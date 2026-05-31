@@ -20,13 +20,15 @@ def deduct_lesson(student):
         print("Student not found.")
         return False
 
-    students[student] -= 1
+    students[student]["lessons_left"] -= 1
     save_data()
 
     print(f"{student} finished a lesson.")
-    print(f"Remaining lessons: {students[student]}")
+    print(f"Teacher: {students[student]['teacher']}")
+    print(f"Instrument: {students[student]['instrument']}")
+    print(f"Remaining lessons: {students[student]['lessons_left']}")
 
-    if students[student] <= 2:
+    if students[student]["lessons_left"] <= 2:
         print("⚠️ Contact parent for renewal.")
 
     print("---------")
@@ -41,6 +43,12 @@ Write a warm and professional parent feedback.
 
 Student:
 {student}
+
+Teacher:
+{students[student]["teacher"]}
+
+Instrument:
+{students[student]["instrument"]}
 
 Lesson Notes:
 {lesson_notes}
@@ -69,6 +77,7 @@ while True:
 
     if lesson_recorded:
         feedback = generate_feedback(student_name, lesson_notes)
+
         print(feedback)
 
         filename = f"{student_name}_feedback.txt"
