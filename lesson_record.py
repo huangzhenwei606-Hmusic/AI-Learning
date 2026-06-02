@@ -1,47 +1,35 @@
 import json
-from openai import OpenAI
-
-client = OpenAI(
-    api_key="YOUR_API_KEY"
-)
 
 student_name = input("Student Name: ")
-lesson_content = input("Today's lesson: ")
+lesson_content = input("Lesson Content: ")
 performance = input("Performance: ")
+homework = input("Homework: ")
 
-lesson = {
+lesson_record = {
     "student": student_name,
-    "content": lesson_content,
-    "performance": performance
+    "lesson": lesson_content,
+    "performance": performance,
+    "homework": homework
 }
 
-with open("lesson_record.json", "w") as file:
-    json.dump(lesson, file, indent=4)
+with open("lesson_history.json", "a") as file:
+    file.write(json.dumps(lesson_record))
+    file.write("\n")
 
-prompt = f"""
-You are a professional piano teacher.
+with open("students.json", "r") as file:
+    students = json.load(file)
 
-Write a warm and professional parent feedback based on this lesson record:
+if student_name in students:
+    students[student_name]["lessons_left"] -= 1
 
-Student: {lesson["student"]}
-Lesson Content: {lesson["content"]}
-Performance: {lesson["performance"]}
+    with open("students.json", "w") as file:
+        json.dump(students, file, indent=4)
 
-Make it easy for parents to understand.
-"""
+    print("\nLesson saved to history!")
+    print(f"Remaining lessons: {students[student_name]['lessons_left']}")
 
-response = client.chat.completions.create(
-    model="gpt-4.1-mini",
-    messages=[
-        {"role": "user", "content": prompt}
-    ]
-)
-
-feedback = response.choices[0].message.content
-
-print(feedback)
-
-with open(f"{student_name}_feedback.txt", "w") as file:
-    file.write(feedback)
-
-print("Lesson and feedback saved!")
+    if students[student_name]["lessons_left"] <= 2:
+        print("⚠️ Contact parent for renewal.")
+else:
+    print("\nLesson saved to history!")
+    print("Student not found in students.json.")
