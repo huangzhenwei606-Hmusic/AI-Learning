@@ -41,6 +41,143 @@ def require_parent():
 client = None
 
 
+PARENT_APP_NAME = "H-Music"
+PARENT_APP_THEME = "#4f46e5"
+
+
+def parent_app_meta(title):
+    return f"""
+        <title>{title}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="{PARENT_APP_THEME}">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-title" content="{PARENT_APP_NAME}">
+        <meta name="apple-mobile-web-app-status-bar-style" content="default">
+        <link rel="manifest" href="/manifest.webmanifest">
+        <link rel="icon" href="/hmusic-icon.svg" type="image/svg+xml">
+        <link rel="apple-touch-icon" href="/hmusic-icon.svg">
+        <script>
+            if ("serviceWorker" in navigator) {{
+                window.addEventListener("load", function() {{
+                    navigator.serviceWorker.register("/sw.js").catch(function() {{}});
+                }});
+            }}
+            let hmusicInstallPrompt = null;
+            window.addEventListener("beforeinstallprompt", function(event) {{
+                event.preventDefault();
+                hmusicInstallPrompt = event;
+                const installButton = document.querySelector("[data-install-app]");
+                if (installButton) {{
+                    installButton.hidden = false;
+                }}
+            }});
+            function installParentApp() {{
+                if (!hmusicInstallPrompt) {{
+                    return;
+                }}
+                hmusicInstallPrompt.prompt();
+                hmusicInstallPrompt = null;
+                const installButton = document.querySelector("[data-install-app]");
+                if (installButton) {{
+                    installButton.hidden = true;
+                }}
+            }}
+        </script>
+    """
+
+
+def parent_bottom_nav(active="home"):
+    items = [
+        ("home", "/parent_dashboard", "Home"),
+        ("reschedule", "/parent_reschedule", "Reschedule"),
+        ("messages", "/parent_messages", "Messages"),
+        ("profile", "/parent_profile", "Profile"),
+    ]
+    links = ""
+    for key, href, label in items:
+        active_class = "active" if key == active else ""
+        links += f'<a class="{active_class}" href="{href}">{label}</a>'
+    return f'<nav class="parent-bottom-nav">{links}</nav>'
+
+
+@app.route("/app")
+def parent_app_entry():
+    if require_parent():
+        return redirect("/parent_dashboard")
+    return redirect("/parent_login")
+
+
+@app.route("/manifest.webmanifest")
+@app.route("/manifest.json")
+def parent_app_manifest():
+    return Response(f"""{{
+        "name": "H-Music Parent App",
+        "short_name": "H-Music",
+        "description": "Parent portal for H-Music lessons, messages, rescheduling, and account history.",
+        "start_url": "/app",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#f7f7fb",
+        "theme_color": "{PARENT_APP_THEME}",
+        "icons": [
+            {{
+                "src": "/hmusic-icon.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any maskable"
+            }}
+        ]
+    }}""", mimetype="application/manifest+json")
+
+
+@app.route("/sw.js")
+def parent_app_service_worker():
+    return Response("""
+const CACHE_NAME = "hmusic-parent-v31-2";
+const SHELL = ["/parent_login", "/hmusic-icon.svg", "/manifest.webmanifest"];
+
+self.addEventListener("install", function(event) {
+  event.waitUntil(caches.open(CACHE_NAME).then(function(cache) {
+    return cache.addAll(SHELL);
+  }));
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", function(event) {
+  event.waitUntil(
+    caches.keys().then(function(keys) {
+      return Promise.all(keys.filter(function(key) {
+        return key !== CACHE_NAME;
+      }).map(function(key) {
+        return caches.delete(key);
+      }));
+    })
+  );
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", function(event) {
+  if (event.request.mode === "navigate") {
+    event.respondWith(fetch(event.request).catch(function() {
+      return caches.match("/parent_login");
+    }));
+  }
+});
+""", mimetype="application/javascript")
+
+
+@app.route("/hmusic-icon.svg")
+def parent_app_icon():
+    return Response(f"""
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="{PARENT_APP_THEME}"/>
+  <circle cx="376" cy="142" r="46" fill="#facc15"/>
+  <path d="M162 360c0 34 27 60 70 60 45 0 76-28 76-72V126h-46v206c0 25-13 42-34 42-18 0-29-11-29-27 0-15 11-26 28-26 8 0 16 2 24 6v-44c-11-4-22-6-34-6-32 0-55 18-55 83Z" fill="white"/>
+  <path d="M307 126h80v44h-80z" fill="white" opacity=".95"/>
+</svg>
+""", mimetype="image/svg+xml")
+
+
 def ensure_teacher_management_schema():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -5916,29 +6053,54 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
     if notifications_href:
         action_buttons += f' <a class="button" href="{notifications_href}">Notifications</a>'
 
+    is_parent_app = back_href.startswith("/parent") or new_href == "/new_parent_message"
+    bottom_nav_html = parent_bottom_nav("messages") if is_parent_app else ""
+    page_padding = "calc(96px + env(safe-area-inset-bottom))" if is_parent_app else "40px"
+
     return f"""
     <html>
     <head>
-        <title>{title}</title>
+        {parent_app_meta(title) if is_parent_app else f"<title>{title}</title>"}
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; color:#111827; }}
-            .container {{ background:white; padding:30px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
-            a.button {{ display:inline-block; background:#5b5cff; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; }}
+            * {{ box-sizing: border-box; }}
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px {page_padding}; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 18px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:12px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin:0; }}
             table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
             th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
             th {{ background:#eeeeff; }}
-            a {{ color:#5b5cff; font-weight:bold; }}
+            a {{ color:#4f46e5; font-weight:bold; }}
             .subtle {{ color:#6b7280; font-size:12px; margin-top:4px; }}
             .badge {{ display:inline-block; padding:3px 8px; border-radius:999px; background:#eef2ff; color:#374151; font-size:12px; font-weight:bold; }}
             .badge.unread {{ background:#fee2e2; color:#991b1b; }}
             .badge.type {{ background:#e0f2fe; color:#075985; }}
             tr.is-unread td {{ background:#fff7ed; }}
+            .parent-bottom-nav {{
+                position: fixed; left: 0; right: 0; bottom: 0;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255,255,255,.96); border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,.08); z-index: 20;
+            }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{
+                table {{ display:block; overflow-x:auto; font-size:12px; }}
+                .actions {{ display:grid; grid-template-columns:1fr; }}
+                a.button {{ text-align:center; }}
+            }}
+            @media (min-width:900px) {{
+                body {{ padding:32px; }}
+                .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>{title}</h1>
-            {action_buttons}
+            <div class="actions">{action_buttons}</div>
 
             <table>
                 <tr>
@@ -5954,6 +6116,7 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
                 {rows}
             </table>
         </div>
+        {bottom_nav_html}
     </body>
     </html>
     """
@@ -6117,12 +6280,21 @@ def new_parent_message():
     return f"""
     <html>
     <head>
-        <title>New Message to Teacher</title>
+        {parent_app_meta("New Message")}
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
-            .container {{ background:white; padding:30px; border-radius:12px; max-width:760px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
-            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
-            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            * {{ box-sizing: border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:760px; margin:0 auto; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 22px; }}
+            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:130px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} .form-actions button, .form-actions a {{ text-align:center; }} }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
     </head>
     <body>
@@ -6141,10 +6313,13 @@ def new_parent_message():
                 Attachments:<br>
                 <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
 
-                <button type="submit">Send Message</button>
-                <a class="button" href="/parent_messages">Back</a>
+                <div class="form-actions">
+                    <button type="submit">Send Message</button>
+                    <a class="button" href="/parent_messages">Back</a>
+                </div>
             </form>
         </div>
+        {parent_bottom_nav("messages")}
     </body>
     </html>
     """
@@ -6375,18 +6550,31 @@ def message_thread(thread_id):
     else:
         back_link = "/parent_messages"
 
+    is_parent_app = back_link == "/parent_messages"
+    thread_head = parent_app_meta(thread[1]) if is_parent_app else f"<title>{thread[1]}</title>"
+    bottom_nav_html = parent_bottom_nav("messages") if is_parent_app else ""
+    page_padding = "calc(96px + env(safe-area-inset-bottom))" if is_parent_app else "40px"
+
     return f"""
     <html>
     <head>
-        <title>{thread[1]}</title>
+        {thread_head}
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
-            .container {{ background:white; padding:30px; border-radius:12px; max-width:900px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
-            .message {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:12px 0; background:#fafafa; }}
+            * {{ box-sizing: border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px {page_padding}; max-width:900px; margin:0 auto; }}
+            h1 {{ font-size:28px; line-height:1.12; margin:0 0 10px; }}
+            .message {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:12px 0; background:#fafafa; overflow:hidden; }}
             .meta {{ color:#6b7280; font-size:13px; margin-bottom:8px; }}
             .body {{ font-size:15px; white-space:pre-wrap; }}
-            textarea {{ width:100%; padding:10px; margin:12px 0; font-size:15px; }}
-            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; }}
+            textarea {{ width:100%; min-height:120px; padding:12px 14px; margin:12px 0; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            input[type=file] {{ width:100%; margin:8px 0 18px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; min-height:48px; }}
+            .attachment img, .attachment video {{ max-width:100% !important; height:auto; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
     </head>
     <body>
@@ -6405,6 +6593,7 @@ def message_thread(thread_id):
                 <button type="submit">Send Reply</button>
             </form>
         </div>
+        {bottom_nav_html}
     </body>
     </html>
     """
@@ -6941,15 +7130,37 @@ def parent_reschedule():
     return f"""
     <html>
     <head>
-        <title>Request Reschedule</title>
+        {parent_app_meta("Request Reschedule")}
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
-            .container {{ background:white; padding:30px; border-radius:12px; max-width:900px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
-            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
-            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            * {{ box-sizing: border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:900px; margin:0 auto; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 24px; }}
+            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:120px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
             table {{ width:100%; border-collapse:collapse; margin-top:16px; }}
             th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
             th {{ background:#eeeeff; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
+            .parent-bottom-nav {{
+                position: fixed; left: 0; right: 0; bottom: 0;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255,255,255,.96); border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,.08); z-index: 20;
+            }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{
+                table {{ display:block; overflow-x:auto; font-size:12px; }}
+                .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
+                .form-actions button, .form-actions a {{ text-align:center; }}
+            }}
+            @media (min-width:900px) {{
+                body {{ padding:32px; }}
+                .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            }}
         </style>
     </head>
     <body>
@@ -6976,8 +7187,10 @@ def parent_reschedule():
                 Reason:<br>
                 <textarea name="reason" rows="4"></textarea>
 
-                <button type="submit">Submit Request</button>
-                <a class="button" href="/parent_dashboard">Back</a>
+                <div class="form-actions">
+                    <button type="submit">Submit Request</button>
+                    <a class="button" href="/parent_dashboard">Back</a>
+                </div>
             </form>
 
             <h2>Recent Requests</h2>
@@ -6992,6 +7205,7 @@ def parent_reschedule():
                 {request_rows}
             </table>
         </div>
+        {parent_bottom_nav("reschedule")}
     </body>
     </html>
     """
@@ -7874,52 +8088,105 @@ def parent_login():
     return """
     <html>
     <head>
-        <title>Parent Pro Login</title>
+        """ + parent_app_meta("H-Music Parent Login") + """
         <style>
+            * {
+                box-sizing: border-box;
+            }
             body {
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 background: #f7f7fb;
-                padding: 40px;
+                margin: 0;
+                color: #111827;
             }
             .container {
                 background: white;
-                padding: 30px;
-                border-radius: 12px;
-                max-width: 560px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                min-height: 100vh;
+                padding: max(28px, env(safe-area-inset-top)) 22px max(28px, env(safe-area-inset-bottom));
+                max-width: 520px;
+                margin: 0 auto;
+            }
+            .brand {
+                margin: 30px 0 28px;
+            }
+            .brand-mark {
+                width: 56px;
+                height: 56px;
+                border-radius: 16px;
+                margin-bottom: 18px;
+                background: #4f46e5;
+                color: white;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 30px;
+                font-weight: 900;
+            }
+            h1 {
+                font-size: 34px;
+                line-height: 1.05;
+                margin: 0;
+            }
+            h3 {
+                margin-top: 0;
             }
             input {
                 width: 100%;
-                padding: 10px;
-                margin: 8px 0 20px;
-                font-size: 15px;
+                min-height: 48px;
+                padding: 12px 14px;
+                margin: 8px 0 18px;
+                font-size: 16px;
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
             }
             button {
-                background: #5b5cff;
+                background: #4f46e5;
                 color: white;
                 border: none;
-                padding: 10px 16px;
-                border-radius: 6px;
+                min-height: 48px;
+                padding: 12px 18px;
+                border-radius: 10px;
                 font-weight: bold;
+                font-size: 16px;
+                width: 100%;
             }
             .section {
                 border-top: 1px solid #eee;
-                margin-top: 24px;
-                padding-top: 20px;
+                margin-top: 28px;
+                padding-top: 24px;
             }
             .hint {
                 color: #6b7280;
-                font-size: 13px;
+                font-size: 14px;
+                line-height: 1.5;
             }
             a {
-                color: #5b5cff;
+                color: #4f46e5;
                 font-weight: bold;
+            }
+            @media (min-width: 760px) {
+                body {
+                    padding: 40px;
+                }
+                .container {
+                    min-height: auto;
+                    padding: 34px;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }
+                button {
+                    width: auto;
+                }
             }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Parent Pro Login</h1>
+            <div class="brand">
+                <div class="brand-mark">H</div>
+                <h1>H-Music</h1>
+                <p class="hint">Parent App</p>
+            </div>
             <p class="hint">Seeded parent accounts use password 1234 until the owner updates them.</p>
 
             <form method="POST">
@@ -7946,7 +8213,6 @@ def parent_login():
             </div>
 
             <br>
-            <a href="/">Back Home</a>
         </div>
     </body>
     </html>
@@ -8173,26 +8439,50 @@ def parent_dashboard():
     return f"""
     <html>
     <head>
-        <title>Parent Pro</title>
+        {parent_app_meta("H-Music Parent App")}
         <style>
+            * {{
+                box-sizing: border-box;
+            }}
             body {{
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 background: #f7f7fb;
-                padding: 40px;
+                margin: 0;
+                color: #111827;
             }}
             .container {{
                 background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                min-height: 100vh;
+                padding: max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
+                max-width: 1180px;
+                margin: 0 auto;
             }}
             .top {{
                 display: flex;
                 justify-content: space-between;
+                align-items: flex-start;
+                gap: 16px;
+                margin-bottom: 18px;
+            }}
+            .top h1 {{
+                font-size: 32px;
+                line-height: 1.05;
+                margin: 0 0 8px;
+            }}
+            .top p {{
+                margin: 0;
+                color: #6b7280;
+            }}
+            .top-links {{
+                display: flex;
+                gap: 10px;
                 align-items: center;
             }}
             .student-tabs {{
-                margin: 16px 0 8px;
+                margin: 18px 0 10px;
+                white-space: nowrap;
+                overflow-x: auto;
+                padding-bottom: 4px;
             }}
             .student-tab {{
                 display: inline-block;
@@ -8205,9 +8495,9 @@ def parent_dashboard():
                 font-weight: bold;
             }}
             .student-tab.active {{
-                background: #5b5cff;
+                background: #4f46e5;
                 color: white;
-                border-color: #5b5cff;
+                border-color: #4f46e5;
             }}
             .cards {{
                 display: grid;
@@ -8218,7 +8508,7 @@ def parent_dashboard():
             .card {{
                 background: #f5f5ff;
                 padding: 18px;
-                border-radius: 10px;
+                border-radius: 8px;
                 border: 1px solid #ddd;
             }}
             .label {{
@@ -8229,6 +8519,7 @@ def parent_dashboard():
                 font-size: 24px;
                 font-weight: bold;
                 margin-top: 8px;
+                overflow-wrap: anywhere;
             }}
             table {{
                 width: 100%;
@@ -8244,33 +8535,101 @@ def parent_dashboard():
                 padding: 10px;
                 border: 1px solid #ddd;
             }}
+            .actions {{
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin: 20px 0 30px;
+            }}
             a.button {{
                 display: inline-block;
-                margin-right: 10px;
-                margin-bottom: 20px;
-                background: #5b5cff;
+                background: #4f46e5;
                 color: white;
                 padding: 10px 16px;
-                border-radius: 6px;
+                border-radius: 8px;
                 text-decoration: none;
                 font-weight: bold;
             }}
+            button.install-button {{
+                background: #111827;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 12px;
+                font-weight: 800;
+            }}
             a {{
-                color: #5b5cff;
+                color: #4f46e5;
                 font-weight: bold;
             }}
+            .parent-bottom-nav {{
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255, 255, 255, 0.96);
+                border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,0.08);
+                z-index: 20;
+            }}
+            .parent-bottom-nav a {{
+                text-align: center;
+                text-decoration: none;
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 9px 4px;
+                border-radius: 8px;
+            }}
+            .parent-bottom-nav a.active {{
+                color: #4f46e5;
+                background: #eef2ff;
+            }}
             @media (max-width: 760px) {{
-                body {{
-                    padding: 14px;
-                }}
                 .top {{
-                    display: block;
+                    align-items: flex-start;
                 }}
                 .cards {{
-                    grid-template-columns: repeat(2, 1fr);
+                    grid-template-columns: 1fr 1fr;
+                    gap: 10px;
+                    margin: 18px 0;
+                }}
+                .card {{
+                    padding: 14px;
+                }}
+                .card:nth-child(4) {{
+                    grid-column: 1 / -1;
+                }}
+                .value {{
+                    font-size: 20px;
                 }}
                 table {{
+                    display: block;
+                    overflow-x: auto;
                     font-size: 12px;
+                }}
+                .actions {{
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                }}
+                a.button {{
+                    text-align: center;
+                    margin: 0;
+                }}
+            }}
+            @media (min-width: 900px) {{
+                body {{
+                    padding: 32px;
+                }}
+                .container {{
+                    min-height: auto;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    padding: 32px;
                 }}
             }}
         </style>
@@ -8284,7 +8643,10 @@ def parent_dashboard():
                     <h1>Parent Pro - {student[0]}</h1>
                     <p>Welcome, {session.get("parent_name", "Parent")}</p>
                 </div>
-                <a href="/parent_logout">Logout</a>
+                <div class="top-links">
+                    <button class="install-button" data-install-app hidden onclick="installParentApp()">Install App</button>
+                    <a href="/parent_logout">Logout</a>
+                </div>
             </div>
 
             <div class="student-tabs">
@@ -8313,12 +8675,13 @@ def parent_dashboard():
                 </div>
             </div>
 
-            <a class="button" href="/parent_cancel">Cancel Lesson</a>
-            <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
-            <a class="button" href="/parent_messages">{message_label}</a>
-            <a class="button" href="/parent_profile">Parent Profile</a>
-            <a class="button" href="/student_ledger/{student[0]}">Full Ledger</a>
-            <a class="button" href="/">Back Home</a>
+            <div class="actions">
+                <a class="button" href="/parent_cancel">Cancel Lesson</a>
+                <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
+                <a class="button" href="/parent_messages">{message_label}</a>
+                <a class="button" href="/parent_profile">Parent Profile</a>
+                <a class="button" href="/student_ledger/{student[0]}">Full Ledger</a>
+            </div>
 
             <h2>Upcoming Lessons</h2>
             <table>
@@ -8390,6 +8753,7 @@ def parent_dashboard():
             </table>
 
         </div>
+        {parent_bottom_nav("home")}
     </body>
     </html>
     """
@@ -8471,35 +8835,47 @@ def parent_profile():
     return f"""
     <html>
     <head>
-        <title>Parent Profile</title>
+        {parent_app_meta("Parent Profile")}
         <style>
+            * {{
+                box-sizing: border-box;
+            }}
             body {{
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 background: #f7f7fb;
-                padding: 40px;
+                margin: 0;
+                color: #111827;
             }}
             .container {{
                 background: white;
-                padding: 30px;
-                border-radius: 12px;
+                padding: max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
+                min-height: 100vh;
                 max-width: 760px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                margin: 0 auto;
+            }}
+            h1 {{
+                font-size: 30px;
+                margin: 0 0 22px;
             }}
             input {{
                 width: 100%;
-                padding: 10px;
+                min-height: 48px;
+                padding: 12px 14px;
                 margin: 8px 0 18px;
-                font-size: 15px;
+                font-size: 16px;
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
             }}
             button, a.button {{
                 display: inline-block;
-                background: #5b5cff;
+                background: #4f46e5;
                 color: white;
                 border: none;
-                padding: 10px 16px;
-                border-radius: 6px;
+                padding: 12px 16px;
+                border-radius: 8px;
                 font-weight: bold;
                 text-decoration: none;
+                min-height: 48px;
             }}
             table {{
                 width: 100%;
@@ -8513,6 +8889,64 @@ def parent_profile():
             }}
             th {{
                 background: #eeeeff;
+            }}
+            .form-actions {{
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }}
+            .parent-bottom-nav {{
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255, 255, 255, 0.96);
+                border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,0.08);
+                z-index: 20;
+            }}
+            .parent-bottom-nav a {{
+                text-align: center;
+                text-decoration: none;
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 9px 4px;
+                border-radius: 8px;
+            }}
+            .parent-bottom-nav a.active {{
+                color: #4f46e5;
+                background: #eef2ff;
+            }}
+            @media (max-width: 760px) {{
+                table {{
+                    display: block;
+                    overflow-x: auto;
+                    font-size: 12px;
+                }}
+                .form-actions {{
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                }}
+                .form-actions button,
+                .form-actions a {{
+                    text-align: center;
+                }}
+            }}
+            @media (min-width: 900px) {{
+                body {{
+                    padding: 32px;
+                }}
+                .container {{
+                    min-height: auto;
+                    padding: 32px;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }}
             }}
         </style>
     </head>
@@ -8533,8 +8967,10 @@ def parent_profile():
                 Password:<br>
                 <input name="password" value="{profile[3] or ''}">
 
-                <button type="submit">Save Profile</button>
-                <a class="button" href="/parent_dashboard">Back</a>
+                <div class="form-actions">
+                    <button type="submit">Save Profile</button>
+                    <a class="button" href="/parent_dashboard">Back</a>
+                </div>
             </form>
 
             <h2>Linked Students</h2>
@@ -8546,6 +8982,7 @@ def parent_profile():
                 {linked_rows}
             </table>
         </div>
+        {parent_bottom_nav("profile")}
     </body>
     </html>
     """
@@ -15037,6 +15474,31 @@ def ensure_base_schema():
         status TEXT,
         invoice_type TEXT,
         created_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        lesson_content TEXT,
+        performance TEXT,
+        homework TEXT,
+        lesson_date TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        entry_type TEXT,
+        amount REAL,
+        description TEXT,
+        related_invoice_id INTEGER,
+        related_payment_id INTEGER,
+        created_at TEXT,
+        related_schedule_id INTEGER
     )
     """)
 
