@@ -89,3 +89,84 @@ app.h-musicandarts.com
 ```
 
 Render will show the exact target value for the CNAME.
+
+## V31.3 Parent App Domain Plan
+
+Recommended production app URL:
+
+```text
+https://app.h-musicandarts.com/app
+```
+
+This matches the existing website domain:
+
+```text
+https://www.h-musicandarts.com/
+```
+
+Do not use this unless H-Music buys the separate domain first:
+
+```text
+app.h-musicandart.com
+```
+
+`h-musicandart.com` and `h-musicandarts.com` are different domains.
+
+## Render Custom Domain Steps
+
+1. Open Render dashboard.
+2. Open the `hmusic-crm` web service.
+3. Go to `Settings`.
+4. Find `Custom Domains`.
+5. Add:
+
+```text
+app.h-musicandarts.com
+```
+
+6. Render will show a DNS target value.
+7. Keep the Render tab open.
+
+## Squarespace DNS Steps
+
+In Squarespace domain DNS settings, add a new record only for the app subdomain:
+
+```text
+Type: CNAME
+Host: app
+Value: <the target Render shows>
+```
+
+Do not edit the existing `www` or root website records.
+
+After saving the DNS record, return to Render and click `Verify`.
+
+DNS can verify quickly, but it can also take 15 minutes to a few hours.
+
+## Parent App Install Links
+
+Temporary Render URL:
+
+```text
+https://hmusic-crm.onrender.com/app
+```
+
+Final branded URL:
+
+```text
+https://app.h-musicandarts.com/app
+```
+
+Installation help page:
+
+```text
+https://app.h-musicandarts.com/app_install
+```
+
+Parent install flow:
+
+1. Open the app link on the phone.
+2. Log in as parent.
+3. iPhone Safari: Share -> Add to Home Screen -> Add.
+4. Android Chrome: Install app or Add to Home screen.
+5. Reopen from the `H-Music` icon.

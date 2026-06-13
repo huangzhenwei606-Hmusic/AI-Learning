@@ -100,6 +100,130 @@ def parent_bottom_nav(active="home"):
     return f'<nav class="parent-bottom-nav">{links}</nav>'
 
 
+@app.route("/app_install")
+def parent_app_install():
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Install H-Music App")}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                background: #f7f7fb;
+                color: #111827;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }}
+            .container {{
+                min-height: 100vh;
+                max-width: 720px;
+                margin: 0 auto;
+                background: white;
+                padding: max(26px, env(safe-area-inset-top)) 20px max(30px, env(safe-area-inset-bottom));
+            }}
+            .app-mark {{
+                width: 64px;
+                height: 64px;
+                border-radius: 18px;
+                background: {PARENT_APP_THEME};
+                color: white;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 34px;
+                font-weight: 900;
+                margin-bottom: 18px;
+            }}
+            h1 {{
+                font-size: 34px;
+                line-height: 1.05;
+                margin: 0 0 10px;
+            }}
+            p {{
+                color: #4b5563;
+                line-height: 1.55;
+            }}
+            .steps {{
+                display: grid;
+                gap: 14px;
+                margin: 22px 0;
+            }}
+            .step {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 16px;
+                background: #fafafa;
+            }}
+            .step h2 {{
+                margin: 0 0 10px;
+                font-size: 18px;
+            }}
+            ol {{
+                margin: 0;
+                padding-left: 22px;
+                color: #374151;
+                line-height: 1.65;
+            }}
+            a.button {{
+                display: inline-block;
+                background: {PARENT_APP_THEME};
+                color: white;
+                padding: 12px 16px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: 800;
+                margin-right: 8px;
+                margin-bottom: 8px;
+            }}
+            a.secondary {{
+                background: #111827;
+            }}
+            @media (min-width: 900px) {{
+                body {{ padding: 32px; }}
+                .container {{
+                    min-height: auto;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    padding: 34px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="app-mark">H</div>
+            <h1>Install H-Music</h1>
+            <p>Use the parent portal like an app from your phone home screen.</p>
+
+            <div class="steps">
+                <div class="step">
+                    <h2>iPhone / iPad</h2>
+                    <ol>
+                        <li>Open this page in Safari.</li>
+                        <li>Tap the Share button.</li>
+                        <li>Choose Add to Home Screen.</li>
+                        <li>Tap Add.</li>
+                    </ol>
+                </div>
+
+                <div class="step">
+                    <h2>Android</h2>
+                    <ol>
+                        <li>Open this page in Chrome.</li>
+                        <li>Tap Install App if Chrome shows it, or open the browser menu.</li>
+                        <li>Choose Install app or Add to Home screen.</li>
+                    </ol>
+                </div>
+            </div>
+
+            <a class="button" href="/app">Open Parent App</a>
+            <a class="button secondary" href="/parent_login">Parent Login</a>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.route("/app")
 def parent_app_entry():
     if require_parent():
@@ -133,8 +257,8 @@ def parent_app_manifest():
 @app.route("/sw.js")
 def parent_app_service_worker():
     return Response("""
-const CACHE_NAME = "hmusic-parent-v31-2";
-const SHELL = ["/parent_login", "/hmusic-icon.svg", "/manifest.webmanifest"];
+const CACHE_NAME = "hmusic-parent-v31-3";
+const SHELL = ["/app_install", "/parent_login", "/hmusic-icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", function(event) {
   event.waitUntil(caches.open(CACHE_NAME).then(function(cache) {
@@ -159,7 +283,7 @@ self.addEventListener("activate", function(event) {
 self.addEventListener("fetch", function(event) {
   if (event.request.mode === "navigate") {
     event.respondWith(fetch(event.request).catch(function() {
-      return caches.match("/parent_login");
+      return caches.match("/app_install");
     }));
   }
 });
@@ -8187,6 +8311,7 @@ def parent_login():
                 <h1>H-Music</h1>
                 <p class="hint">Parent App</p>
             </div>
+            <p><a href="/app_install">Install on phone</a></p>
             <p class="hint">Seeded parent accounts use password 1234 until the owner updates them.</p>
 
             <form method="POST">
@@ -8645,6 +8770,7 @@ def parent_dashboard():
                 </div>
                 <div class="top-links">
                     <button class="install-button" data-install-app hidden onclick="installParentApp()">Install App</button>
+                    <a href="/app_install">App Help</a>
                     <a href="/parent_logout">Logout</a>
                 </div>
             </div>
