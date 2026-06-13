@@ -15735,6 +15735,24 @@ def ensure_base_schema():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO settings (key, value)
+    VALUES (?, ?)
+    """, [
+        ("free_cancel_per_package", "1"),
+        ("default_lesson_rate", "50"),
+        ("cancel_3h_charge", "1"),
+        ("cancel_12h_charge", "0.75"),
+        ("cancel_24h_charge", "0.5"),
+    ])
+
     conn.commit()
     conn.close()
 
