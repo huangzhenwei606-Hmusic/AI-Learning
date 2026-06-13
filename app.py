@@ -8203,10 +8203,70 @@ def parent_login():
 
         conn.close()
 
-        return """
-        <h2>Login Failed</h2>
-        <p>Please check parent email, password, or legacy student information.</p>
-        <a href="/parent_login">Try Again</a>
+        return f"""
+        <html>
+        <head>
+            {parent_app_meta("Login Failed")}
+            <style>
+                * {{ box-sizing: border-box; }}
+                body {{
+                    margin: 0;
+                    background: #f7f7fb;
+                    color: #111827;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                }}
+                .container {{
+                    min-height: 100vh;
+                    max-width: 520px;
+                    margin: 0 auto;
+                    background: white;
+                    padding: max(32px, env(safe-area-inset-top)) 22px max(32px, env(safe-area-inset-bottom));
+                }}
+                .brand-mark {{
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 16px;
+                    margin-bottom: 18px;
+                    background: #4f46e5;
+                    color: white;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 30px;
+                    font-weight: 900;
+                }}
+                h1 {{ font-size: 32px; margin: 0 0 12px; }}
+                p {{ color: #6b7280; line-height: 1.5; }}
+                a.button {{
+                    display: inline-block;
+                    background: #4f46e5;
+                    color: white;
+                    padding: 12px 16px;
+                    border-radius: 8px;
+                    text-decoration: none;
+                    font-weight: 800;
+                    margin-top: 12px;
+                }}
+                @media (min-width: 760px) {{
+                    body {{ padding: 40px; }}
+                    .container {{
+                        min-height: auto;
+                        padding: 34px;
+                        border-radius: 16px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    }}
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="brand-mark">H</div>
+                <h1>Login failed</h1>
+                <p>Please check the parent email and password, then try again.</p>
+                <a class="button" href="/parent_login">Back to Login</a>
+            </div>
+        </body>
+        </html>
         """
 
     return """
@@ -8279,10 +8339,35 @@ def parent_login():
                 margin-top: 28px;
                 padding-top: 24px;
             }
+            details.section summary {
+                cursor: pointer;
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 700;
+                list-style: none;
+            }
+            details.section summary::-webkit-details-marker {
+                display: none;
+            }
+            details.section summary::after {
+                content: " +";
+            }
+            details.section[open] summary::after {
+                content: " -";
+            }
             .hint {
                 color: #6b7280;
                 font-size: 14px;
                 line-height: 1.5;
+            }
+            .subtitle {
+                color: #4b5563;
+                font-size: 16px;
+                line-height: 1.55;
+                margin: 12px 0 22px;
+            }
+            .install-link {
+                margin: 0 0 20px;
             }
             a {
                 color: #4f46e5;
@@ -8311,8 +8396,8 @@ def parent_login():
                 <h1>H-Music</h1>
                 <p class="hint">Parent App</p>
             </div>
-            <p><a href="/app_install">Install on phone</a></p>
-            <p class="hint">Seeded parent accounts use password 1234 until the owner updates them.</p>
+            <p class="subtitle">Access your child's lessons, messages, reschedule requests, and account history.</p>
+            <p class="install-link"><a href="/app_install">Install on phone</a></p>
 
             <form method="POST">
                 Parent Email:<br>
@@ -8324,8 +8409,8 @@ def parent_login():
                 <button type="submit">Login</button>
             </form>
 
-            <div class="section">
-                <h3>Legacy Login</h3>
+            <details class="section">
+                <summary>Legacy login</summary>
                 <form method="POST">
                     Student Name:<br>
                     <input name="student_name">
@@ -8335,7 +8420,7 @@ def parent_login():
 
                     <button type="submit">Login with Student</button>
                 </form>
-            </div>
+            </details>
 
             <br>
         </div>
