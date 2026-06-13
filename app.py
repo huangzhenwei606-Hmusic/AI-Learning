@@ -341,6 +341,28 @@ def ensure_teacher_management_schema():
     )
     """)
 
+    owner_username = os.environ.get("HMUSIC_OWNER_USERNAME", OWNER_USERNAME)
+    owner_password = os.environ.get("HMUSIC_OWNER_PASSWORD", OWNER_PASSWORD)
+    owner_display_name = os.environ.get("HMUSIC_OWNER_DISPLAY_NAME", "Owner")
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'owner'")
+    owner_count = cursor.fetchone()[0]
+    if owner_count == 0:
+        cursor.execute("""
+        INSERT OR IGNORE INTO users (
+            username,
+            password,
+            role,
+            display_name
+        )
+        VALUES (?, ?, ?, ?)
+        """, (
+            owner_username,
+            owner_password,
+            "owner",
+            owner_display_name
+        ))
+
     conn.commit()
     conn.close()
 
