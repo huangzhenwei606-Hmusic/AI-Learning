@@ -11,6 +11,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("HMUSIC_SECRET_KEY", "hmusic_secret_key")
 HMUSIC_DB_PATH = os.environ.get("HMUSIC_DB_PATH", "hmusic.db")
 HMUSIC_UPLOAD_DIR = os.environ.get("HMUSIC_UPLOAD_DIR", "message_uploads")
+DB_NAME = "hmusic.db"
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
 _sqlite_connect = sqlite3._hmusic_original_connect
@@ -14972,6 +14973,95 @@ def export_payroll_csv():
             "Content-Disposition": f"attachment; filename=payroll_{month}.csv"
         }
     )
+
+
+_production_schema_ready = False
+
+
+def ensure_base_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        teacher TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        lessons_left INTEGER DEFAULT 0,
+        free_cancel_used INTEGER DEFAULT 0
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        classroom TEXT,
+        location TEXT,
+        notes TEXT,
+        schedule_type TEXT,
+        total_lessons INTEGER,
+        weekday TEXT,
+        package_type TEXT,
+        start_date TEXT,
+        status TEXT DEFAULT 'scheduled',
+        charge_lessons REAL DEFAULT 0,
+        cancellation_reason TEXT,
+        cancelled_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        amount REAL,
+        lessons_added INTEGER,
+        payment_method TEXT,
+        payment_date TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        schedule_id INTEGER,
+        charge_lessons REAL,
+        amount REAL,
+        status TEXT,
+        invoice_type TEXT,
+        created_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def ensure_production_schema():
+    global _production_schema_ready
+    if _production_schema_ready:
+        return
+
+    ensure_base_schema()
+    ensure_teacher_management_schema()
+    ensure_v26_schema()
+    ensure_v27_schema()
+    ensure_v29_schema()
+    ensure_v145_schema()
+
+    _production_schema_ready = True
+
+
+@app.before_request
+def prepare_database_for_request():
+    ensure_production_schema()
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
