@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: hmusic-crm
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: HMUSIC_DB_PATH
+        value: /var/data/hmusic.db
+      - key: HMUSIC_UPLOAD_DIR
+        value: /var/data/message_uploads
+      - key: HMUSIC_SECRET_KEY
+        generateValue: true
+    disk:
+      name: hmusic-data
+      mountPath: /var/data
+      sizeGB: 1
