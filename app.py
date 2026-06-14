@@ -3803,10 +3803,11 @@ def get_hours_before_lesson(lesson_date, lesson_time):
 
 
 def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None):
-    ensure_v252_schema()
+    ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    renewal_events = []
 
     cursor.execute("""
     SELECT
@@ -3903,6 +3904,7 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 enrollment_id
             ))
+            renewal_events = maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name)
         else:
             cursor.execute("""
             UPDATE students
@@ -3949,6 +3951,23 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
 
     conn.commit()
     conn.close()
+
+    for event in renewal_events:
+        if event.get("parent_id"):
+            create_notification(
+                "parent",
+                str(event["parent_id"]),
+                event["title"],
+                event["body"],
+                event["link"]
+            )
+        create_notification(
+            "owner",
+            "owner",
+            event["title"],
+            event["body"],
+            event["link"]
+        )
 
     return {
         "ok": True,
@@ -4225,6 +4244,8 @@ def pay_invoice(invoice_id):
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_v321_schema()
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -4236,7 +4257,8 @@ def pay_invoice(invoice_id):
         amount,
         status,
         invoice_type,
-        created_at
+        created_at,
+        enrollment_id
     FROM invoices
     WHERE id = ?
     """, (invoice_id,))
@@ -4267,8 +4289,8 @@ def pay_invoice(invoice_id):
 
         student_name = invoice[1]
         amount = invoice[3]
+        enrollment_id = invoice[7]
 
-        # Invoice payment 不增加课包节数，只是把欠款冲平
         cursor.execute("""
         INSERT INTO payments
         (
@@ -4276,15 +4298,21 @@ def pay_invoice(invoice_id):
             amount,
             lessons_added,
             payment_method,
-            payment_date
+            payment_date,
+            enrollment_id,
+            package_name,
+            notes
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             student_name,
             amount,
             0,
             payment_method,
-            payment_date
+            payment_date,
+            enrollment_id,
+            "Tuition Invoice",
+            f"Invoice #{invoice_id} paid"
         ))
 
         payment_id = cursor.lastrowid
@@ -8779,10 +8807,14 @@ def parent_dashboard():
         lesson_rows = "<tr><td colspan='4'>No lesson history.</td></tr>"
 
     invoice_rows = ""
+    tuition_due_total = 0
+    tuition_due_count = 0
     for inv in invoices:
         action = "Paid"
         if inv[2] != "paid":
-            action = "Pending"
+            action = f'<a href="/parent_invoice/{inv[0]}">View / Pay</a>'
+            tuition_due_count += 1
+            tuition_due_total += inv[1] or 0
 
         invoice_rows += f"""
         <tr>
@@ -8797,6 +8829,18 @@ def parent_dashboard():
 
     if not invoice_rows:
         invoice_rows = "<tr><td colspan='6'>No invoices.</td></tr>"
+
+    tuition_alert = ""
+    if tuition_due_count:
+        tuition_alert = f"""
+        <div class="tuition-alert">
+            <div>
+                <strong>Tuition Due</strong><br>
+                {tuition_due_count} open invoice(s), ${round(tuition_due_total, 2)} total.
+            </div>
+            <a href="#invoices">View / Pay</a>
+        </div>
+        """
 
     payment_rows = ""
     for p in payments:
@@ -8914,6 +8958,26 @@ def parent_dashboard():
                 padding: 18px;
                 border-radius: 8px;
                 border: 1px solid #ddd;
+            }}
+            .tuition-alert {{
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                align-items: center;
+                background: #fff7ed;
+                border: 1px solid #fed7aa;
+                color: #9a3412;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 18px 0;
+            }}
+            .tuition-alert a {{
+                background: #ea580c;
+                color: white;
+                padding: 10px 12px;
+                border-radius: 8px;
+                text-decoration: none;
+                white-space: nowrap;
             }}
             .label {{
                 color: #666;
@@ -9058,6 +9122,8 @@ def parent_dashboard():
                 {student_tabs}
             </div>
 
+            {tuition_alert}
+
             <div class="cards">
                 <div class="card">
                     <div class="label">Teacher</div>
@@ -9100,7 +9166,7 @@ def parent_dashboard():
                 {upcoming_rows}
             </table>
 
-            <h2>Invoices</h2>
+            <h2 id="invoices">Invoices</h2>
             <table>
                 <tr>
                     <th>ID</th>
@@ -9157,6 +9223,154 @@ def parent_dashboard():
                 {lesson_rows}
             </table>
 
+        </div>
+        {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_invoice/<int:invoice_id>", methods=["GET", "POST"])
+def parent_invoice(invoice_id):
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v321_schema()
+
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        i.id,
+        i.student_name,
+        i.charge_lessons,
+        i.amount,
+        i.status,
+        i.invoice_type,
+        i.created_at,
+        i.enrollment_id,
+        i.due_date,
+        i.notes,
+        e.auto_renew_enabled,
+        e.auto_renew_lessons
+    FROM invoices i
+    LEFT JOIN enrollments e
+        ON i.enrollment_id = e.id
+    WHERE i.id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    if not parent_can_access_student(parent_id, invoice[1]):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "save_autorenew" and invoice[7]:
+            auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
+            auto_renew_lessons = float(request.form.get("auto_renew_lessons") or invoice[11] or invoice[2] or 10)
+            cursor.execute("""
+            UPDATE enrollments
+            SET auto_renew_enabled = ?,
+                auto_renew_lessons = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                auto_renew_enabled,
+                auto_renew_lessons,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                invoice[7]
+            ))
+            conn.commit()
+            conn.close()
+            return redirect(f"/parent_invoice/{invoice_id}")
+
+        if action == "notify_paid":
+            conn.close()
+            create_notification(
+                "owner",
+                "owner",
+                "Parent payment notice",
+                f"{session.get('parent_name', 'Parent')} opened invoice #{invoice_id} for {invoice[1]} and marked it as paid / ready for confirmation.",
+                f"/pay_invoice/{invoice_id}"
+            )
+            return f"""
+            <h1>Payment Notice Sent</h1>
+            <p>Thank you. The owner will confirm invoice #{invoice_id} after payment is received.</p>
+            <p><a href="/parent_dashboard">Back to Parent App</a></p>
+            """
+
+    conn.close()
+
+    checked_yes = "selected" if invoice[10] == 1 else ""
+    checked_no = "" if invoice[10] == 1 else "selected"
+    auto_lessons = invoice[11] or invoice[2] or 10
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Tuition Invoice")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:760px; margin:0 auto; }}
+            h1 {{ font-size:30px; margin:0 0 18px; }}
+            .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; margin:14px 0; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:28px; font-weight:900; margin-top:4px; }}
+            input, select {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
+            .secondary {{ background:#111827 !important; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Tuition Invoice</h1>
+            <div class="card">
+                <div class="label">Student</div>
+                <div class="value">{invoice[1]}</div>
+            </div>
+            <div class="card">
+                <div class="label">Amount Due</div>
+                <div class="value">${invoice[3]}</div>
+            </div>
+            <p><b>Status:</b> {invoice[4]}</p>
+            <p><b>Lessons:</b> {invoice[2]}</p>
+            <p><b>Due Date:</b> {invoice[8] or ''}</p>
+            <p>{invoice[9] or ''}</p>
+
+            <h2>Payment</h2>
+            <p>Please pay with the studio's current tuition method. After sending payment, tap the button below so the owner can confirm and mark it paid.</p>
+            <form method="POST">
+                <input type="hidden" name="action" value="notify_paid">
+                <button type="submit">I Paid / Notify Owner</button>
+                <a class="button secondary" href="/parent_dashboard">Back</a>
+            </form>
+
+            <h2>Auto-Renew</h2>
+            <form method="POST">
+                <input type="hidden" name="action" value="save_autorenew">
+                Auto-renew after package ends:<br>
+                <select name="auto_renew_enabled">
+                    <option value="0" {checked_no}>No - remind me first</option>
+                    <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
+                </select>
+                Lessons per renewal:<br>
+                <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
+                <button type="submit">Save Auto-Renew</button>
+            </form>
         </div>
         {parent_bottom_nav("home")}
     </body>
@@ -12968,7 +13182,7 @@ def add_enrollment():
     if not require_owner():
         return redirect("/owner_login")
 
-    ensure_v211_schema()
+    ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -12981,6 +13195,8 @@ def add_enrollment():
         discount_value = request.form.get("discount_value")
         package_amount = float(request.form.get("package_amount") or 0)
         package_lessons = float(request.form.get("package_lessons") or 0)
+        auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
+        auto_renew_lessons = float(request.form.get("auto_renew_lessons") or package_lessons or 10)
         start_date = request.form.get("start_date")
         status = request.form.get("status")
         notes = request.form.get("notes")
@@ -13028,10 +13244,12 @@ def add_enrollment():
             start_date,
             package_amount,
             package_lessons,
+            auto_renew_enabled,
+            auto_renew_lessons,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             student_name,
             pricing["course_id"],
@@ -13055,42 +13273,36 @@ def add_enrollment():
             start_date,
             package_amount,
             package_lessons,
+            auto_renew_enabled,
+            auto_renew_lessons,
             now,
             now
         ))
 
         enrollment_id = cursor.lastrowid
 
+        invoice_id = None
+        parent_id = None
         if package_amount > 0:
-            cursor.execute("""
-            INSERT INTO payments (
-                student_name,
-                amount,
-                lessons_added,
-                payment_method,
-                payment_date,
+            invoice_id = create_enrollment_invoice(
+                cursor,
                 enrollment_id,
-                course_type_name,
-                teacher_name,
-                package_name,
-                notes
+                "initial_tuition",
+                "Initial tuition invoice created from new enrollment."
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                student_name,
-                package_amount,
-                package_lessons,
-                "Not Recorded",
-                start_date,
-                enrollment_id,
-                pricing["course_name"],
-                teacher_name,
-                f"{package_lessons} Lesson Package",
-                "Initial enrollment payment"
-            ))
+            parent_id = get_primary_parent_for_student(cursor, student_name)
 
         conn.commit()
         conn.close()
+
+        if package_amount > 0 and invoice_id:
+            notify_parent_tuition_due(
+                student_name,
+                parent_id,
+                invoice_id,
+                package_amount,
+                "New tuition invoice"
+            )
 
         return redirect(f"/enrollment/{enrollment_id}")
 
@@ -13194,11 +13406,22 @@ def add_enrollment():
                 Package Lessons:<br>
                 <input type="number" step="0.5" name="package_lessons" value="10">
 
+                Auto-Renew / Auto Tuition Reminder:<br>
+                <select name="auto_renew_enabled">
+                    <option value="0">No - remind only</option>
+                    <option value="1">Yes - auto-generate next package invoice</option>
+                </select>
+                <div class="hint">When enabled, the system creates the next tuition invoice after the last lesson is completed. Real card charging requires Stripe later.</div><br>
+
+                Auto-Renew Lessons:<br>
+                <input type="number" step="0.5" name="auto_renew_lessons" value="10">
+
                 Start Date:<br>
                 <input type="date" name="start_date" value="{today}">
 
                 Status:<br>
                 <select name="status">
+                    <option value="active">Active</option>
                     <option value="present">Present</option>
                     <option value="no_show">No Show</option>
                     <option value="cancel_3h">Cancel &lt; 3h</option>
@@ -13249,7 +13472,11 @@ def enrollment_detail(enrollment_id):
         notes,
         start_date,
         package_amount,
-        package_lessons
+        package_lessons,
+        auto_renew_enabled,
+        auto_renew_lessons,
+        renewal_reminder_sent_at,
+        auto_renewed_at
     FROM enrollments
     WHERE id = ?
     """, (enrollment_id,))
@@ -13295,6 +13522,15 @@ def enrollment_detail(enrollment_id):
     utilization = 0
     if total_lessons_purchased:
         utilization = round((lessons_used / total_lessons_purchased) * 100, 1)
+
+    cursor.execute("""
+    SELECT id, amount, status, invoice_type, created_at
+    FROM invoices
+    WHERE enrollment_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (enrollment_id,))
+    invoice_rows_data = cursor.fetchall()
 
     # Recent payments
     cursor.execute("""
@@ -13345,6 +13581,23 @@ def enrollment_detail(enrollment_id):
 
     if payment_rows == "":
         payment_rows = "<tr><td colspan='5'>No payments yet.</td></tr>"
+
+    invoice_rows = ""
+    for inv in invoice_rows_data:
+        action = "Paid" if inv[2] == "paid" else f'<a href="/pay_invoice/{inv[0]}">Mark Paid</a>'
+        invoice_rows += f"""
+        <tr>
+            <td>{inv[0]}</td>
+            <td>${inv[1]}</td>
+            <td>{inv[2]}</td>
+            <td>{inv[3]}</td>
+            <td>{inv[4]}</td>
+            <td>{action}</td>
+        </tr>
+        """
+
+    if not invoice_rows:
+        invoice_rows = "<tr><td colspan='6'>No invoices yet.</td></tr>"
 
     lesson_rows = ""
     ledger_rows = ""
@@ -13517,6 +13770,16 @@ def enrollment_detail(enrollment_id):
                     <div class="label">Lessons Left</div>
                     <div class="value">{e[13]}</div>
                 </div>
+
+                <div class="card">
+                    <div class="label">Auto-Renew</div>
+                    <div class="value">{"On" if e[19] == 1 else "Off"}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Renewal Lessons</div>
+                    <div class="value">{e[20] or e[18] or 10}</div>
+                </div>
             </div>
 
             <h3>Financial Summary</h3>
@@ -13567,6 +13830,8 @@ def enrollment_detail(enrollment_id):
             <p><b>Base Price:</b> ${e[6]}</p>
             <p><b>Discount:</b> {e[7]} {e[8]}</p>
             <p><b>Start Date:</b> {e[16]}</p>
+            <p><b>Renewal Reminder Sent:</b> {e[21] or ""}</p>
+            <p><b>Last Auto-Renew:</b> {e[22] or ""}</p>
             <p><b>Notes:</b> {e[15] or ""}</p>
 
             <h3>Recent Lessons</h3>
@@ -13596,6 +13861,19 @@ def enrollment_detail(enrollment_id):
                 {payment_rows}
             </table>
 
+            <h3>Tuition Invoices</h3>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Type</th>
+                    <th>Created</th>
+                    <th>Action</th>
+                </tr>
+                {invoice_rows}
+            </table>
+
             <h3>Enrollment Ledger</h3>
             <table>
                 <tr>
@@ -13617,7 +13895,7 @@ def edit_enrollment(enrollment_id):
     if not require_owner():
         return redirect("/owner_login")
 
-    ensure_v19_schema()
+    ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -13627,6 +13905,8 @@ def edit_enrollment(enrollment_id):
         discount_value = request.form.get("discount_value")
         lessons_left = request.form.get("lessons_left")
         status = request.form.get("status")
+        auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
+        auto_renew_lessons = float(request.form.get("auto_renew_lessons") or 10)
         notes = request.form.get("notes")
 
         cursor.execute("""
@@ -13656,6 +13936,8 @@ def edit_enrollment(enrollment_id):
             final_price = ?,
             lessons_left = ?,
             status = ?,
+            auto_renew_enabled = ?,
+            auto_renew_lessons = ?,
             notes = ?,
             updated_at = ?
         WHERE id = ?
@@ -13665,6 +13947,8 @@ def edit_enrollment(enrollment_id):
             final_price,
             float(lessons_left or 0),
             status,
+            auto_renew_enabled,
+            auto_renew_lessons,
             notes,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             enrollment_id
@@ -13681,7 +13965,9 @@ def edit_enrollment(enrollment_id):
         discount_value,
         lessons_left,
         status,
-        notes
+        notes,
+        auto_renew_enabled,
+        auto_renew_lessons
     FROM enrollments
     WHERE id = ?
     """, (enrollment_id,))
@@ -13719,6 +14005,15 @@ def edit_enrollment(enrollment_id):
             <option value="paused" {selected("paused", e[3])}>Paused</option>
             <option value="inactive" {selected("inactive", e[3])}>Inactive</option>
         </select><br><br>
+
+        Auto-Renew:<br>
+        <select name="auto_renew_enabled">
+            <option value="0" {selected(0, e[5])}>No - remind only</option>
+            <option value="1" {selected(1, e[5])}>Yes - generate next tuition invoice</option>
+        </select><br><br>
+
+        Auto-Renew Lessons:<br>
+        <input type="number" step="0.5" name="auto_renew_lessons" value="{e[6] or 10}"><br><br>
 
         Notes:<br>
         <textarea name="notes" rows="4" cols="50">{e[4] or ""}</textarea><br><br>
@@ -14451,6 +14746,205 @@ def ensure_v211_schema():
 
     conn.commit()
     conn.close()
+
+
+def ensure_v321_schema():
+    ensure_v211_schema()
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("enrollments", "auto_renew_enabled", "auto_renew_enabled INTEGER DEFAULT 0")
+    add_column_if_missing("enrollments", "auto_renew_lessons", "auto_renew_lessons REAL DEFAULT 10")
+    add_column_if_missing("enrollments", "renewal_reminder_sent_at", "renewal_reminder_sent_at TEXT")
+    add_column_if_missing("enrollments", "auto_renewed_at", "auto_renewed_at TEXT")
+
+    add_column_if_missing("invoices", "enrollment_id", "enrollment_id INTEGER")
+    add_column_if_missing("invoices", "due_date", "due_date TEXT")
+    add_column_if_missing("invoices", "notes", "notes TEXT")
+
+    conn.commit()
+    conn.close()
+
+
+def get_primary_parent_for_student(cursor, student_name):
+    cursor.execute("""
+    SELECT parent_id
+    FROM parent_students
+    WHERE student_name = ?
+    AND active = 1
+    ORDER BY id ASC
+    LIMIT 1
+    """, (student_name,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes=""):
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        final_price,
+        package_amount,
+        package_lessons,
+        auto_renew_lessons
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    e = cursor.fetchone()
+
+    if not e:
+        return None
+
+    lessons = e[5] or e[6] or 10
+    amount = e[4]
+    if amount is None or amount == 0:
+        amount = round((e[3] or 0) * lessons, 2)
+
+    cursor.execute("""
+    SELECT id
+    FROM invoices
+    WHERE enrollment_id = ?
+    AND invoice_type = ?
+    AND status != 'paid'
+    ORDER BY id DESC
+    LIMIT 1
+    """, (enrollment_id, invoice_type))
+    existing = cursor.fetchone()
+    if existing:
+        return existing[0]
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    due_date = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    INSERT INTO invoices (
+        student_name,
+        schedule_id,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        enrollment_id,
+        due_date,
+        notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        e[1],
+        None,
+        lessons,
+        amount,
+        "unpaid",
+        invoice_type,
+        now,
+        enrollment_id,
+        due_date,
+        notes
+    ))
+
+    return cursor.lastrowid
+
+
+def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title):
+    if not parent_id:
+        return
+
+    create_notification(
+        "parent",
+        str(parent_id),
+        title,
+        f"{student_name} has a tuition invoice due: ${amount}.",
+        f"/parent_invoice/{invoice_id}"
+    )
+
+
+def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
+    cursor.execute("""
+    SELECT
+        id,
+        lessons_left,
+        package_amount,
+        package_lessons,
+        auto_renew_enabled,
+        auto_renew_lessons,
+        renewal_reminder_sent_at,
+        auto_renewed_at
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    e = cursor.fetchone()
+
+    if not e:
+        return []
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lessons_left = e[1] or 0
+    events = []
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+
+    if lessons_left <= 2 and not e[6]:
+        cursor.execute("""
+        UPDATE enrollments
+        SET renewal_reminder_sent_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (now, now, enrollment_id))
+        events.append({
+            "parent_id": parent_id,
+            "title": "Lessons running low",
+            "body": f"{student_name} has {lessons_left} lesson(s) left. Please prepare tuition renewal.",
+            "link": "/parent_dashboard"
+        })
+
+    if lessons_left <= 0 and e[4] == 1:
+        invoice_id = create_enrollment_invoice(
+            cursor,
+            enrollment_id,
+            "auto_renewal",
+            "Auto-renewal invoice generated after package completion."
+        )
+
+        if invoice_id:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = lessons_left + ?,
+                auto_renewed_at = ?,
+                renewal_reminder_sent_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                e[5] or e[3] or 10,
+                now,
+                now,
+                enrollment_id
+            ))
+
+            cursor.execute("""
+            SELECT amount
+            FROM invoices
+            WHERE id = ?
+            """, (invoice_id,))
+            invoice_amount = cursor.fetchone()[0]
+
+            events.append({
+                "parent_id": parent_id,
+                "title": "Auto-renewal tuition due",
+                "body": f"{student_name}'s package completed. A new tuition invoice for ${invoice_amount} has been generated.",
+                "link": f"/parent_invoice/{invoice_id}"
+            })
+
+    return events
 
     # =========================
 # V25 Business Rules Engine
@@ -15956,6 +16450,7 @@ def ensure_production_schema():
     ensure_v26_schema()
     ensure_v27_schema()
     ensure_v29_schema()
+    ensure_v321_schema()
     ensure_v145_schema()
 
     _production_schema_ready = True
