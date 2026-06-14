@@ -15753,6 +15753,23 @@ def ensure_base_schema():
         ("cancel_24h_charge", "0.5"),
     ])
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classrooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_name TEXT UNIQUE
+    )
+    """)
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO classrooms (room_name)
+    VALUES (?)
+    """, [
+        ("Room 1",),
+        ("Room 2",),
+        ("Room 3",),
+        ("Trial Room",),
+    ])
+
     conn.commit()
     conn.close()
 
