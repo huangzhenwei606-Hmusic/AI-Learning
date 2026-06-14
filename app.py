@@ -86,6 +86,17 @@ def parent_app_meta(title):
     """
 
 
+def get_parent_unread_message_count():
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return 0
+
+    try:
+        return get_unread_message_count("parent", parent_id)
+    except Exception:
+        return 0
+
+
 def parent_bottom_nav(active="home"):
     items = [
         ("home", "/parent_dashboard", "Home"),
@@ -94,9 +105,19 @@ def parent_bottom_nav(active="home"):
         ("profile", "/parent_profile", "Profile"),
     ]
     links = ""
+    unread_messages = get_parent_unread_message_count()
     for key, href, label in items:
         active_class = "active" if key == active else ""
-        links += f'<a class="{active_class}" href="{href}">{label}</a>'
+        badge = ""
+        if key == "messages" and unread_messages:
+            badge = (
+                f' <span class="nav-badge" style="display:inline-flex;'
+                f'align-items:center;justify-content:center;min-width:18px;'
+                f'height:18px;padding:0 5px;border-radius:999px;'
+                f'background:#dc2626;color:white;font-size:11px;'
+                f'font-weight:900;">{unread_messages}</span>'
+            )
+        links += f'<a class="{active_class}" href="{href}">{label}{badge}</a>'
     return f'<nav class="parent-bottom-nav">{links}</nav>'
 
 
@@ -831,6 +852,7 @@ def home():
     <div class="action-group">
         <a href="/students">Students</a>
         <a href="/add_student">Add Student</a>
+        <a href="/add_schedule">Add Schedule</a>
         <a href="/calendar">Calendar</a>
         <a href="/calendar/today">Today</a>
         <a href="/teacher_dashboard">Teacher Dashboard</a>
@@ -1549,6 +1571,25 @@ def student_detail(name):
     if student[3] <= 2:
         renewal_status = "<h3 style='color:red;'>⚠ Renewal Needed</h3>"
 
+    action_links = ""
+    if require_owner():
+        action_links = f"""
+        <p><a href="/add_lesson/{student[0]}">Add Lesson / Homework</a></p>
+        <p><a href="/payment/{student[0]}">Receive Payment</a></p>
+        <p><a href="/edit_student/{student[0]}">Edit Student / Teacher Link</a></p>
+        <p><a href="/generate_parent_email/{student[0]}">Generate Parent Email</a></p>
+        <p><a href="/send_parent_email/{student[0]}">Send Parent Email</a></p>
+        <p><a href="/students">Back to Students</a></p>
+        <p><a href="/student_ledger/{student[0]}">Student Ledger</a></p>
+        """
+    elif require_teacher() and session.get("teacher_name") == student[1]:
+        action_links = f"""
+        <p><a href="/add_lesson/{student[0]}">Add Lesson Notes / Homework</a></p>
+        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        """
+    elif require_parent():
+        action_links = '<p><a href="/parent_dashboard">Back to Parent App</a></p>'
+
     return f"""
     <h1>{student[0]}</h1>
 
@@ -1558,13 +1599,7 @@ def student_detail(name):
 
     {renewal_status}
 
-    <p><a href="/add_lesson/{student[0]}">Add Lesson</a></p>
-    <p><a href="/payment/{student[0]}">Receive Payment</a></p>
-    <p><a href="/edit_student/{student[0]}">Edit Student / Teacher Link</a></p>
-    <p><a href="/generate_parent_email/{student[0]}">Generate Parent Email</a></p>
-    <p><a href="/send_parent_email/{student[0]}">Send Parent Email</a></p>
-    <p><a href="/students">Back to Students</a></p>
-    <p><a href="/student_ledger/{student[0]}">Student Ledger</a></p>
+    {action_links}
 
     <h2>Lesson History</h2>
     {lesson_html}
@@ -1576,6 +1611,25 @@ def student_detail(name):
 
 @app.route("/add_lesson/<name>", methods=["GET", "POST"])
 def add_lesson(name):
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
+    if require_teacher() and not require_owner():
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id
+        FROM schedule
+        WHERE student_name = ?
+        AND teacher = ?
+        LIMIT 1
+        """, (name, session.get("teacher_name")))
+        teaches_student = cursor.fetchone()
+        conn.close()
+
+        if not teaches_student:
+            return "<h1>Permission denied</h1>"
+
     if request.method == "POST":
         lesson_date = request.form["lesson_date"]
         lesson_content = request.form["lesson_content"]
@@ -1613,14 +1667,18 @@ def add_lesson(name):
         conn.commit()
         conn.close()
 
+        back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else f"/student/{name}"
+
         return f"""
-        <h1>Lesson Saved!</h1>
+        <h1>Lesson Notes Saved!</h1>
         <p>{name}</p>
-        <p><a href="/student/{name}">Back to Student</a></p>
+        <p><a href="{back_href}">Back</a></p>
         """
 
+    back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else f"/student/{name}"
+
     return f"""
-    <h1>Add Lesson - {name}</h1>
+    <h1>Add Lesson Notes / Homework - {name}</h1>
 
     <form method="POST">
         Date:<br>
@@ -1638,7 +1696,7 @@ def add_lesson(name):
         <button type="submit">Save</button>
     </form>
 
-    <p><a href="/student/{name}">Back to Student</a></p>
+    <p><a href="{back_href}">Back</a></p>
     """
 
 
@@ -2271,6 +2329,9 @@ def calendar_today():
 
 @app.route("/add_schedule", methods=["GET", "POST"])
 def add_schedule():
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
     ensure_v18_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -2315,6 +2376,8 @@ def add_schedule():
     if request.method == "POST":
         student_name = request.form.get("student_name")
         teacher = request.form.get("teacher")
+        if require_teacher() and not require_owner():
+            teacher = session.get("teacher_name")
         classroom = request.form.get("classroom")
         weekday = request.form.get("weekday")
         lesson_time = request.form.get("lesson_time")
@@ -2457,21 +2520,23 @@ def add_schedule():
         <p>Course: {course_name}</p>
         <p>Duration: {duration} mins</p>
         <p>Student Charge Per Lesson: ${student_charge_amount}</p>
-        <p>Teacher Pay Per Lesson: ${teacher_pay_amount}</p>
         <p>Start Date: {start_date}</p>
         <p>Time: {lesson_time}</p>
 
-        <a href="/calendar">Back to Calendar</a><br>
+        <a href="{back_href}">Back</a><br>
         <a href="/add_schedule">Add Another Schedule</a><br>
         <a href="/course_types">Manage Course Types</a>
         """
 
-    cursor.execute("""
-    SELECT teacher_name
-    FROM teachers
-    ORDER BY teacher_name
-    """)
-    teachers = cursor.fetchall()
+    if require_teacher() and not require_owner():
+        teachers = [(session.get("teacher_name"),)]
+    else:
+        cursor.execute("""
+        SELECT teacher_name
+        FROM teachers
+        ORDER BY teacher_name
+        """)
+        teachers = cursor.fetchall()
 
     cursor.execute("""
     SELECT room_name
@@ -2513,14 +2578,16 @@ def add_schedule():
     course_options = ""
     for c in course_types:
         student_charge = calculate_course_amount(c[3], c[4], c[2])
-        teacher_amount = calculate_course_amount(c[5], c[6], c[2])
         group_label = "Group" if c[7] == 1 else "Single"
 
         course_options += f"""
         <option value="{c[0]}">
-            {c[1]} - {c[2]} mins - {group_label} - Student ${student_charge} - Teacher ${teacher_amount}
+            {c[1]} - {c[2]} mins - {group_label} - Student ${student_charge}
         </option>
         """
+
+    back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
+    teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
 
     return f"""
     <html>
@@ -2571,7 +2638,7 @@ def add_schedule():
             <h1>Add Schedule</h1>
 
             <p>
-                <a href="/calendar">Back to Calendar</a> |
+                <a href="{back_href}">Back</a> |
                 <a href="/course_types">Manage Course Types</a>
             </p>
 
@@ -2581,7 +2648,7 @@ def add_schedule():
                 <input name="student_name" required>
 
                 Teacher:<br>
-                <select name="teacher">
+                <select name="teacher" {teacher_disabled}>
                     {teacher_options}
                 </select>
 
@@ -3032,6 +3099,7 @@ def teacher_dashboard():
                 <span class="lesson-student">{student_name}</span>
             </div>
             <div class="lesson-room">{room}</div>
+            <a class="lesson-note-link" href="/add_lesson/{student_name}">Lesson Notes</a>
 
             <form method="POST" action="/update_lesson_status" class="status-form">
                 <input type="hidden" name="schedule_id" value="{lesson_id}">
@@ -3388,6 +3456,15 @@ def teacher_dashboard():
                 margin-top: 1px;
             }}
 
+            .lesson-note-link {{
+                display: inline-block;
+                margin-top: 4px;
+                color: #4f46e5;
+                font-size: 9px;
+                font-weight: 850;
+                text-decoration: none;
+            }}
+
             .status-form {{
                 display: none;
                 margin-top: 5px;
@@ -3555,12 +3632,13 @@ def teacher_dashboard():
                 <h1>{title}</h1>
 
                 <div class="controls">
-                    <a class="tab {'active' if view == 'month' else ''}" href="http://127.0.0.1:5001/teacher_dashboard?view=month">Month</a>
-                    <a class="tab {'active' if view == 'week' else ''}" href="http://127.0.0.1:5001/teacher_dashboard?view=week">Week</a>
+                    <a class="tab {'active' if view == 'month' else ''}" href="/teacher_dashboard?view=month">Month</a>
+                    <a class="tab {'active' if view == 'week' else ''}" href="/teacher_dashboard?view=week">Week</a>
                     <a class="tab" href="/teacher_sub_request">Sub Request</a>
                     <a class="tab" href="/teacher_reschedule">Reschedule</a>
                     <a class="tab" href="/teacher_messages">{message_label}</a>
                     <a class="tab" href="/open_slots">Open Slots</a>
+                    <a class="tab" href="/add_schedule">Add Schedule</a>
                     
                     <form method="GET">
                         <input type="hidden" name="view" value="{view}">
@@ -3707,6 +3785,17 @@ def get_parent_cancel_status(lesson_date, lesson_time):
     if hours_before < 24:
         return "cancel_24h"
     return "excused_24h"
+
+
+def get_hours_before_lesson(lesson_date, lesson_time):
+    lesson_datetime_str = lesson_date + " " + lesson_time
+
+    try:
+        lesson_datetime = datetime.strptime(lesson_datetime_str, "%Y-%m-%d %H:%M")
+    except ValueError:
+        lesson_datetime = datetime.strptime(lesson_datetime_str, "%Y-%m-%d %I:%M %p")
+
+    return (lesson_datetime - datetime.now()).total_seconds() / 3600
 
 
 def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None):
@@ -3926,6 +4015,8 @@ def parent_cancel():
         <p>Student: {result["student_name"]}</p>
         <p>Status: {result["status"]}</p>
         <p>Charge: {result["charge_lessons"]} lesson(s)</p>
+        <p><b>Need a makeup time?</b> Please submit a reschedule request from the parent app so the owner can approve a new slot.</p>
+        <p><a href="/parent_reschedule">Request Reschedule</a></p>
         <p><a href="/parent_dashboard">Back to Parent Portal</a></p>
         """
 
@@ -3971,6 +4062,8 @@ def parent_cancel():
     return f"""
     <h1>Parent Cancel Lesson</h1>
     <p>Student: {student_name}</p>
+    <p><b>If you want to move the lesson instead of cancelling it, please use Reschedule first.</b></p>
+    <p><a href="/parent_reschedule">Go to Reschedule</a></p>
 
     <hr>
 
@@ -6171,7 +6264,7 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
 def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None):
     rows = ""
     for t in rows_data:
-        unread_badge = f"<span class='badge unread'>{t[9]} unread</span>" if t[9] else "<span class='badge'>Read</span>"
+        unread_badge = f"<span class='status-badge unread'>{t[9]} unread</span>" if t[9] else "<span class='status-badge read'>Read</span>"
         attachment_badge = f"<span class='badge'>{t[10]} files</span>" if t[10] else ""
         latest = t[8] or ""
         if len(latest) > 120:
@@ -6179,12 +6272,12 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
 
         rows += f"""
         <tr class="{'is-unread' if t[9] else ''}">
+            <td>{unread_badge} {attachment_badge}</td>
             <td><a href="/message_thread/{t[0]}">{t[1]}</a><div class="subtle">#{t[0]}</div></td>
             <td>{t[2] or ''}</td>
             <td>{t[3] or ''}</td>
             <td>{t[4] or ''}</td>
             <td><span class="badge type">{t[5]}</span></td>
-            <td>{unread_badge} {attachment_badge}</td>
             <td>{t[7]}</td>
             <td>{latest}</td>
         </tr>
@@ -6221,6 +6314,9 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
             .subtle {{ color:#6b7280; font-size:12px; margin-top:4px; }}
             .badge {{ display:inline-block; padding:3px 8px; border-radius:999px; background:#eef2ff; color:#374151; font-size:12px; font-weight:bold; }}
             .badge.unread {{ background:#fee2e2; color:#991b1b; }}
+            .status-badge {{ display:inline-block; padding:5px 10px; border-radius:999px; font-size:12px; font-weight:900; }}
+            .status-badge.unread {{ background:#dc2626; color:white; }}
+            .status-badge.read {{ background:#eef2ff; color:#111827; }}
             .badge.type {{ background:#e0f2fe; color:#075985; }}
             tr.is-unread td {{ background:#fff7ed; }}
             .parent-bottom-nav {{
@@ -6250,12 +6346,12 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
 
             <table>
                 <tr>
+                    <th>Status</th>
                     <th>Subject</th>
                     <th>Student</th>
                     <th>Parent</th>
                     <th>Teacher</th>
                     <th>Type</th>
-                    <th>State</th>
                     <th>Updated</th>
                     <th>Latest</th>
                 </tr>
@@ -6317,6 +6413,8 @@ def create_reschedule_message_event(request_id, event_type, body, parent_id=None
         else:
             add_message(thread_id, "parent", session.get("parent_name", "Parent"), "owner", body)
             create_notification("owner", "owner", "New reschedule request", body, f"/reschedule_request/{request_id}")
+            if teacher_name:
+                create_notification("teacher", teacher_name, "New student reschedule request", body, f"/message_thread/{thread_id}")
     elif event_type == "approved":
         recipient_role = "parent" if parent_id else "teacher"
         add_message(thread_id, "owner", "Owner", recipient_role, body)
@@ -6361,7 +6459,7 @@ def parent_messages():
         "Back to Dashboard",
         rows,
         new_href="/new_parent_message",
-        new_label="New Message to Teacher"
+        new_label="New Message"
     )
 
 
@@ -6380,12 +6478,36 @@ def new_parent_message():
     if request.method == "POST":
         student_name = request.form.get("student_name")
         teacher_name = request.form.get("teacher_name")
+        recipient_mode = request.form.get("recipient_mode", "teacher")
         body = request.form.get("body")
         files = request.files.getlist("attachments")
 
         if not parent_can_access_student(parent_id, student_name):
             conn.close()
             return "<h1>Permission denied</h1>"
+
+        if recipient_mode == "director":
+            subject = f"Parent / Director Message - {student_name}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=parent_id,
+                teacher_name=None,
+                thread_type="parent_director",
+                related_type="parent_director",
+                related_id=None
+            )
+
+            message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "owner", body or "")
+            save_message_attachments(message_id, files)
+            create_notification("owner", "owner", "New parent message to Director", body or "Parent sent a message.", f"/message_thread/{thread_id}")
+
+            conn.close()
+            return redirect(f"/message_thread/{thread_id}")
+
+        if not teacher_name:
+            conn.close()
+            return "<h1>Please choose a teacher or send only to Director.</h1>"
 
         subject = f"Parent / Teacher Message - {student_name}"
         thread_id = get_or_create_message_thread(
@@ -6439,19 +6561,45 @@ def new_parent_message():
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
+            .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .recipient-options input {{ width:auto; min-height:auto; margin:0 6px 0 0; }}
             @media (max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} .form-actions button, .form-actions a {{ text-align:center; }} }}
             @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
+        <script>
+            function toggleRecipientMode() {{
+                const selected = document.querySelector("input[name='recipient_mode']:checked");
+                const mode = selected ? selected.value : "teacher";
+                const teacherBlock = document.getElementById("teacher-recipient-block");
+                const teacherSelect = document.getElementById("teacher-select");
+                if (mode === "director") {{
+                    teacherBlock.style.display = "none";
+                    teacherSelect.removeAttribute("required");
+                }} else {{
+                    teacherBlock.style.display = "block";
+                    teacherSelect.setAttribute("required", "required");
+                }}
+            }}
+        </script>
     </head>
-    <body>
+    <body onload="toggleRecipientMode()">
         <div class="container">
-            <h1>New Message to Teacher</h1>
+            <h1>New Message</h1>
             <form method="POST" enctype="multipart/form-data">
                 Student:<br>
                 <select name="student_name" required>{student_options}</select>
 
-                Teacher:<br>
-                <select name="teacher_name" required>{teacher_options}</select>
+                Send To:<br>
+                <div class="recipient-options">
+                    <label><input type="radio" name="recipient_mode" value="teacher" checked onchange="toggleRecipientMode()">Teacher</label>
+                    <label><input type="radio" name="recipient_mode" value="director" onchange="toggleRecipientMode()">Only to Director</label>
+                </div>
+
+                <div id="teacher-recipient-block">
+                    Teacher:<br>
+                    <select id="teacher-select" name="teacher_name" required>{teacher_options}</select>
+                </div>
 
                 Message:<br>
                 <textarea name="body" rows="5" required></textarea>
@@ -7141,6 +7289,12 @@ def parent_reschedule():
             conn.close()
             return "<h1>Only scheduled lessons can be rescheduled.</h1>"
 
+        hours_before = get_hours_before_lesson(lesson[2], lesson[3])
+        is_last_minute = hours_before < 24
+        last_minute_note = ""
+        if is_last_minute:
+            last_minute_note = " This is within 24 hours and may use the same last-minute fee logic as late cancellation. First last-minute exception may be free per package if available."
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         cursor.execute("""
@@ -7190,24 +7344,31 @@ def parent_reschedule():
             parent_id,
             student_name,
             "reschedule_request",
-            f"Parent requested reschedule for lesson #{schedule_id} from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}.",
+            f"Parent requested reschedule for lesson #{schedule_id} from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}.{last_minute_note}",
             schedule_id
         )
 
         create_reschedule_message_event(
             request_id,
             "submitted",
-            f"{student_name} requested a reschedule from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}. Reason: {reason or ''}",
+            f"{student_name} requested a reschedule from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}.{last_minute_note} Reason: {reason or ''}",
             parent_id=parent_id,
             student_name=student_name,
             teacher_name=lesson[4]
         )
+
+        warning_html = ""
+        if is_last_minute:
+            warning_html = """
+            <p><b>Last-minute reschedule notice:</b> This request is within 24 hours. A last-minute reschedule fee may apply, using the same policy as late cancellation. The first exception may be free per package if still available.</p>
+            """
 
         return f"""
         <h1>Reschedule Request Submitted</h1>
         <p>Request #{request_id}</p>
         <p>Student: {student_name}</p>
         <p>Requested Time: {requested_date} {requested_time}</p>
+        {warning_html}
         <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
         """
 
@@ -7241,8 +7402,14 @@ def parent_reschedule():
 
     lesson_options = ""
     for l in lessons:
+        notice = ""
+        try:
+            if get_hours_before_lesson(l[1], l[2]) < 24:
+                notice = " | within 24h: last-minute fee may apply"
+        except Exception:
+            notice = ""
         lesson_options += f"""
-        <option value="{l[0]}">{l[1]} {l[2]} | {l[3]} | {l[4]}</option>
+        <option value="{l[0]}">{l[1]} {l[2]} | {l[3]} | {l[4]}{notice}</option>
         """
 
     if not lesson_options:
@@ -7312,6 +7479,7 @@ def parent_reschedule():
     <body>
         <div class="container">
             <h1>Request Reschedule - {student_name}</h1>
+            <p><b>Policy:</b> Please request reschedules at least 24 hours before class. Within 24 hours, a last-minute reschedule fee may apply. The first exception may be free per package if available.</p>
 
             <form method="POST">
                 Current Lesson:<br>
