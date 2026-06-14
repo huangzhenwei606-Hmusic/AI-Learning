@@ -2510,6 +2510,7 @@ def add_schedule():
 
         conn.commit()
         conn.close()
+        back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
 
         return f"""
         <h1>Schedule Generated!</h1>
@@ -2585,6 +2586,9 @@ def add_schedule():
             {c[1]} - {c[2]} mins - {group_label} - Student ${student_charge}
         </option>
         """
+
+    if not course_options:
+        course_options = '<option value="">No active course types found</option>'
 
     back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
     teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
