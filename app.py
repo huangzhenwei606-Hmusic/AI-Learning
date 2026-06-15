@@ -4,6 +4,7 @@ import os
 import smtplib
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
+from html import escape
 
 from openai import OpenAI
 
@@ -962,6 +963,7 @@ def home():
             <a href="/inquiries">Inquiry CRM</a>
             <a href="/add_inquiry">Add Inquiry</a>
             <a href="/owner_settings">Owner Settings</a>
+            <a href="/notification_queue">Notification Queue</a>
             <a href="/owner_sub_requests">Sub Requests{sub_badge}</a>
             <a href="/teacher_rate_cards">Teacher Rate Cards</a>
             <a href="/rate_overrides">Course Pay Rates</a>
@@ -1760,7 +1762,7 @@ def add_lesson(name):
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .container {{ max-width:760px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
-            input, textarea {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
             textarea {{ min-height:170px; }}
             textarea.homework {{ min-height:260px; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
@@ -1776,8 +1778,13 @@ def add_lesson(name):
                 <input type="date" name="lesson_date" value="{date.today().strftime('%Y-%m-%d')}" required>
                 <input type="hidden" name="lesson_content" value="Lesson note">
 
-                Performance / Class Notes:<br>
-                <textarea name="performance" placeholder="Short note for how the lesson went."></textarea>
+                Performance:<br>
+                <select name="performance" required>
+                    <option value="Excellent focus and progress">Excellent focus and progress</option>
+                    <option value="Strong effort with steady growth">Strong effort with steady growth</option>
+                    <option value="Good participation, keep practicing">Good participation, keep practicing</option>
+                    <option value="Building consistency and confidence">Building consistency and confidence</option>
+                </select>
 
                 Homework:<br>
                 <textarea class="homework" name="homework" placeholder="Write homework clearly for the parent and student."></textarea>
@@ -2466,6 +2473,13 @@ def add_schedule():
 
     if request.method == "POST":
         action = request.form.get("action")
+        allow_unassigned_teacher_schedule = (
+            action == "create_unassigned_teacher_schedule"
+            and require_teacher()
+            and not require_owner()
+        )
+        temporary_schedule_note = (request.form.get("temporary_schedule_note") or "").strip()
+
         if action == "request_student_setup" and require_teacher() and not require_owner():
             teacher_name = session.get("teacher_name")
             requested_student = (request.form.get("requested_student") or "").strip()
@@ -2519,7 +2533,24 @@ def add_schedule():
             """, (student_name, teacher))
             teacher_enrollment = cursor.fetchone()
 
-            if not teacher_enrollment:
+            if not teacher_enrollment and not allow_unassigned_teacher_schedule:
+                hidden_fields = {
+                    "action": "create_unassigned_teacher_schedule",
+                    "student_name": student_name,
+                    "teacher": teacher,
+                    "classroom": request.form.get("classroom"),
+                    "weekday": request.form.get("weekday"),
+                    "lesson_time": request.form.get("lesson_time"),
+                    "schedule_type": request.form.get("schedule_type"),
+                    "package_type": request.form.get("package_type"),
+                    "start_date": request.form.get("start_date"),
+                    "course_type_id": request.form.get("course_type_id")
+                }
+                hidden_html = "".join([
+                    f'<input type="hidden" name="{escape(str(k))}" value="{escape(str(v or ""))}">'
+                    for k, v in hidden_fields.items()
+                ])
+
                 conn.close()
                 return f"""
                 <html>
@@ -2537,20 +2568,23 @@ def add_schedule():
                 <body>
                     <div class="container">
                         <h1>Student Not In Your Enrollment List</h1>
-                        <p>You cannot add a schedule for <b>{student_name}</b> yet. Ask owner to add this student to your active enrollment list or assign the student to you.</p>
+                        <p><b>{student_name}</b> is not in your active enrollment list yet. You may create a temporary schedule only if you write the student name and reason in the note below. Owner will be notified automatically.</p>
                         <form method="POST" action="/add_schedule">
-                            <input type="hidden" name="action" value="request_student_setup">
-                            Student name:<br>
-                            <input name="requested_student" value="{student_name}" required>
-                            Message to owner:<br>
-                            <textarea name="request_note" placeholder="Example: This is my new trial student. Please add them to my list."></textarea>
-                            <button type="submit">Notify Owner</button>
+                            {hidden_html}
+                            Required note to owner:<br>
+                            <textarea name="temporary_schedule_note" required placeholder="Example: Student name: {escape(str(student_name or ''))}. This is my new trial student. Please add them to my list / create enrollment."></textarea>
+                            <button type="submit">Create Temporary Schedule + Notify Owner</button>
                             <a class="button secondary" href="/teacher_dashboard">Back</a>
                         </form>
                     </div>
                 </body>
                 </html>
                 """
+
+            if not teacher_enrollment and allow_unassigned_teacher_schedule and not temporary_schedule_note:
+                conn.close()
+                return "<h1>Temporary schedule note is required.</h1><p><a href='/add_schedule'>Back</a></p>"
+
         classroom = request.form.get("classroom")
         weekday = request.form.get("weekday")
         lesson_time = request.form.get("lesson_time")
@@ -2558,6 +2592,12 @@ def add_schedule():
         package_type = request.form.get("package_type")
         start_date = request.form.get("start_date")
         course_type_id = request.form.get("course_type_id")
+        schedule_note = ""
+        if allow_unassigned_teacher_schedule:
+            schedule_note = (
+                f"Temporary teacher-created schedule for unassigned student: {student_name}. "
+                f"Teacher note: {temporary_schedule_note}"
+            )
 
         cursor.execute("""
         SELECT
@@ -2653,9 +2693,10 @@ def add_schedule():
                 student_charge_amount,
                 teacher_pay_amount,
                 is_group,
+                notes,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
@@ -2676,6 +2717,7 @@ def add_schedule():
                 student_charge_amount,
                 teacher_pay_amount,
                 is_group,
+                schedule_note,
                 "scheduled"
             ))
 
@@ -2684,6 +2726,35 @@ def add_schedule():
         conn.commit()
         conn.close()
         back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
+
+        if allow_unassigned_teacher_schedule:
+            subject = f"Temporary Schedule Created - {student_name}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=None,
+                teacher_name=teacher,
+                thread_type="teacher_student_setup",
+                related_type=None,
+                related_id=None
+            )
+            body = (
+                f"{teacher} created a temporary schedule for {student_name}, but the student is not in their active enrollment list.\n\n"
+                f"Course: {course_name}\n"
+                f"Start Date: {start_date}\n"
+                f"Time: {lesson_time}\n"
+                f"Room: {classroom}\n\n"
+                f"Teacher note: {temporary_schedule_note}"
+            )
+            add_message(thread_id, "teacher", teacher, "owner", body)
+            create_notification(
+                "owner",
+                "owner",
+                "Temporary schedule needs owner review",
+                f"{teacher} created a temporary schedule for {student_name}. Please add/assign enrollment.",
+                f"/message_thread/{thread_id}",
+                related_type="teacher_student_setup"
+            )
 
         return f"""
         <h1>Schedule Generated!</h1>
@@ -6332,7 +6403,7 @@ def save_message_attachments(message_id, files):
     conn.close()
 
 
-def create_notification(user_role, user_key, title, body, link_url):
+def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None):
     ensure_v29_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -6359,6 +6430,300 @@ def create_notification(user_role, user_key, title, body, link_url):
 
     conn.commit()
     conn.close()
+
+    queue_notification_delivery(
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        "push",
+        related_type=related_type,
+        related_id=related_id
+    )
+    if should_queue_sms_notification(title):
+        queue_sms_if_available(
+            user_role,
+            user_key,
+            title,
+            body,
+            link_url,
+            related_type=related_type,
+            related_id=related_id
+        )
+
+
+def ensure_v33_schema():
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS notification_delivery_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_role TEXT,
+        user_key TEXT,
+        channel TEXT,
+        destination TEXT,
+        title TEXT,
+        body TEXT,
+        link_url TEXT,
+        related_type TEXT,
+        related_id INTEGER,
+        status TEXT DEFAULT 'pending',
+        provider_response TEXT,
+        created_at TEXT,
+        sent_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def should_queue_sms_notification(title):
+    title = (title or "").lower()
+    important_keywords = [
+        "message",
+        "lesson reminder",
+        "payment",
+        "invoice",
+        "reschedule",
+        "student setup"
+    ]
+    return any(keyword in title for keyword in important_keywords)
+
+
+def get_notification_destination(cursor, user_role, user_key, channel):
+    if channel == "push":
+        return f"{user_role}:{user_key}"
+
+    if channel == "sms":
+        if user_role == "parent":
+            cursor.execute("SELECT phone FROM parent_profiles WHERE id = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "teacher":
+            cursor.execute("SELECT phone FROM teachers WHERE teacher_name = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "owner":
+            cursor.execute("SELECT value FROM settings WHERE key = 'owner_phone'")
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+    return None
+
+
+def queue_notification_delivery(user_role, user_key, title, body, link_url, channel="push", related_type=None, related_id=None):
+    ensure_v33_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    destination = get_notification_destination(cursor, user_role, user_key, channel)
+
+    if not destination:
+        conn.close()
+        return None
+
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        user_role,
+        str(user_key),
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        "pending",
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+
+    queue_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return queue_id
+
+
+def queue_sms_if_available(user_role, user_key, title, body, link_url, related_type=None, related_id=None):
+    return queue_notification_delivery(
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        "sms",
+        related_type=related_type,
+        related_id=related_id
+    )
+
+
+def create_lesson_reminders_for_date(target_date):
+    ensure_v33_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
+    FROM schedule
+    WHERE lesson_date = ?
+    AND COALESCE(status, 'scheduled') = 'scheduled'
+    ORDER BY lesson_time
+    """, (target_date,))
+    lessons = cursor.fetchall()
+
+    created = 0
+    for lesson in lessons:
+        schedule_id, student_name, teacher, lesson_date, lesson_time, classroom = lesson
+
+        cursor.execute("""
+        SELECT parent_id
+        FROM parent_students
+        WHERE student_name = ?
+        AND active = 1
+        """, (student_name,))
+        parent_rows = cursor.fetchall()
+
+        for parent_row in parent_rows:
+            parent_id = parent_row[0]
+            cursor.execute("""
+            SELECT id
+            FROM notification_delivery_queue
+            WHERE user_role = 'parent'
+            AND user_key = ?
+            AND related_type = 'lesson_reminder'
+            AND related_id = ?
+            LIMIT 1
+            """, (str(parent_id), schedule_id))
+            existing = cursor.fetchone()
+            if existing:
+                continue
+
+            title = "Lesson reminder"
+            body = f"{student_name} has a lesson tomorrow at {lesson_time} with {teacher} in {classroom}."
+            link = "/parent_dashboard"
+            conn.commit()
+            create_notification(
+                "parent",
+                str(parent_id),
+                title,
+                body,
+                link,
+                related_type="lesson_reminder",
+                related_id=schedule_id
+            )
+            created += 1
+
+    conn.close()
+    return created
+
+
+@app.route("/run_lesson_reminders")
+def run_lesson_reminders():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    target_date = request.args.get("date") or (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    created = create_lesson_reminders_for_date(target_date)
+
+    return f"""
+    <h1>Lesson Reminders Queued</h1>
+    <p>Date: {target_date}</p>
+    <p>Created: {created}</p>
+    <p><a href="/notification_queue">Notification Queue</a></p>
+    <p><a href="/">Home</a></p>
+    """
+
+
+@app.route("/notification_queue")
+def notification_queue():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, channel, user_role, user_key, destination, title, status, created_at, link_url
+    FROM notification_delivery_queue
+    ORDER BY id DESC
+    LIMIT 100
+    """)
+    rows_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in rows_data:
+        rows += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]}</td>
+            <td>{r[2]}:{r[3]}</td>
+            <td>{r[4]}</td>
+            <td>{r[5]}</td>
+            <td>{r[6]}</td>
+            <td>{r[7]}</td>
+            <td><a href="{r[8]}">Open</a></td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='8'>No queued notifications yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Notification Queue</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
+            th {{ background:#eeeeff; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Notification Queue</h1>
+            <p>This is the V33 bridge for future push/SMS sending. Pending SMS entries are ready for a provider such as Twilio.</p>
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Channel</th>
+                    <th>User</th>
+                    <th>Destination</th>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Link</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
 
 
 def get_message_identity():
@@ -11804,6 +12169,7 @@ def ensure_v18_schema():
     add_column_if_missing("schedule", "status", "status TEXT DEFAULT 'scheduled'")
     add_column_if_missing("schedule", "charge_lessons", "charge_lessons REAL DEFAULT 0")
     add_column_if_missing("schedule", "location", "location TEXT")
+    add_column_if_missing("schedule", "notes", "notes TEXT")
 
     cursor.execute("SELECT COUNT(*) FROM course_types")
     existing_count = cursor.fetchone()[0]
@@ -16945,6 +17311,7 @@ def ensure_production_schema():
     ensure_v27_schema()
     ensure_v29_schema()
     ensure_v321_schema()
+    ensure_v33_schema()
     ensure_v145_schema()
 
     _production_schema_ready = True
