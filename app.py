@@ -6463,6 +6463,76 @@ def create_reschedule_message_event(request_id, event_type, body, parent_id=None
             create_notification("teacher", teacher_name, "Reschedule rejected", body, f"/message_thread/{thread_id}")
 
 
+def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=None, student_name=None, amount=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        i.student_name,
+        i.amount,
+        i.charge_lessons,
+        i.status,
+        i.due_date,
+        COALESCE(i.notes, '')
+    FROM invoices i
+    WHERE i.id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return None
+
+    student_name = student_name or invoice[0]
+    amount = amount if amount is not None else invoice[1]
+    parent_id = parent_id or get_primary_parent_for_student(cursor, student_name)
+    conn.close()
+
+    subject = f"Tuition Invoice #{invoice_id} - {student_name}"
+    thread_id = get_or_create_message_thread(
+        subject,
+        student_name=student_name,
+        parent_id=parent_id,
+        teacher_name=None,
+        thread_type="tuition_invoice",
+        related_type="invoice",
+        related_id=invoice_id
+    )
+
+    if event_type == "sent":
+        message_body = body or (
+            f"Tuition invoice #{invoice_id} for {student_name} is ready. "
+            f"Amount due: ${amount}. Please open the invoice in the parent app."
+        )
+        if parent_id:
+            add_message(thread_id, "owner", "Owner", "parent", message_body)
+            create_notification(
+                "parent",
+                str(parent_id),
+                "Tuition invoice sent",
+                f"{student_name} has a tuition invoice due: ${amount}.",
+                f"/message_thread/{thread_id}"
+            )
+    elif event_type == "paid_notice":
+        parent_name = session.get("parent_name", "Parent")
+        message_body = body or (
+            f"{parent_name} marked invoice #{invoice_id} for {student_name} as paid / ready for confirmation. "
+            f"Amount: ${amount}. Owner confirmation: /pay_invoice/{invoice_id}"
+        )
+        add_message(thread_id, "parent", parent_name, "owner", message_body)
+        create_notification(
+            "owner",
+            "owner",
+            "Parent payment notice",
+            f"{parent_name} marked invoice #{invoice_id} for {student_name} as paid / ready for confirmation.",
+            f"/message_thread/{thread_id}"
+        )
+
+    return thread_id
+
+
 @app.route("/messages")
 def messages():
     if not require_owner():
@@ -9294,17 +9364,25 @@ def parent_invoice(invoice_id):
             return redirect(f"/parent_invoice/{invoice_id}")
 
         if action == "notify_paid":
+            payment_note = (request.form.get("payment_note") or "").strip()
             conn.close()
-            create_notification(
-                "owner",
-                "owner",
-                "Parent payment notice",
-                f"{session.get('parent_name', 'Parent')} opened invoice #{invoice_id} for {invoice[1]} and marked it as paid / ready for confirmation.",
-                f"/pay_invoice/{invoice_id}"
+            message_body = (
+                f"{session.get('parent_name', 'Parent')} marked invoice #{invoice_id} for {invoice[1]} as paid / ready for confirmation. "
+                f"Amount: ${invoice[3]}. Owner confirmation: /pay_invoice/{invoice_id}"
+            )
+            if payment_note:
+                message_body += f"\n\nParent note: {payment_note}"
+            create_invoice_message_event(
+                invoice_id,
+                "paid_notice",
+                message_body,
+                parent_id=parent_id,
+                student_name=invoice[1],
+                amount=invoice[3]
             )
             return f"""
             <h1>Payment Notice Sent</h1>
-            <p>Thank you. The owner will confirm invoice #{invoice_id} after payment is received.</p>
+            <p>Thank you. The owner has a new unread message for invoice #{invoice_id} and can confirm it after payment is received.</p>
             <p><a href="/parent_dashboard">Back to Parent App</a></p>
             """
 
@@ -9326,7 +9404,8 @@ def parent_invoice(invoice_id):
             .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; margin:14px 0; }}
             .label {{ color:#6b7280; font-size:13px; }}
             .value {{ font-size:28px; font-weight:900; margin-top:4px; }}
-            input, select {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:100px; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
             .secondary {{ background:#111827 !important; }}
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
@@ -9355,6 +9434,8 @@ def parent_invoice(invoice_id):
             <p>Please pay with the studio's current tuition method. After sending payment, tap the button below so the owner can confirm and mark it paid.</p>
             <form method="POST">
                 <input type="hidden" name="action" value="notify_paid">
+                Payment note (optional):<br>
+                <textarea name="payment_note" rows="3" placeholder="Example: Zelle sent today, check number, or payment reference."></textarea>
                 <button type="submit">I Paid / Notify Owner</button>
                 <a class="button secondary" href="/parent_dashboard">Back</a>
             </form>
@@ -13296,12 +13377,13 @@ def add_enrollment():
         conn.close()
 
         if package_amount > 0 and invoice_id:
-            notify_parent_tuition_due(
-                student_name,
-                parent_id,
+            create_invoice_message_event(
                 invoice_id,
-                package_amount,
-                "New tuition invoice"
+                "sent",
+                f"Hi, {student_name}'s new enrollment tuition invoice is ready. Amount due: ${package_amount}. Please open the invoice in the H-Music parent app when convenient.",
+                parent_id=parent_id,
+                student_name=student_name,
+                amount=package_amount
             )
 
         return redirect(f"/enrollment/{enrollment_id}")
@@ -14730,7 +14812,7 @@ def enrollment_payment(enrollment_id):
     """
 
 
-@app.route("/create_enrollment_invoice/<int:enrollment_id>")
+@app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
 def create_enrollment_invoice_route(enrollment_id):
     if not require_owner():
         return redirect("/owner_login")
@@ -14739,6 +14821,76 @@ def create_enrollment_invoice_route(enrollment_id):
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        teacher_name,
+        final_price,
+        package_amount,
+        package_lessons,
+        auto_renew_lessons
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    enrollment = cursor.fetchone()
+
+    if not enrollment:
+        conn.close()
+        return "<h1>Enrollment not found</h1>"
+
+    suggested_lessons = enrollment[6] or enrollment[7] or 10
+    suggested_amount = enrollment[5]
+    if suggested_amount is None or suggested_amount == 0:
+        suggested_amount = round((enrollment[4] or 0) * suggested_lessons, 2)
+
+    if request.method == "GET":
+        conn.close()
+        default_message = (
+            f"Hi, {enrollment[1]}'s tuition invoice is ready. "
+            f"Amount due: ${suggested_amount}. Please open the invoice in the H-Music parent app when convenient."
+        )
+        return f"""
+        <html>
+        <head>
+            <title>Send Tuition Invoice</title>
+            <style>
+                body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:40px; color:#111827; }}
+                .card {{ max-width:760px; margin:0 auto; background:white; border-radius:14px; padding:28px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+                h1 {{ margin-top:0; }}
+                .summary {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:18px 0; }}
+                .box {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:14px; }}
+                .label {{ color:#6b7280; font-size:13px; }}
+                .value {{ font-size:20px; font-weight:900; margin-top:4px; }}
+                textarea {{ width:100%; min-height:170px; padding:12px 14px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; box-sizing:border-box; }}
+                button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-top:14px; margin-right:8px; }}
+                .secondary {{ background:#111827 !important; }}
+                @media (max-width:760px) {{ body {{ padding:18px; }} .summary {{ grid-template-columns:1fr; }} }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>Send Tuition Invoice</h1>
+                <div class="summary">
+                    <div class="box"><div class="label">Student</div><div class="value">{enrollment[1]}</div></div>
+                    <div class="box"><div class="label">Course</div><div class="value">{enrollment[2]}</div></div>
+                    <div class="box"><div class="label">Teacher</div><div class="value">{enrollment[3]}</div></div>
+                    <div class="box"><div class="label">Amount</div><div class="value">${suggested_amount}</div></div>
+                </div>
+
+                <form method="POST">
+                    Message to parent:<br>
+                    <textarea name="message_body" required>{default_message}</textarea>
+                    <br>
+                    <button type="submit">Send Invoice + Message</button>
+                    <a class="button secondary" href="/enrollment/{enrollment_id}">Back</a>
+                </form>
+            </div>
+        </body>
+        </html>
+        """
 
     invoice_id = create_enrollment_invoice(
         cursor,
@@ -14764,19 +14916,16 @@ def create_enrollment_invoice_route(enrollment_id):
     conn.close()
 
     if invoice:
-        notify_parent_tuition_due(
-            invoice[0],
-            parent_id,
+        message_body = (request.form.get("message_body") or "").strip()
+        if not message_body:
+            message_body = f"Tuition invoice #{invoice_id} for {invoice[0]} is ready. Amount due: ${invoice[1]}."
+        create_invoice_message_event(
             invoice_id,
-            invoice[1],
-            "Tuition invoice"
-        )
-        create_notification(
-            "owner",
-            "owner",
-            "Tuition invoice ready",
-            f"Invoice #{invoice_id} for {invoice[0]} is ready and visible in the parent app.",
-            f"/pay_invoice/{invoice_id}"
+            "sent",
+            message_body,
+            parent_id=parent_id,
+            student_name=invoice[0],
+            amount=invoice[1]
         )
 
     return redirect(f"/enrollment/{enrollment_id}")
