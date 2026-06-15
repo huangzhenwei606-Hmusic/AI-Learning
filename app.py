@@ -14191,6 +14191,8 @@ def ensure_v19_schema():
 
     add_column_if_missing("schedule", "enrollment_id", "enrollment_id INTEGER")
     add_column_if_missing("schedule", "final_price", "final_price REAL")
+    add_column_if_missing("enrollments", "class_size", "class_size INTEGER")
+    add_column_if_missing("enrollments", "confirmed_tuition_updated_at", "confirmed_tuition_updated_at TEXT")
 
     conn.commit()
     conn.close()
@@ -14738,7 +14740,7 @@ def enrollment_detail(enrollment_id):
     if not require_owner():
         return redirect("/owner_login")
 
-    ensure_v252_schema()
+    ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -14748,6 +14750,7 @@ def enrollment_detail(enrollment_id):
         id,
         student_name,
         course_type_name,
+        course_type_id,
         teacher_name,
         duration,
         student_billing_method,
@@ -14767,7 +14770,9 @@ def enrollment_detail(enrollment_id):
         auto_renew_enabled,
         auto_renew_lessons,
         renewal_reminder_sent_at,
-        auto_renewed_at
+        auto_renewed_at,
+        class_size,
+        confirmed_tuition_updated_at
     FROM enrollments
     WHERE id = ?
     """, (enrollment_id,))
@@ -14808,7 +14813,7 @@ def enrollment_detail(enrollment_id):
     teacher_cost = financial_summary[2] or 0
     profit_earned = financial_summary[3] or 0
 
-    package_value = e[17] or 0
+    package_value = e[18] or 0
     outstanding_balance = round(package_value - total_paid, 2)
     utilization = 0
     if total_lessons_purchased:
@@ -14872,6 +14877,14 @@ def enrollment_detail(enrollment_id):
 
     if payment_rows == "":
         payment_rows = "<tr><td colspan='5'>No payments yet.</td></tr>"
+
+    suggested_pricing = get_final_pricing(e[1], e[4], e[3], class_size=e[24], duration_override=e[5])
+    suggested_price = suggested_pricing["student_charge_amount"] if suggested_pricing else (e[10] or 0)
+    confirmed_tuition = e[10] or suggested_price
+    confirmed_package_lessons = e[19] or e[21] or 10
+    confirmed_package_amount = e[18] or round((confirmed_tuition or 0) * confirmed_package_lessons, 2)
+    tuition_profit = round((confirmed_tuition or 0) - (e[13] or 0), 2)
+    class_size_value = e[24] or (1 if "group" not in (e[2] or "").lower() else "")
 
     invoice_rows = ""
     for inv in invoice_rows_data:
@@ -15003,6 +15016,24 @@ def enrollment_detail(enrollment_id):
             .muted {{
                 color: #6b7280;
             }}
+            input {{
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px;
+                margin-top: 6px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 15px;
+            }}
+            button.save-button {{
+                background: #635bff;
+                color: white;
+                border: none;
+                padding: 11px 15px;
+                border-radius: 8px;
+                font-weight: bold;
+                margin-right: 10px;
+            }}
         </style>
     </head>
 
@@ -15030,7 +15061,7 @@ def enrollment_detail(enrollment_id):
 
                 <div class="card">
                     <div class="label">Teacher</div>
-                    <div class="value">{e[3]}</div>
+                    <div class="value">{e[4]}</div>
                 </div>
 
                 <div class="card">
@@ -15040,39 +15071,82 @@ def enrollment_detail(enrollment_id):
 
                 <div class="card">
                     <div class="label">Status</div>
-                    <div class="value">{e[14]}</div>
+                    <div class="value">{e[15]}</div>
                 </div>
 
                 <div class="card">
-                    <div class="label">Price / Lesson</div>
-                    <div class="value">${e[9]}</div>
+                    <div class="label">Confirmed Tuition / Lesson</div>
+                    <div class="value">${confirmed_tuition}</div>
                 </div>
 
                 <div class="card">
                     <div class="label">Teacher Pay / Lesson</div>
-                    <div class="value">${e[12]}</div>
+                    <div class="value">${e[13]}</div>
                 </div>
 
                 <div class="card">
                     <div class="label">Profit / Lesson</div>
-                    <div class="value">${round((e[9] or 0) - (e[12] or 0), 2)}</div>
+                    <div class="value">${tuition_profit}</div>
                 </div>
 
                 <div class="card">
                     <div class="label">Lessons Left</div>
-                    <div class="value">{e[13]}</div>
+                    <div class="value">{e[14]}</div>
                 </div>
 
                 <div class="card">
                     <div class="label">Auto-Renew</div>
-                    <div class="value">{"On" if e[19] == 1 else "Off"}</div>
+                    <div class="value">{"On" if e[20] == 1 else "Off"}</div>
                 </div>
 
                 <div class="card">
                     <div class="label">Renewal Lessons</div>
-                    <div class="value">{e[20] or e[18] or 10}</div>
+                    <div class="value">{e[21] or e[19] or 10}</div>
                 </div>
             </div>
+
+            <h3>Confirmed Tuition</h3>
+            <form method="POST" action="/update_enrollment_tuition/{e[0]}">
+                <div class="grid">
+                    <div class="card">
+                        <div class="label">Teacher</div>
+                        <div class="value">{e[4]}</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Course Type</div>
+                        <div class="value">{e[2]}</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Duration</div>
+                        <div class="value">{e[5]} mins</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Suggested Price</div>
+                        <div class="value">${suggested_price}</div>
+                    </div>
+                </div>
+                <div class="grid">
+                    <div>
+                        <label><b>Class Size</b></label><br>
+                        <input type="number" name="class_size" min="1" step="1" value="{class_size_value}" placeholder="1 for private, group size for group">
+                    </div>
+                    <div>
+                        <label><b>Final Student Tuition / Lesson</b></label><br>
+                        <input type="number" step="0.01" name="final_price" value="{confirmed_tuition}" required>
+                    </div>
+                    <div>
+                        <label><b>Invoice Package Lessons</b></label><br>
+                        <input type="number" step="0.5" name="package_lessons" value="{confirmed_package_lessons}">
+                    </div>
+                    <div>
+                        <label><b>Invoice Package Amount</b></label><br>
+                        <input type="number" step="0.01" name="package_amount" value="{confirmed_package_amount}">
+                    </div>
+                </div>
+                <p class="muted">Invoices and auto-renewal will use this confirmed tuition/package amount first. Suggested price is only a reference from Course Type rules.</p>
+                <button type="submit" class="save-button">Update Confirmed Tuition</button>
+                <span class="muted">Last updated: {e[25] or ""}</span>
+            </form>
 
             <h3>Financial Summary</h3>
 
@@ -15118,13 +15192,13 @@ def enrollment_detail(enrollment_id):
             </div>
 
             <h3>Pricing Details</h3>
-            <p><b>Billing:</b> {e[5]}</p>
-            <p><b>Base Price:</b> ${e[6]}</p>
-            <p><b>Discount:</b> {e[7]} {e[8]}</p>
-            <p><b>Start Date:</b> {e[16]}</p>
-            <p><b>Renewal Reminder Sent:</b> {e[21] or ""}</p>
-            <p><b>Last Auto-Renew:</b> {e[22] or ""}</p>
-            <p><b>Notes:</b> {e[15] or ""}</p>
+            <p><b>Billing:</b> {e[6]}</p>
+            <p><b>Base Price:</b> ${e[7]}</p>
+            <p><b>Discount:</b> {e[8]} {e[9]}</p>
+            <p><b>Start Date:</b> {e[17]}</p>
+            <p><b>Renewal Reminder Sent:</b> {e[22] or ""}</p>
+            <p><b>Last Auto-Renew:</b> {e[23] or ""}</p>
+            <p><b>Notes:</b> {e[16] or ""}</p>
 
             <h3>Recent Lessons</h3>
             <table>
@@ -15182,6 +15256,48 @@ def enrollment_detail(enrollment_id):
     </html>
     """
 
+@app.route("/update_enrollment_tuition/<int:enrollment_id>", methods=["POST"])
+def update_enrollment_tuition(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    class_size = request.form.get("class_size") or None
+    final_price = float(request.form.get("final_price") or 0)
+    package_lessons = float(request.form.get("package_lessons") or 0)
+    package_amount = request.form.get("package_amount")
+    if package_amount in (None, ""):
+        package_amount = round(final_price * package_lessons, 2)
+    else:
+        package_amount = float(package_amount or 0)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE enrollments
+    SET class_size = ?,
+        final_price = ?,
+        package_lessons = ?,
+        package_amount = ?,
+        confirmed_tuition_updated_at = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        class_size,
+        final_price,
+        package_lessons,
+        package_amount,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        enrollment_id
+    ))
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/enrollment/{enrollment_id}")
+
+
 @app.route("/edit_enrollment/<int:enrollment_id>", methods=["GET", "POST"])
 def edit_enrollment(enrollment_id):
     if not require_owner():
@@ -15201,31 +15317,15 @@ def edit_enrollment(enrollment_id):
         auto_renew_lessons = float(request.form.get("auto_renew_lessons") or 10)
         notes = request.form.get("notes")
 
-        cursor.execute("""
-        SELECT base_price
-        FROM enrollments
-        WHERE id = ?
-        """, (enrollment_id,))
-
-        result = cursor.fetchone()
-
-        if not result:
+        cursor.execute("SELECT id FROM enrollments WHERE id = ?", (enrollment_id,))
+        if not cursor.fetchone():
             conn.close()
             return "<h1>Enrollment not found</h1>"
-
-        base_price = result[0]
-
-        final_price = calculate_discounted_price(
-            base_price,
-            discount_type,
-            discount_value
-        )
 
         cursor.execute("""
         UPDATE enrollments
         SET discount_type = ?,
             discount_value = ?,
-            final_price = ?,
             lessons_left = ?,
             status = ?,
             auto_renew_enabled = ?,
@@ -15236,7 +15336,6 @@ def edit_enrollment(enrollment_id):
         """, (
             discount_type,
             float(discount_value or 0),
-            final_price,
             float(lessons_left or 0),
             status,
             auto_renew_enabled,
