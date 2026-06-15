@@ -2642,7 +2642,8 @@ def add_schedule():
             student_name,
             teacher,
             course_type_id,
-            group_size if is_group else None
+            group_size if is_group else None,
+            duration_override=duration
         )
 
         if not effective_pricing:
@@ -12243,6 +12244,22 @@ def ensure_v18_schema():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS course_type_tuition_tiers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_type_id INTEGER,
+        duration INTEGER,
+        class_size_min INTEGER,
+        class_size_max INTEGER,
+        student_billing_method TEXT DEFAULT 'Per Lesson',
+        student_price REAL DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
     def add_column_if_missing(table_name, column_name, column_sql):
         cursor.execute(f"PRAGMA table_info({table_name})")
         columns = [row[1] for row in cursor.fetchall()]
@@ -12300,6 +12317,57 @@ def ensure_v18_schema():
 
     conn.commit()
     conn.close()
+
+
+def get_course_type_tuition_tier(cursor, course_type_id, duration=None, class_size=None):
+    try:
+        duration_value = int(float(duration)) if duration not in (None, "") else None
+    except:
+        duration_value = None
+
+    try:
+        class_size_value = int(float(class_size)) if class_size not in (None, "") else None
+    except:
+        class_size_value = None
+
+    params = [course_type_id]
+    duration_clause = ""
+    class_clause = """
+    AND class_size_min IS NULL
+    AND class_size_max IS NULL
+    """
+
+    if duration_value:
+        duration_clause = "AND (duration IS NULL OR duration = ?)"
+        params.append(duration_value)
+
+    if class_size_value:
+        class_clause = """
+        AND (
+            (class_size_min IS NULL AND class_size_max IS NULL)
+            OR (
+                COALESCE(class_size_min, 0) <= ?
+                AND COALESCE(class_size_max, 999) >= ?
+            )
+        )
+        """
+        params.extend([class_size_value, class_size_value])
+
+    cursor.execute(f"""
+    SELECT student_billing_method, student_price, duration, class_size_min, class_size_max
+    FROM course_type_tuition_tiers
+    WHERE course_type_id = ?
+    AND active = 1
+    {duration_clause}
+    {class_clause}
+    ORDER BY
+        CASE WHEN duration = ? THEN 0 ELSE 1 END,
+        CASE WHEN class_size_min IS NOT NULL OR class_size_max IS NOT NULL THEN 0 ELSE 1 END,
+        id DESC
+    LIMIT 1
+    """, params + [duration_value or -1])
+
+    return cursor.fetchone()
 
 
 @app.route("/v18_setup")
@@ -12363,7 +12431,8 @@ def course_types():
             <td>{group_label}</td>
             <td>{active_label}</td>
             <td>
-                <a href="/edit_course_type/{c[0]}">Edit</a>
+                <a href="/edit_course_type/{c[0]}">Edit</a> |
+                <a href="/course_type_tuition_tiers/{c[0]}">Tuition Tiers</a>
             </td>
         </tr>
         """
@@ -12489,9 +12558,10 @@ def add_course_type():
         ))
 
         conn.commit()
+        course_id = cursor.lastrowid
         conn.close()
 
-        return redirect("/course_types")
+        return redirect(f"/course_type_tuition_tiers/{course_id}")
 
     return """
     <h1>Add Course Type</h1>
@@ -12536,6 +12606,308 @@ def add_course_type():
     <br>
     <a href="/course_types">Back to Course Types</a>
     """
+
+
+@app.route("/course_type_tuition_tiers/<int:course_id>", methods=["GET", "POST"])
+def course_type_tuition_tiers(course_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, name, duration, student_billing_method, student_price, is_group
+    FROM course_types
+    WHERE id = ?
+    """, (course_id,))
+    course = cursor.fetchone()
+
+    if not course:
+        conn.close()
+        return "<h1>Course Type not found</h1><p><a href='/course_types'>Back</a></p>"
+
+    if request.method == "POST":
+        duration = request.form.get("duration") or None
+        class_size_min = request.form.get("class_size_min") or None
+        class_size_max = request.form.get("class_size_max") or None
+        student_billing_method = request.form.get("student_billing_method")
+        student_price = request.form.get("student_price") or 0
+        active = request.form.get("active")
+        notes = request.form.get("notes")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO course_type_tuition_tiers (
+            course_type_id,
+            duration,
+            class_size_min,
+            class_size_max,
+            student_billing_method,
+            student_price,
+            active,
+            notes,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            course_id,
+            duration,
+            class_size_min,
+            class_size_max,
+            student_billing_method,
+            student_price,
+            int(active or 1),
+            notes,
+            now,
+            now
+        ))
+
+        conn.commit()
+        conn.close()
+        return redirect(f"/course_type_tuition_tiers/{course_id}")
+
+    cursor.execute("""
+    SELECT
+        id,
+        duration,
+        class_size_min,
+        class_size_max,
+        student_billing_method,
+        student_price,
+        active,
+        COALESCE(notes, ''),
+        created_at
+    FROM course_type_tuition_tiers
+    WHERE course_type_id = ?
+    ORDER BY active DESC,
+        COALESCE(duration, 99999),
+        COALESCE(class_size_min, 0),
+        COALESCE(class_size_max, 999),
+        id DESC
+    """, (course_id,))
+    tiers = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for t in tiers:
+        duration_label = f"{t[1]} mins" if t[1] else "Any duration"
+        if t[2] or t[3]:
+            size_label = f"{t[2] or ''}-{t[3] or ''}".strip("-")
+        else:
+            size_label = "Any / private"
+        active_label = "Active" if t[6] == 1 else "Inactive"
+        example_amount = calculate_course_amount(t[4], t[5], t[1] or course[2])
+        action_label = "Deactivate" if t[6] == 1 else "Activate"
+        rows += f"""
+        <tr>
+            <td>{t[0]}</td>
+            <td>{duration_label}</td>
+            <td>{size_label}</td>
+            <td>{t[4]}</td>
+            <td>${t[5]}</td>
+            <td>${example_amount}</td>
+            <td>{active_label}</td>
+            <td>{escape(t[7])}</td>
+            <td>
+                <form method="POST" action="/toggle_course_type_tuition_tier/{t[0]}" style="margin:0;">
+                    <button type="submit" class="small">{action_label}</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    if not rows:
+        rows = """
+        <tr>
+            <td colspan="9">No flexible tuition tiers yet. The course type default student price will be used until you add one.</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Tuition Tiers - {escape(str(course[1]))}</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+                color: #111827;
+            }}
+            .container {{
+                max-width: 1000px;
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                margin-bottom: 24px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 18px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+                font-size: 14px;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            input, select, textarea {{
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px;
+                margin-top: 6px;
+                margin-bottom: 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 15px;
+            }}
+            textarea {{
+                min-height: 90px;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 14px;
+            }}
+            button, a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                border: none;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+            button.small {{
+                padding: 7px 10px;
+                font-size: 13px;
+                background: #111827;
+            }}
+            a.button.secondary {{
+                background: #111827;
+            }}
+            .hint {{
+                color: #6b7280;
+                line-height: 1.45;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Tuition Tiers</h1>
+            <h2>{escape(str(course[1]))} - {course[2]} mins</h2>
+            <p class="hint">
+                Use this when parent tuition changes by duration or class size.
+                Example: private 1 student = $120, group 2 students = $80 each, group 3-4 students = $65 each.
+                Student-specific overrides still win when you set a special rate for one student.
+            </p>
+            <a class="button secondary" href="/course_types">Back to Course Types</a>
+            <a class="button" href="/add_schedule">Add Schedule</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Duration</th>
+                    <th>Class Size</th>
+                    <th>Billing</th>
+                    <th>Rate</th>
+                    <th>Example Charge</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+
+        <div class="container">
+            <h2>Add Flexible Tuition Rule</h2>
+            <form method="POST">
+                <div class="grid">
+                    <div>
+                        Duration Minutes:<br>
+                        <input type="number" name="duration" value="{course[2]}" placeholder="Blank = any duration">
+                    </div>
+                    <div>
+                        Student Billing Method:<br>
+                        <select name="student_billing_method">
+                            <option value="Per Lesson">Per Lesson</option>
+                            <option value="Hourly">Hourly</option>
+                        </select>
+                    </div>
+                    <div>
+                        Class Size Min:<br>
+                        <input type="number" name="class_size_min" placeholder="Blank = any/private">
+                    </div>
+                    <div>
+                        Class Size Max:<br>
+                        <input type="number" name="class_size_max" placeholder="Blank = any/private">
+                    </div>
+                    <div>
+                        Student Price / Rate:<br>
+                        <input type="number" step="0.01" name="student_price" required>
+                    </div>
+                    <div>
+                        Active:<br>
+                        <select name="active">
+                            <option value="1">Active</option>
+                            <option value="0">Inactive</option>
+                        </select>
+                    </div>
+                </div>
+
+                Notes:<br>
+                <textarea name="notes" placeholder="Example: Custom Program, 3-4 students, per student per lesson."></textarea>
+
+                <button type="submit">Save Tuition Rule</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/toggle_course_type_tuition_tier/<int:tier_id>", methods=["POST"])
+def toggle_course_type_tuition_tier(tier_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT course_type_id, active
+    FROM course_type_tuition_tiers
+    WHERE id = ?
+    """, (tier_id,))
+    tier = cursor.fetchone()
+
+    if not tier:
+        conn.close()
+        return "<h1>Tuition tier not found</h1><p><a href='/course_types'>Back</a></p>"
+
+    new_active = 0 if tier[1] == 1 else 1
+    cursor.execute("""
+    UPDATE course_type_tuition_tiers
+    SET active = ?, updated_at = ?
+    WHERE id = ?
+    """, (new_active, datetime.now().strftime("%Y-%m-%d %H:%M"), tier_id))
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/course_type_tuition_tiers/{tier[0]}")
 
 
 @app.route("/edit_course_type/<int:course_id>", methods=["GET", "POST"])
@@ -13285,7 +13657,7 @@ def get_teacher_rate_card(teacher_name):
     return None
 
 
-def get_final_pricing(student_name, teacher_name, course_type_id, class_size=None):
+def get_final_pricing(student_name, teacher_name, course_type_id, class_size=None, duration_override=None):
     ensure_v18c_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -13314,6 +13686,11 @@ def get_final_pricing(student_name, teacher_name, course_type_id, class_size=Non
     course_id = course[0]
     course_name = course[1]
     duration = course[2]
+    if duration_override not in (None, ""):
+        try:
+            duration = int(float(duration_override))
+        except:
+            pass
 
     student_billing_method = course[3]
     student_price = course[4]
@@ -13323,7 +13700,17 @@ def get_final_pricing(student_name, teacher_name, course_type_id, class_size=Non
 
     is_group = course[7]
 
-    # Student price override
+    tuition_tier = get_course_type_tuition_tier(
+        cursor,
+        course_type_id,
+        duration=duration,
+        class_size=class_size
+    )
+    if tuition_tier:
+        student_billing_method = tuition_tier[0]
+        student_price = tuition_tier[1]
+
+    # Student price override. Student-specific rates win over course defaults and tuition tiers.
     cursor.execute("""
     SELECT student_billing_method, student_price
     FROM student_course_rates
