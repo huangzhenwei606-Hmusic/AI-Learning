@@ -412,6 +412,13 @@ def home():
     renewal_count = cursor.fetchone()[0]
 
     cursor.execute("""
+    SELECT COUNT(*)
+    FROM enrollments
+    WHERE status = 'active'
+    """)
+    active_enrollment_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
     SELECT name, lessons_left
     FROM students
     WHERE lessons_left <= 2
@@ -739,6 +746,51 @@ def home():
                 margin-bottom: 15px;
             }}
 
+            .primary-actions {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 12px;
+                margin-top: 14px;
+            }}
+
+            .primary-action {{
+                display: block;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 18px;
+                text-decoration: none;
+                color: #111827;
+                background: #fbfbff;
+            }}
+
+            .primary-action strong {{
+                display: block;
+                font-size: 16px;
+                margin-bottom: 8px;
+            }}
+
+            .primary-action span {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+
+            .primary-action.main {{
+                background: #eef2ff;
+                border-color: #c7d2fe;
+            }}
+
+            details.tool-drawer {{
+                border-top: 1px solid #eef0f4;
+                padding-top: 14px;
+            }}
+
+            details.tool-drawer summary {{
+                cursor: pointer;
+                font-weight: 800;
+                color: #374151;
+                margin-bottom: 10px;
+            }}
+
             .muted {{
                 color: #6b7280;
             }}
@@ -757,6 +809,9 @@ def home():
                 .cards,
                 .attention-cards {{
                     grid-template-columns: repeat(2, 1fr);
+                }}
+                .primary-actions {{
+                    grid-template-columns: 1fr;
                 }}
                 .row,
                 .task-row {{
@@ -796,13 +851,35 @@ def home():
                 </div>
 
                 <div class="card">
-                    <div class="label">Total Students</div>
-                    <div class="value">{total_students}</div>
+                    <div class="label">Active Enrollments</div>
+                    <div class="value">{active_enrollment_count}</div>
                 </div>
 
                 <div class="card">
                     <div class="label">Need Renewal</div>
                     <div class="value">{renewal_count}</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Main Workflow</h2>
+                <div class="primary-actions">
+                    <a class="primary-action main" href="/enrollments">
+                        <strong>Enrollment Detail</strong>
+                        <span>Find student package, invoice, payment, schedule</span>
+                    </a>
+                    <a class="primary-action" href="/add_enrollment">
+                        <strong>New Enrollment</strong>
+                        <span>Create package and tuition invoice</span>
+                    </a>
+                    <a class="primary-action" href="/add_schedule">
+                        <strong>Add Schedule</strong>
+                        <span>Add a lesson to calendar</span>
+                    </a>
+                    <a class="primary-action" href="/messages">
+                        <strong>Messages{message_badge}</strong>
+                        <span>Parent and teacher communication</span>
+                    </a>
                 </div>
             </div>
 
@@ -846,52 +923,51 @@ def home():
             </div>
 
             <div class="section actions">
-    <h2>🚀 Quick Actions</h2>
+    <h2>Tools</h2>
 
-    <h3>📅 Daily Operations</h3>
+    <h3>Daily Operations</h3>
     <div class="action-group">
-        <a href="/students">Students</a>
+        <a href="/enrollments">Enrollment Detail</a>
+        <a href="/add_enrollment">New Enrollment</a>
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
         <a href="/calendar">Calendar</a>
         <a href="/calendar/today">Today</a>
-        <a href="/teacher_dashboard">Teacher Dashboard</a>
+        <a href="/students">Students</a>
     </div>
 
-    <h3>💰 Money</h3>
+    <h3>Money</h3>
     <div class="action-group">
         <a href="/invoices">Invoices{invoice_badge}</a>
+        <a href="/enrollment_payments">Enrollment Payments</a>
         <a href="/payroll">Teacher Payroll</a>
         <a href="/executive_dashboard">Executive Dashboard</a>
-        <a href="/enrollment_payments">Enrollment Payments</a>
     </div>
 
-    <h3>👨‍👩‍👧 Parent & Renewal</h3>
+    <h3>Parent & Renewal</h3>
     <div class="action-group">
-        <a href="/parent_portal">Parent Portal</a>
         <a href="/parents">Parent Management</a>
         <a href="/owner_reschedule_requests">Reschedule Requests{reschedule_badge}</a>
         <a href="/messages">Message Center{message_badge}</a>
         <a href="/open_slots">Open Slots</a>
-        <a href="/renewal_emails">Renewal Emails</a>
         <a href="/enrollment_renewals">Enrollment Renewals</a>
     </div>
 
-    <h3>🎯 CRM</h3>
-    <div class="action-group">
-        <a href="/inquiries">Inquiry CRM</a>
-        <a href="/add_inquiry">Add Inquiry</a>
-    </div>
-
-    <h3>⚙️ Admin</h3>
-    <div class="action-group">
-        <a href="/owner_settings">Owner Settings</a>
-        <a href="/owner_sub_requests">Sub Requests{sub_badge}</a>
-        <a href="/teacher_rate_cards">Teacher Rate Cards</a>
-        <a href="/rate_overrides">Course Pay Rates</a>
-        <a href="/enrollments">Enrollments</a>
-        <a href="/business_rules">Business Rules</a>
-    </div>
+    <details class="tool-drawer">
+        <summary>More CRM / Admin Tools</summary>
+        <div class="action-group">
+            <a href="/teacher_dashboard">Teacher Dashboard</a>
+            <a href="/parent_portal">Parent Portal</a>
+            <a href="/renewal_emails">Renewal Emails</a>
+            <a href="/inquiries">Inquiry CRM</a>
+            <a href="/add_inquiry">Add Inquiry</a>
+            <a href="/owner_settings">Owner Settings</a>
+            <a href="/owner_sub_requests">Sub Requests{sub_badge}</a>
+            <a href="/teacher_rate_cards">Teacher Rate Cards</a>
+            <a href="/rate_overrides">Course Pay Rates</a>
+            <a href="/business_rules">Business Rules</a>
+        </div>
+    </details>
             </div>
 
         </div>
@@ -13093,11 +13169,23 @@ def enrollments():
         return redirect("/owner_login")
 
     ensure_v19_schema()
+    q = (request.args.get("q") or "").strip()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
-    cursor.execute("""
+    where_sql = ""
+    params = []
+    if q:
+        where_sql = """
+        WHERE student_name LIKE ?
+        OR course_type_name LIKE ?
+        OR teacher_name LIKE ?
+        """
+        like_q = f"%{q}%"
+        params = [like_q, like_q, like_q]
+
+    cursor.execute(f"""
     SELECT
         id,
         student_name,
@@ -13109,8 +13197,9 @@ def enrollments():
         lessons_left,
         status
     FROM enrollments
+    {where_sql}
     ORDER BY student_name, status, id DESC
-    """)
+    """, params)
 
     rows_data = cursor.fetchall()
 
@@ -13136,22 +13225,26 @@ def enrollments():
     for r in rows_data:
         rows += f"""
         <tr>
-            <td>{r[0]}</td>
-            <td><a href="/student/{r[1]}">{r[1]}</a></td>
+            <td><a href="/enrollment/{r[0]}">#{r[0]}</a></td>
+            <td><a href="/enrollment/{r[0]}">{r[1]}</a></td>
             <td>{r[2]}</td>
             <td>{r[3]}</td>
             <td>{r[4]} mins</td>
             <td>${r[5]}</td>
-            <td>${r[6]}</td>
             <td>{r[7]}</td>
             <td>{r[8]}</td>
             <td>
-                <a href="/enrollment/{r[0]}">View</a>
-                |
-                <a href="/enrollment_payment/{r[0]}">Payment</a>
-                |
-                <a href="/add_enrollment_schedule/{r[0]}">Schedule</a>
+                <a class="mini-button primary" href="/enrollment/{r[0]}">Enrollment Detail</a>
+                <a class="mini-button" href="/create_enrollment_invoice/{r[0]}">Send Invoice</a>
+                <a class="mini-button" href="/add_enrollment_schedule/{r[0]}">Add Schedule</a>
             </td>
+        </tr>
+        """
+
+    if not rows:
+        rows = """
+        <tr>
+            <td colspan="9">No enrollments found.</td>
         </tr>
         """
 
@@ -13170,6 +13263,13 @@ def enrollments():
                 padding: 30px;
                 border-radius: 12px;
                 box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .topbar {{
+                display:flex;
+                justify-content:space-between;
+                gap:16px;
+                align-items:flex-start;
+                flex-wrap:wrap;
             }}
             .cards {{
                 display: grid;
@@ -13209,22 +13309,72 @@ def enrollments():
                 font-weight: bold;
                 margin-right: 8px;
             }}
+            form.search {{
+                display:flex;
+                gap:10px;
+                margin:18px 0;
+                max-width:680px;
+            }}
+            form.search input {{
+                flex:1;
+                min-height:44px;
+                padding:10px 12px;
+                border:1px solid #d1d5db;
+                border-radius:8px;
+                font-size:16px;
+            }}
+            form.search button {{
+                background:#111827;
+                color:white;
+                border:none;
+                padding:10px 16px;
+                border-radius:8px;
+                font-weight:bold;
+            }}
             td a {{
                 color: #635bff;
                 font-weight: bold;
                 text-decoration: none;
+            }}
+            .mini-button {{
+                display:inline-block;
+                background:#eef2ff;
+                color:#3730a3 !important;
+                padding:7px 9px;
+                border-radius:7px;
+                margin:2px 4px 2px 0;
+                white-space:nowrap;
+            }}
+            .mini-button.primary {{
+                background:#4f46e5;
+                color:white !important;
+            }}
+            .hint {{
+                color:#6b7280;
+                margin-top:6px;
+            }}
+            @media (max-width: 900px) {{
+                body {{ padding:16px; }}
+                table {{ display:block; overflow-x:auto; }}
+                .cards {{ grid-template-columns:1fr; }}
+                form.search {{ display:block; }}
+                form.search button {{ margin-top:8px; width:100%; min-height:44px; }}
             }}
         </style>
     </head>
 
     <body>
         <div class="container">
-            <h1>Enrollment Dashboard</h1>
-
-            <a class="button" href="/">Home</a>
-            <a class="button" href="/add_enrollment">New Enrollment</a>
-            <a class="button" href="/enrollment_renewals">Renewals</a>
-            <a class="button" href="/enrollment_payments">Payments</a>
+            <div class="topbar">
+                <div>
+                    <h1>Enrollment Dashboard</h1>
+                    <div class="hint">Open Enrollment Detail from the first button in each row.</div>
+                </div>
+                <div>
+                    <a class="button" href="/">Home</a>
+                    <a class="button" href="/add_enrollment">New Enrollment</a>
+                </div>
+            </div>
 
             <div class="cards">
                 <div class="card">
@@ -13238,6 +13388,17 @@ def enrollments():
                 </div>
             </div>
 
+            <form class="search" method="GET" action="/enrollments">
+                <input name="q" value="{q}" placeholder="Search student, teacher, or course">
+                <button type="submit">Search</button>
+                <a class="button" href="/enrollments">Clear</a>
+            </form>
+
+            <p>
+                <a class="button" href="/enrollment_renewals">Renewals</a>
+                <a class="button" href="/enrollment_payments">Payments</a>
+            </p>
+
             <table>
                 <tr>
                     <th>ID</th>
@@ -13246,7 +13407,6 @@ def enrollments():
                     <th>Teacher</th>
                     <th>Duration</th>
                     <th>Student Price</th>
-                    <th>Teacher Pay</th>
                     <th>Lessons Left</th>
                     <th>Status</th>
                     <th>Action</th>
