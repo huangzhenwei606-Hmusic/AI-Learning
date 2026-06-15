@@ -12594,30 +12594,42 @@ def calculate_course_amount(billing_method, rate, duration_minutes):
 
 
 COURSE_COLOR_PRESETS = [
-    ("#3b82f6", "Blue"),
-    ("#16a34a", "Green"),
-    ("#f59e0b", "Amber"),
-    ("#8b5cf6", "Purple"),
-    ("#ec4899", "Pink"),
-    ("#14b8a6", "Teal"),
-    ("#64748b", "Slate"),
+    ("#8b5cf6", "Group Piano - Purple"),
+    ("#c4b5fd", "Piano Group - Light Purple"),
+    ("#93c5fd", "Private 30m - Light Blue"),
+    ("#3b82f6", "Private 45m - Blue"),
+    ("#1e3a8a", "Private 60m - Dark Blue"),
+    ("#facc15", "Trial - Yellow"),
+    ("#64748b", "Other - Slate"),
 ]
 
 
-def default_course_color(name="", duration=None, is_group=0):
+def course_color_from_rules(name="", duration=None, is_group=0):
     course_name = (name or "").lower()
-    if is_group or "group" in course_name:
-        return "#16a34a"
-    if "trial" in course_name:
-        return "#f59e0b"
-    if "custom" in course_name:
+    duration_text = str(duration or "").strip()
+
+    if "group piano" in course_name:
         return "#8b5cf6"
-    if str(duration) == "30":
-        return "#3b82f6"
-    if str(duration) == "45":
-        return "#14b8a6"
-    if str(duration) == "60":
-        return "#ec4899"
+    if "piano group" in course_name:
+        return "#c4b5fd"
+    if "trial" in course_name:
+        return "#facc15"
+    if "private" in course_name or not is_group:
+        if duration_text == "30":
+            return "#93c5fd"
+        if duration_text == "45":
+            return "#3b82f6"
+        if duration_text == "60":
+            return "#1e3a8a"
+    if is_group or "group" in course_name:
+        return "#8b5cf6"
+    return None
+
+
+def default_course_color(name="", duration=None, is_group=0):
+    rule_color = course_color_from_rules(name, duration, is_group)
+    if rule_color:
+        return rule_color
     return "#64748b"
 
 
@@ -12738,6 +12750,20 @@ def ensure_v18_schema():
             default_course_color(course[1], course[2], course[3]),
             course[0]
         ))
+
+    cursor.execute("""
+    SELECT id, name, duration, is_group, display_color
+    FROM course_types
+    """)
+    courses_for_color_sync = cursor.fetchall()
+    for course in courses_for_color_sync:
+        rule_color = course_color_from_rules(course[1], course[2], course[3])
+        if rule_color and str(course[4] or "").lower() != rule_color.lower():
+            cursor.execute("""
+            UPDATE course_types
+            SET display_color = ?
+            WHERE id = ?
+            """, (rule_color, course[0]))
 
     conn.commit()
     conn.close()
