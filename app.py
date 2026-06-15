@@ -2592,6 +2592,10 @@ def add_schedule():
         package_type = request.form.get("package_type")
         start_date = request.form.get("start_date")
         course_type_id = request.form.get("course_type_id")
+        custom_duration = request.form.get("custom_duration")
+        lesson_format = request.form.get("lesson_format") or "private"
+        group_size = request.form.get("group_size")
+        group_student_names = (request.form.get("group_student_names") or "").strip()
         schedule_note = ""
         if allow_unassigned_teacher_schedule:
             schedule_note = (
@@ -2628,10 +2632,17 @@ def add_schedule():
         teacher_pay = course[6]
         is_group = course[7]
 
+        is_custom_program = "custom" in (course_name or "").lower()
+        if is_custom_program and custom_duration:
+            duration = int(float(custom_duration))
+        if is_custom_program:
+            is_group = 1 if lesson_format == "group" else 0
+
         effective_pricing = get_final_pricing(
             student_name,
             teacher,
-            course_type_id
+            course_type_id,
+            group_size if is_group else None
         )
 
         if not effective_pricing:
@@ -2640,7 +2651,8 @@ def add_schedule():
 
         course_id = effective_pricing["course_id"]
         course_name = effective_pricing["course_name"]
-        duration = effective_pricing["duration"]
+        if not is_custom_program:
+            duration = effective_pricing["duration"]
 
         student_billing_method = effective_pricing["student_billing_method"]
         student_price = effective_pricing["student_price"]
@@ -2650,7 +2662,15 @@ def add_schedule():
 
         student_charge_amount = effective_pricing["student_charge_amount"]
         teacher_pay_amount = effective_pricing["teacher_pay_amount"]
-        is_group = effective_pricing["is_group"]
+        if not is_custom_program:
+            is_group = effective_pricing["is_group"]
+        if is_custom_program:
+            student_charge_amount = calculate_course_amount(student_billing_method, student_price, duration)
+            teacher_pay_amount = calculate_course_amount(teacher_billing_method, teacher_pay, duration)
+            custom_note = f"Custom Program: {duration} mins, {'group' if is_group else 'private'}."
+            if is_group:
+                custom_note += f" Group size: {group_size or ''}. Students: {group_student_names or student_name}."
+            schedule_note = (schedule_note + " " + custom_note).strip()
 
         if schedule_type == "one_time":
             number_of_lessons = 1
@@ -2694,9 +2714,11 @@ def add_schedule():
                 teacher_pay_amount,
                 is_group,
                 notes,
+                group_size,
+                group_student_names,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
@@ -2718,6 +2740,8 @@ def add_schedule():
                 teacher_pay_amount,
                 is_group,
                 schedule_note,
+                int(group_size or 0) if is_group else None,
+                group_student_names if is_group else None,
                 "scheduled"
             ))
 
@@ -2756,6 +2780,8 @@ def add_schedule():
                 related_type="teacher_student_setup"
             )
 
+        student_charge_line = "" if require_teacher() and not require_owner() else f"<p>Student Charge Per Lesson: ${student_charge_amount}</p>"
+
         return f"""
         <h1>Schedule Generated!</h1>
 
@@ -2764,7 +2790,7 @@ def add_schedule():
         <p>Room: {classroom}</p>
         <p>Course: {course_name}</p>
         <p>Duration: {duration} mins</p>
-        <p>Student Charge Per Lesson: ${student_charge_amount}</p>
+        {student_charge_line}
         <p>Start Date: {start_date}</p>
         <p>Time: {lesson_time}</p>
 
@@ -2822,12 +2848,11 @@ def add_schedule():
 
     course_options = ""
     for c in course_types:
-        student_charge = calculate_course_amount(c[3], c[4], c[2])
         group_label = "Group" if c[7] == 1 else "Single"
 
         course_options += f"""
         <option value="{c[0]}">
-            {c[1]} - {c[2]} mins - {group_label} - Student ${student_charge}
+            {c[1]} - {c[2]} mins - {group_label}
         </option>
         """
 
@@ -2856,12 +2881,22 @@ def add_schedule():
                 max-width: 760px;
             }}
 
-            input, select {{
+            input, select, textarea {{
                 width: 100%;
                 padding: 9px;
                 margin-top: 6px;
                 margin-bottom: 16px;
                 font-size: 14px;
+            }}
+            textarea {{
+                min-height: 92px;
+            }}
+            .custom-box {{
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                background: #f8f8ff;
+                padding: 14px;
+                margin: 6px 0 18px;
             }}
 
             button {{
@@ -2906,9 +2941,29 @@ def add_schedule():
                 </select>
 
                 Course Type:<br>
-                <select name="course_type_id">
+                <select name="course_type_id" id="course_type_id" onchange="toggleCustomProgram()">
                     {course_options}
                 </select>
+
+                <div class="custom-box" id="custom-program-box">
+                    <b>Custom Program Options</b><br><br>
+                    Duration Minutes:<br>
+                    <input type="number" name="custom_duration" value="60" min="15" step="5">
+
+                    Lesson Format:<br>
+                    <select name="lesson_format" id="lesson_format" onchange="toggleGroupFields()">
+                        <option value="private">Private</option>
+                        <option value="group">Group</option>
+                    </select>
+
+                    <div id="group-fields">
+                        Group Size:<br>
+                        <input type="number" name="group_size" min="2" step="1" placeholder="Example: 3">
+
+                        Group Student Names:<br>
+                        <textarea name="group_student_names" placeholder="Write all students in this group, separated by commas."></textarea>
+                    </div>
+                </div>
 
                 Day of Week:<br>
                 <select name="weekday">
@@ -2945,6 +3000,24 @@ def add_schedule():
             </form>
 
         </div>
+        <script>
+            function selectedCourseText() {{
+                const select = document.getElementById("course_type_id");
+                return select && select.options[select.selectedIndex] ? select.options[select.selectedIndex].text.toLowerCase() : "";
+            }}
+            function toggleCustomProgram() {{
+                const box = document.getElementById("custom-program-box");
+                const isCustom = selectedCourseText().includes("custom");
+                box.style.display = isCustom ? "block" : "none";
+                toggleGroupFields();
+            }}
+            function toggleGroupFields() {{
+                const groupFields = document.getElementById("group-fields");
+                const format = document.getElementById("lesson_format");
+                groupFields.style.display = format && format.value === "group" ? "block" : "none";
+            }}
+            toggleCustomProgram();
+        </script>
     </body>
     </html>
     """
@@ -3559,6 +3632,24 @@ def teacher_dashboard():
                 margin: 0;
             }}
 
+            .payroll-pill {{
+                display: inline-flex;
+                gap: 8px;
+                align-items: baseline;
+                margin-top: 8px;
+                padding: 8px 12px;
+                border-radius: 999px;
+                background: #eef2ff;
+                color: #3730a3;
+                font-weight: 850;
+            }}
+
+            .payroll-pill span {{
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 750;
+            }}
+
             .controls {{
                 display: flex;
                 gap: 10px;
@@ -3905,7 +3996,10 @@ def teacher_dashboard():
         <div class="container">
 
             <div class="header">
-                <h1>{title}</h1>
+                <div>
+                    <h1>{title}</h1>
+                    <div class="payroll-pill">{payroll_label}: ${actual_payroll} <span>Projected ${projected_payroll}</span></div>
+                </div>
 
                 <div class="controls">
                     <a class="tab {'active' if view == 'month' else ''}" href="/teacher_dashboard?view=month">Month</a>
@@ -12170,6 +12264,8 @@ def ensure_v18_schema():
     add_column_if_missing("schedule", "charge_lessons", "charge_lessons REAL DEFAULT 0")
     add_column_if_missing("schedule", "location", "location TEXT")
     add_column_if_missing("schedule", "notes", "notes TEXT")
+    add_column_if_missing("schedule", "group_size", "group_size INTEGER")
+    add_column_if_missing("schedule", "group_student_names", "group_student_names TEXT")
 
     cursor.execute("SELECT COUNT(*) FROM course_types")
     existing_count = cursor.fetchone()[0]
@@ -12256,8 +12352,6 @@ def course_types():
         active_label = "Active" if c[8] == 1 else "Inactive"
 
         student_example = calculate_course_amount(c[3], c[4], c[2])
-        teacher_example = calculate_course_amount(c[5], c[6], c[2])
-
         rows += f"""
         <tr>
             <td>{c[0]}</td>
@@ -12266,9 +12360,6 @@ def course_types():
             <td>{c[3]}</td>
             <td>${c[4]}</td>
             <td>${student_example}</td>
-            <td>{c[5]}</td>
-            <td>${c[6]}</td>
-            <td>${teacher_example}</td>
             <td>{group_label}</td>
             <td>{active_label}</td>
             <td>
@@ -12322,7 +12413,7 @@ def course_types():
     <body>
         <div class="container">
             <h1>Course Types</h1>
-            <p>Owner can define duration, student price, teacher pay, and billing method.</p>
+            <p>Course Types define the class shape only. Student price is optional/default; teacher pay belongs in Teacher Rate Cards or Teacher Course Rates.</p>
 
             <a class="button" href="/">Home</a>
             <a class="button" href="/add_course_type">Add Course Type</a>
@@ -12336,9 +12427,6 @@ def course_types():
                     <th>Student Billing</th>
                     <th>Student Rate</th>
                     <th>Student Charge</th>
-                    <th>Teacher Billing</th>
-                    <th>Teacher Rate</th>
-                    <th>Teacher Pay</th>
                     <th>Class Type</th>
                     <th>Status</th>
                     <th>Action</th>
@@ -12425,14 +12513,9 @@ def add_course_type():
         Student Price / Rate:<br>
         <input type="number" step="0.01" name="student_price" value="0"><br><br>
 
-        Teacher Billing Method:<br>
-        <select name="teacher_billing_method">
-            <option value="Per Lesson">Per Lesson</option>
-            <option value="Hourly">Hourly</option>
-        </select><br><br>
-
-        Teacher Pay / Rate:<br>
-        <input type="number" step="0.01" name="teacher_pay" value="0"><br><br>
+        <input type="hidden" name="teacher_billing_method" value="Hourly">
+        <input type="hidden" name="teacher_pay" value="0">
+        <p><b>Teacher pay:</b> Set this in Teacher Rate Cards or Add Teacher Course Rate, not here.</p>
 
         Is Group Class?<br>
         <select name="is_group">
@@ -12549,14 +12632,9 @@ def edit_course_type(course_id):
         Student Price / Rate:<br>
         <input type="number" step="0.01" name="student_price" value="{c[4]}"><br><br>
 
-        Teacher Billing Method:<br>
-        <select name="teacher_billing_method">
-            <option value="Per Lesson" {selected("Per Lesson", c[5])}>Per Lesson</option>
-            <option value="Hourly" {selected("Hourly", c[5])}>Hourly</option>
-        </select><br><br>
-
-        Teacher Pay / Rate:<br>
-        <input type="number" step="0.01" name="teacher_pay" value="{c[6]}"><br><br>
+        <input type="hidden" name="teacher_billing_method" value="{c[5] or 'Hourly'}">
+        <input type="hidden" name="teacher_pay" value="{c[6] or 0}">
+        <p><b>Teacher pay:</b> Set teacher pay rules in Teacher Rate Cards or Add Teacher Course Rate.</p>
 
         Is Group Class?<br>
         <select name="is_group">
@@ -12612,6 +12690,16 @@ def ensure_v18b_schema():
         updated_at TEXT
     )
     """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("teacher_course_rates", "class_size_min", "class_size_min INTEGER")
+    add_column_if_missing("teacher_course_rates", "class_size_max", "class_size_max INTEGER")
+    add_column_if_missing("teacher_course_rates", "notes", "notes TEXT")
 
     conn.commit()
     conn.close()
@@ -12751,6 +12839,9 @@ def rate_overrides():
         c.duration,
         t.teacher_billing_method,
         t.teacher_pay,
+        t.class_size_min,
+        t.class_size_max,
+        COALESCE(t.notes, ''),
         t.active
     FROM teacher_course_rates t
     LEFT JOIN course_types c
@@ -12782,7 +12873,11 @@ def rate_overrides():
     teacher_rows = ""
 
     for r in teacher_rates:
-        active = "Active" if r[6] == 1 else "Inactive"
+        active = "Active" if r[9] == 1 else "Inactive"
+        if r[6] or r[7]:
+            class_size_label = f"{r[6] or ''}-{r[7] or ''}".strip("-")
+        else:
+            class_size_label = "Any"
 
         teacher_rows += f"""
         <tr>
@@ -12790,6 +12885,8 @@ def rate_overrides():
             <td>{r[2]} - {r[3]} mins</td>
             <td>{r[4]}</td>
             <td>${r[5]}</td>
+            <td>{class_size_label}</td>
+            <td>{r[8]}</td>
             <td>{active}</td>
         </tr>
         """
@@ -12871,6 +12968,8 @@ def rate_overrides():
                     <th>Course</th>
                     <th>Billing Method</th>
                     <th>Teacher Pay / Rate</th>
+                    <th>Class Size</th>
+                    <th>Notes</th>
                     <th>Status</th>
                 </tr>
                 {teacher_rows}
@@ -12911,6 +13010,9 @@ def add_teacher_course_rate():
         course_type_id = request.form.get("course_type_id")
         teacher_billing_method = request.form.get("teacher_billing_method")
         teacher_pay = request.form.get("teacher_pay")
+        class_size_min = request.form.get("class_size_min") or None
+        class_size_max = request.form.get("class_size_max") or None
+        notes = request.form.get("notes")
         active = request.form.get("active")
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -12921,16 +13023,22 @@ def add_teacher_course_rate():
             course_type_id,
             teacher_billing_method,
             teacher_pay,
+            class_size_min,
+            class_size_max,
+            notes,
             active,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             teacher_name,
             course_type_id,
             teacher_billing_method,
             teacher_pay,
+            class_size_min,
+            class_size_max,
+            notes,
             int(active or 1),
             now,
             now
@@ -12968,6 +13076,12 @@ def add_teacher_course_rate():
 
     return f"""
     <h1>Add Teacher Course Rate</h1>
+    <p>
+        Use this for three cases:
+        1. Stable private lesson pay, usually hourly.
+        2. Group pay that changes by class size, usually per lesson.
+        3. Flexible custom program pay, either hourly or per lesson.
+    </p>
 
     <form method="POST">
 
@@ -12983,12 +13097,19 @@ def add_teacher_course_rate():
 
         Teacher Billing Method:<br>
         <select name="teacher_billing_method">
-            <option value="Per Lesson">Per Lesson</option>
             <option value="Hourly">Hourly</option>
+            <option value="Per Lesson">Per Lesson</option>
         </select><br><br>
 
         Teacher Pay / Rate:<br>
         <input type="number" step="0.01" name="teacher_pay" required><br><br>
+
+        Class Size Range (optional, for group rules):<br>
+        <input type="number" name="class_size_min" placeholder="Min students, e.g. 2"><br>
+        <input type="number" name="class_size_max" placeholder="Max students, e.g. 4"><br><br>
+
+        Notes:<br>
+        <textarea name="notes" rows="4" cols="50" placeholder="Example: private hourly default, group 3-4 students per lesson, or flexible custom program."></textarea><br><br>
 
         Active:<br>
         <select name="active">
@@ -13164,7 +13285,7 @@ def get_teacher_rate_card(teacher_name):
     return None
 
 
-def get_final_pricing(student_name, teacher_name, course_type_id):
+def get_final_pricing(student_name, teacher_name, course_type_id, class_size=None):
     ensure_v18c_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -13219,7 +13340,51 @@ def get_final_pricing(student_name, teacher_name, course_type_id):
         student_billing_method = student_override[0]
         student_price = student_override[1]
 
-    # Teacher Rate Card override
+    # Teacher course-specific override. Class-size-specific rows win first.
+    try:
+        class_size_value = int(class_size) if class_size not in (None, "") else None
+    except:
+        class_size_value = None
+
+    if class_size_value:
+        cursor.execute("""
+        SELECT teacher_billing_method, teacher_pay
+        FROM teacher_course_rates
+        WHERE teacher_name = ?
+        AND course_type_id = ?
+        AND active = 1
+        AND (
+            (class_size_min IS NULL AND class_size_max IS NULL)
+            OR (
+                COALESCE(class_size_min, 0) <= ?
+                AND COALESCE(class_size_max, 999) >= ?
+            )
+        )
+        ORDER BY
+            CASE WHEN class_size_min IS NOT NULL OR class_size_max IS NOT NULL THEN 0 ELSE 1 END,
+            id DESC
+        LIMIT 1
+        """, (teacher_name, course_type_id, class_size_value, class_size_value))
+    else:
+        cursor.execute("""
+        SELECT teacher_billing_method, teacher_pay
+        FROM teacher_course_rates
+        WHERE teacher_name = ?
+        AND course_type_id = ?
+        AND active = 1
+        AND class_size_min IS NULL
+        AND class_size_max IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """, (teacher_name, course_type_id))
+
+    teacher_course_rate = cursor.fetchone()
+
+    if teacher_course_rate:
+        teacher_billing_method = teacher_course_rate[0]
+        teacher_pay = teacher_course_rate[1]
+
+    # Teacher Rate Card override. This is the general fallback when no course-specific rate exists.
     cursor.execute("""
     SELECT billing_method, rate
     FROM teacher_rate_cards
@@ -13231,7 +13396,7 @@ def get_final_pricing(student_name, teacher_name, course_type_id):
 
     teacher_rate_card = cursor.fetchone()
 
-    if teacher_rate_card:
+    if teacher_rate_card and not teacher_course_rate:
         teacher_billing_method = teacher_rate_card[0]
         teacher_pay = teacher_rate_card[1]
 
