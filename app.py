@@ -2,9 +2,11 @@ from flask import Flask, request, redirect, session, Response, send_from_directo
 import sqlite3
 import os
 import smtplib
+import calendar as calendar_lib
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
+from urllib.parse import urlencode
 
 from openai import OpenAI
 
@@ -2248,11 +2250,58 @@ H-Music
 
 @app.route("/calendar")
 def calendar():
+    selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
+    selected_teacher = (request.args.get("teacher") or "").strip()
+    selected_student = (request.args.get("student") or "").strip()
+
+    try:
+        month_start = datetime.strptime(selected_month + "-01", "%Y-%m-%d").date()
+    except:
+        month_start = date.today().replace(day=1)
+        selected_month = month_start.strftime("%Y-%m")
+
+    _, last_day = calendar_lib.monthrange(month_start.year, month_start.month)
+    month_end = month_start.replace(day=last_day)
+    prev_month = (month_start - timedelta(days=1)).replace(day=1).strftime("%Y-%m")
+    next_month = (month_end + timedelta(days=1)).replace(day=1).strftime("%Y-%m")
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     cursor.execute("""
+    SELECT DISTINCT teacher
+    FROM schedule
+    WHERE teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher
+    """)
+    teacher_options_data = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT DISTINCT student_name
+    FROM schedule
+    WHERE student_name IS NOT NULL
+    AND student_name != ''
+    ORDER BY student_name
+    """)
+    student_options_data = cursor.fetchall()
+
+    where_clauses = ["lesson_date BETWEEN ? AND ?"]
+    params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
+
+    if selected_teacher:
+        where_clauses.append("teacher = ?")
+        params.append(selected_teacher)
+
+    if selected_student:
+        where_clauses.append("student_name = ?")
+        params.append(selected_student)
+
+    where_sql = " AND ".join(where_clauses)
+
+    cursor.execute("""
     SELECT
+        id,
         lesson_date,
         lesson_time,
         student_name,
@@ -2260,25 +2309,83 @@ def calendar():
         classroom,
         weekday,
         schedule_type,
-        package_type
+        package_type,
+        COALESCE(status, 'scheduled')
     FROM schedule
+    WHERE """ + where_sql + """
     ORDER BY lesson_date, lesson_time
-    """)
+    """, params)
 
     schedules = cursor.fetchall()
     conn.close()
 
-    rows = ""
+    teacher_options = '<option value="">All Teachers</option>'
+    for t in teacher_options_data:
+        selected = "selected" if t[0] == selected_teacher else ""
+        teacher_options += f'<option value="{escape(str(t[0]))}" {selected}>{escape(str(t[0]))}</option>'
 
+    student_options = '<option value="">All Students</option>'
+    for s in student_options_data:
+        selected = "selected" if s[0] == selected_student else ""
+        student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
+
+    events_by_date = {}
     for item in schedules:
-        lesson_date = item[0]
-        lesson_time = item[1]
-        student_name = item[2]
-        teacher = item[3]
-        classroom = item[4]
-        weekday = item[5]
-        schedule_type = item[6]
-        package_type = item[7]
+        events_by_date.setdefault(item[1], []).append(item)
+
+    status_class = {
+        "scheduled": "scheduled",
+        "present": "present",
+        "no_show": "no-show",
+        "cancelled": "cancelled",
+        "cancel_3h": "cancelled",
+        "cancel_12h": "cancelled",
+        "cancel_24h": "cancelled",
+        "excused_24h": "excused",
+        "teacher_cancelled": "excused",
+        "makeup": "makeup",
+    }
+
+    month_label = month_start.strftime("%B %Y")
+    calendar_weeks = calendar_lib.Calendar(firstweekday=0).monthdatescalendar(month_start.year, month_start.month)
+
+    calendar_html = ""
+    for week in calendar_weeks:
+        calendar_html += "<tr>"
+        for day_obj in week:
+            date_key = day_obj.strftime("%Y-%m-%d")
+            muted = "muted-day" if day_obj.month != month_start.month else ""
+            today_class = "today" if day_obj == date.today() else ""
+            event_cards = ""
+            for event in events_by_date.get(date_key, []):
+                event_status = event[9] or "scheduled"
+                css_status = status_class.get(event_status, "scheduled")
+                event_cards += f"""
+                <div class="event {css_status}">
+                    <div class="event-main">{escape(str(event[2] or ""))} {escape(str(event[3] or ""))}</div>
+                    <div class="event-sub">{escape(str(event[4] or ""))} · {escape(str(event[5] or ""))}</div>
+                    <div class="event-status">{escape(str(event_status))}</div>
+                </div>
+                """
+            calendar_html += f"""
+            <td class="{muted} {today_class}">
+                <div class="day-number">{day_obj.day}</div>
+                {event_cards}
+            </td>
+            """
+        calendar_html += "</tr>"
+
+    rows = ""
+    for item in schedules:
+        lesson_date = item[1]
+        lesson_time = item[2]
+        student_name = item[3]
+        teacher = item[4]
+        classroom = item[5]
+        weekday = item[6]
+        schedule_type = item[7]
+        package_type = item[8]
+        status = item[9]
 
         rows += f"""
         <tr>
@@ -2290,18 +2397,34 @@ def calendar():
             <td>{classroom}</td>
             <td>{schedule_type}</td>
             <td>{package_type}</td>
+            <td>{status}</td>
         </tr>
         """
+
+    if not rows:
+        rows = "<tr><td colspan='9'>No lessons found for this filter.</td></tr>"
+
+    prev_query = urlencode({
+        "month": prev_month,
+        "teacher": selected_teacher,
+        "student": selected_student
+    })
+    next_query = urlencode({
+        "month": next_month,
+        "teacher": selected_teacher,
+        "student": selected_student
+    })
 
     return f"""
     <html>
     <head>
-        <title>Calendar</title>
+        <title>Owner Calendar</title>
         <style>
             body {{
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 background: #f7f7fb;
                 padding: 40px;
+                color: #111827;
             }}
 
             .container {{
@@ -2314,17 +2437,160 @@ def calendar():
             h1 {{
                 margin-bottom: 20px;
             }}
+            .topbar {{
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                align-items: flex-start;
+                flex-wrap: wrap;
+                margin-bottom: 18px;
+            }}
 
             a.button {{
                 display: inline-block;
                 background: #5b5cff;
                 color: white;
                 padding: 10px 16px;
-                border-radius: 6px;
+                border-radius: 8px;
                 text-decoration: none;
                 margin-right: 10px;
                 font-weight: bold;
             }}
+            a.button.dark {{
+                background: #111827;
+            }}
+            .filters {{
+                display: grid;
+                grid-template-columns: 180px 1fr 1fr auto;
+                gap: 12px;
+                align-items: end;
+                background: #f8f8ff;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 14px;
+                margin: 18px 0 22px;
+            }}
+            label {{
+                font-size: 13px;
+                color: #6b7280;
+                font-weight: 700;
+            }}
+            input, select {{
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px 12px;
+                min-height: 44px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 15px;
+                background: white;
+            }}
+            button {{
+                min-height: 44px;
+                padding: 10px 16px;
+                border: none;
+                border-radius: 8px;
+                background: #111827;
+                color: white;
+                font-weight: 800;
+            }}
+            .month-nav {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin: 16px 0;
+            }}
+            .month-title {{
+                font-size: 34px;
+                font-weight: 900;
+            }}
+            .legend {{
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                color: #4b5563;
+                font-size: 14px;
+                margin-bottom: 12px;
+            }}
+            .dot {{
+                display:inline-block;
+                width: 10px;
+                height: 10px;
+                border-radius: 999px;
+                margin-right: 6px;
+            }}
+            .calendar-grid {{
+                width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+                table-layout: fixed;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                overflow: hidden;
+                margin-bottom: 26px;
+            }}
+            .calendar-grid th {{
+                background: #f8fafc;
+                color: #111827;
+                text-align: center;
+                padding: 12px 8px;
+                border-bottom: 1px solid #e5e7eb;
+            }}
+            .calendar-grid td {{
+                vertical-align: top;
+                height: 145px;
+                padding: 10px;
+                border-right: 1px solid #e5e7eb;
+                border-bottom: 1px solid #e5e7eb;
+                background: white;
+            }}
+            .calendar-grid td:last-child {{
+                border-right: none;
+            }}
+            .day-number {{
+                font-weight: 900;
+                margin-bottom: 7px;
+            }}
+            .muted-day {{
+                background: #f9fafb !important;
+                color: #9ca3af;
+            }}
+            .today .day-number {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                border-radius: 999px;
+                padding: 2px 8px;
+            }}
+            .event {{
+                border-left: 4px solid #3b82f6;
+                background: #eff6ff;
+                border-radius: 8px;
+                padding: 7px 8px;
+                margin: 6px 0;
+                overflow: hidden;
+            }}
+            .event-main {{
+                font-weight: 900;
+                font-size: 13px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }}
+            .event-sub, .event-status {{
+                color: #6b7280;
+                font-size: 12px;
+                line-height: 1.25;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }}
+            .present {{ border-left-color: #16a34a; background: #ecfdf5; }}
+            .no-show {{ border-left-color: #dc2626; background: #fef2f2; }}
+            .cancelled {{ border-left-color: #f59e0b; background: #fffbeb; }}
+            .excused {{ border-left-color: #9ca3af; background: #f3f4f6; }}
+            .makeup {{ border-left-color: #8b5cf6; background: #f5f3ff; }}
 
             table {{
                 width: 100%;
@@ -2345,18 +2611,80 @@ def calendar():
             tr:hover {{
                 background: #fafafa;
             }}
+            .list-title {{
+                margin-top: 28px;
+            }}
+            @media (max-width: 900px) {{
+                body {{ padding: 16px; }}
+                .container {{ padding: 18px; }}
+                .filters {{ grid-template-columns: 1fr; }}
+                .calendar-grid {{ display: block; overflow-x: auto; }}
+                .calendar-grid table {{ min-width: 900px; }}
+                .month-title {{ font-size: 26px; }}
+                table {{ display:block; overflow-x:auto; }}
+            }}
         </style>
     </head>
 
     <body>
         <div class="container">
-            <h1>Calendar V2</h1>
+            <div class="topbar">
+                <div>
+                    <h1>Owner Calendar</h1>
+                    <div>Filter by teacher or student to see only the calendar you need.</div>
+                </div>
+                <div>
+                    <a class="button dark" href="/">Home</a>
+                    <a class="button" href="/add_schedule">Add Schedule</a>
+                    <a class="button" href="/room_schedule">Room Schedule</a>
+                    <a class="button" href="/owner_dashboard">Owner Dashboard</a>
+                </div>
+            </div>
 
-            <a class="button" href="/">Home</a>
-            <a class="button" href="/add_schedule">Add Schedule</a>
-            <a class="button" href="/room_schedule">Room Schedule</a>
-            <a class="button" href="/owner_dashboard">Owner Dashboard</a>
+            <form class="filters" method="GET" action="/calendar">
+                <div>
+                    <label>Month</label>
+                    <input type="month" name="month" value="{selected_month}">
+                </div>
+                <div>
+                    <label>Teacher</label>
+                    <select name="teacher">{teacher_options}</select>
+                </div>
+                <div>
+                    <label>Student</label>
+                    <select name="student">{student_options}</select>
+                </div>
+                <button type="submit">View</button>
+            </form>
 
+            <div class="month-nav">
+                <a class="button dark" href="/calendar?{prev_query}">Prev</a>
+                <div class="month-title">{month_label}</div>
+                <a class="button dark" href="/calendar?{next_query}">Next</a>
+            </div>
+
+            <div class="legend">
+                <span><span class="dot" style="background:#3b82f6"></span>Scheduled</span>
+                <span><span class="dot" style="background:#16a34a"></span>Present</span>
+                <span><span class="dot" style="background:#dc2626"></span>No Show</span>
+                <span><span class="dot" style="background:#f59e0b"></span>Cancelled</span>
+                <span><span class="dot" style="background:#9ca3af"></span>Excused</span>
+            </div>
+
+            <table class="calendar-grid">
+                <tr>
+                    <th>Mon</th>
+                    <th>Tue</th>
+                    <th>Wed</th>
+                    <th>Thu</th>
+                    <th>Fri</th>
+                    <th>Sat</th>
+                    <th>Sun</th>
+                </tr>
+                {calendar_html}
+            </table>
+
+            <h2 class="list-title">List View</h2>
             <table>
                 <tr>
                     <th>Date</th>
@@ -2367,6 +2695,7 @@ def calendar():
                     <th>Room</th>
                     <th>Type</th>
                     <th>Package</th>
+                    <th>Status</th>
                 </tr>
                 {rows}
             </table>
