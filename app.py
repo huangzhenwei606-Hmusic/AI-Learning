@@ -4126,10 +4126,11 @@ def teacher_dashboard():
 
             .lesson {{
                 border-radius: 7px;
-                padding: 4px 6px;
-                margin-bottom: 4px;
+                padding: 5px 6px;
+                margin-bottom: 5px;
                 font-size: 10px;
-                border-left: 4px solid #3b82f6;
+                border-left: 8px solid #3b82f6;
+                box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.04);
                 background: #eff6ff;
             }}
 
@@ -4299,8 +4300,9 @@ def teacher_dashboard():
 
                 .lesson {{
                     font-size: 9px;
-                    padding: 5px 6px;
+                    padding: 6px 7px;
                     margin-bottom: 5px;
+                    border-left-width: 8px;
                 }}
 
                 .lesson-time,
@@ -6332,7 +6334,11 @@ def ensure_v28_schema():
         ("requested_classroom", "requested_classroom TEXT"),
         ("requested_slot_source", "requested_slot_source TEXT"),
         ("approved_teacher", "approved_teacher TEXT"),
-        ("approved_classroom", "approved_classroom TEXT")
+        ("approved_classroom", "approved_classroom TEXT"),
+        ("backup_date_2", "backup_date_2 TEXT"),
+        ("backup_time_2", "backup_time_2 TEXT"),
+        ("backup_date_3", "backup_date_3 TEXT"),
+        ("backup_time_3", "backup_time_3 TEXT")
     ]:
         if column_name not in existing_columns:
             cursor.execute(f"ALTER TABLE reschedule_requests ADD COLUMN {column_sql}")
@@ -6367,6 +6373,26 @@ def time_text_from_minutes(minutes):
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours:02d}:{mins:02d}"
+
+
+def format_display_time(time_text):
+    parsed = parse_lesson_time_value(time_text)
+    if not parsed:
+        return time_text or ""
+    return parsed.strftime("%I:%M%p").lstrip("0")
+
+
+def format_lesson_time_range(time_text, duration_minutes=None):
+    start_minutes = minutes_from_time_text(time_text)
+    if start_minutes is None:
+        return time_text or ""
+    try:
+        duration = int(float(duration_minutes or 30))
+    except (TypeError, ValueError):
+        duration = 30
+    start_label = format_display_time(time_text)
+    end_label = format_display_time(time_text_from_minutes(start_minutes + duration))
+    return f"{start_label}-{end_label}"
 
 
 def ensure_v282_schema():
@@ -8370,6 +8396,10 @@ def parent_reschedule():
         preferred_slot = request.form.get("preferred_slot")
         requested_date = request.form.get("requested_date")
         requested_time = request.form.get("requested_time")
+        backup_date_2 = request.form.get("backup_date_2")
+        backup_time_2 = request.form.get("backup_time_2")
+        backup_date_3 = request.form.get("backup_date_3")
+        backup_time_3 = request.form.get("backup_time_3")
         reason = request.form.get("reason")
         requested_teacher = None
         requested_classroom = None
@@ -8385,7 +8415,8 @@ def parent_reschedule():
                 requested_slot_source = slot_parts[4] if len(slot_parts) >= 5 else None
 
         if not preferred_slot and (not requested_date or not requested_time):
-            return "<h1>Please choose an open slot or enter a backup requested date and time.</h1>"
+            requested_date = requested_date or ""
+            requested_time = requested_time or ""
 
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
@@ -8432,12 +8463,16 @@ def parent_reschedule():
             requested_teacher,
             requested_classroom,
             requested_slot_source,
+            backup_date_2,
+            backup_time_2,
+            backup_date_3,
+            backup_time_3,
             reason,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             parent_id,
             student_name,
@@ -8451,6 +8486,10 @@ def parent_reschedule():
             requested_teacher,
             requested_classroom,
             requested_slot_source,
+            backup_date_2,
+            backup_time_2,
+            backup_date_3,
+            backup_time_3,
             reason,
             "pending",
             now,
@@ -8469,10 +8508,20 @@ def parent_reschedule():
             schedule_id
         )
 
+        backup_summary = []
+        for label, backup_date, backup_time in [
+            ("Backup 1", requested_date, requested_time),
+            ("Backup 2", backup_date_2, backup_time_2),
+            ("Backup 3", backup_date_3, backup_time_3),
+        ]:
+            if backup_date or backup_time:
+                backup_summary.append(f"{label}: {backup_date or 'any date'} {backup_time or 'any time'}")
+        backup_summary_text = "; ".join(backup_summary) if backup_summary else "No backup times provided."
+
         create_reschedule_message_event(
             request_id,
             "submitted",
-            f"{student_name} requested a reschedule from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}.{last_minute_note} Reason: {reason or ''}",
+            f"{student_name} requested a reschedule from {lesson[2]} {lesson[3]}. Preferred: {requested_date or 'not specified'} {requested_time or ''}. {backup_summary_text}{last_minute_note} Reason: {reason or ''}",
             parent_id=parent_id,
             student_name=student_name,
             teacher_name=lesson[4]
@@ -8488,7 +8537,7 @@ def parent_reschedule():
         <h1>Reschedule Request Submitted</h1>
         <p>Request #{request_id}</p>
         <p>Student: {student_name}</p>
-        <p>Requested Time: {requested_date} {requested_time}</p>
+        <p>Requested Time: {requested_date or 'Not specified'} {requested_time or ''}</p>
         {warning_html}
         <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
         """
@@ -8576,6 +8625,9 @@ def parent_reschedule():
             table {{ width:100%; border-collapse:collapse; margin-top:16px; }}
             th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
             th {{ background:#eeeeff; }}
+            .backup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:8px; }}
+            .backup-title {{ font-weight:900; margin:14px 0 4px; }}
+            .hint {{ color:#6b7280; font-size:13px; margin-top:-4px; }}
             .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
             .parent-bottom-nav {{
                 position: fixed; left: 0; right: 0; bottom: 0;
@@ -8588,6 +8640,7 @@ def parent_reschedule():
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
             @media (max-width:760px) {{
                 table {{ display:block; overflow-x:auto; font-size:12px; }}
+                .backup-grid {{ grid-template-columns:1fr; gap:0; }}
                 .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
                 .form-actions button, .form-actions a {{ text-align:center; }}
             }}
@@ -8613,11 +8666,42 @@ def parent_reschedule():
                     {open_slot_options}
                 </select>
 
-                Backup Requested Date:<br>
-                <input type="date" name="requested_date">
+                <div class="backup-title">Backup Option 1</div>
+                <div class="hint">Optional if you selected an open slot.</div>
+                <div class="backup-grid">
+                    <div>
+                        Backup Requested Date:<br>
+                        <input type="date" name="requested_date">
+                    </div>
+                    <div>
+                        Backup Requested Time:<br>
+                        <input type="time" name="requested_time">
+                    </div>
+                </div>
 
-                Backup Requested Time:<br>
-                <input type="time" name="requested_time">
+                <div class="backup-title">Backup Option 2</div>
+                <div class="backup-grid">
+                    <div>
+                        Backup Requested Date:<br>
+                        <input type="date" name="backup_date_2">
+                    </div>
+                    <div>
+                        Backup Requested Time:<br>
+                        <input type="time" name="backup_time_2">
+                    </div>
+                </div>
+
+                <div class="backup-title">Backup Option 3</div>
+                <div class="backup-grid">
+                    <div>
+                        Backup Requested Date:<br>
+                        <input type="date" name="backup_date_3">
+                    </div>
+                    <div>
+                        Backup Requested Time:<br>
+                        <input type="time" name="backup_time_3">
+                    </div>
+                </div>
 
                 Reason:<br>
                 <textarea name="reason" rows="4"></textarea>
@@ -9130,7 +9214,11 @@ def reschedule_request_detail(request_id):
         requested_classroom,
         requested_slot_source,
         approved_teacher,
-        approved_classroom
+        approved_classroom,
+        backup_date_2,
+        backup_time_2,
+        backup_date_3,
+        backup_time_3
     FROM reschedule_requests
     WHERE id = ?
     """, (request_id,))
@@ -9150,6 +9238,9 @@ def reschedule_request_detail(request_id):
     requested_teacher = r[16] or r[6]
     requested_classroom = r[17] or r[7]
     requested_slot_source = r[18] or "backup"
+    backup_option_1 = f"{r[8] or ''} {r[9] or ''}".strip() or "Not provided"
+    backup_option_2 = f"{r[21] or ''} {r[22] or ''}".strip() or "Not provided"
+    backup_option_3 = f"{r[23] or ''} {r[24] or ''}".strip() or "Not provided"
 
     for t in teacher_rows:
         selected = "selected" if t[0] == requested_teacher else ""
@@ -9219,6 +9310,9 @@ def reschedule_request_detail(request_id):
                 <div class="card"><div class="label">Preferred Teacher</div><div class="value">{requested_teacher or ''}</div></div>
                 <div class="card"><div class="label">Preferred Room</div><div class="value">{requested_classroom or ''}</div></div>
                 <div class="card"><div class="label">Slot Source</div><div class="value">{requested_slot_source}</div></div>
+                <div class="card"><div class="label">Backup Option 1</div><div class="value">{backup_option_1}</div></div>
+                <div class="card"><div class="label">Backup Option 2</div><div class="value">{backup_option_2}</div></div>
+                <div class="card"><div class="label">Backup Option 3</div><div class="value">{backup_option_3}</div></div>
             </div>
 
             <p><b>Reason:</b> {r[10] or ''}</p>
@@ -9793,7 +9887,14 @@ def parent_dashboard():
     today = date.today().strftime("%Y-%m-%d")
 
     cursor.execute("""
-    SELECT lesson_date, lesson_time, teacher, classroom, status
+    SELECT
+        lesson_date,
+        lesson_time,
+        teacher,
+        classroom,
+        COALESCE(location, ''),
+        COALESCE(duration, 30),
+        status
     FROM schedule
     WHERE student_name = ?
     AND lesson_date >= ?
@@ -9871,13 +9972,15 @@ def parent_dashboard():
 
     upcoming_rows = ""
     for l in upcoming_lessons:
+        time_range = format_lesson_time_range(l[1], l[5])
+        location_room = " / ".join([part for part in [l[4], l[3]] if part])
         upcoming_rows += f"""
         <tr>
             <td>{l[0]}</td>
-            <td>{l[1]}</td>
+            <td>{time_range}</td>
             <td>{l[2]}</td>
-            <td>{l[3]}</td>
-            <td>{l[4] or "scheduled"}</td>
+            <td>{location_room or "TBD"}</td>
+            <td>{l[6] or "scheduled"}</td>
         </tr>
         """
 
@@ -10270,7 +10373,7 @@ def parent_dashboard():
                     <th>Date</th>
                     <th>Time</th>
                     <th>Teacher</th>
-                    <th>Room</th>
+                    <th>Location / Room</th>
                     <th>Status</th>
                 </tr>
                 {upcoming_rows}
@@ -18394,6 +18497,7 @@ def ensure_base_schema():
         lesson_time TEXT,
         classroom TEXT,
         location TEXT,
+        duration INTEGER,
         notes TEXT,
         schedule_type TEXT,
         total_lessons INTEGER,
@@ -18490,6 +18594,11 @@ def ensure_base_schema():
         ("Room 3",),
         ("Trial Room",),
     ])
+
+    cursor.execute("PRAGMA table_info(schedule)")
+    schedule_columns = [row[1] for row in cursor.fetchall()]
+    if "duration" not in schedule_columns:
+        cursor.execute("ALTER TABLE schedule ADD COLUMN duration INTEGER")
 
     conn.commit()
     conn.close()
