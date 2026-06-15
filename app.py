@@ -2250,6 +2250,8 @@ H-Music
 
 @app.route("/calendar")
 def calendar():
+    ensure_v321_schema()
+
     selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
     selected_teacher = (request.args.get("teacher") or "").strip()
     selected_student = (request.args.get("student") or "").strip()
@@ -2286,34 +2288,37 @@ def calendar():
     """)
     student_options_data = cursor.fetchall()
 
-    where_clauses = ["lesson_date BETWEEN ? AND ?"]
+    where_clauses = ["s.lesson_date BETWEEN ? AND ?"]
     params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
 
     if selected_teacher:
-        where_clauses.append("teacher = ?")
+        where_clauses.append("s.teacher = ?")
         params.append(selected_teacher)
 
     if selected_student:
-        where_clauses.append("student_name = ?")
+        where_clauses.append("s.student_name = ?")
         params.append(selected_student)
 
     where_sql = " AND ".join(where_clauses)
 
     cursor.execute("""
     SELECT
-        id,
-        lesson_date,
-        lesson_time,
-        student_name,
-        teacher,
-        classroom,
-        weekday,
-        schedule_type,
-        package_type,
-        COALESCE(status, 'scheduled')
-    FROM schedule
+        s.id,
+        s.lesson_date,
+        s.lesson_time,
+        s.student_name,
+        s.teacher,
+        s.classroom,
+        s.weekday,
+        s.schedule_type,
+        s.package_type,
+        COALESCE(s.status, 'scheduled'),
+        c.display_color
+    FROM schedule s
+    LEFT JOIN course_types c
+        ON s.course_type_id = c.id
     WHERE """ + where_sql + """
-    ORDER BY lesson_date, lesson_time
+    ORDER BY s.lesson_date, s.lesson_time
     """, params)
 
     schedules = cursor.fetchall()
@@ -2360,8 +2365,10 @@ def calendar():
             for event in events_by_date.get(date_key, []):
                 event_status = event[9] or "scheduled"
                 css_status = status_class.get(event_status, "scheduled")
+                event_color = event[10] or "#3b82f6"
+                event_style = f'style="border-left-color:{event_color};"' if css_status == "scheduled" else ""
                 event_cards += f"""
-                <div class="event {css_status}">
+                <div class="event {css_status}" {event_style}>
                     <div class="event-main">{escape(str(event[2] or ""))} {escape(str(event[3] or ""))}</div>
                     <div class="event-sub">{escape(str(event[4] or ""))} · {escape(str(event[5] or ""))}</div>
                     <div class="event-status">{escape(str(event_status))}</div>
@@ -3674,6 +3681,8 @@ def teacher_dashboard():
     if session.get("user_role") != "teacher":
         return redirect("/teacher_login")
 
+    ensure_v321_schema()
+
     teacher_name = session.get("teacher_name")
     unread_messages = get_unread_message_count("teacher", teacher_name)
     message_label = f"Messages ({unread_messages})" if unread_messages else "Messages"
@@ -3693,6 +3702,7 @@ def teacher_dashboard():
     if view == "week":
         payroll_start = week_start.strftime("%Y-%m-%d")
         payroll_end = week_end.strftime("%Y-%m-%d")
+        dashboard_return_url = f"/teacher_dashboard?{urlencode({'view': 'week', 'week': week_start.strftime('%Y-%m-%d')})}"
     else:
         month_year = int(selected_month[:4])
         month_num = int(selected_month[5:7])
@@ -3703,17 +3713,20 @@ def teacher_dashboard():
             payroll_end_obj = date(month_year, month_num + 1, 1) - timedelta(days=1)
         payroll_start = payroll_start_obj.strftime("%Y-%m-%d")
         payroll_end = payroll_end_obj.strftime("%Y-%m-%d")
+        dashboard_return_url = f"/teacher_dashboard?{urlencode({'view': 'month', 'month': selected_month})}"
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     if view == "week":
         cursor.execute("""
-        SELECT id, lesson_date, lesson_time, student_name, classroom, status
-        FROM schedule
-        WHERE teacher = ?
-        AND lesson_date >= ?
-        AND lesson_date <= ?
+        SELECT s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status, c.display_color
+        FROM schedule s
+        LEFT JOIN course_types c
+            ON s.course_type_id = c.id
+        WHERE s.teacher = ?
+        AND s.lesson_date >= ?
+        AND s.lesson_date <= ?
         ORDER BY lesson_date, lesson_time
         """, (
             teacher_name,
@@ -3722,10 +3735,12 @@ def teacher_dashboard():
         ))
     else:
         cursor.execute("""
-        SELECT id, lesson_date, lesson_time, student_name, classroom, status
-        FROM schedule
-        WHERE teacher = ?
-        AND lesson_date LIKE ?
+        SELECT s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status, c.display_color
+        FROM schedule s
+        LEFT JOIN course_types c
+            ON s.course_type_id = c.id
+        WHERE s.teacher = ?
+        AND s.lesson_date LIKE ?
         ORDER BY lesson_date, lesson_time
         """, (teacher_name, selected_month + "%"))
 
@@ -3766,10 +3781,12 @@ def teacher_dashboard():
         student_name = lesson[3]
         room = lesson[4]
         status = lesson[5] or "scheduled"
+        display_color = lesson[6] or "#3b82f6"
         cls = status_class(status)
+        lesson_style = f'style="border-left-color:{display_color};"' if cls == "scheduled" else ""
 
         return f"""
-        <div class="lesson {cls}">
+        <div class="lesson {cls}" {lesson_style}>
             <div class="lesson-main">
                 <span class="lesson-time">{lesson_time}</span>
                 <span class="lesson-student">{student_name}</span>
@@ -3779,6 +3796,7 @@ def teacher_dashboard():
 
             <form method="POST" action="/update_lesson_status" class="status-form">
                 <input type="hidden" name="schedule_id" value="{lesson_id}">
+                <input type="hidden" name="return_to" value="{escape(dashboard_return_url)}">
             <select name="status">
                 <option value="present">Present</option>
                 <option value="no_show">No Show</option>
@@ -4332,8 +4350,8 @@ def teacher_dashboard():
                 </div>
 
                 <div class="controls">
-                    <a class="tab {'active' if view == 'month' else ''}" href="/teacher_dashboard?view=month">Month</a>
-                    <a class="tab {'active' if view == 'week' else ''}" href="/teacher_dashboard?view=week">Week</a>
+                    <a class="tab {'active' if view == 'month' else ''}" href="/teacher_dashboard?view=month&month={selected_month}">Month</a>
+                    <a class="tab {'active' if view == 'week' else ''}" href="/teacher_dashboard?view=week&week={week_start.strftime('%Y-%m-%d')}">Week</a>
                     <a class="tab" href="/teacher_sub_request">Sub Request</a>
                     <a class="tab" href="/teacher_reschedule">Reschedule</a>
                     <a class="tab" href="/teacher_messages">{message_label}</a>
@@ -4806,6 +4824,9 @@ def update_lesson_status():
 
     schedule_id = request.form.get("schedule_id")
     status = request.form.get("status")
+    return_to = request.form.get("return_to") or "/teacher_dashboard"
+    if not return_to.startswith("/teacher_dashboard"):
+        return_to = "/teacher_dashboard"
 
     result = apply_lesson_status(
         schedule_id,
@@ -4820,7 +4841,7 @@ def update_lesson_status():
         <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
         """
 
-    return redirect("/teacher_dashboard")
+    return redirect(return_to)
 
 @app.route("/invoices")
 def invoices():
@@ -5003,9 +5024,10 @@ def pay_invoice(invoice_id):
             payment_date,
             enrollment_id,
             package_name,
-            notes
+            notes,
+            visible_to_parent
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             student_name,
             amount,
@@ -5014,7 +5036,8 @@ def pay_invoice(invoice_id):
             payment_date,
             enrollment_id,
             "Tuition Invoice",
-            f"Invoice #{invoice_id} paid"
+            f"Invoice #{invoice_id} paid",
+            1
         ))
 
         payment_id = cursor.lastrowid
@@ -9728,6 +9751,7 @@ def parent_dashboard():
     unread_messages = get_unread_message_count("parent", parent_id) if parent_id else 0
     message_label = f"Messages ({unread_messages})" if unread_messages else "Messages"
     linked_students = get_parent_students(parent_id) if parent_id else []
+    payment_notice = request.args.get("payment_notice")
 
     requested_student = request.args.get("student_name")
     current_student = session.get("parent_student_name")
@@ -9801,6 +9825,8 @@ def parent_dashboard():
     SELECT payment_date, amount, lessons_added, payment_method
     FROM payments
     WHERE student_name = ?
+    AND COALESCE(visible_to_parent, 1) = 1
+    AND COALESCE(payment_method, '') != 'Not Recorded'
     ORDER BY id DESC
     LIMIT 10
     """, (current_student,))
@@ -9897,6 +9923,14 @@ def parent_dashboard():
         invoice_rows = "<tr><td colspan='6'>No invoices yet. If this is a new enrollment, the owner can create a tuition invoice from the enrollment page.</td></tr>"
 
     tuition_alert = ""
+    notice_alert = ""
+    if payment_notice == "sent":
+        notice_alert = """
+        <div class="notice-alert">
+            Payment notice sent. The owner will confirm after payment is received.
+        </div>
+        """
+
     if tuition_due_count:
         tuition_alert = f"""
         <div class="tuition-alert">
@@ -10036,6 +10070,15 @@ def parent_dashboard():
                 border-radius: 10px;
                 padding: 14px 16px;
                 margin: 18px 0;
+            }}
+            .notice-alert {{
+                background: #ecfdf5;
+                border: 1px solid #bbf7d0;
+                color: #166534;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 18px 0;
+                font-weight: 800;
             }}
             .tuition-alert a {{
                 background: #ea580c;
@@ -10189,6 +10232,7 @@ def parent_dashboard():
             </div>
 
             {tuition_alert}
+            {notice_alert}
 
             <div class="cards">
                 <div class="card">
@@ -10376,11 +10420,7 @@ def parent_invoice(invoice_id):
                 student_name=invoice[1],
                 amount=invoice[3]
             )
-            return f"""
-            <h1>Payment Notice Sent</h1>
-            <p>Thank you. The owner has a new unread message for invoice #{invoice_id} and can confirm it after payment is received.</p>
-            <p><a href="/parent_dashboard">Back to Parent App</a></p>
-            """
+            return redirect("/parent_dashboard?payment_notice=sent")
 
     conn.close()
 
@@ -12553,6 +12593,43 @@ def calculate_course_amount(billing_method, rate, duration_minutes):
     return round(rate, 2)
 
 
+COURSE_COLOR_PRESETS = [
+    ("#3b82f6", "Blue"),
+    ("#16a34a", "Green"),
+    ("#f59e0b", "Amber"),
+    ("#8b5cf6", "Purple"),
+    ("#ec4899", "Pink"),
+    ("#14b8a6", "Teal"),
+    ("#64748b", "Slate"),
+]
+
+
+def default_course_color(name="", duration=None, is_group=0):
+    course_name = (name or "").lower()
+    if is_group or "group" in course_name:
+        return "#16a34a"
+    if "trial" in course_name:
+        return "#f59e0b"
+    if "custom" in course_name:
+        return "#8b5cf6"
+    if str(duration) == "30":
+        return "#3b82f6"
+    if str(duration) == "45":
+        return "#14b8a6"
+    if str(duration) == "60":
+        return "#ec4899"
+    return "#64748b"
+
+
+def course_color_options(current_color=None):
+    current = current_color or "#3b82f6"
+    options = ""
+    for color, label in COURSE_COLOR_PRESETS:
+        selected = "selected" if color.lower() == str(current).lower() else ""
+        options += f'<option value="{color}" {selected}>{label} {color}</option>'
+    return options
+
+
 def ensure_v18_schema():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -12612,6 +12689,7 @@ def ensure_v18_schema():
     add_column_if_missing("schedule", "notes", "notes TEXT")
     add_column_if_missing("schedule", "group_size", "group_size INTEGER")
     add_column_if_missing("schedule", "group_student_names", "group_student_names TEXT")
+    add_column_if_missing("course_types", "display_color", "display_color TEXT")
 
     cursor.execute("SELECT COUNT(*) FROM course_types")
     existing_count = cursor.fetchone()[0]
@@ -12643,6 +12721,23 @@ def ensure_v18_schema():
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, preset_courses)
+
+    cursor.execute("""
+    SELECT id, name, duration, is_group
+    FROM course_types
+    WHERE display_color IS NULL
+    OR display_color = ''
+    """)
+    courses_without_color = cursor.fetchall()
+    for course in courses_without_color:
+        cursor.execute("""
+        UPDATE course_types
+        SET display_color = ?
+        WHERE id = ?
+        """, (
+            default_course_color(course[1], course[2], course[3]),
+            course[0]
+        ))
 
     conn.commit()
     conn.close()
@@ -12734,7 +12829,8 @@ def course_types():
         teacher_billing_method,
         teacher_pay,
         is_group,
-        active
+        active,
+        display_color
     FROM course_types
     ORDER BY active DESC, name, duration
     """)
@@ -12747,12 +12843,13 @@ def course_types():
     for c in courses:
         group_label = "Group" if c[7] == 1 else "Private/Single"
         active_label = "Active" if c[8] == 1 else "Inactive"
+        display_color = c[9] or default_course_color(c[1], c[2], c[7])
 
         student_example = calculate_course_amount(c[3], c[4], c[2])
         rows += f"""
         <tr>
             <td>{c[0]}</td>
-            <td><b>{c[1]}</b></td>
+            <td><span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:{display_color};margin-right:7px;vertical-align:-2px;"></span><b>{c[1]}</b></td>
             <td>{c[2]} mins</td>
             <td>{c[3]}</td>
             <td>${c[4]}</td>
@@ -12852,6 +12949,7 @@ def add_course_type():
         teacher_billing_method = request.form.get("teacher_billing_method")
         teacher_pay = request.form.get("teacher_pay")
         is_group = request.form.get("is_group")
+        display_color = request.form.get("display_color")
         active = request.form.get("active")
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -12868,11 +12966,12 @@ def add_course_type():
             teacher_billing_method,
             teacher_pay,
             is_group,
+            display_color,
             active,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             name,
             duration,
@@ -12881,6 +12980,7 @@ def add_course_type():
             teacher_billing_method,
             teacher_pay,
             int(is_group or 0),
+            display_color or default_course_color(name, duration, int(is_group or 0)),
             int(active or 1),
             now,
             now
@@ -12920,6 +13020,11 @@ def add_course_type():
         <select name="is_group">
             <option value="0">No</option>
             <option value="1">Yes</option>
+        </select><br><br>
+
+        Display Color:<br>
+        <select name="display_color">
+            {course_color_options()}
         </select><br><br>
 
         Active?<br>
@@ -13257,6 +13362,7 @@ def edit_course_type(course_id):
         teacher_billing_method = request.form.get("teacher_billing_method")
         teacher_pay = request.form.get("teacher_pay")
         is_group = request.form.get("is_group")
+        display_color = request.form.get("display_color")
         active = request.form.get("active")
 
         cursor.execute("""
@@ -13268,6 +13374,7 @@ def edit_course_type(course_id):
             teacher_billing_method = ?,
             teacher_pay = ?,
             is_group = ?,
+            display_color = ?,
             active = ?,
             updated_at = ?
         WHERE id = ?
@@ -13279,6 +13386,7 @@ def edit_course_type(course_id):
             teacher_billing_method,
             teacher_pay,
             int(is_group or 0),
+            display_color or default_course_color(name, duration, int(is_group or 0)),
             int(active or 1),
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             course_id
@@ -13299,7 +13407,8 @@ def edit_course_type(course_id):
         teacher_billing_method,
         teacher_pay,
         is_group,
-        active
+        active,
+        display_color
     FROM course_types
     WHERE id = ?
     """, (course_id,))
@@ -13341,6 +13450,11 @@ def edit_course_type(course_id):
         <select name="is_group">
             <option value="0" {selected(0, c[7])}>No</option>
             <option value="1" {selected(1, c[7])}>Yes</option>
+        </select><br><br>
+
+        Display Color:<br>
+        <select name="display_color">
+            {course_color_options(c[9] or default_course_color(c[1], c[2], c[7]))}
         </select><br><br>
 
         Active?<br>
@@ -15160,11 +15274,13 @@ def enrollment_detail(enrollment_id):
     # Recent payments
     cursor.execute("""
     SELECT
+        id,
         amount,
         lessons_added,
         payment_method,
         payment_date,
-        package_name
+        package_name,
+        COALESCE(visible_to_parent, 1)
     FROM payments
     WHERE enrollment_id = ?
     ORDER BY id DESC
@@ -15194,18 +15310,26 @@ def enrollment_detail(enrollment_id):
 
     payment_rows = ""
     for p in payments:
+        visible_label = "Visible" if p[6] == 1 else "Hidden"
+        toggle_label = "Hide from Parent" if p[6] == 1 else "Show to Parent"
         payment_rows += f"""
         <tr>
-            <td>${p[0]}</td>
-            <td>{p[1]}</td>
+            <td>${p[1]}</td>
             <td>{p[2]}</td>
             <td>{p[3]}</td>
             <td>{p[4]}</td>
+            <td>{p[5]}</td>
+            <td>{visible_label}</td>
+            <td>
+                <form method="POST" action="/toggle_parent_payment_visibility/{p[0]}" style="margin:0;">
+                    <button type="submit" class="mini-button">{toggle_label}</button>
+                </form>
+            </td>
         </tr>
         """
 
     if payment_rows == "":
-        payment_rows = "<tr><td colspan='5'>No payments yet.</td></tr>"
+        payment_rows = "<tr><td colspan='7'>No payments yet.</td></tr>"
 
     suggested_pricing = get_final_pricing(e[1], e[4], e[3], class_size=e[24], duration_override=e[5])
     suggested_price = suggested_pricing["student_charge_amount"] if suggested_pricing else (e[10] or 0)
@@ -15268,10 +15392,10 @@ def enrollment_detail(enrollment_id):
     for p in payments:
         ledger_rows += f"""
         <tr>
-            <td>{p[3]}</td>
+            <td>{p[4]}</td>
             <td>Payment</td>
-            <td>+{p[1]} lessons</td>
-            <td>${p[0]} / {p[4]}</td>
+            <td>+{p[2]} lessons</td>
+            <td>${p[1]} / {p[5]}</td>
         </tr>
         """
 
@@ -15354,7 +15478,7 @@ def enrollment_detail(enrollment_id):
                 border-radius: 8px;
                 font-size: 15px;
             }}
-            button.save-button {{
+            button.save-button, button.mini-button {{
                 background: #635bff;
                 color: white;
                 border: none;
@@ -15362,6 +15486,11 @@ def enrollment_detail(enrollment_id):
                 border-radius: 8px;
                 font-weight: bold;
                 margin-right: 10px;
+            }}
+            button.mini-button {{
+                padding: 8px 10px;
+                font-size: 12px;
+                background: #111827;
             }}
         </style>
     </head>
@@ -15552,6 +15681,8 @@ def enrollment_detail(enrollment_id):
                     <th>Method</th>
                     <th>Date</th>
                     <th>Package</th>
+                    <th>Parent App</th>
+                    <th>Action</th>
                 </tr>
                 {payment_rows}
             </table>
@@ -16147,6 +16278,7 @@ def ensure_v21_schema():
     add_column_if_missing("payments", "teacher_name", "teacher_name TEXT")
     add_column_if_missing("payments", "package_name", "package_name TEXT")
     add_column_if_missing("payments", "notes", "notes TEXT")
+    add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
 
     conn.commit()
     conn.close()
@@ -16189,7 +16321,8 @@ def enrollment_payments():
         p.payment_method,
         p.payment_date,
         p.package_name,
-        p.enrollment_id
+        p.enrollment_id,
+        COALESCE(p.visible_to_parent, 1)
     FROM payments p
     WHERE p.enrollment_id IS NOT NULL
     ORDER BY p.id DESC
@@ -16202,6 +16335,8 @@ def enrollment_payments():
     rows = ""
 
     for p in payments:
+        visible_label = "Visible" if p[10] == 1 else "Hidden"
+        toggle_label = "Hide" if p[10] == 1 else "Show"
         rows += f"""
         <tr>
             <td>{p[0]}</td>
@@ -16214,13 +16349,19 @@ def enrollment_payments():
             <td>{p[7]}</td>
             <td>{p[8]}</td>
             <td><a href="/enrollment/{p[9]}">Enrollment</a></td>
+            <td>{visible_label}</td>
+            <td>
+                <form method="POST" action="/toggle_parent_payment_visibility/{p[0]}" style="margin:0;">
+                    <button type="submit">{toggle_label}</button>
+                </form>
+            </td>
         </tr>
         """
 
     if rows == "":
         rows = """
         <tr>
-            <td colspan="10">No enrollment payments yet.</td>
+            <td colspan="12">No enrollment payments yet.</td>
         </tr>
         """
 
@@ -16286,6 +16427,8 @@ def enrollment_payments():
                     <th>Date</th>
                     <th>Package</th>
                     <th>Link</th>
+                    <th>Parent App</th>
+                    <th>Action</th>
                 </tr>
                 {rows}
             </table>
@@ -16331,6 +16474,7 @@ def enrollment_payment(enrollment_id):
         payment_date = request.form.get("payment_date")
         package_name = request.form.get("package_name")
         notes = request.form.get("notes")
+        visible_to_parent = 1 if request.form.get("visible_to_parent") == "1" else 0
 
         cursor.execute("""
         INSERT INTO payments (
@@ -16343,9 +16487,10 @@ def enrollment_payment(enrollment_id):
             course_type_name,
             teacher_name,
             package_name,
-            notes
+            notes,
+            visible_to_parent
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             e[1],
             amount,
@@ -16356,7 +16501,8 @@ def enrollment_payment(enrollment_id):
             e[2],
             e[3],
             package_name,
-            notes
+            notes,
+            visible_to_parent
         ))
 
         payment_id = cursor.lastrowid
@@ -16437,6 +16583,12 @@ def enrollment_payment(enrollment_id):
         Payment Date:<br>
         <input type="date" name="payment_date" value="{today}"><br><br>
 
+        Show in Parent App?<br>
+        <select name="visible_to_parent">
+            <option value="1">Yes - parent can see this payment</option>
+            <option value="0">No - internal owner record only</option>
+        </select><br><br>
+
         Notes:<br>
         <textarea name="notes" rows="4" cols="50"></textarea><br><br>
 
@@ -16447,6 +16599,42 @@ def enrollment_payment(enrollment_id):
     <p><a href="/enrollment/{enrollment_id}">Back to Enrollment</a></p>
     <p><a href="/enrollments">Back to Enrollments</a></p>
     """
+
+
+@app.route("/toggle_parent_payment_visibility/<int:payment_id>", methods=["POST"])
+def toggle_parent_payment_visibility(payment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v21_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT enrollment_id, COALESCE(visible_to_parent, 1)
+    FROM payments
+    WHERE id = ?
+    """, (payment_id,))
+    payment = cursor.fetchone()
+
+    if not payment:
+        conn.close()
+        return "<h1>Payment not found</h1>"
+
+    new_visible = 0 if payment[1] == 1 else 1
+    cursor.execute("""
+    UPDATE payments
+    SET visible_to_parent = ?
+    WHERE id = ?
+    """, (new_visible, payment_id))
+
+    conn.commit()
+    conn.close()
+
+    if payment[0]:
+        return redirect(f"/enrollment/{payment[0]}")
+    return redirect("/enrollment_payments")
 
 
 @app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
@@ -16609,6 +16797,7 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "enrollment_id", "enrollment_id INTEGER")
     add_column_if_missing("invoices", "due_date", "due_date TEXT")
     add_column_if_missing("invoices", "notes", "notes TEXT")
+    add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
 
     conn.commit()
     conn.close()
