@@ -1708,9 +1708,9 @@ def add_lesson(name):
 
     if request.method == "POST":
         lesson_date = request.form["lesson_date"]
-        lesson_content = request.form["lesson_content"]
-        performance = request.form["performance"]
-        homework = request.form["homework"]
+        lesson_content = request.form.get("lesson_content") or "Lesson note"
+        performance = request.form.get("performance", "")
+        homework = request.form.get("homework", "")
 
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
@@ -1754,25 +1754,40 @@ def add_lesson(name):
     back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else f"/student/{name}"
 
     return f"""
-    <h1>Add Lesson Notes / Homework - {name}</h1>
+    <html>
+    <head>
+        <title>Add Lesson Notes</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ max-width:760px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            input, textarea {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+            textarea {{ min-height:170px; }}
+            textarea.homework {{ min-height:260px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
+            a.button.secondary {{ background:#111827; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Add Lesson Notes - {name}</h1>
 
-    <form method="POST">
-        Date:<br>
-        <input name="lesson_date"><br><br>
+            <form method="POST">
+                Date:<br>
+                <input type="date" name="lesson_date" value="{date.today().strftime('%Y-%m-%d')}" required>
+                <input type="hidden" name="lesson_content" value="Lesson note">
 
-        Lesson Content:<br>
-        <input name="lesson_content"><br><br>
+                Performance / Class Notes:<br>
+                <textarea name="performance" placeholder="Short note for how the lesson went."></textarea>
 
-        Performance:<br>
-        <input name="performance"><br><br>
+                Homework:<br>
+                <textarea class="homework" name="homework" placeholder="Write homework clearly for the parent and student."></textarea>
 
-        Homework:<br>
-        <input name="homework"><br><br>
-
-        <button type="submit">Save</button>
-    </form>
-
-    <p><a href="{back_href}">Back</a></p>
+                <button type="submit">Save Notes</button>
+                <a class="button secondary" href="{back_href}">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
     """
 
 
@@ -2450,10 +2465,92 @@ def add_schedule():
     conn.commit()
 
     if request.method == "POST":
+        action = request.form.get("action")
+        if action == "request_student_setup" and require_teacher() and not require_owner():
+            teacher_name = session.get("teacher_name")
+            requested_student = (request.form.get("requested_student") or "").strip()
+            request_note = (request.form.get("request_note") or "").strip()
+            if not requested_student:
+                conn.close()
+                return "<h1>Please enter the student name.</h1><p><a href='/add_schedule'>Back</a></p>"
+
+            subject = f"Teacher Student Setup Request - {requested_student}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=requested_student,
+                parent_id=None,
+                teacher_name=teacher_name,
+                thread_type="teacher_student_setup",
+                related_type=None,
+                related_id=None
+            )
+            body = (
+                f"{teacher_name} tried to add a schedule for {requested_student}, but the student is not active in their enrollment list."
+            )
+            if request_note:
+                body += f"\n\nTeacher note: {request_note}"
+            add_message(thread_id, "teacher", teacher_name, "owner", body)
+            create_notification(
+                "owner",
+                "owner",
+                "Teacher student setup request",
+                f"{teacher_name} needs {requested_student} added or assigned before scheduling.",
+                f"/message_thread/{thread_id}"
+            )
+            conn.close()
+            return f"""
+            <h1>Request Sent</h1>
+            <p>Owner has been notified to add or assign {requested_student} before you schedule lessons.</p>
+            <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+            """
+
         student_name = request.form.get("student_name")
         teacher = request.form.get("teacher")
         if require_teacher() and not require_owner():
             teacher = session.get("teacher_name")
+
+            cursor.execute("""
+            SELECT id
+            FROM enrollments
+            WHERE student_name = ?
+            AND teacher_name = ?
+            AND status = 'active'
+            LIMIT 1
+            """, (student_name, teacher))
+            teacher_enrollment = cursor.fetchone()
+
+            if not teacher_enrollment:
+                conn.close()
+                return f"""
+                <html>
+                <head>
+                    <title>Student Setup Required</title>
+                    <style>
+                        body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+                        .container {{ max-width:720px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+                        textarea, input {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+                        textarea {{ min-height:150px; }}
+                        button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
+                        a.button.secondary {{ background:#111827; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>Student Not In Your Enrollment List</h1>
+                        <p>You cannot add a schedule for <b>{student_name}</b> yet. Ask owner to add this student to your active enrollment list or assign the student to you.</p>
+                        <form method="POST" action="/add_schedule">
+                            <input type="hidden" name="action" value="request_student_setup">
+                            Student name:<br>
+                            <input name="requested_student" value="{student_name}" required>
+                            Message to owner:<br>
+                            <textarea name="request_note" placeholder="Example: This is my new trial student. Please add them to my list."></textarea>
+                            <button type="submit">Notify Owner</button>
+                            <a class="button secondary" href="/teacher_dashboard">Back</a>
+                        </form>
+                    </div>
+                </body>
+                </html>
+                """
         classroom = request.form.get("classroom")
         weekday = request.form.get("weekday")
         lesson_time = request.form.get("lesson_time")
@@ -3119,6 +3216,19 @@ def teacher_dashboard():
         week_start = today_obj - timedelta(days=today_obj.weekday())
 
     week_end = week_start + timedelta(days=6)
+    if view == "week":
+        payroll_start = week_start.strftime("%Y-%m-%d")
+        payroll_end = week_end.strftime("%Y-%m-%d")
+    else:
+        month_year = int(selected_month[:4])
+        month_num = int(selected_month[5:7])
+        payroll_start_obj = date(month_year, month_num, 1)
+        if month_num == 12:
+            payroll_end_obj = date(month_year + 1, 1, 1) - timedelta(days=1)
+        else:
+            payroll_end_obj = date(month_year, month_num + 1, 1) - timedelta(days=1)
+        payroll_start = payroll_start_obj.strftime("%Y-%m-%d")
+        payroll_end = payroll_end_obj.strftime("%Y-%m-%d")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -3146,6 +3256,18 @@ def teacher_dashboard():
         """, (teacher_name, selected_month + "%"))
 
     lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(teacher_pay_amount), 0),
+        COUNT(*)
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date >= ?
+    AND lesson_date <= ?
+    """, (teacher_name, payroll_start, payroll_end))
+    payroll_summary = cursor.fetchone()
     conn.close()
 
     lessons_by_date = {}
@@ -3313,6 +3435,9 @@ def teacher_dashboard():
     no_show_count = len([l for l in lessons if l[5] == "no_show"])
     cancel_count = len([l for l in lessons if str(l[5]).startswith("cancel")])
     student_count = len(set([l[3] for l in lessons]))
+    actual_payroll = round(payroll_summary[0] or 0, 2)
+    projected_payroll = round(payroll_summary[1] or 0, 2)
+    payroll_label = "Week Payroll" if view == "week" else "Month Payroll"
 
     return f"""
     <html>
@@ -3572,7 +3697,7 @@ def teacher_dashboard():
 
             .summary {{
                 display: grid;
-                grid-template-columns: repeat(5, 1fr);
+                grid-template-columns: repeat(6, 1fr);
                 gap: 12px;
                 margin-top: 20px;
             }}
@@ -3768,6 +3893,12 @@ def teacher_dashboard():
                 <div class="summary-card">
                     <div class="summary-label">Students</div>
                     <div class="summary-value">{student_count}</div>
+                </div>
+
+                <div class="summary-card">
+                    <div class="summary-label">{payroll_label}</div>
+                    <div class="summary-value">${actual_payroll}</div>
+                    <div class="summary-label">Projected ${projected_payroll}</div>
                 </div>
             </div>
 
