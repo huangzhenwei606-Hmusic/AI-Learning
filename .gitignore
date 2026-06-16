@@ -7,3 +7,5 @@ hmusic.db-*
 message_uploads/
 *.log
 .env
+ios-parent-app/node_modules/
+ios-parent-app/ios/App/Pods/
