@@ -51,6 +51,7 @@ client = None
 
 PARENT_APP_NAME = "H-Music"
 PARENT_APP_THEME = "#4f46e5"
+PARENT_APP_ICON_BG = "#050505"
 
 
 def parent_app_meta(title):
@@ -174,13 +175,14 @@ def parent_app_install():
                 width: 64px;
                 height: 64px;
                 border-radius: 18px;
-                background: {PARENT_APP_THEME};
-                color: white;
+                background: {PARENT_APP_ICON_BG};
+                color: #d7a849;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 34px;
-                font-weight: 900;
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 32px;
+                font-weight: 700;
                 margin-bottom: 18px;
             }}
             h1 {{
@@ -240,7 +242,7 @@ def parent_app_install():
     </head>
     <body>
         <div class="container">
-            <div class="app-mark">H</div>
+            <div class="app-mark">Hf</div>
             <h1>Install H-Music</h1>
             <p>Use the parent portal like an app from your phone home screen.</p>
 
@@ -343,10 +345,32 @@ self.addEventListener("fetch", function(event) {
 def parent_app_icon():
     return Response(f"""
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="{PARENT_APP_THEME}"/>
-  <circle cx="376" cy="142" r="46" fill="#facc15"/>
-  <path d="M162 360c0 34 27 60 70 60 45 0 76-28 76-72V126h-46v206c0 25-13 42-34 42-18 0-29-11-29-27 0-15 11-26 28-26 8 0 16 2 24 6v-44c-11-4-22-6-34-6-32 0-55 18-55 83Z" fill="white"/>
-  <path d="M307 126h80v44h-80z" fill="white" opacity=".95"/>
+  <defs>
+    <linearGradient id="hmusicGold" x1="120" x2="392" y1="118" y2="394" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9b681f"/>
+      <stop offset="0.42" stop-color="#f3d079"/>
+      <stop offset="0.68" stop-color="#c79436"/>
+      <stop offset="1" stop-color="#7a4d17"/>
+    </linearGradient>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="{PARENT_APP_ICON_BG}"/>
+  <text
+    x="256"
+    y="318"
+    text-anchor="middle"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="182"
+    font-weight="600"
+    letter-spacing="-22"
+    fill="url(#hmusicGold)"
+    filter="url(#softGlow)">Hf</text>
 </svg>
 """, mimetype="image/svg+xml")
 
@@ -10137,13 +10161,14 @@ def parent_login():
                     height: 56px;
                     border-radius: 16px;
                     margin-bottom: 18px;
-                    background: #4f46e5;
-                    color: white;
+                    background: {PARENT_APP_ICON_BG};
+                    color: #d7a849;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 30px;
-                    font-weight: 900;
+                    font-family: Georgia, "Times New Roman", serif;
+                    font-size: 28px;
+                    font-weight: 700;
                 }}
                 h1 {{ font-size: 32px; margin: 0 0 12px; }}
                 p {{ color: #6b7280; line-height: 1.5; }}
@@ -10170,7 +10195,7 @@ def parent_login():
         </head>
         <body>
             <div class="container">
-                <div class="brand-mark">H</div>
+                <div class="brand-mark">Hf</div>
                 <h1>Login failed</h1>
                 <p>Please check the parent email and password, then try again.</p>
                 <a class="button" href="/parent_login">Back to Login</a>
@@ -10208,13 +10233,14 @@ def parent_login():
                 height: 56px;
                 border-radius: 16px;
                 margin-bottom: 18px;
-                background: #4f46e5;
-                color: white;
+                background: """ + PARENT_APP_ICON_BG + """;
+                color: #d7a849;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 30px;
-                font-weight: 900;
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 28px;
+                font-weight: 700;
             }
             h1 {
                 font-size: 34px;
@@ -10302,7 +10328,7 @@ def parent_login():
     <body>
         <div class="container">
             <div class="brand">
-                <div class="brand-mark">H</div>
+                <div class="brand-mark">Hf</div>
                 <h1>H-Music</h1>
                 <p class="hint">Parent App</p>
             </div>
