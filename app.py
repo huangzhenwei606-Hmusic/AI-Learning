@@ -11575,7 +11575,7 @@ def parent_billing():
         action = request.form.get("action")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         if action == "start_stripe_setup":
-            if not stripe_is_configured():
+            if not configure_stripe():
                 conn.close()
                 return redirect("/parent_billing?stripe_missing=1")
 
@@ -11760,7 +11760,7 @@ def stripe_setup_success():
     parent_id = session.get("parent_id")
     session_id = request.args.get("session_id")
 
-    if not session_id or not stripe_is_configured():
+    if not session_id or not configure_stripe():
         return redirect("/parent_billing")
 
     try:
@@ -11965,7 +11965,7 @@ def stripe_invoice_checkout(invoice_id):
     if not require_parent():
         return redirect("/parent_login")
 
-    if not stripe_is_configured():
+    if not configure_stripe():
         return redirect(f"/parent_invoice/{invoice_id}?stripe_missing=1")
 
     ensure_billing_schema()
@@ -12056,7 +12056,7 @@ def stripe_invoice_success():
         return redirect("/parent_dashboard")
 
     try:
-        checkout_session = stripe.checkout.Session.retrieve(session_id) if stripe_is_configured() else None
+        checkout_session = stripe.checkout.Session.retrieve(session_id) if configure_stripe() else None
         session_invoice_id = None
         payment_intent_id = None
         if checkout_session:
