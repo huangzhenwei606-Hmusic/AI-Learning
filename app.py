@@ -63,8 +63,8 @@ def parent_app_meta(title):
         <meta name="apple-mobile-web-app-title" content="{PARENT_APP_NAME}">
         <meta name="apple-mobile-web-app-status-bar-style" content="default">
         <link rel="manifest" href="/manifest.webmanifest">
-        <link rel="icon" href="/hmusic-icon.svg" type="image/svg+xml">
-        <link rel="apple-touch-icon" href="/hmusic-icon.svg">
+        <link rel="icon" href="/hmusic-icon.png" type="image/png">
+        <link rel="apple-touch-icon" href="/hmusic-icon.png">
         <script>
             if ("serviceWorker" in navigator) {{
                 window.addEventListener("load", function() {{
@@ -175,8 +175,8 @@ def parent_app_install():
                 width: 64px;
                 height: 64px;
                 border-radius: 18px;
-                background: {PARENT_APP_ICON_BG};
-                color: #d7a849;
+                background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                color: transparent;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -296,9 +296,9 @@ def parent_app_manifest():
         "theme_color": "{PARENT_APP_THEME}",
         "icons": [
             {{
-                "src": "/hmusic-icon.svg",
-                "sizes": "any",
-                "type": "image/svg+xml",
+                "src": "/hmusic-icon.png",
+                "sizes": "512x512",
+                "type": "image/png",
                 "purpose": "any maskable"
             }}
         ]
@@ -308,8 +308,8 @@ def parent_app_manifest():
 @app.route("/sw.js")
 def parent_app_service_worker():
     return Response("""
-const CACHE_NAME = "hmusic-parent-v31-3";
-const SHELL = ["/app_install", "/parent_login", "/hmusic-icon.svg", "/manifest.webmanifest"];
+const CACHE_NAME = "hmusic-parent-v33-icon";
+const SHELL = ["/app_install", "/parent_login", "/hmusic-icon.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", function(event) {
   event.waitUntil(caches.open(CACHE_NAME).then(function(cache) {
@@ -339,6 +339,11 @@ self.addEventListener("fetch", function(event) {
   }
 });
 """, mimetype="application/javascript")
+
+
+@app.route("/hmusic-icon.png")
+def parent_app_icon_png():
+    return send_from_directory("static", "hmusic-icon.png")
 
 
 @app.route("/hmusic-icon.svg")
@@ -10161,8 +10166,8 @@ def parent_login():
                     height: 56px;
                     border-radius: 16px;
                     margin-bottom: 18px;
-                    background: {PARENT_APP_ICON_BG};
-                    color: #d7a849;
+                    background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                    color: transparent;
                     display: flex;
                     align-items: center;
                     justify-content: center;
@@ -10233,8 +10238,8 @@ def parent_login():
                 height: 56px;
                 border-radius: 16px;
                 margin-bottom: 18px;
-                background: """ + PARENT_APP_ICON_BG + """;
-                color: #d7a849;
+                background: """ + PARENT_APP_ICON_BG + """ url("/hmusic-icon.png") center / cover no-repeat;
+                color: transparent;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -10432,7 +10437,7 @@ def parent_dashboard():
     AND lesson_date >= ?
     AND (status IS NULL OR status='scheduled')
     ORDER BY lesson_date, lesson_time
-    LIMIT 10
+    LIMIT 3
     """, (current_student, today))
     upcoming_lessons = cursor.fetchall()
 
@@ -10503,9 +10508,25 @@ def parent_dashboard():
             """
 
     upcoming_rows = ""
+    upcoming_cards = ""
     for l in upcoming_lessons:
         time_range = format_lesson_time_range(l[1], l[5])
         location_room = " / ".join([part for part in [l[4], l[3]] if part])
+        lesson_date = escape(str(l[0] or ""))
+        lesson_time = escape(str(time_range or ""))
+        lesson_teacher = escape(str(l[2] or ""))
+        lesson_place = escape(str(location_room or "TBD"))
+        lesson_status = escape(str(l[6] or "scheduled"))
+        upcoming_cards += f"""
+        <div class="lesson-card">
+            <div>
+                <div class="lesson-date">{lesson_date}</div>
+                <div class="lesson-main">{lesson_time}</div>
+                <div class="lesson-meta">{lesson_teacher} · {lesson_place}</div>
+            </div>
+            <span class="status-chip">{lesson_status}</span>
+        </div>
+        """
         upcoming_rows += f"""
         <tr>
             <td>{l[0]}</td>
@@ -10518,8 +10539,12 @@ def parent_dashboard():
 
     if not upcoming_rows:
         upcoming_rows = "<tr><td colspan='5'>No upcoming lessons.</td></tr>"
+        upcoming_cards = """
+        <div class="empty-card">No upcoming lessons.</div>
+        """
 
     lesson_rows = ""
+    lesson_note_cards = ""
     for l in lesson_history:
         lesson_rows += f"""
         <tr>
@@ -10530,8 +10555,32 @@ def parent_dashboard():
         </tr>
         """
 
+    for l in lesson_history[:3]:
+        lesson_date = escape(str(l[0] or ""))
+        lesson_content = escape(str(l[1] or "No lesson notes yet."))
+        performance = escape(str(l[2] or ""))
+        homework = escape(str(l[3] or "No homework assigned yet."))
+        performance_line = f'<div class="note-performance">{performance}</div>' if performance else ""
+        lesson_note_cards += f"""
+        <div class="note-card">
+            <div class="note-date">{lesson_date}</div>
+            {performance_line}
+            <div class="note-section">
+                <strong>Lesson Notes</strong>
+                <p>{lesson_content}</p>
+            </div>
+            <div class="note-section">
+                <strong>Homework</strong>
+                <p>{homework}</p>
+            </div>
+        </div>
+        """
+
     if not lesson_rows:
         lesson_rows = "<tr><td colspan='4'>No lesson history.</td></tr>"
+        lesson_note_cards = """
+        <div class="empty-card">No lesson notes or homework yet.</div>
+        """
 
     invoice_rows = ""
     tuition_due_total = 0
@@ -10630,6 +10679,15 @@ def parent_dashboard():
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No parent activity yet.</td></tr>"
 
+    next_lesson_title = "No upcoming lessons"
+    next_lesson_meta = "Your next scheduled lesson will appear here."
+    if upcoming_lessons:
+        next_lesson = upcoming_lessons[0]
+        next_time_range = format_lesson_time_range(next_lesson[1], next_lesson[5])
+        next_location_room = " / ".join([part for part in [next_lesson[4], next_lesson[3]] if part])
+        next_lesson_title = f"{escape(str(next_lesson[0] or ''))} · {escape(str(next_time_range or ''))}"
+        next_lesson_meta = f"{escape(str(next_lesson[2] or ''))} · {escape(str(next_location_room or 'TBD'))}"
+
     return f"""
     <html>
     <head>
@@ -10640,7 +10698,7 @@ def parent_dashboard():
             }}
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #f7f7fb;
+                background: #fbfbff;
                 margin: 0;
                 color: #111827;
             }}
@@ -10648,7 +10706,7 @@ def parent_dashboard():
                 background: white;
                 min-height: 100vh;
                 padding: max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
-                max-width: 1180px;
+                max-width: 880px;
                 margin: 0 auto;
             }}
             .top {{
@@ -10700,10 +10758,10 @@ def parent_dashboard():
                 margin: 25px 0;
             }}
             .card {{
-                background: #f5f5ff;
+                background: #f8f8ff;
                 padding: 18px;
-                border-radius: 8px;
-                border: 1px solid #ddd;
+                border-radius: 16px;
+                border: 1px solid #e5e7eb;
             }}
             .tuition-alert {{
                 display: flex;
@@ -10805,6 +10863,162 @@ def parent_dashboard():
                 color: #4f46e5;
                 font-weight: bold;
             }}
+            .app-hero {{
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 14px;
+                margin-bottom: 18px;
+            }}
+            .brand-lockup {{
+                display: flex;
+                gap: 12px;
+                align-items: center;
+                margin-bottom: 22px;
+            }}
+            .brand-mark {{
+                width: 54px;
+                height: 54px;
+                border-radius: 16px;
+                background: #050505 url("/hmusic-icon.png") center / cover no-repeat;
+                flex: 0 0 auto;
+            }}
+            .brand-copy strong {{
+                display: block;
+                font-size: 22px;
+                line-height: 1;
+            }}
+            .brand-copy span {{
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 700;
+            }}
+            .hero-title h1 {{
+                font-size: 34px;
+                line-height: 1.02;
+                margin: 0 0 8px;
+            }}
+            .hero-title p {{
+                color: #6b7280;
+                margin: 0;
+                font-weight: 700;
+            }}
+            .hero-links {{
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }}
+            .summary-card {{
+                background: #eef2ff;
+                border-color: #c7d2fe;
+            }}
+            .summary-card .value {{
+                font-size: 36px;
+            }}
+            .summary-card.wide {{
+                grid-column: span 2;
+            }}
+            .lesson-list {{
+                display: grid;
+                gap: 10px;
+                margin: 12px 0 26px;
+            }}
+            .lesson-card {{
+                display: flex;
+                justify-content: space-between;
+                gap: 14px;
+                align-items: center;
+                position: relative;
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 12px 12px 12px 22px;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+            }}
+            .lesson-card:before {{
+                content: "";
+                position: absolute;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                width: 8px;
+                background: #60a5fa;
+                border-radius: 16px 0 0 16px;
+            }}
+            .lesson-date {{
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            .lesson-main {{
+                font-size: 18px;
+                font-weight: 900;
+                margin-top: 2px;
+            }}
+            .lesson-meta {{
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 700;
+                margin-top: 2px;
+            }}
+            .status-chip {{
+                background: #eef2ff;
+                color: #3730a3;
+                border-radius: 999px;
+                padding: 6px 10px;
+                font-size: 12px;
+                font-weight: 900;
+                white-space: nowrap;
+            }}
+            .notes-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 12px;
+                margin: 12px 0 28px;
+            }}
+            .note-card, .empty-card {{
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 14px;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            }}
+            .note-date {{
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 900;
+                margin-bottom: 8px;
+            }}
+            .note-performance {{
+                display: inline-block;
+                background: #ecfdf5;
+                color: #166534;
+                border-radius: 999px;
+                padding: 5px 9px;
+                font-size: 12px;
+                font-weight: 900;
+                margin-bottom: 10px;
+            }}
+            .note-section {{
+                margin-top: 8px;
+            }}
+            .note-section strong {{
+                display: block;
+                font-size: 13px;
+                color: #111827;
+                margin-bottom: 4px;
+            }}
+            .note-section p {{
+                margin: 0;
+                color: #4b5563;
+                line-height: 1.45;
+                font-size: 14px;
+            }}
+            .desktop-table {{
+                margin-top: 12px;
+            }}
             .parent-bottom-nav {{
                 position: fixed;
                 left: 0;
@@ -10841,9 +11055,17 @@ def parent_dashboard():
                     gap: 10px;
                     margin: 18px 0;
                 }}
+                .app-hero {{
+                    display: block;
+                }}
+                .hero-links {{
+                    justify-content: flex-start;
+                    margin-top: 12px;
+                }}
                 .card {{
                     padding: 14px;
                 }}
+                .summary-card.wide,
                 .card:nth-child(4) {{
                     grid-column: 1 / -1;
                 }}
@@ -10863,6 +11085,12 @@ def parent_dashboard():
                     text-align: center;
                     margin: 0;
                 }}
+                .notes-grid {{
+                    grid-template-columns: 1fr;
+                }}
+                .desktop-table {{
+                    display: none;
+                }}
             }}
             @media (min-width: 900px) {{
                 body {{
@@ -10881,12 +11109,20 @@ def parent_dashboard():
     <body>
         <div class="container">
 
-            <div class="top">
-                <div>
-                    <h1>Parent Pro - {student[0]}</h1>
+            <div class="brand-lockup">
+                <div class="brand-mark" aria-label="H-Music"></div>
+                <div class="brand-copy">
+                    <strong>H-Music</strong>
+                    <span>Parent App</span>
+                </div>
+            </div>
+
+            <div class="app-hero">
+                <div class="hero-title">
+                    <h1>{student[0]}</h1>
                     <p>Welcome, {session.get("parent_name", "Parent")}</p>
                 </div>
-                <div class="top-links">
+                <div class="hero-links">
                     <button class="install-button" data-install-app hidden onclick="installParentApp()">Install App</button>
                     <a href="/app_install">App Help</a>
                     <a href="/parent_logout">Logout</a>
@@ -10902,38 +11138,43 @@ def parent_dashboard():
             {app_notification_alert}
 
             <div class="cards">
-                <div class="card">
-                    <div class="label">Teacher</div>
-                    <div class="value">{student[1]}</div>
-                </div>
-
-                <div class="card">
+                <div class="card summary-card">
                     <div class="label">Lessons Left</div>
                     <div class="value">{student[3]}</div>
                 </div>
 
-                <div class="card">
-                    <div class="label">Ledger Balance</div>
-                    <div class="value">${balance}</div>
+                <div class="card summary-card wide">
+                    <div class="label">Next Lesson</div>
+                    <div class="value" style="font-size:20px;">{next_lesson_title}</div>
+                    <div class="lesson-meta">{next_lesson_meta}</div>
                 </div>
 
                 <div class="card">
-                    <div class="label">Parent Email</div>
-                    <div class="value" style="font-size:15px;">{student[2]}</div>
+                    <div class="label">Teacher</div>
+                    <div class="value">{student[1]}</div>
                 </div>
             </div>
 
             <div class="actions">
-                <a class="button" href="/parent_cancel">Cancel Lesson</a>
                 <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
                 <a class="button" href="/parent_messages">{message_label}</a>
+                <a class="button" href="/parent_cancel">Cancel Lesson</a>
                 <a class="button" href="/parent_profile">Parent Profile</a>
                 <a class="button" href="/parent_billing">Billing / AutoPay</a>
                 <a class="button" href="/student_ledger/{student[0]}">Full Ledger</a>
             </div>
 
             <h2>Upcoming Lessons</h2>
-            <table>
+            <div class="lesson-list">
+                {upcoming_cards}
+            </div>
+
+            <h2>Lesson Notes / Homework</h2>
+            <div class="notes-grid">
+                {lesson_note_cards}
+            </div>
+
+            <table class="desktop-table">
                 <tr>
                     <th>Date</th>
                     <th>Time</th>
