@@ -7777,6 +7777,124 @@ def get_or_create_stripe_customer(cursor, parent_id):
     return customer.id
 
 
+def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, payment_intent_id=None, source="stripe_checkout"):
+    ensure_v321_schema()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    payment_date = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        enrollment_id,
+        stripe_checkout_session_id,
+        stripe_payment_intent_id
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return False
+
+    if invoice[4] == "paid":
+        conn.close()
+        return True
+
+    student_name = invoice[1]
+    amount = invoice[3] or 0
+    enrollment_id = invoice[7]
+    checkout_session_id = checkout_session_id or invoice[8]
+    payment_intent_id = payment_intent_id or invoice[9]
+
+    cursor.execute("""
+    INSERT INTO payments
+    (
+        student_name,
+        amount,
+        lessons_added,
+        payment_method,
+        payment_date,
+        enrollment_id,
+        package_name,
+        notes,
+        visible_to_parent
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        student_name,
+        amount,
+        0,
+        "Stripe Test Mode",
+        payment_date,
+        enrollment_id,
+        "Tuition Invoice",
+        f"Invoice #{invoice_id} paid via Stripe test mode ({source})",
+        1
+    ))
+
+    payment_id = cursor.lastrowid
+
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'paid',
+        stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+        stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+        autopay_status = 'paid_test'
+    WHERE id = ?
+    """, (
+        checkout_session_id,
+        payment_intent_id,
+        invoice_id
+    ))
+
+    cursor.execute("""
+    INSERT INTO student_ledger (
+        student_name,
+        entry_type,
+        amount,
+        description,
+        related_invoice_id,
+        related_payment_id,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        student_name,
+        "invoice_payment",
+        amount,
+        f"Invoice #{invoice_id} paid via Stripe test mode",
+        invoice_id,
+        payment_id,
+        None,
+        now
+    ))
+
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+    conn.commit()
+    conn.close()
+
+    create_invoice_message_event(
+        invoice_id,
+        "stripe_paid",
+        parent_id=parent_id,
+        student_name=student_name,
+        amount=amount
+    )
+
+    return True
+
+
 def public_url_for(path):
     base_url = (os.environ.get("HMUSIC_PUBLIC_URL") or request.url_root.rstrip("/")).rstrip("/")
     return f"{base_url}{path}"
@@ -8108,6 +8226,27 @@ def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=No
             f"{parent_name} marked invoice #{invoice_id} for {student_name} as paid / ready for confirmation.",
             f"/message_thread/{thread_id}"
         )
+    elif event_type == "stripe_paid":
+        message_body = body or (
+            f"Stripe test payment completed for invoice #{invoice_id}. "
+            f"Student: {student_name}. Amount: ${amount}."
+        )
+        add_message(thread_id, "system", "H-Music", "owner", message_body)
+        create_notification(
+            "owner",
+            "owner",
+            "Stripe invoice paid",
+            f"Invoice #{invoice_id} for {student_name} was paid in Stripe test mode.",
+            f"/message_thread/{thread_id}"
+        )
+        if parent_id:
+            create_notification(
+                "parent",
+                str(parent_id),
+                "Payment received",
+                f"Payment received for {student_name}: ${amount}.",
+                f"/message_thread/{thread_id}"
+            )
 
     return thread_id
 
@@ -11757,48 +11896,66 @@ def stripe_webhook():
             conn.commit()
             conn.close()
 
-    if event_type == "checkout.session.completed" and data_object.get("mode") == "payment":
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and data_object.get("mode") == "payment":
         invoice_id = data_object.get("metadata", {}).get("invoice_id")
         if invoice_id:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            conn = sqlite3.connect("hmusic.db")
-            cursor = conn.cursor()
-            cursor.execute("""
-            UPDATE invoices
-            SET status = 'stripe_processing',
-                stripe_checkout_session_id = ?,
-                stripe_payment_intent_id = ?,
-                autopay_status = COALESCE(autopay_status, 'processing')
-            WHERE id = ?
-            """, (
-                data_object.get("id"),
-                data_object.get("payment_intent"),
-                invoice_id
-            ))
-            cursor.execute("""
-            INSERT INTO notification_delivery_queue (
-                user_role,
-                user_key,
-                channel,
-                destination,
-                title,
-                body,
-                link_url,
-                related_type,
-                related_id,
-                status,
-                created_at
+            if event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
+                finalize_stripe_invoice_payment(
+                    int(invoice_id),
+                    checkout_session_id=data_object.get("id"),
+                    payment_intent_id=data_object.get("payment_intent"),
+                    source=event_type
+                )
+            else:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                conn = sqlite3.connect("hmusic.db")
+                cursor = conn.cursor()
+                cursor.execute("""
+                UPDATE invoices
+                SET status = 'stripe_processing',
+                    stripe_checkout_session_id = ?,
+                    stripe_payment_intent_id = ?,
+                    autopay_status = COALESCE(autopay_status, 'processing')
+                WHERE id = ?
+                AND status != 'paid'
+                """, (
+                    data_object.get("id"),
+                    data_object.get("payment_intent"),
+                    invoice_id
+                ))
+                cursor.execute("""
+                INSERT INTO notification_delivery_queue (
+                    user_role,
+                    user_key,
+                    channel,
+                    destination,
+                    title,
+                    body,
+                    link_url,
+                    related_type,
+                    related_id,
+                    status,
+                    created_at
+                )
+                VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
+                """, (
+                    "Stripe payment processing",
+                    f"Stripe checkout completed for invoice #{invoice_id}. Await bank/payment settlement before final confirmation.",
+                    f"/pay_invoice/{invoice_id}",
+                    invoice_id,
+                    now
+                ))
+                conn.commit()
+                conn.close()
+
+    if event_type == "payment_intent.succeeded":
+        invoice_id = data_object.get("metadata", {}).get("invoice_id")
+        if invoice_id:
+            finalize_stripe_invoice_payment(
+                int(invoice_id),
+                payment_intent_id=data_object.get("id"),
+                source=event_type
             )
-            VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
-            """, (
-                "Stripe payment processing",
-                f"Stripe checkout completed for invoice #{invoice_id}. Await bank/payment settlement before final confirmation.",
-                f"/pay_invoice/{invoice_id}",
-                invoice_id,
-                now
-            ))
-            conn.commit()
-            conn.close()
 
     return Response("ok", status=200)
 
@@ -11836,7 +11993,7 @@ def stripe_invoice_checkout(invoice_id):
         checkout_session = stripe.checkout.Session.create(
             mode="payment",
             customer=customer_id,
-            payment_method_types=["us_bank_account"],
+            payment_method_types=["card", "us_bank_account"],
             line_items=[{
                 "price_data": {
                     "currency": "usd",
@@ -11849,7 +12006,10 @@ def stripe_invoice_checkout(invoice_id):
             }],
             success_url=public_url_for("/stripe/invoice/success") + f"?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=public_url_for(f"/parent_invoice/{invoice_id}?cancelled=1"),
-            metadata={"invoice_id": str(invoice_id), "parent_id": str(parent_id)}
+            metadata={"invoice_id": str(invoice_id), "parent_id": str(parent_id)},
+            payment_intent_data={
+                "metadata": {"invoice_id": str(invoice_id), "parent_id": str(parent_id)}
+            }
         )
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         cursor.execute("""
@@ -11894,6 +12054,28 @@ def stripe_invoice_success():
     session_id = request.args.get("session_id")
     if not invoice_id or not session_id:
         return redirect("/parent_dashboard")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id) if stripe_is_configured() else None
+        session_invoice_id = None
+        payment_intent_id = None
+        if checkout_session:
+            session_invoice_id = checkout_session.get("metadata", {}).get("invoice_id")
+            payment_intent_id = checkout_session.get("payment_intent")
+        if session_invoice_id and str(session_invoice_id) != str(invoice_id):
+            return redirect("/parent_dashboard")
+
+        if checkout_session and checkout_session.get("payment_status") == "paid":
+            finalized = finalize_stripe_invoice_payment(
+                int(invoice_id),
+                checkout_session_id=session_id,
+                payment_intent_id=payment_intent_id,
+                source="stripe_success_return"
+            )
+            if finalized:
+                return redirect(f"/parent_invoice/{invoice_id}?stripe_paid=1")
+    except Exception:
+        pass
 
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
@@ -12002,6 +12184,8 @@ def parent_invoice(invoice_id):
     stripe_status_alert = ""
     if request.args.get("stripe_missing") == "1":
         stripe_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
+    elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
+        stripe_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
     elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
         stripe_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
     elif request.args.get("cancelled") == "1":
