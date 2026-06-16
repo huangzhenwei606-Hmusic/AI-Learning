@@ -8,6 +8,11 @@ from datetime import date, datetime, timedelta
 from html import escape
 from urllib.parse import urlencode
 
+try:
+    import stripe
+except ImportError:
+    stripe = None
+
 from openai import OpenAI
 
 app = Flask(__name__)
@@ -7216,6 +7221,67 @@ def create_lesson_reminders_for_date(target_date):
     return created
 
 
+def create_autopay_due_notifications(target_date=None):
+    ensure_v321_schema()
+    target_date = target_date or date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        e.id,
+        e.student_name,
+        e.autopay_pending_invoice_id,
+        e.autopay_charge_due_date,
+        i.amount
+    FROM enrollments e
+    JOIN invoices i
+        ON e.autopay_pending_invoice_id = i.id
+    WHERE e.auto_renew_enabled = 1
+    AND e.autopay_charge_status = 'pending'
+    AND e.autopay_charge_due_date <= ?
+    ORDER BY e.autopay_charge_due_date, e.student_name
+    """, (target_date,))
+    rows = cursor.fetchall()
+
+    created = 0
+    for row in rows:
+        enrollment_id, student_name, invoice_id, due_date, amount = row
+        parent_id = get_primary_parent_for_student(cursor, student_name)
+        cursor.execute("""
+        UPDATE enrollments
+        SET autopay_charge_status = 'pending_owner_review',
+            updated_at = ?
+        WHERE id = ?
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"), enrollment_id))
+
+        conn.commit()
+
+        if parent_id:
+            create_notification(
+                "parent",
+                str(parent_id),
+                "AutoPay payment reminder",
+                f"{student_name}'s next package AutoPay is due today for ${amount}. The owner will confirm Stripe processing.",
+                f"/parent_invoice/{invoice_id}",
+                related_type="invoice",
+                related_id=invoice_id
+            )
+        create_notification(
+            "owner",
+            "owner",
+            "AutoPay due today",
+            f"{student_name}'s AutoPay invoice #{invoice_id} is due today for ${amount}. Review Stripe processing.",
+            f"/pay_invoice/{invoice_id}",
+            related_type="invoice",
+            related_id=invoice_id
+        )
+        created += 1
+
+    conn.close()
+    return created
+
+
 @app.route("/run_lesson_reminders")
 def run_lesson_reminders():
     if not require_owner():
@@ -7228,6 +7294,24 @@ def run_lesson_reminders():
     <h1>Lesson Reminders Queued</h1>
     <p>Date: {target_date}</p>
     <p>Created: {created}</p>
+    <p><a href="/notification_queue">Notification Queue</a></p>
+    <p><a href="/">Home</a></p>
+    """
+
+
+@app.route("/run_autopay_checks")
+def run_autopay_checks():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    target_date = request.args.get("date") or date.today().strftime("%Y-%m-%d")
+    created = create_autopay_due_notifications(target_date)
+
+    return f"""
+    <h1>AutoPay Checks Queued</h1>
+    <p>Date: {target_date}</p>
+    <p>Due autopay notifications: {created}</p>
+    <p><a href="/billing_settings">Billing Settings</a></p>
     <p><a href="/notification_queue">Notification Queue</a></p>
     <p><a href="/">Home</a></p>
     """
@@ -7440,6 +7524,7 @@ def billing_settings():
             <a class="button" href="/">Home</a>
             <a class="button" href="/owner_settings">Owner Settings</a>
             <a class="button" href="/notification_queue">Notification Queue</a>
+            <a class="button" href="/run_autopay_checks">Run AutoPay Checks</a>
             <div class="cards">
                 <div class="card">
                     <div class="label">Stripe Secret Key</div>
@@ -7568,6 +7653,9 @@ def ensure_billing_schema():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         parent_id INTEGER UNIQUE,
         stripe_customer_id TEXT,
+        stripe_setup_session_id TEXT,
+        stripe_setup_intent_id TEXT,
+        stripe_payment_method_id TEXT,
         autopay_enabled INTEGER DEFAULT 0,
         ach_enabled INTEGER DEFAULT 0,
         status TEXT DEFAULT 'not_connected',
@@ -7576,8 +7664,93 @@ def ensure_billing_schema():
         updated_at TEXT
     )
     """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("parent_billing_profiles", "stripe_setup_session_id", "stripe_setup_session_id TEXT")
+    add_column_if_missing("parent_billing_profiles", "stripe_setup_intent_id", "stripe_setup_intent_id TEXT")
+    add_column_if_missing("parent_billing_profiles", "stripe_payment_method_id", "stripe_payment_method_id TEXT")
+
     conn.commit()
     conn.close()
+
+
+def get_stripe_secret_key():
+    return os.environ.get("STRIPE_SECRET_KEY")
+
+
+def stripe_is_configured():
+    return stripe is not None and bool(get_stripe_secret_key())
+
+
+def configure_stripe():
+    if not stripe_is_configured():
+        return False
+    stripe.api_key = get_stripe_secret_key()
+    return True
+
+
+def get_or_create_stripe_customer(cursor, parent_id):
+    cursor.execute("""
+    SELECT parent_name, email, phone
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+    parent = cursor.fetchone()
+
+    if not parent:
+        return None
+
+    cursor.execute("""
+    SELECT stripe_customer_id
+    FROM parent_billing_profiles
+    WHERE parent_id = ?
+    """, (parent_id,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        return row[0]
+
+    if not configure_stripe():
+        return None
+
+    customer = stripe.Customer.create(
+        name=parent[0] or None,
+        email=parent[1] or None,
+        phone=parent[2] or None,
+        metadata={"parent_id": str(parent_id), "app": "hmusic-crm"}
+    )
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO parent_billing_profiles (
+        parent_id,
+        stripe_customer_id,
+        status,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, 'customer_created', ?, ?)
+    ON CONFLICT(parent_id) DO UPDATE SET
+        stripe_customer_id = excluded.stripe_customer_id,
+        status = 'customer_created',
+        updated_at = excluded.updated_at
+    """, (
+        parent_id,
+        customer.id,
+        now,
+        now
+    ))
+
+    return customer.id
+
+
+def public_url_for(path):
+    base_url = (os.environ.get("HMUSIC_PUBLIC_URL") or request.url_root.rstrip("/")).rstrip("/")
+    return f"{base_url}{path}"
 
 
 def mark_message_thread_read(thread_id):
@@ -10902,6 +11075,61 @@ def parent_billing():
     if request.method == "POST":
         action = request.form.get("action")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if action == "start_stripe_setup":
+            if not stripe_is_configured():
+                conn.close()
+                return redirect("/parent_billing?stripe_missing=1")
+
+            try:
+                customer_id = get_or_create_stripe_customer(cursor, parent_id)
+                checkout_session = stripe.checkout.Session.create(
+                    mode="setup",
+                    customer=customer_id,
+                    payment_method_types=["us_bank_account"],
+                    success_url=public_url_for("/stripe/setup/success") + "?session_id={CHECKOUT_SESSION_ID}",
+                    cancel_url=public_url_for("/parent_billing?cancelled=1"),
+                    metadata={"parent_id": str(parent_id)}
+                )
+                cursor.execute("""
+                INSERT INTO parent_billing_profiles (
+                    parent_id,
+                    stripe_customer_id,
+                    stripe_setup_session_id,
+                    autopay_enabled,
+                    ach_enabled,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, 1, 0, 'setup_started', ?, ?, ?)
+                ON CONFLICT(parent_id) DO UPDATE SET
+                    stripe_customer_id = excluded.stripe_customer_id,
+                    stripe_setup_session_id = excluded.stripe_setup_session_id,
+                    autopay_enabled = 1,
+                    status = 'setup_started',
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                """, (
+                    parent_id,
+                    customer_id,
+                    checkout_session.id,
+                    "Stripe test-mode ACH setup session created.",
+                    now,
+                    now
+                ))
+                conn.commit()
+                conn.close()
+                return redirect(checkout_session.url)
+            except Exception as exc:
+                conn.rollback()
+                conn.close()
+                return f"""
+                <h1>Stripe Setup Failed</h1>
+                <p>{escape(str(exc))}</p>
+                <p><a href="/parent_billing">Back to Billing</a></p>
+                """
+
         if action == "request_autopay":
             cursor.execute("""
             INSERT INTO parent_billing_profiles (
@@ -10949,9 +11177,32 @@ def parent_billing():
     status = billing[2] if billing else "not_connected"
     autopay = "On" if billing and billing[0] else "Off"
     ach = "Connected" if billing and billing[1] else "Not connected"
+    stripe_ready = stripe_is_configured()
     requested_alert = ""
     if request.args.get("requested") == "1":
         requested_alert = "<div class='alert'>Request sent. The owner will send the secure Stripe setup link.</div>"
+    if request.args.get("connected") == "1":
+        requested_alert = "<div class='alert'>Bank setup completed in Stripe test mode.</div>"
+    if request.args.get("stripe_missing") == "1":
+        requested_alert = "<div class='warn'>Stripe is not configured yet. Add STRIPE_SECRET_KEY in Render first.</div>"
+    if request.args.get("cancelled") == "1":
+        requested_alert = "<div class='warn'>Stripe setup was cancelled. You can try again when ready.</div>"
+
+    stripe_button = ""
+    if stripe_ready:
+        stripe_button = """
+        <form method="POST">
+            <input type="hidden" name="action" value="start_stripe_setup">
+            <button type="submit">Connect Bank with Stripe Test Mode</button>
+        </form>
+        """
+    else:
+        stripe_button = """
+        <form method="POST">
+            <input type="hidden" name="action" value="request_autopay">
+            <button type="submit">Request Bank AutoPay Setup</button>
+        </form>
+        """
 
     return f"""
     <html>
@@ -10966,6 +11217,7 @@ def parent_billing():
             .label {{ color:#6b7280; font-size:13px; }}
             .value {{ font-size:24px; font-weight:900; margin-top:4px; }}
             .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:8px; padding:12px 16px; font-weight:850; text-decoration:none; margin-right:8px; }}
             .secondary {{ background:#111827 !important; }}
             .hint {{ color:#6b7280; line-height:1.45; }}
@@ -10991,16 +11243,312 @@ def parent_billing():
                 <div class="label">Setup Status</div>
                 <div class="value">{status}</div>
             </div>
-            <form method="POST">
-                <input type="hidden" name="action" value="request_autopay">
-                <button type="submit">Request Bank AutoPay Setup</button>
-                <a class="button secondary" href="/parent_dashboard">Back</a>
-            </form>
+            {stripe_button}
+            <p><a class="button secondary" href="/parent_dashboard">Back</a></p>
         </div>
         {parent_bottom_nav("profile")}
     </body>
     </html>
     """
+
+
+@app.route("/stripe/setup/success")
+def stripe_setup_success():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+    session_id = request.args.get("session_id")
+
+    if not session_id or not stripe_is_configured():
+        return redirect("/parent_billing")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        setup_intent_id = checkout_session.get("setup_intent")
+        payment_method_id = None
+        if setup_intent_id:
+            setup_intent = stripe.SetupIntent.retrieve(setup_intent_id)
+            payment_method_id = setup_intent.get("payment_method")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO parent_billing_profiles (
+            parent_id,
+            stripe_customer_id,
+            stripe_setup_session_id,
+            stripe_setup_intent_id,
+            stripe_payment_method_id,
+            autopay_enabled,
+            ach_enabled,
+            status,
+            notes,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 1, 1, 'connected_test', ?, ?, ?)
+        ON CONFLICT(parent_id) DO UPDATE SET
+            stripe_customer_id = COALESCE(excluded.stripe_customer_id, stripe_customer_id),
+            stripe_setup_session_id = excluded.stripe_setup_session_id,
+            stripe_setup_intent_id = excluded.stripe_setup_intent_id,
+            stripe_payment_method_id = excluded.stripe_payment_method_id,
+            autopay_enabled = 1,
+            ach_enabled = 1,
+            status = 'connected_test',
+            notes = excluded.notes,
+            updated_at = excluded.updated_at
+        """, (
+            parent_id,
+            checkout_session.get("customer"),
+            session_id,
+            setup_intent_id,
+            payment_method_id,
+            "Stripe test-mode ACH setup completed.",
+            now,
+            now
+        ))
+        conn.commit()
+        conn.close()
+
+        create_notification(
+            "owner",
+            "owner",
+            "Bank AutoPay connected",
+            f"{session.get('parent_name', 'Parent')} completed Stripe test-mode bank setup.",
+            "/billing_settings",
+            related_type="billing",
+            related_id=parent_id
+        )
+    except Exception as exc:
+        return f"""
+        <h1>Stripe Setup Check Failed</h1>
+        <p>{escape(str(exc))}</p>
+        <p><a href="/parent_billing">Back to Billing</a></p>
+        """
+
+    return redirect("/parent_billing?connected=1")
+
+
+@app.route("/stripe/webhook", methods=["POST"])
+def stripe_webhook():
+    ensure_billing_schema()
+
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature")
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+    if webhook_secret:
+        if stripe is None:
+            return Response("Stripe SDK missing", status=500)
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        except Exception:
+            return Response("Invalid signature", status=400)
+    else:
+        try:
+            event = request.get_json(force=True)
+        except Exception:
+            return Response("Invalid payload", status=400)
+
+    event_type = event.get("type")
+    data_object = event.get("data", {}).get("object", {})
+
+    if event_type == "checkout.session.completed" and data_object.get("mode") == "setup":
+        parent_id = data_object.get("metadata", {}).get("parent_id")
+        if parent_id:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+            INSERT INTO parent_billing_profiles (
+                parent_id,
+                stripe_customer_id,
+                stripe_setup_session_id,
+                stripe_setup_intent_id,
+                autopay_enabled,
+                ach_enabled,
+                status,
+                notes,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, 1, 'connected_test', ?, ?, ?)
+            ON CONFLICT(parent_id) DO UPDATE SET
+                stripe_customer_id = COALESCE(excluded.stripe_customer_id, stripe_customer_id),
+                stripe_setup_session_id = excluded.stripe_setup_session_id,
+                stripe_setup_intent_id = excluded.stripe_setup_intent_id,
+                autopay_enabled = 1,
+                ach_enabled = 1,
+                status = 'connected_test',
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """, (
+                parent_id,
+                data_object.get("customer"),
+                data_object.get("id"),
+                data_object.get("setup_intent"),
+                "Stripe webhook confirmed checkout setup completion.",
+                now,
+                now
+            ))
+            conn.commit()
+            conn.close()
+
+    if event_type == "checkout.session.completed" and data_object.get("mode") == "payment":
+        invoice_id = data_object.get("metadata", {}).get("invoice_id")
+        if invoice_id:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+            UPDATE invoices
+            SET status = 'stripe_processing',
+                stripe_checkout_session_id = ?,
+                stripe_payment_intent_id = ?,
+                autopay_status = COALESCE(autopay_status, 'processing')
+            WHERE id = ?
+            """, (
+                data_object.get("id"),
+                data_object.get("payment_intent"),
+                invoice_id
+            ))
+            cursor.execute("""
+            INSERT INTO notification_delivery_queue (
+                user_role,
+                user_key,
+                channel,
+                destination,
+                title,
+                body,
+                link_url,
+                related_type,
+                related_id,
+                status,
+                created_at
+            )
+            VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
+            """, (
+                "Stripe payment processing",
+                f"Stripe checkout completed for invoice #{invoice_id}. Await bank/payment settlement before final confirmation.",
+                f"/pay_invoice/{invoice_id}",
+                invoice_id,
+                now
+            ))
+            conn.commit()
+            conn.close()
+
+    return Response("ok", status=200)
+
+
+@app.route("/stripe/invoice/<int:invoice_id>/checkout")
+def stripe_invoice_checkout(invoice_id):
+    if not require_parent():
+        return redirect("/parent_login")
+
+    if not stripe_is_configured():
+        return redirect(f"/parent_invoice/{invoice_id}?stripe_missing=1")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, amount, status
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    if not parent_can_access_student(parent_id, invoice[1]):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    try:
+        customer_id = get_or_create_stripe_customer(cursor, parent_id)
+        checkout_session = stripe.checkout.Session.create(
+            mode="payment",
+            customer=customer_id,
+            payment_method_types=["us_bank_account"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {
+                        "name": f"H-Music Tuition - {invoice[1]}",
+                    },
+                    "unit_amount": int(round((invoice[2] or 0) * 100)),
+                },
+                "quantity": 1,
+            }],
+            success_url=public_url_for("/stripe/invoice/success") + f"?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=public_url_for(f"/parent_invoice/{invoice_id}?cancelled=1"),
+            metadata={"invoice_id": str(invoice_id), "parent_id": str(parent_id)}
+        )
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        UPDATE invoices
+        SET stripe_checkout_session_id = ?,
+            autopay_status = COALESCE(autopay_status, 'checkout_started')
+        WHERE id = ?
+        """, (checkout_session.id, invoice_id))
+        cursor.execute("""
+        INSERT INTO parent_billing_profiles (
+            parent_id,
+            stripe_customer_id,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, 'checkout_started', ?, ?)
+        ON CONFLICT(parent_id) DO UPDATE SET
+            stripe_customer_id = excluded.stripe_customer_id,
+            status = 'checkout_started',
+            updated_at = excluded.updated_at
+        """, (parent_id, customer_id, now, now))
+        conn.commit()
+        conn.close()
+        return redirect(checkout_session.url)
+    except Exception as exc:
+        conn.rollback()
+        conn.close()
+        return f"""
+        <h1>Stripe Checkout Failed</h1>
+        <p>{escape(str(exc))}</p>
+        <p><a href="/parent_invoice/{invoice_id}">Back to Invoice</a></p>
+        """
+
+
+@app.route("/stripe/invoice/success")
+def stripe_invoice_success():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    invoice_id = request.args.get("invoice_id")
+    session_id = request.args.get("session_id")
+    if not invoice_id or not session_id:
+        return redirect("/parent_dashboard")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'stripe_processing',
+        stripe_checkout_session_id = ?,
+        autopay_status = 'processing'
+    WHERE id = ?
+    """, (session_id, invoice_id))
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/parent_invoice/{invoice_id}?stripe_processing=1")
 
 
 @app.route("/parent_invoice/<int:invoice_id>", methods=["GET", "POST"])
@@ -11090,6 +11638,24 @@ def parent_invoice(invoice_id):
     checked_yes = "selected" if invoice[10] == 1 else ""
     checked_no = "" if invoice[10] == 1 else "selected"
     auto_lessons = invoice[11] or invoice[2] or 10
+    stripe_payment_html = ""
+    stripe_status_alert = ""
+    if request.args.get("stripe_missing") == "1":
+        stripe_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
+    elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
+        stripe_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
+    elif request.args.get("cancelled") == "1":
+        stripe_status_alert = "<div class='warn'>Stripe checkout was cancelled. You can try again or use the current studio payment method.</div>"
+
+    if invoice[4] not in ("paid", "stripe_processing"):
+        if stripe_is_configured():
+            stripe_payment_html = f"""
+            <p><a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout">Pay with Stripe Test Mode</a></p>
+            """
+        else:
+            stripe_payment_html = """
+            <p class="hint">Stripe test payment is not enabled yet. Please use the current studio payment method below.</p>
+            """
 
     return f"""
     <html>
@@ -11103,10 +11669,14 @@ def parent_invoice(invoice_id):
             .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; margin:14px 0; }}
             .label {{ color:#6b7280; font-size:13px; }}
             .value {{ font-size:28px; font-weight:900; margin-top:4px; }}
+            .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            .hint {{ color:#6b7280; line-height:1.45; }}
             input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
             textarea {{ min-height:100px; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
             .secondary {{ background:#111827 !important; }}
+            .stripe-button {{ background:#635bff !important; }}
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
@@ -11116,6 +11686,7 @@ def parent_invoice(invoice_id):
     <body>
         <div class="container">
             <h1>Tuition Invoice</h1>
+            {stripe_status_alert}
             <div class="card">
                 <div class="label">Student</div>
                 <div class="value">{invoice[1]}</div>
@@ -11130,6 +11701,7 @@ def parent_invoice(invoice_id):
             <p>{invoice[9] or ''}</p>
 
             <h2>Payment</h2>
+            {stripe_payment_html}
             <p>Please pay with the studio's current tuition method. After sending payment, tap the button below so the owner can confirm and mark it paid.</p>
             <form method="POST">
                 <input type="hidden" name="action" value="notify_paid">
@@ -17482,10 +18054,17 @@ def ensure_v321_schema():
     add_column_if_missing("enrollments", "auto_renew_lessons", "auto_renew_lessons REAL DEFAULT 10")
     add_column_if_missing("enrollments", "renewal_reminder_sent_at", "renewal_reminder_sent_at TEXT")
     add_column_if_missing("enrollments", "auto_renewed_at", "auto_renewed_at TEXT")
+    add_column_if_missing("enrollments", "first_lesson_autopay_reminder_sent_at", "first_lesson_autopay_reminder_sent_at TEXT")
+    add_column_if_missing("enrollments", "autopay_pending_invoice_id", "autopay_pending_invoice_id INTEGER")
+    add_column_if_missing("enrollments", "autopay_charge_due_date", "autopay_charge_due_date TEXT")
+    add_column_if_missing("enrollments", "autopay_charge_status", "autopay_charge_status TEXT")
 
     add_column_if_missing("invoices", "enrollment_id", "enrollment_id INTEGER")
     add_column_if_missing("invoices", "due_date", "due_date TEXT")
     add_column_if_missing("invoices", "notes", "notes TEXT")
+    add_column_if_missing("invoices", "stripe_checkout_session_id", "stripe_checkout_session_id TEXT")
+    add_column_if_missing("invoices", "stripe_payment_intent_id", "stripe_payment_intent_id TEXT")
+    add_column_if_missing("invoices", "autopay_status", "autopay_status TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
 
     conn.commit()
@@ -17597,7 +18176,8 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
         auto_renew_enabled,
         auto_renew_lessons,
         renewal_reminder_sent_at,
-        auto_renewed_at
+        auto_renewed_at,
+        first_lesson_autopay_reminder_sent_at
     FROM enrollments
     WHERE id = ?
     """, (enrollment_id,))
@@ -17608,8 +18188,24 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lessons_left = e[1] or 0
+    package_lessons = e[3] or e[5] or 10
+    auto_renew_enabled = e[4] == 1
     events = []
     parent_id = get_primary_parent_for_student(cursor, student_name)
+
+    if auto_renew_enabled and package_lessons and lessons_left == package_lessons - 1 and not e[8]:
+        cursor.execute("""
+        UPDATE enrollments
+        SET first_lesson_autopay_reminder_sent_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (now, now, enrollment_id))
+        events.append({
+            "parent_id": parent_id,
+            "title": "AutoPay payment reminder",
+            "body": f"{student_name}'s package is set to AutoPay. H-Music will remind you again on the second-to-last lesson before the next package renews.",
+            "link": "/parent_billing"
+        })
 
     if lessons_left <= 2 and not e[6]:
         cursor.execute("""
@@ -17620,30 +18216,53 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
         """, (now, now, enrollment_id))
         events.append({
             "parent_id": parent_id,
-            "title": "Lessons running low",
-            "body": f"{student_name} has {lessons_left} lesson(s) left. Please prepare tuition renewal.",
-            "link": "/parent_dashboard"
+            "title": "AutoPay payment reminder",
+            "body": f"{student_name} has {lessons_left} lesson(s) left. This package is set to AutoPay, and the next package will be prepared soon.",
+            "link": "/parent_billing" if auto_renew_enabled else "/parent_dashboard"
         })
 
-    if lessons_left <= 0 and e[4] == 1:
+    if lessons_left <= 0 and auto_renew_enabled:
         invoice_id = create_enrollment_invoice(
             cursor,
             enrollment_id,
             "auto_renewal",
-            "Auto-renewal invoice generated after package completion."
+            "Auto-renewal invoice generated after package completion. Stripe AutoPay will be triggered on the next package first lesson date."
         )
 
         if invoice_id:
             cursor.execute("""
+            SELECT lesson_date
+            FROM schedule
+            WHERE enrollment_id = ?
+            AND student_name = ?
+            AND lesson_date >= ?
+            AND COALESCE(status, 'scheduled') = 'scheduled'
+            ORDER BY lesson_date, lesson_time
+            LIMIT 1
+            """, (
+                enrollment_id,
+                student_name,
+                date.today().strftime("%Y-%m-%d")
+            ))
+            next_lesson = cursor.fetchone()
+            autopay_due_date = next_lesson[0] if next_lesson else date.today().strftime("%Y-%m-%d")
+
+            cursor.execute("""
             UPDATE enrollments
             SET lessons_left = lessons_left + ?,
                 auto_renewed_at = ?,
+                first_lesson_autopay_reminder_sent_at = NULL,
                 renewal_reminder_sent_at = NULL,
+                autopay_pending_invoice_id = ?,
+                autopay_charge_due_date = ?,
+                autopay_charge_status = 'pending',
                 updated_at = ?
             WHERE id = ?
             """, (
                 e[5] or e[3] or 10,
                 now,
+                invoice_id,
+                autopay_due_date,
                 now,
                 enrollment_id
             ))
@@ -17657,8 +18276,8 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
 
             events.append({
                 "parent_id": parent_id,
-                "title": "Auto-renewal tuition due",
-                "body": f"{student_name}'s package completed. A new tuition invoice for ${invoice_amount} has been generated.",
+                "title": "AutoPay payment scheduled",
+                "body": f"{student_name}'s next package invoice for ${invoice_amount} is ready. AutoPay is scheduled for {autopay_due_date}, the next package first lesson date.",
                 "link": f"/parent_invoice/{invoice_id}"
             })
 
