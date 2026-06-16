@@ -10067,6 +10067,9 @@ def reject_reschedule(request_id):
 @app.route("/parent_login", methods=["GET", "POST"])
 def parent_login():
     ensure_v27_schema()
+    native_app = request.args.get("native_app") == "1" or session.get("parent_native_app") == 1
+    if native_app:
+        session["parent_native_app"] = 1
 
     if request.method == "POST":
         parent_email = request.form.get("parent_email")
@@ -10101,6 +10104,8 @@ def parent_login():
                 conn.close()
 
                 session.clear()
+                if native_app:
+                    session["parent_native_app"] = 1
                 session["parent_id"] = parent[0]
                 session["parent_name"] = parent[1]
                 session["parent_email"] = parent[2]
@@ -10131,6 +10136,8 @@ def parent_login():
                 conn.close()
 
                 session.clear()
+                if native_app:
+                    session["parent_native_app"] = 1
 
                 if parent:
                     session["parent_id"] = parent[0]
@@ -10208,6 +10215,8 @@ def parent_login():
         </body>
         </html>
         """
+
+    install_link_html = "" if native_app else '<p class="install-link"><a href="/app_install">Install on phone</a></p>'
 
     return """
     <html>
@@ -10338,7 +10347,7 @@ def parent_login():
                 <p class="hint">Parent App</p>
             </div>
             <p class="subtitle">Access your child's lessons, messages, reschedule requests, and account history.</p>
-            <p class="install-link"><a href="/app_install">Install on phone</a></p>
+            """ + install_link_html + """
 
             <form method="POST">
                 Parent Email:<br>
