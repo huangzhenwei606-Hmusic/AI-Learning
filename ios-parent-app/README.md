@@ -2,7 +2,7 @@
 
 This folder is the native iOS wrapper for the H-Music parent app. It points only to the parent app entry at:
 
-https://hmusic-crm.onrender.com/app
+https://hmusic-crm.onrender.com/parent_login
 
 Owner and teacher dashboards remain web-only.
 

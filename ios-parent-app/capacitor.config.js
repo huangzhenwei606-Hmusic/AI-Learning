@@ -4,7 +4,7 @@ const config = {
   appName: "H-Music",
   webDir: "www",
   server: {
-    url: "https://hmusic-crm.onrender.com/app",
+    url: "https://hmusic-crm.onrender.com/parent_login",
     cleartext: false
   },
   ios: {

@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#4f46e5">
     <title>H-Music</title>
+    <script>
+      window.setTimeout(function () {
+        window.location.replace("https://hmusic-crm.onrender.com/parent_login");
+      }, 800);
+    </script>
     <style>
       * {
         box-sizing: border-box;
@@ -68,7 +73,7 @@
         line-height: 1.5;
       }
 
-      a {
+      .status {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -76,11 +81,10 @@
         min-height: 48px;
         padding: 0 18px;
         border-radius: 8px;
-        background: #4f46e5;
-        color: #ffffff;
+        background: #111827;
+        color: #ffda40;
         font-weight: 800;
-        text-decoration: none;
-        box-shadow: 0 12px 24px rgba(79, 70, 229, 0.22);
+        box-shadow: 0 12px 24px rgba(17, 24, 39, 0.16);
       }
     </style>
   </head>
@@ -90,7 +94,7 @@
       <div class="eyebrow">Parent App</div>
       <h1>H-Music</h1>
       <p>Lessons, messages, homework, reschedules, and billing for H-Music families.</p>
-      <a href="https://hmusic-crm.onrender.com/app">Open Parent App</a>
+      <div class="status">Opening Parent App...</div>
     </main>
   </body>
 </html>
