@@ -11019,6 +11019,72 @@ def parent_dashboard():
             .desktop-table {{
                 margin-top: 12px;
             }}
+            .secondary-actions {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 10px;
+                margin: 10px 0 28px;
+            }}
+            .secondary-action {{
+                display: block;
+                background: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 14px;
+                text-decoration: none;
+                color: #111827;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            }}
+            .secondary-action strong {{
+                display: block;
+                font-size: 16px;
+                margin-bottom: 4px;
+            }}
+            .secondary-action span {{
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            .records-panel {{
+                border: 1px solid #e5e7eb;
+                border-radius: 18px;
+                background: #ffffff;
+                margin: 6px 0 28px;
+                overflow: hidden;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            }}
+            .records-panel summary {{
+                cursor: pointer;
+                list-style: none;
+                padding: 16px;
+                font-weight: 900;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }}
+            .records-panel summary::-webkit-details-marker {{
+                display: none;
+            }}
+            .records-panel summary::after {{
+                content: "+";
+                color: #4f46e5;
+                font-size: 24px;
+                line-height: 1;
+            }}
+            .records-panel[open] summary::after {{
+                content: "-";
+            }}
+            .records-content {{
+                border-top: 1px solid #e5e7eb;
+                padding: 16px;
+            }}
+            .records-content h2 {{
+                font-size: 22px;
+                margin-top: 24px;
+            }}
+            .records-content h2:first-child {{
+                margin-top: 0;
+            }}
             .parent-bottom-nav {{
                 position: fixed;
                 left: 0;
@@ -11081,6 +11147,9 @@ def parent_dashboard():
                     display: grid;
                     grid-template-columns: 1fr 1fr;
                 }}
+                .secondary-actions {{
+                    grid-template-columns: 1fr;
+                }}
                 a.button {{
                     text-align: center;
                     margin: 0;
@@ -11088,7 +11157,14 @@ def parent_dashboard():
                 .notes-grid {{
                     grid-template-columns: 1fr;
                 }}
-                .desktop-table {{
+                .desktop-table,
+                .records-content table {{
+                    display: none;
+                }}
+                .records-content {{
+                    padding: 0 16px 16px;
+                }}
+                .records-content h2 {{
                     display: none;
                 }}
             }}
@@ -11159,9 +11235,7 @@ def parent_dashboard():
                 <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
                 <a class="button" href="/parent_messages">{message_label}</a>
                 <a class="button" href="/parent_cancel">Cancel Lesson</a>
-                <a class="button" href="/parent_profile">Parent Profile</a>
                 <a class="button" href="/parent_billing">Billing / AutoPay</a>
-                <a class="button" href="/student_ledger/{student[0]}">Full Ledger</a>
             </div>
 
             <h2>Upcoming Lessons</h2>
@@ -11174,73 +11248,83 @@ def parent_dashboard():
                 {lesson_note_cards}
             </div>
 
-            <table class="desktop-table">
-                <tr>
-                    <th>Date</th>
-                    <th>Time</th>
-                    <th>Teacher</th>
-                    <th>Location / Room</th>
-                    <th>Status</th>
-                </tr>
-                {upcoming_rows}
-            </table>
+            <h2>More</h2>
+            <div class="secondary-actions">
+                <a class="secondary-action" href="/parent_billing">
+                    <strong>Billing</strong>
+                    <span>Invoices, AutoPay, payment setup</span>
+                </a>
+                <a class="secondary-action" href="/student_ledger/{student[0]}">
+                    <strong>Full Ledger</strong>
+                    <span>Complete account history</span>
+                </a>
+                <a class="secondary-action" href="/parent_notifications">
+                    <strong>Updates</strong>
+                    <span>App notices and reminders</span>
+                </a>
+            </div>
 
-            <h2 id="invoices">Invoices</h2>
-            <table>
-                <tr>
-                    <th>ID</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th>Type</th>
-                    <th>Created</th>
-                    <th>Action</th>
-                </tr>
-                {invoice_rows}
-            </table>
+            <details class="records-panel">
+                <summary>Account Records</summary>
+                <div class="records-content">
+                    <h2 id="invoices">Invoices</h2>
+                    <table>
+                        <tr>
+                            <th>ID</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Type</th>
+                            <th>Created</th>
+                            <th>Action</th>
+                        </tr>
+                        {invoice_rows}
+                    </table>
 
-            <h2>Payments</h2>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Lessons Added</th>
-                    <th>Method</th>
-                </tr>
-                {payment_rows}
-            </table>
+                    <h2>Payments</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Amount</th>
+                            <th>Lessons Added</th>
+                            <th>Method</th>
+                        </tr>
+                        {payment_rows}
+                    </table>
 
-            <h2>Recent Ledger</h2>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Type</th>
-                    <th>Amount</th>
-                    <th>Description</th>
-                </tr>
-                {ledger_rows}
-            </table>
+                    <h2>Recent Ledger</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Description</th>
+                        </tr>
+                        {ledger_rows}
+                    </table>
 
-            <h2>Parent Activity</h2>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Student</th>
-                    <th>Action</th>
-                    <th>Description</th>
-                </tr>
-                {activity_rows}
-            </table>
+                    <h2>Parent Activity</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Student</th>
+                            <th>Action</th>
+                            <th>Description</th>
+                        </tr>
+                        {activity_rows}
+                    </table>
 
-            <h2>Lesson History</h2>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Lesson Content</th>
-                    <th>Performance</th>
-                    <th>Homework</th>
-                </tr>
-                {lesson_rows}
-            </table>
+                    <h2>Lesson History</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Lesson Content</th>
+                            <th>Performance</th>
+                            <th>Homework</th>
+                        </tr>
+                        {lesson_rows}
+                    </table>
+                </div>
+            </details>
 
         </div>
         {parent_bottom_nav("home")}
