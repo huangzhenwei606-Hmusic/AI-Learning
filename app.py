@@ -100,6 +100,17 @@ def get_parent_unread_message_count():
         return 0
 
 
+def get_parent_unread_notification_count():
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return 0
+
+    try:
+        return get_unread_notification_count("parent", str(parent_id))
+    except Exception:
+        return 0
+
+
 def parent_bottom_nav(active="home"):
     items = [
         ("home", "/parent_dashboard", "Home"),
@@ -109,6 +120,7 @@ def parent_bottom_nav(active="home"):
     ]
     links = ""
     unread_messages = get_parent_unread_message_count()
+    unread_notifications = get_parent_unread_notification_count()
     for key, href, label in items:
         active_class = "active" if key == active else ""
         badge = ""
@@ -119,6 +131,14 @@ def parent_bottom_nav(active="home"):
                 f'height:18px;padding:0 5px;border-radius:999px;'
                 f'background:#dc2626;color:white;font-size:11px;'
                 f'font-weight:900;">{unread_messages}</span>'
+            )
+        if key == "home" and unread_notifications:
+            badge = (
+                f' <span class="nav-badge" style="display:inline-flex;'
+                f'align-items:center;justify-content:center;min-width:18px;'
+                f'height:18px;padding:0 5px;border-radius:999px;'
+                f'background:#dc2626;color:white;font-size:11px;'
+                f'font-weight:900;">{unread_notifications}</span>'
             )
         links += f'<a class="{active_class}" href="{href}">{label}{badge}</a>'
     return f'<nav class="parent-bottom-nav">{links}</nav>'
@@ -966,6 +986,7 @@ def home():
             <a href="/add_inquiry">Add Inquiry</a>
             <a href="/owner_settings">Owner Settings</a>
             <a href="/notification_queue">Notification Queue</a>
+            <a href="/billing_settings">Billing Settings</a>
             <a href="/owner_sub_requests">Sub Requests{sub_badge}</a>
             <a href="/teacher_rate_cards">Teacher Rate Cards</a>
             <a href="/rate_overrides">Course Pay Rates</a>
@@ -3783,7 +3804,7 @@ def teacher_dashboard():
         status = lesson[5] or "scheduled"
         display_color = lesson[6] or "#3b82f6"
         cls = status_class(status)
-        lesson_style = f'style="border-left-color:{display_color};"' if cls == "scheduled" else ""
+        lesson_style = f'style="--lesson-color:{display_color};"' if cls == "scheduled" else ""
 
         return f"""
         <div class="lesson {cls}" {lesson_style}>
@@ -4129,29 +4150,34 @@ def teacher_dashboard():
                 padding: 5px 6px;
                 margin-bottom: 5px;
                 font-size: 10px;
-                border-left: 8px solid #3b82f6;
-                box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.04);
+                border: 2px solid var(--lesson-color, #3b82f6);
+                border-left-width: 8px;
+                box-shadow: 0 1px 2px rgba(17, 24, 39, 0.08);
                 background: #eff6ff;
             }}
 
             .lesson.present {{
                 background: #ecfdf3;
-                border-left-color: #16a34a;
+                border-color: #16a34a;
+                border-left-width: 8px;
             }}
 
             .lesson.noshow {{
                 background: #fff1f2;
-                border-left-color: #dc2626;
+                border-color: #dc2626;
+                border-left-width: 8px;
             }}
 
             .lesson.cancel {{
                 background: #fffbeb;
-                border-left-color: #f59e0b;
+                border-color: #f59e0b;
+                border-left-width: 8px;
             }}
 
             .lesson.excused {{
                 background: #f3f4f6;
-                border-left-color: #9ca3af;
+                border-color: #9ca3af;
+                border-left-width: 8px;
             }}
 
             .lesson-main {{
@@ -5111,7 +5137,7 @@ def pay_invoice(invoice_id):
     <p><a href="/invoices">Back to Invoices</a></p>
     """
 
-@app.route("/owner_settings")
+@app.route("/owner_settings", methods=["GET", "POST"])
 def owner_settings():
 
     if not require_owner():
@@ -5126,6 +5152,8 @@ def owner_settings():
         cancel_3h_charge = request.form.get("cancel_3h_charge")
         cancel_12h_charge = request.form.get("cancel_12h_charge")
         cancel_24h_charge = request.form.get("cancel_24h_charge")
+        owner_email = request.form.get("owner_email")
+        owner_phone = request.form.get("owner_phone")
 
         settings_to_update = {
             "free_cancel_per_package": free_cancel_per_package,
@@ -5133,6 +5161,8 @@ def owner_settings():
             "cancel_3h_charge": cancel_3h_charge,
             "cancel_12h_charge": cancel_12h_charge,
             "cancel_24h_charge": cancel_24h_charge,
+            "owner_email": owner_email,
+            "owner_phone": owner_phone,
         }
 
         for key, value in settings_to_update.items():
@@ -5228,6 +5258,12 @@ def owner_settings():
 
                 <label>Cancel Within 24 Hours Charge</label>
                 <input name="cancel_24h_charge" value="{settings.get('cancel_24h_charge', '0.5')}">
+
+                <label>Owner Notification Email</label>
+                <input name="owner_email" value="{settings.get('owner_email', '')}">
+
+                <label>Owner Notification Phone</label>
+                <input name="owner_phone" value="{settings.get('owner_phone', '')}">
 
                 <button type="submit">Save Settings</button>
 
@@ -6914,6 +6950,16 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
         related_type=related_type,
         related_id=related_id
     )
+    queue_notification_delivery(
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        "email",
+        related_type=related_type,
+        related_id=related_id
+    )
     if should_queue_sms_notification(title):
         queue_sms_if_available(
             user_role,
@@ -6971,6 +7017,20 @@ def should_queue_sms_notification(title):
 def get_notification_destination(cursor, user_role, user_key, channel):
     if channel == "push":
         return f"{user_role}:{user_key}"
+
+    if channel == "email":
+        if user_role == "parent":
+            cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "teacher":
+            cursor.execute("SELECT email FROM teachers WHERE teacher_name = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "owner":
+            cursor.execute("SELECT value FROM settings WHERE key = 'owner_email'")
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
 
     if channel == "sms":
         if user_role == "parent":
@@ -7046,6 +7106,53 @@ def queue_sms_if_available(user_role, user_key, title, body, link_url, related_t
         related_type=related_type,
         related_id=related_id
     )
+
+
+def send_email_delivery(destination, title, body, link_url):
+    smtp_host = os.environ.get("HMUSIC_SMTP_HOST")
+    smtp_port = int(os.environ.get("HMUSIC_SMTP_PORT", "587"))
+    smtp_user = os.environ.get("HMUSIC_SMTP_USER")
+    smtp_password = os.environ.get("HMUSIC_SMTP_PASSWORD")
+    from_email = os.environ.get("HMUSIC_FROM_EMAIL") or smtp_user
+
+    if not smtp_host or not smtp_user or not smtp_password or not from_email:
+        return False, "SMTP not configured. Add HMUSIC_SMTP_HOST, HMUSIC_SMTP_USER, HMUSIC_SMTP_PASSWORD, and HMUSIC_FROM_EMAIL."
+
+    message = EmailMessage()
+    message["Subject"] = title or "H-Music Notification"
+    message["From"] = from_email
+    message["To"] = destination
+    message.set_content(
+        f"{body or ''}\n\nOpen: {link_url or '/'}\n\nH-Music"
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(message)
+
+    return True, "Email sent via SMTP."
+
+
+def mark_delivery_status(queue_id, status, provider_response=None):
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE notification_delivery_queue
+    SET status = ?,
+        provider_response = ?,
+        sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END
+    WHERE id = ?
+    """, (
+        status,
+        provider_response,
+        status,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        queue_id
+    ))
+    conn.commit()
+    conn.close()
 
 
 def create_lesson_reminders_for_date(target_date):
@@ -7135,7 +7242,7 @@ def notification_queue():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT id, channel, user_role, user_key, destination, title, status, created_at, link_url
+    SELECT id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response
     FROM notification_delivery_queue
     ORDER BY id DESC
     LIMIT 100
@@ -7145,6 +7252,16 @@ def notification_queue():
 
     rows = ""
     for r in rows_data:
+        actions = f'<a href="{r[8]}">Open</a>'
+        if r[6] == "pending":
+            actions += f"""
+            <form method="POST" action="/notification_queue/{r[0]}/send" style="display:inline;">
+                <button type="submit">Send</button>
+            </form>
+            <form method="POST" action="/notification_queue/{r[0]}/mark_sent" style="display:inline;">
+                <button type="submit">Mark Sent</button>
+            </form>
+            """
         rows += f"""
         <tr>
             <td>{r[0]}</td>
@@ -7154,12 +7271,13 @@ def notification_queue():
             <td>{r[5]}</td>
             <td>{r[6]}</td>
             <td>{r[7]}</td>
-            <td><a href="{r[8]}">Open</a></td>
+            <td>{r[9] or ''}</td>
+            <td>{actions}</td>
         </tr>
         """
 
     if not rows:
-        rows = "<tr><td colspan='8'>No queued notifications yet.</td></tr>"
+        rows = "<tr><td colspan='9'>No queued notifications yet.</td></tr>"
 
     return f"""
     <html>
@@ -7172,14 +7290,17 @@ def notification_queue():
             th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
             th {{ background:#eeeeff; }}
             a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            button {{ background:#111827; color:white; border:none; border-radius:7px; padding:7px 10px; font-weight:800; margin:2px; }}
+            .hint {{ color:#6b7280; max-width:900px; line-height:1.45; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>Notification Queue</h1>
-            <p>This is the V33 bridge for future push/SMS sending. Pending SMS entries are ready for a provider such as Twilio.</p>
+            <p class="hint">App notifications are visible inside the parent app badge. Email can send now if SMTP environment variables are configured. SMS rows are queued for the next provider step, such as Twilio.</p>
             <a class="button" href="/">Home</a>
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
+            <a class="button" href="/billing_settings">Billing Settings</a>
             <table>
                 <tr>
                     <th>ID</th>
@@ -7189,7 +7310,159 @@ def notification_queue():
                     <th>Title</th>
                     <th>Status</th>
                     <th>Created</th>
-                    <th>Link</th>
+                    <th>Provider Response</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/notification_queue/<int:queue_id>/mark_sent", methods=["POST"])
+def notification_queue_mark_sent(queue_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    mark_delivery_status(queue_id, "sent", "Marked sent manually by owner.")
+    return redirect("/notification_queue")
+
+
+@app.route("/notification_queue/<int:queue_id>/send", methods=["POST"])
+def notification_queue_send(queue_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT channel, destination, title, body, link_url
+    FROM notification_delivery_queue
+    WHERE id = ?
+    """, (queue_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return redirect("/notification_queue")
+
+    channel, destination, title, body, link_url = row
+    if channel == "email":
+        try:
+            sent, response = send_email_delivery(destination, title, body, link_url)
+        except Exception as exc:
+            sent = False
+            response = f"Email send failed: {exc}"
+        mark_delivery_status(queue_id, "sent" if sent else "failed", response)
+    elif channel == "push":
+        mark_delivery_status(queue_id, "sent", "In-app notification queued. Browser push provider not connected yet.")
+    elif channel == "sms":
+        mark_delivery_status(queue_id, "failed", "SMS provider not configured yet. Connect Twilio or another SMS provider next.")
+    else:
+        mark_delivery_status(queue_id, "failed", f"Unsupported channel: {channel}")
+
+    return redirect("/notification_queue")
+
+
+@app.route("/billing_settings")
+def billing_settings():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        p.id,
+        p.parent_name,
+        p.email,
+        p.phone,
+        COALESCE(b.status, 'not_connected'),
+        COALESCE(b.autopay_enabled, 0),
+        COALESCE(b.ach_enabled, 0),
+        b.updated_at
+    FROM parent_profiles p
+    LEFT JOIN parent_billing_profiles b
+        ON p.id = b.parent_id
+    ORDER BY p.parent_name, p.email
+    """)
+    rows_data = cursor.fetchall()
+    conn.close()
+
+    stripe_secret_ready = "Configured" if os.environ.get("STRIPE_SECRET_KEY") else "Missing"
+    stripe_webhook_ready = "Configured" if os.environ.get("STRIPE_WEBHOOK_SECRET") else "Missing"
+    smtp_ready = "Configured" if os.environ.get("HMUSIC_SMTP_HOST") else "Missing"
+
+    rows = ""
+    for r in rows_data:
+        rows += f"""
+        <tr>
+            <td>{r[1] or ''}</td>
+            <td>{r[2] or ''}</td>
+            <td>{r[3] or ''}</td>
+            <td>{r[4]}</td>
+            <td>{"On" if r[5] else "Off"}</td>
+            <td>{"Connected" if r[6] else "Not connected"}</td>
+            <td>{r[7] or ''}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='7'>No parent profiles yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Billing Settings</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            .cards {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:18px 0; }}
+            .card {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:22px; font-weight:900; margin-top:4px; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
+            th {{ background:#eeeeff; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            .hint {{ color:#6b7280; line-height:1.45; max-width:900px; }}
+            @media(max-width:760px) {{ .cards {{ grid-template-columns:1fr; }} table {{ display:block; overflow-x:auto; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Stripe / ACH Billing Setup</h1>
+            <p class="hint">This page tracks which parents requested bank AutoPay. Real bank collection should happen through Stripe-hosted setup or SetupIntent; H-Music should not store bank account numbers.</p>
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/owner_settings">Owner Settings</a>
+            <a class="button" href="/notification_queue">Notification Queue</a>
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Stripe Secret Key</div>
+                    <div class="value">{stripe_secret_ready}</div>
+                </div>
+                <div class="card">
+                    <div class="label">Stripe Webhook Secret</div>
+                    <div class="value">{stripe_webhook_ready}</div>
+                </div>
+                <div class="card">
+                    <div class="label">SMTP Email</div>
+                    <div class="value">{smtp_ready}</div>
+                </div>
+            </div>
+            <table>
+                <tr>
+                    <th>Parent</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Setup Status</th>
+                    <th>AutoPay</th>
+                    <th>ACH</th>
+                    <th>Updated</th>
                 </tr>
                 {rows}
             </table>
@@ -7246,6 +7519,65 @@ def get_unread_message_count(viewer_role, viewer_key):
     count = cursor.fetchone()[0] or 0
     conn.close()
     return count
+
+
+def get_unread_notification_count(user_role, user_key):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM notifications
+    WHERE user_role = ?
+    AND user_key = ?
+    AND read_at IS NULL
+    """, (user_role, str(user_key)))
+    count = cursor.fetchone()[0] or 0
+    conn.close()
+    return count
+
+
+def mark_notifications_read(user_role, user_key):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE notifications
+    SET read_at = ?
+    WHERE user_role = ?
+    AND user_key = ?
+    AND read_at IS NULL
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        user_role,
+        str(user_key)
+    ))
+    conn.commit()
+    conn.close()
+
+
+def ensure_billing_schema():
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_billing_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER UNIQUE,
+        stripe_customer_id TEXT,
+        autopay_enabled INTEGER DEFAULT 0,
+        ach_enabled INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'not_connected',
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
 
 
 def mark_message_thread_read(thread_id):
@@ -9843,6 +10175,7 @@ def parent_dashboard():
 
     parent_id = session.get("parent_id")
     unread_messages = get_unread_message_count("parent", parent_id) if parent_id else 0
+    unread_notifications = get_unread_notification_count("parent", str(parent_id)) if parent_id else 0
     message_label = f"Messages ({unread_messages})" if unread_messages else "Messages"
     linked_students = get_parent_students(parent_id) if parent_id else []
     payment_notice = request.args.get("payment_notice")
@@ -10027,10 +10360,21 @@ def parent_dashboard():
 
     tuition_alert = ""
     notice_alert = ""
+    app_notification_alert = ""
     if payment_notice == "sent":
         notice_alert = """
         <div class="notice-alert">
             Payment notice sent. The owner will confirm after payment is received.
+        </div>
+        """
+    if unread_notifications:
+        app_notification_alert = f"""
+        <div class="app-notification-alert">
+            <div>
+                <strong>App Notifications</strong><br>
+                {unread_notifications} unread update(s).
+            </div>
+            <a href="/parent_notifications">View</a>
         </div>
         """
 
@@ -10183,8 +10527,28 @@ def parent_dashboard():
                 margin: 18px 0;
                 font-weight: 800;
             }}
+            .app-notification-alert {{
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                align-items: center;
+                background: #eef2ff;
+                border: 1px solid #c7d2fe;
+                color: #3730a3;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 18px 0;
+            }}
             .tuition-alert a {{
                 background: #ea580c;
+                color: white;
+                padding: 10px 12px;
+                border-radius: 8px;
+                text-decoration: none;
+                white-space: nowrap;
+            }}
+            .app-notification-alert a {{
+                background: #4f46e5;
                 color: white;
                 padding: 10px 12px;
                 border-radius: 8px;
@@ -10336,6 +10700,7 @@ def parent_dashboard():
 
             {tuition_alert}
             {notice_alert}
+            {app_notification_alert}
 
             <div class="cards">
                 <div class="card">
@@ -10364,6 +10729,7 @@ def parent_dashboard():
                 <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
                 <a class="button" href="/parent_messages">{message_label}</a>
                 <a class="button" href="/parent_profile">Parent Profile</a>
+                <a class="button" href="/parent_billing">Billing / AutoPay</a>
                 <a class="button" href="/student_ledger/{student[0]}">Full Ledger</a>
             </div>
 
@@ -10438,6 +10804,200 @@ def parent_dashboard():
 
         </div>
         {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_notifications", methods=["GET", "POST"])
+def parent_notifications():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    parent_id = session.get("parent_id")
+    if request.method == "POST":
+        mark_notifications_read("parent", str(parent_id))
+        return redirect("/parent_notifications")
+
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, title, body, link_url, read_at, created_at
+    FROM notifications
+    WHERE user_role = 'parent'
+    AND user_key = ?
+    ORDER BY id DESC
+    LIMIT 50
+    """, (str(parent_id),))
+    rows_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for item in rows_data:
+        status = "Unread" if not item[4] else "Read"
+        rows += f"""
+        <div class="notice {'unread' if not item[4] else ''}">
+            <div class="notice-top">
+                <strong>{item[1]}</strong>
+                <span>{status} · {item[5]}</span>
+            </div>
+            <p>{item[2] or ''}</p>
+            <a href="{item[3] or '/parent_dashboard'}">Open</a>
+        </div>
+        """
+
+    if not rows:
+        rows = "<p class='muted'>No app notifications yet.</p>"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Notifications")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; max-width:760px; margin:0 auto; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
+            h1 {{ font-size:30px; margin:0 0 18px; }}
+            .notice {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:12px 0; background:#fff; }}
+            .notice.unread {{ border-color:#4f46e5; background:#eef2ff; }}
+            .notice-top {{ display:flex; justify-content:space-between; gap:12px; }}
+            .notice-top span {{ color:#6b7280; font-size:12px; white-space:nowrap; }}
+            .notice p {{ color:#374151; line-height:1.45; }}
+            a, button {{ font-weight:850; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:8px; padding:12px 16px; text-decoration:none; margin-right:8px; }}
+            .secondary {{ background:#111827 !important; }}
+            .muted {{ color:#6b7280; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>App Notifications</h1>
+            <form method="POST" style="margin-bottom:14px;">
+                <button type="submit">Mark All Read</button>
+                <a class="button secondary" href="/parent_dashboard">Back</a>
+            </form>
+            {rows}
+        </div>
+        {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_billing", methods=["GET", "POST"])
+def parent_billing():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if action == "request_autopay":
+            cursor.execute("""
+            INSERT INTO parent_billing_profiles (
+                parent_id,
+                autopay_enabled,
+                ach_enabled,
+                status,
+                notes,
+                created_at,
+                updated_at
+            )
+            VALUES (?, 1, 0, 'requested', ?, ?, ?)
+            ON CONFLICT(parent_id) DO UPDATE SET
+                autopay_enabled = 1,
+                status = 'requested',
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """, (
+                parent_id,
+                "Parent requested Stripe ACH/autopay setup.",
+                now,
+                now
+            ))
+            conn.commit()
+            conn.close()
+            create_notification(
+                "owner",
+                "owner",
+                "Autopay setup requested",
+                f"{session.get('parent_name', 'Parent')} requested bank/autopay setup.",
+                "/billing_settings",
+                related_type="billing",
+                related_id=parent_id
+            )
+            return redirect("/parent_billing?requested=1")
+
+    cursor.execute("""
+    SELECT autopay_enabled, ach_enabled, status, updated_at
+    FROM parent_billing_profiles
+    WHERE parent_id = ?
+    """, (parent_id,))
+    billing = cursor.fetchone()
+    conn.close()
+
+    status = billing[2] if billing else "not_connected"
+    autopay = "On" if billing and billing[0] else "Off"
+    ach = "Connected" if billing and billing[1] else "Not connected"
+    requested_alert = ""
+    if request.args.get("requested") == "1":
+        requested_alert = "<div class='alert'>Request sent. The owner will send the secure Stripe setup link.</div>"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Billing")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; max-width:760px; margin:0 auto; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
+            h1 {{ font-size:30px; margin:0 0 18px; }}
+            .card {{ border:1px solid #e5e7eb; border-radius:10px; padding:16px; margin:14px 0; background:#f8fafc; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:24px; font-weight:900; margin-top:4px; }}
+            .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:8px; padding:12px 16px; font-weight:850; text-decoration:none; margin-right:8px; }}
+            .secondary {{ background:#111827 !important; }}
+            .hint {{ color:#6b7280; line-height:1.45; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Billing & AutoPay</h1>
+            {requested_alert}
+            <p class="hint">For safety, H-Music does not store bank account details. Bank setup will happen through a secure Stripe page after the owner enables live billing.</p>
+            <div class="card">
+                <div class="label">Bank / ACH</div>
+                <div class="value">{ach}</div>
+            </div>
+            <div class="card">
+                <div class="label">AutoPay</div>
+                <div class="value">{autopay}</div>
+            </div>
+            <div class="card">
+                <div class="label">Setup Status</div>
+                <div class="value">{status}</div>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="action" value="request_autopay">
+                <button type="submit">Request Bank AutoPay Setup</button>
+                <a class="button secondary" href="/parent_dashboard">Back</a>
+            </form>
+        </div>
+        {parent_bottom_nav("profile")}
     </body>
     </html>
     """
