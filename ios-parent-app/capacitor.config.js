@@ -7,7 +7,12 @@ const config = {
   server: {
     url: "https://hmusic-crm.onrender.com/parent_login?native_app=1",
     cleartext: false,
-    allowNavigation: ["hmusic-crm.onrender.com"]
+    allowNavigation: [
+      "hmusic-crm.onrender.com",
+      "checkout.stripe.com",
+      "*.stripe.com",
+      "*.link.com"
+    ]
   },
   ios: {
     contentInset: "automatic"
