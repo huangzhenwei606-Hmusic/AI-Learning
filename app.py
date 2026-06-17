@@ -7822,11 +7822,19 @@ def get_or_create_stripe_customer(cursor, parent_id):
     WHERE parent_id = ?
     """, (parent_id,))
     row = cursor.fetchone()
-    if row and row[0]:
-        return row[0]
 
     if not configure_stripe():
         return None
+
+    if row and row[0]:
+        try:
+            existing_customer = stripe.Customer.retrieve(row[0])
+            if not existing_customer.get("deleted"):
+                return row[0]
+        except Exception:
+            # A saved live-mode customer cannot be reused with a test-mode key.
+            # Create a fresh customer for the currently configured Stripe mode.
+            pass
 
     customer = stripe.Customer.create(
         name=parent[0] or None,
