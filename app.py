@@ -10815,10 +10815,13 @@ def parent_dashboard():
     invoice_rows = ""
     tuition_due_total = 0
     tuition_due_count = 0
+    first_unpaid_invoice_id = None
     for inv in invoices:
         action = "Paid"
         if inv[2] != "paid":
-            action = f'<a href="/parent_invoice/{inv[0]}">View / Pay</a>'
+            if first_unpaid_invoice_id is None:
+                first_unpaid_invoice_id = inv[0]
+            action = f'<a class="mini-pay-button" href="/parent_invoice/{inv[0]}">View / Pay</a>'
             tuition_due_count += 1
             tuition_due_total += inv[1] or 0
 
@@ -10857,13 +10860,14 @@ def parent_dashboard():
         """
 
     if tuition_due_count:
+        tuition_pay_link = f"/parent_invoice/{first_unpaid_invoice_id}" if first_unpaid_invoice_id else "#invoices"
         tuition_alert = f"""
         <div class="tuition-alert">
             <div>
                 <strong>Tuition Due</strong><br>
                 {tuition_due_count} open invoice(s), ${round(tuition_due_total, 2)} total.
             </div>
-            <a href="#invoices">View / Pay</a>
+            <a href="{tuition_pay_link}">View / Pay</a>
         </div>
         """
 
@@ -11033,6 +11037,16 @@ def parent_dashboard():
                 border-radius: 8px;
                 text-decoration: none;
                 white-space: nowrap;
+            }}
+            .mini-pay-button {{
+                display: inline-block;
+                background: #4f46e5;
+                color: white !important;
+                padding: 8px 10px;
+                border-radius: 8px;
+                text-decoration: none;
+                white-space: nowrap;
+                font-size: 14px;
             }}
             .app-notification-alert a {{
                 background: #4f46e5;
