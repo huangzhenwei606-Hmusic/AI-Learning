@@ -7252,6 +7252,261 @@ def create_lesson_reminders_for_date(target_date):
 
 def create_autopay_due_notifications(target_date=None):
     ensure_v321_schema()
+    ensure_billing_schema()
+    target_date = target_date or date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        e.id,
+        e.student_name,
+        e.autopay_pending_invoice_id,
+        e.autopay_charge_due_date,
+        i.amount,
+        i.status
+    FROM enrollments e
+    JOIN invoices i
+        ON e.autopay_pending_invoice_id = i.id
+    WHERE e.auto_renew_enabled = 1
+    AND e.autopay_charge_status = 'pending'
+    AND e.autopay_charge_due_date <= ?
+    AND COALESCE(i.status, 'unpaid') != 'paid'
+    ORDER BY e.autopay_charge_due_date, e.student_name
+    """, (target_date,))
+    rows = cursor.fetchall()
+
+    processed = 0
+    for row in rows:
+        enrollment_id, student_name, invoice_id, due_date, amount, invoice_status = row
+        parent_id = get_primary_parent_for_student(cursor, student_name)
+
+        def mark_for_review(status, invoice_autopay_status, parent_title, parent_body, owner_title, owner_body):
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            cursor.execute("""
+            UPDATE enrollments
+            SET autopay_charge_status = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (status, now, enrollment_id))
+            cursor.execute("""
+            UPDATE invoices
+            SET autopay_status = ?
+            WHERE id = ?
+            AND status != 'paid'
+            """, (invoice_autopay_status, invoice_id))
+            conn.commit()
+
+            if parent_id and parent_title:
+                create_notification(
+                    "parent",
+                    str(parent_id),
+                    parent_title,
+                    parent_body,
+                    f"/parent_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+            create_notification(
+                "owner",
+                "owner",
+                owner_title,
+                owner_body,
+                f"/pay_invoice/{invoice_id}",
+                related_type="invoice",
+                related_id=invoice_id
+            )
+
+        if not parent_id:
+            mark_for_review(
+                "pending_owner_review",
+                "missing_parent",
+                None,
+                None,
+                "AutoPay needs review",
+                f"{student_name}'s AutoPay invoice #{invoice_id} is due, but no linked parent was found."
+            )
+            processed += 1
+            continue
+
+        if not configure_stripe():
+            mark_for_review(
+                "pending_owner_review",
+                "stripe_missing",
+                "AutoPay setup needs attention",
+                f"{student_name}'s next package invoice is ready, but Stripe is not configured yet.",
+                "AutoPay Stripe configuration missing",
+                f"{student_name}'s AutoPay invoice #{invoice_id} cannot be charged until Stripe is configured."
+            )
+            processed += 1
+            continue
+
+        payment_method_id, billing_autopay_enabled, saved_customer_id, billing_status = get_saved_stripe_payment_method(cursor, parent_id)
+        if not payment_method_id or billing_autopay_enabled != 1:
+            mark_for_review(
+                "pending_owner_review",
+                "needs_payment_method",
+                "AutoPay payment method needed",
+                f"{student_name}'s next package is ready. Please connect or confirm your bank payment method for AutoPay.",
+                "AutoPay payment method missing",
+                f"{student_name}'s AutoPay invoice #{invoice_id} is due, but the parent does not have a saved payment method."
+            )
+            processed += 1
+            continue
+
+        customer_id = get_or_create_stripe_customer(cursor, parent_id)
+        conn.commit()
+
+        if not customer_id:
+            mark_for_review(
+                "pending_owner_review",
+                "customer_missing",
+                "AutoPay setup needs attention",
+                f"{student_name}'s next package is ready, but Stripe could not confirm your customer profile.",
+                "AutoPay customer missing",
+                f"{student_name}'s AutoPay invoice #{invoice_id} is due, but Stripe customer creation failed."
+            )
+            processed += 1
+            continue
+
+        if saved_customer_id and customer_id != saved_customer_id:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            cursor.execute("""
+            UPDATE parent_billing_profiles
+            SET stripe_payment_method_id = NULL,
+                status = 'needs_reconnect_test',
+                updated_at = ?
+            WHERE parent_id = ?
+            """, (now, parent_id))
+            conn.commit()
+            mark_for_review(
+                "pending_owner_review",
+                "needs_payment_method",
+                "Please reconnect AutoPay",
+                f"{student_name}'s saved bank setup needs to be reconnected before AutoPay can run.",
+                "AutoPay reconnect needed",
+                f"{student_name}'s AutoPay invoice #{invoice_id} could not run because the saved Stripe customer changed."
+            )
+            processed += 1
+            continue
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        UPDATE enrollments
+        SET autopay_charge_status = 'processing',
+            updated_at = ?
+        WHERE id = ?
+        """, (now, enrollment_id))
+        cursor.execute("""
+        UPDATE invoices
+        SET status = 'stripe_processing',
+            autopay_status = 'autopay_attempting'
+        WHERE id = ?
+        AND status != 'paid'
+        """, (invoice_id,))
+
+        conn.commit()
+
+        try:
+            payment_intent = stripe.PaymentIntent.create(
+                amount=int(round(float(amount or 0) * 100)),
+                currency="usd",
+                customer=customer_id,
+                payment_method=payment_method_id,
+                confirm=True,
+                off_session=True,
+                description=f"H-Music AutoPay - {student_name} invoice #{invoice_id}",
+                metadata={
+                    "invoice_id": str(invoice_id),
+                    "parent_id": str(parent_id),
+                    "enrollment_id": str(enrollment_id),
+                    "source": "autopay"
+                }
+            )
+            payment_status = payment_intent.get("status")
+
+            if payment_status == "succeeded":
+                cursor.execute("""
+                UPDATE enrollments
+                SET autopay_charge_status = 'charged',
+                    updated_at = ?
+                WHERE id = ?
+                """, (datetime.now().strftime("%Y-%m-%d %H:%M"), enrollment_id))
+                cursor.execute("""
+                UPDATE invoices
+                SET stripe_payment_intent_id = ?,
+                    autopay_status = 'paid_test'
+                WHERE id = ?
+                """, (payment_intent.get("id"), invoice_id))
+                conn.commit()
+                finalize_stripe_invoice_payment(
+                    invoice_id,
+                    payment_intent_id=payment_intent.get("id"),
+                    source="autopay_due_check"
+                )
+                create_notification(
+                    "parent",
+                    str(parent_id),
+                    "AutoPay processed",
+                    f"{student_name}'s next package AutoPay payment of ${amount} was processed.",
+                    f"/parent_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+                create_notification(
+                    "owner",
+                    "owner",
+                    "AutoPay processed",
+                    f"{student_name}'s AutoPay invoice #{invoice_id} was charged successfully.",
+                    f"/pay_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+            elif payment_status in ("processing", "requires_capture"):
+                cursor.execute("""
+                UPDATE invoices
+                SET stripe_payment_intent_id = ?,
+                    autopay_status = ?
+                WHERE id = ?
+                """, (payment_intent.get("id"), payment_status, invoice_id))
+                conn.commit()
+                create_notification(
+                    "owner",
+                    "owner",
+                    "AutoPay processing",
+                    f"{student_name}'s AutoPay invoice #{invoice_id} is processing in Stripe.",
+                    f"/pay_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+            else:
+                mark_for_review(
+                    "pending_owner_review",
+                    f"autopay_{payment_status}",
+                    "AutoPay needs confirmation",
+                    f"{student_name}'s AutoPay could not finish automatically. H-Music will review the payment.",
+                    "AutoPay needs review",
+                    f"{student_name}'s AutoPay invoice #{invoice_id} returned Stripe status: {payment_status}."
+                )
+        except Exception as exc:
+            error_text = str(exc)[:240]
+            mark_for_review(
+                "pending_owner_review",
+                "autopay_failed",
+                "AutoPay needs confirmation",
+                f"{student_name}'s AutoPay could not finish automatically. H-Music will review the payment.",
+                "AutoPay failed",
+                f"{student_name}'s AutoPay invoice #{invoice_id} failed: {error_text}"
+            )
+
+        processed += 1
+
+    conn.close()
+    return processed
+
+
+def create_autopay_due_notifications_legacy(target_date=None):
+    ensure_v321_schema()
     target_date = target_date or date.today().strftime("%Y-%m-%d")
 
     conn = sqlite3.connect("hmusic.db")
@@ -7334,12 +7589,12 @@ def run_autopay_checks():
         return redirect("/owner_login")
 
     target_date = request.args.get("date") or date.today().strftime("%Y-%m-%d")
-    created = create_autopay_due_notifications(target_date)
+    processed = create_autopay_due_notifications(target_date)
 
     return f"""
-    <h1>AutoPay Checks Queued</h1>
+    <h1>AutoPay Checks Processed</h1>
     <p>Date: {target_date}</p>
-    <p>Due autopay notifications: {created}</p>
+    <p>Due AutoPay records processed: {processed}</p>
     <p><a href="/billing_settings">Billing Settings</a></p>
     <p><a href="/notification_queue">Notification Queue</a></p>
     <p><a href="/">Home</a></p>
@@ -7865,6 +8120,24 @@ def get_or_create_stripe_customer(cursor, parent_id):
     ))
 
     return customer.id
+
+
+def get_saved_stripe_payment_method(cursor, parent_id):
+    cursor.execute("""
+    SELECT
+        stripe_payment_method_id,
+        autopay_enabled,
+        stripe_customer_id,
+        status
+    FROM parent_billing_profiles
+    WHERE parent_id = ?
+    """, (parent_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        return None, 0, None, None
+
+    return row[0], row[1] or 0, row[2], row[3]
 
 
 def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, payment_intent_id=None, source="stripe_checkout"):
@@ -11975,6 +12248,15 @@ def stripe_webhook():
         parent_id = metadata.get("parent_id")
         if parent_id:
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            setup_intent_id = data_object.get("setup_intent")
+            payment_method_id = None
+            if setup_intent_id and configure_stripe():
+                try:
+                    setup_intent = stripe.SetupIntent.retrieve(setup_intent_id)
+                    payment_method_id = setup_intent.get("payment_method")
+                except Exception:
+                    payment_method_id = None
+
             conn = sqlite3.connect("hmusic.db")
             cursor = conn.cursor()
             cursor.execute("""
@@ -11983,6 +12265,7 @@ def stripe_webhook():
                 stripe_customer_id,
                 stripe_setup_session_id,
                 stripe_setup_intent_id,
+                stripe_payment_method_id,
                 autopay_enabled,
                 ach_enabled,
                 status,
@@ -11990,11 +12273,12 @@ def stripe_webhook():
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, 1, 1, 'connected_test', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 1, 1, 'connected_test', ?, ?, ?)
             ON CONFLICT(parent_id) DO UPDATE SET
                 stripe_customer_id = COALESCE(excluded.stripe_customer_id, stripe_customer_id),
                 stripe_setup_session_id = excluded.stripe_setup_session_id,
                 stripe_setup_intent_id = excluded.stripe_setup_intent_id,
+                stripe_payment_method_id = COALESCE(excluded.stripe_payment_method_id, stripe_payment_method_id),
                 autopay_enabled = 1,
                 ach_enabled = 1,
                 status = 'connected_test',
@@ -12004,7 +12288,8 @@ def stripe_webhook():
                 parent_id,
                 data_object.get("customer"),
                 data_object.get("id"),
-                data_object.get("setup_intent"),
+                setup_intent_id,
+                payment_method_id,
                 "Stripe webhook confirmed checkout setup completion.",
                 now,
                 now
@@ -18898,7 +19183,7 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
             "link": "/parent_billing"
         })
 
-    if lessons_left <= 2 and not e[6]:
+    if auto_renew_enabled and lessons_left <= 2 and not e[6]:
         cursor.execute("""
         UPDATE enrollments
         SET renewal_reminder_sent_at = ?,
