@@ -7504,6 +7504,19 @@ def billing_settings():
     ORDER BY p.parent_name, p.email
     """)
     rows_data = cursor.fetchall()
+    cursor.execute("""
+    SELECT
+        created_at,
+        event_type,
+        status,
+        COALESCE(related_invoice_id, ''),
+        COALESCE(related_parent_id, ''),
+        COALESCE(message, '')
+    FROM stripe_webhook_events
+    ORDER BY id DESC
+    LIMIT 10
+    """)
+    webhook_events = cursor.fetchall()
     conn.close()
 
     stripe_secret_ready = "Configured" if os.environ.get("STRIPE_SECRET_KEY") else "Missing"
@@ -7526,6 +7539,22 @@ def billing_settings():
 
     if not rows:
         rows = "<tr><td colspan='7'>No parent profiles yet.</td></tr>"
+
+    webhook_rows = ""
+    for event_row in webhook_events:
+        webhook_rows += f"""
+        <tr>
+            <td>{escape(str(event_row[0] or ""))}</td>
+            <td>{escape(str(event_row[1] or ""))}</td>
+            <td>{escape(str(event_row[2] or ""))}</td>
+            <td>{escape(str(event_row[3] or ""))}</td>
+            <td>{escape(str(event_row[4] or ""))}</td>
+            <td>{escape(str(event_row[5] or ""))}</td>
+        </tr>
+        """
+
+    if not webhook_rows:
+        webhook_rows = "<tr><td colspan='6'>No Stripe webhook events received yet.</td></tr>"
 
     return f"""
     <html>
@@ -7579,6 +7608,19 @@ def billing_settings():
                     <th>Updated</th>
                 </tr>
                 {rows}
+            </table>
+            <h2>Recent Stripe Webhook Events</h2>
+            <p class="hint">Use this to confirm Stripe is calling H-Music after checkout, bank setup, or ACH settlement.</p>
+            <table>
+                <tr>
+                    <th>Received</th>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Invoice</th>
+                    <th>Parent</th>
+                    <th>Message</th>
+                </tr>
+                {webhook_rows}
             </table>
         </div>
     </body>
@@ -7703,7 +7745,47 @@ def ensure_billing_schema():
     add_column_if_missing("parent_billing_profiles", "stripe_setup_session_id", "stripe_setup_session_id TEXT")
     add_column_if_missing("parent_billing_profiles", "stripe_setup_intent_id", "stripe_setup_intent_id TEXT")
     add_column_if_missing("parent_billing_profiles", "stripe_payment_method_id", "stripe_payment_method_id TEXT")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stripe_event_id TEXT,
+        event_type TEXT,
+        related_invoice_id INTEGER,
+        related_parent_id INTEGER,
+        status TEXT,
+        message TEXT,
+        created_at TEXT
+    )
+    """)
 
+    conn.commit()
+    conn.close()
+
+
+def record_stripe_webhook_event(event_id, event_type, status, message="", invoice_id=None, parent_id=None):
+    ensure_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO stripe_webhook_events (
+        stripe_event_id,
+        event_type,
+        related_invoice_id,
+        related_parent_id,
+        status,
+        message,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event_id,
+        event_type,
+        invoice_id,
+        parent_id,
+        status,
+        message,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
     conn.commit()
     conn.close()
 
@@ -11844,19 +11926,31 @@ def stripe_webhook():
             return Response("Stripe SDK missing", status=500)
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except Exception:
+        except Exception as exc:
+            record_stripe_webhook_event(None, "unknown", "invalid_signature", str(exc))
             return Response("Invalid signature", status=400)
     else:
         try:
             event = request.get_json(force=True)
-        except Exception:
+        except Exception as exc:
+            record_stripe_webhook_event(None, "unknown", "invalid_payload", str(exc))
             return Response("Invalid payload", status=400)
 
     event_type = event.get("type")
+    event_id = event.get("id")
     data_object = event.get("data", {}).get("object", {})
+    metadata = data_object.get("metadata", {}) or {}
+    record_stripe_webhook_event(
+        event_id,
+        event_type,
+        "received",
+        data_object.get("id") or "",
+        invoice_id=metadata.get("invoice_id"),
+        parent_id=metadata.get("parent_id")
+    )
 
     if event_type == "checkout.session.completed" and data_object.get("mode") == "setup":
-        parent_id = data_object.get("metadata", {}).get("parent_id")
+        parent_id = metadata.get("parent_id")
         if parent_id:
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             conn = sqlite3.connect("hmusic.db")
@@ -11895,9 +11989,16 @@ def stripe_webhook():
             ))
             conn.commit()
             conn.close()
+            record_stripe_webhook_event(
+                event_id,
+                event_type,
+                "setup_connected",
+                "Stripe setup checkout completed.",
+                parent_id=parent_id
+            )
 
     if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and data_object.get("mode") == "payment":
-        invoice_id = data_object.get("metadata", {}).get("invoice_id")
+        invoice_id = metadata.get("invoice_id")
         if invoice_id:
             if event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
                 finalize_stripe_invoice_payment(
@@ -11905,6 +12006,14 @@ def stripe_webhook():
                     checkout_session_id=data_object.get("id"),
                     payment_intent_id=data_object.get("payment_intent"),
                     source=event_type
+                )
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "invoice_paid",
+                    "Invoice finalized from Stripe webhook.",
+                    invoice_id=invoice_id,
+                    parent_id=metadata.get("parent_id")
                 )
             else:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -11947,14 +12056,30 @@ def stripe_webhook():
                 ))
                 conn.commit()
                 conn.close()
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "payment_processing",
+                    "Checkout completed, waiting for bank/payment settlement.",
+                    invoice_id=invoice_id,
+                    parent_id=metadata.get("parent_id")
+                )
 
     if event_type == "payment_intent.succeeded":
-        invoice_id = data_object.get("metadata", {}).get("invoice_id")
+        invoice_id = metadata.get("invoice_id")
         if invoice_id:
             finalize_stripe_invoice_payment(
                 int(invoice_id),
                 payment_intent_id=data_object.get("id"),
                 source=event_type
+            )
+            record_stripe_webhook_event(
+                event_id,
+                event_type,
+                "invoice_paid",
+                "Invoice finalized from payment intent.",
+                invoice_id=invoice_id,
+                parent_id=metadata.get("parent_id")
             )
 
     return Response("ok", status=200)
