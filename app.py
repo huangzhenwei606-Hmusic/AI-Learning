@@ -229,6 +229,18 @@ def parent_app_install():
             a.secondary {{
                 background: #111827;
             }}
+            .legal {{
+                margin-top: 24px;
+                padding-top: 18px;
+                border-top: 1px solid #eef0f4;
+                color: #6b7280;
+                font-size: 13px;
+            }}
+            .legal a {{
+                color: #4f46e5;
+                font-weight: 800;
+                margin-right: 14px;
+            }}
             @media (min-width: 900px) {{
                 body {{ padding: 32px; }}
                 .container {{
@@ -269,10 +281,163 @@ def parent_app_install():
 
             <a class="button" href="/app">Open Parent App</a>
             <a class="button secondary" href="/parent_login">Parent Login</a>
+            <div class="legal">
+                <a href="/privacy">Privacy Policy</a>
+                <a href="/terms">Terms</a>
+            </div>
         </div>
     </body>
     </html>
     """
+
+
+def public_legal_page(title, body_html):
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta(title)}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                background: #f7f7fb;
+                color: #111827;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }}
+            .container {{
+                max-width: 860px;
+                margin: 0 auto;
+                background: white;
+                min-height: 100vh;
+                padding: max(28px, env(safe-area-inset-top)) 22px max(34px, env(safe-area-inset-bottom));
+            }}
+            .brand-mark {{
+                width: 52px;
+                height: 52px;
+                border-radius: 15px;
+                background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                margin-bottom: 18px;
+            }}
+            h1 {{
+                font-size: 34px;
+                margin: 0 0 8px;
+                line-height: 1.08;
+            }}
+            h2 {{
+                margin: 28px 0 8px;
+                font-size: 20px;
+            }}
+            p, li {{
+                color: #4b5563;
+                line-height: 1.65;
+                font-size: 16px;
+            }}
+            ul {{
+                padding-left: 22px;
+            }}
+            .updated {{
+                color: #6b7280;
+                font-size: 14px;
+                margin-bottom: 24px;
+            }}
+            .actions {{
+                margin-top: 28px;
+                padding-top: 18px;
+                border-top: 1px solid #eef0f4;
+            }}
+            a {{
+                color: #4f46e5;
+                font-weight: 800;
+            }}
+            .actions a {{
+                margin-right: 16px;
+            }}
+            @media (min-width: 900px) {{
+                body {{ padding: 32px; }}
+                .container {{
+                    min-height: auto;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    padding: 38px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <main class="container">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <h1>{title}</h1>
+            <p class="updated">Last updated: June 17, 2026</p>
+            {body_html}
+            <div class="actions">
+                <a href="/app">Parent App</a>
+                <a href="https://www.h-musicandarts.com/">H-Music & Arts Website</a>
+            </div>
+        </main>
+    </body>
+    </html>
+    """
+
+
+@app.route("/privacy")
+@app.route("/privacy_policy")
+def privacy_policy():
+    return public_legal_page("Privacy Policy", """
+        <p>H-Music Parent App helps enrolled H-Music families manage lesson schedules, messages, reschedule requests, invoices, payments, and lesson history.</p>
+
+        <h2>Information We Collect</h2>
+        <ul>
+            <li>Parent contact information such as name, email address, and phone number.</li>
+            <li>Student lesson information such as student name, teacher, schedule, attendance status, lesson notes, homework, and reschedule or cancellation requests.</li>
+            <li>Messages and attachments sent through the app between families and H-Music staff.</li>
+            <li>Billing records such as invoices, payment status, package balances, and AutoPay preferences.</li>
+            <li>Basic technical information needed to keep the app signed in and working, such as session state and device/browser information.</li>
+        </ul>
+
+        <h2>Payments</h2>
+        <p>Payments are processed by Stripe. H-Music does not store full card numbers, bank account numbers, or bank login credentials. Stripe may collect and process payment details under its own privacy and security practices.</p>
+
+        <h2>How We Use Information</h2>
+        <ul>
+            <li>To provide lesson scheduling, attendance, rescheduling, messaging, billing, and tuition renewal features.</li>
+            <li>To notify families and H-Music staff about important lesson, payment, and account events.</li>
+            <li>To keep records needed for studio operations, parent support, and accounting.</li>
+        </ul>
+
+        <h2>Sharing</h2>
+        <p>We share information only as needed to operate the studio, support families, process payments, comply with law, or use trusted service providers such as Stripe, hosting, email, and SMS providers.</p>
+
+        <h2>Retention and Access</h2>
+        <p>Lesson, account, and billing records may be retained while the student is enrolled and for reasonable business, tax, accounting, and support purposes. Families may contact H-Music & Arts to request help with access, correction, or account questions.</p>
+
+        <h2>Contact</h2>
+        <p>For privacy questions, contact H-Music & Arts through <a href="https://www.h-musicandarts.com/">www.h-musicandarts.com</a>.</p>
+    """)
+
+
+@app.route("/terms")
+def terms_of_use():
+    return public_legal_page("Terms of Use", """
+        <p>These terms apply to the H-Music Parent App for enrolled H-Music families. By using the app, you agree to use it only for managing H-Music lesson, account, communication, and tuition activity.</p>
+
+        <h2>Parent Accounts</h2>
+        <p>Parent accounts are for authorized parents or guardians of enrolled students. Please keep your login information private and contact H-Music if you believe your account has been accessed without permission.</p>
+
+        <h2>Lessons, Rescheduling, and Cancellation</h2>
+        <p>The app may show lesson schedules, cancellation options, reschedule requests, open slots, and studio policy reminders. Final scheduling approval may require H-Music owner or teacher confirmation. Within-policy and last-minute fees are governed by the studio policies shown in the app or provided by H-Music.</p>
+
+        <h2>Tuition and Payments</h2>
+        <p>Tuition invoices, package renewals, AutoPay reminders, and payment links are for real-world music lessons and studio services. Payments are processed through Stripe. H-Music may update invoice status, package balances, and account history after payment confirmation.</p>
+
+        <h2>Messages and Lesson Notes</h2>
+        <p>Messages, lesson notes, homework, and attachments should be used for lesson-related communication. The app is not intended for emergencies or urgent safety communication.</p>
+
+        <h2>Changes</h2>
+        <p>H-Music may update the app, policies, or these terms as the studio system evolves. Continued use of the app means you accept the updated terms.</p>
+
+        <h2>Contact</h2>
+        <p>For questions about these terms, contact H-Music & Arts through <a href="https://www.h-musicandarts.com/">www.h-musicandarts.com</a>.</p>
+    """)
 
 
 @app.route("/app")

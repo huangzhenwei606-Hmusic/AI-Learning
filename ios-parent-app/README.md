@@ -2,7 +2,7 @@
 
 This folder is the native iOS wrapper for the H-Music parent app. It points only to the parent app entry at:
 
-https://hmusic-crm.onrender.com/parent_login
+https://hmusic-crm.onrender.com/parent_login?native_app=1
 
 Owner and teacher dashboards remain web-only.
 
@@ -38,6 +38,8 @@ npm run open:ios
 - Bundle ID: `com.hmusicandarts.parent`
 - Category: Education
 - Target users: existing H-Music families
+- Privacy Policy URL: `https://hmusic-crm.onrender.com/privacy`
+- Terms URL: `https://hmusic-crm.onrender.com/terms`
 - Reviewer demo account: create a parent-only demo account in production before submission.
 
 ## App Review Notes
