@@ -8790,8 +8790,212 @@ def messages():
         "/",
         "Home",
         rows,
+        new_href="/new_owner_message",
+        new_label="New Message",
         notifications_href="/notifications"
     )
+
+
+@app.route("/new_owner_message", methods=["GET", "POST"])
+def new_owner_message():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        recipient_mode = request.form.get("recipient_mode", "parent")
+        student_name = (request.form.get("student_name") or "").strip() or None
+        subject_input = (request.form.get("subject") or "").strip()
+        body = (request.form.get("body") or "").strip()
+        files = request.files.getlist("attachments")
+        has_attachment = any([f and f.filename for f in files])
+
+        if not body and not has_attachment:
+            conn.close()
+            return "<h1>Message required</h1><a href='/new_owner_message'>Back</a>"
+
+        if recipient_mode == "parent":
+            parent_id_raw = request.form.get("parent_id")
+            try:
+                parent_id = int(parent_id_raw)
+            except (TypeError, ValueError):
+                conn.close()
+                return "<h1>Please choose a parent.</h1><a href='/new_owner_message'>Back</a>"
+
+            cursor.execute("SELECT parent_name, email FROM parent_profiles WHERE id = ?", (parent_id,))
+            parent = cursor.fetchone()
+            if not parent:
+                conn.close()
+                return "<h1>Parent not found.</h1><a href='/new_owner_message'>Back</a>"
+
+            parent_label = parent[0] or parent[1] or f"Parent #{parent_id}"
+            subject = subject_input or f"Owner / Parent Message - {student_name or parent_label}"
+            conn.close()
+
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=parent_id,
+                teacher_name=None,
+                thread_type="owner_parent"
+            )
+            message_id = add_message(thread_id, "owner", "Owner", "parent", body)
+            save_message_attachments(message_id, files)
+            create_notification(
+                "parent",
+                str(parent_id),
+                "New message from H-Music",
+                body or "New attachment",
+                f"/message_thread/{thread_id}"
+            )
+            return redirect(f"/message_thread/{thread_id}")
+
+        if recipient_mode == "teacher":
+            teacher_name = (request.form.get("teacher_name") or "").strip()
+            cursor.execute("SELECT teacher_name FROM teachers WHERE teacher_name = ?", (teacher_name,))
+            teacher = cursor.fetchone()
+            if not teacher:
+                conn.close()
+                return "<h1>Please choose a teacher.</h1><a href='/new_owner_message'>Back</a>"
+
+            subject = subject_input or f"Owner / Teacher Message - {student_name or teacher_name}"
+            conn.close()
+
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=None,
+                teacher_name=teacher_name,
+                thread_type="owner_teacher"
+            )
+            message_id = add_message(thread_id, "owner", "Owner", "teacher", body)
+            save_message_attachments(message_id, files)
+            create_notification(
+                "teacher",
+                teacher_name,
+                "New message from Owner",
+                body or "New attachment",
+                f"/message_thread/{thread_id}"
+            )
+            return redirect(f"/message_thread/{thread_id}")
+
+        conn.close()
+        return "<h1>Invalid recipient.</h1><a href='/new_owner_message'>Back</a>"
+
+    cursor.execute("""
+        SELECT id, COALESCE(parent_name, ''), COALESCE(email, '')
+        FROM parent_profiles
+        ORDER BY parent_name, email
+    """)
+    parents = cursor.fetchall()
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teachers = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT name, COALESCE(teacher, '') FROM students ORDER BY name")
+    students = cursor.fetchall()
+    conn.close()
+
+    parent_options = "".join([
+        f'<option value="{p[0]}">{escape(p[1] or p[2] or f"Parent #{p[0]}")} | {escape(p[2] or "")}</option>'
+        for p in parents
+    ]) or '<option value="">No parents found</option>'
+    teacher_options = "".join([
+        f'<option value="{escape(t)}">{escape(t)}</option>'
+        for t in teachers
+    ]) or '<option value="">No teachers found</option>'
+    student_options = '<option value="">No student / general message</option>' + "".join([
+        f'<option value="{escape(s[0])}">{escape(s[0])} | Teacher: {escape(s[1] or "")}</option>'
+        for s in students
+    ])
+
+    return f"""
+    <html>
+    <head>
+        <title>New Owner Message</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ background:white; padding:32px; border-radius:16px; max-width:820px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            h1 {{ font-size:32px; margin:0 0 22px; }}
+            input, select, textarea {{ width:100%; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:150px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
+            .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .recipient-options input {{ width:auto; margin:0 6px 0 0; }}
+            .subtle {{ color:#6b7280; font-size:13px; margin-top:-10px; margin-bottom:14px; }}
+            @media (max-width:760px) {{
+                body {{ padding:16px; }}
+                .recipient-options {{ grid-template-columns:1fr; }}
+                .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
+                .form-actions button, .form-actions a {{ text-align:center; }}
+            }}
+        </style>
+        <script>
+            function toggleOwnerRecipient() {{
+                const mode = document.querySelector("input[name='recipient_mode']:checked").value;
+                const parentBlock = document.getElementById("parent-recipient-block");
+                const teacherBlock = document.getElementById("teacher-recipient-block");
+                const parentSelect = document.getElementById("parent-select");
+                const teacherSelect = document.getElementById("teacher-select");
+                if (mode === "teacher") {{
+                    parentBlock.style.display = "none";
+                    teacherBlock.style.display = "block";
+                    parentSelect.removeAttribute("required");
+                    teacherSelect.setAttribute("required", "required");
+                }} else {{
+                    parentBlock.style.display = "block";
+                    teacherBlock.style.display = "none";
+                    parentSelect.setAttribute("required", "required");
+                    teacherSelect.removeAttribute("required");
+                }}
+            }}
+        </script>
+    </head>
+    <body onload="toggleOwnerRecipient()">
+        <div class="container">
+            <h1>New Owner Message</h1>
+            <form method="POST" enctype="multipart/form-data">
+                Send To:<br>
+                <div class="recipient-options">
+                    <label><input type="radio" name="recipient_mode" value="parent" checked onchange="toggleOwnerRecipient()">Parent</label>
+                    <label><input type="radio" name="recipient_mode" value="teacher" onchange="toggleOwnerRecipient()">Teacher</label>
+                </div>
+
+                <div id="parent-recipient-block">
+                    Parent:<br>
+                    <select id="parent-select" name="parent_id" required>{parent_options}</select>
+                </div>
+
+                <div id="teacher-recipient-block" style="display:none;">
+                    Teacher:<br>
+                    <select id="teacher-select" name="teacher_name">{teacher_options}</select>
+                </div>
+
+                Student (optional):<br>
+                <select name="student_name">{student_options}</select>
+
+                Subject (optional):<br>
+                <input name="subject" placeholder="Leave blank to auto-create subject">
+                <div class="subtle">Examples: Tuition question, schedule update, reminder, lesson follow-up.</div>
+
+                Message:<br>
+                <textarea name="body" rows="6" placeholder="Write your message here."></textarea>
+
+                Attachments:<br>
+                <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
+
+                <div class="form-actions">
+                    <button type="submit">Send Message</button>
+                    <a class="button" href="/messages">Back</a>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @app.route("/parent_messages")
@@ -9102,9 +9306,18 @@ def message_thread(thread_id):
             if require_owner():
                 sender_role = "owner"
                 sender_name = "Owner"
-                recipient_role = "parent"
-                notify_role = "parent"
-                notify_key = str(thread_for_reply[6]) if thread_for_reply and thread_for_reply[6] else None
+                if thread_for_reply and thread_for_reply[6]:
+                    recipient_role = "parent"
+                    notify_role = "parent"
+                    notify_key = str(thread_for_reply[6])
+                elif thread_for_reply and thread_for_reply[7]:
+                    recipient_role = "teacher"
+                    notify_role = "teacher"
+                    notify_key = thread_for_reply[7]
+                else:
+                    recipient_role = "owner"
+                    notify_role = None
+                    notify_key = None
             elif require_parent():
                 sender_role = "parent"
                 sender_name = session.get("parent_name", "Parent")
