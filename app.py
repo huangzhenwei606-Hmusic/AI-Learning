@@ -1094,6 +1094,10 @@ def home():
                         <strong>New Enrollment</strong>
                         <span>Create package and tuition invoice</span>
                     </a>
+                    <a class="primary-action" href="/trial_leads">
+                        <strong>Trial Leads</strong>
+                        <span>AI intake, trial scheduling, follow-up, convert to enrollment</span>
+                    </a>
                     <a class="primary-action" href="/add_schedule">
                         <strong>Add Schedule</strong>
                         <span>Add a lesson to calendar</span>
@@ -1151,6 +1155,8 @@ def home():
     <div class="action-group">
         <a href="/enrollments">Enrollment Detail</a>
         <a href="/add_enrollment">New Enrollment</a>
+        <a href="/trial_leads">Trial Leads</a>
+        <a href="/add_trial_lead">Add Trial Lead</a>
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
         <a href="/calendar">Calendar</a>
@@ -1181,8 +1187,8 @@ def home():
             <a href="/teacher_dashboard">Teacher Dashboard</a>
             <a href="/parent_portal">Parent Portal</a>
             <a href="/renewal_emails">Renewal Emails</a>
-            <a href="/inquiries">Inquiry CRM</a>
-            <a href="/add_inquiry">Add Inquiry</a>
+            <a href="/trial_leads">Lead / Trial Intake</a>
+            <a href="/add_trial_lead">Add Trial Lead</a>
             <a href="/owner_settings">Owner Settings</a>
             <a href="/notification_queue">Notification Queue</a>
             <a href="/billing_settings">Billing Settings</a>
@@ -14311,13 +14317,30 @@ def assign_sub_request(request_id):
     return redirect("/owner_sub_requests")
 
 # =========================
-# V17 Inquiry CRM - FULL
+# V35.1 Lead / Trial Intake
+# Upgraded from V17 Inquiry CRM
 # =========================
 
-def ensure_v17_schema():
-    conn = sqlite3.connect("hmusic.db")
-    cursor = conn.cursor()
+def v35_now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
 
+
+def v35_safe(value, default=""):
+    if value is None or value == "":
+        return default
+    return escape(str(value))
+
+
+def v35_add_column_if_missing(cursor, table_name, column_name, column_sql):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column_name not in columns:
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+
+def ensure_v17_schema():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS inquiries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14339,395 +14362,396 @@ def ensure_v17_schema():
     )
     """)
 
+    upgrades = [
+        ("program_interest", "program_interest TEXT"),
+        ("preferred_days", "preferred_days TEXT"),
+        ("preferred_times", "preferred_times TEXT"),
+        ("trial_location", "trial_location TEXT"),
+        ("trial_status", "trial_status TEXT DEFAULT 'Needs Review'"),
+        ("lead_temperature", "lead_temperature TEXT DEFAULT 'Warm'"),
+        ("ai_summary", "ai_summary TEXT"),
+        ("ai_recommendation", "ai_recommendation TEXT"),
+        ("ai_follow_up_draft", "ai_follow_up_draft TEXT"),
+        ("next_follow_up_at", "next_follow_up_at TEXT"),
+        ("follow_up_status", "follow_up_status TEXT DEFAULT 'New'"),
+        ("follow_up_notes", "follow_up_notes TEXT"),
+        ("owner_verified", "owner_verified INTEGER DEFAULT 0"),
+        ("converted_enrollment_id", "converted_enrollment_id INTEGER"),
+    ]
+    for column_name, column_sql in upgrades:
+        v35_add_column_if_missing(cursor, "inquiries", column_name, column_sql)
+
     conn.commit()
     conn.close()
 
 
+def build_v35_trial_plan(data):
+    student = (data.get("student_name") or "New student").strip()
+    parent = (data.get("parent_name") or "Parent").strip()
+    age = (data.get("age") or "age not provided").strip()
+    instrument = (data.get("instrument") or "music").strip()
+    program = (data.get("program_interest") or instrument or "Trial Lesson").strip()
+    preferred_days = (data.get("preferred_days") or "").strip()
+    preferred_times = (data.get("preferred_times") or "").strip()
+    source = (data.get("source") or "Unknown source").strip()
+    temp = (data.get("lead_temperature") or "Warm").strip()
+    notes = (data.get("notes") or "").strip()
+
+    missing = []
+    for label, key in [
+        ("parent email", "parent_email"),
+        ("phone", "phone"),
+        ("student age", "age"),
+        ("preferred day/time", "preferred_days"),
+    ]:
+        if not (data.get(key) or "").strip():
+            missing.append(label)
+
+    preferred = " / ".join([x for x in [preferred_days, preferred_times] if x]) or "No preference yet"
+    summary = (
+        f"{student} is a {temp.lower()} trial lead for {program}. "
+        f"Parent: {parent}. Age: {age}. Source: {source}. Preferred time: {preferred}."
+    )
+    if notes:
+        summary += f" Notes: {notes[:220]}"
+
+    recommendation = (
+        f"AI suggestion: schedule a trial for {program} with the best-fit teacher, then ask owner to verify teacher, room/location, and tuition before confirming. "
+        f"Priority: {'high' if temp.lower() == 'hot' else 'normal'}."
+    )
+    if missing:
+        recommendation += " Missing before final confirmation: " + ", ".join(missing) + "."
+
+    follow_up = (
+        f"Hi {parent}, thank you for reaching out to H-Music. We are reviewing a trial lesson option for {student}. "
+        f"Could you confirm your preferred days/times and whether {program} is the right program interest?"
+    )
+    return summary, recommendation, follow_up
+
+
+def v35_insert_trial_lead(data, public=False):
+    ensure_v17_schema()
+    fields = [
+        "student_name", "parent_name", "parent_email", "phone", "age", "instrument",
+        "program_interest", "preferred_days", "preferred_times", "source",
+        "lead_temperature", "trial_location", "notes",
+    ]
+    clean = {key: (data.get(key, "") or "").strip() for key in fields}
+    if not clean["source"]:
+        clean["source"] = "Public Trial Form" if public else "Owner Entry"
+    if not clean["lead_temperature"]:
+        clean["lead_temperature"] = "Warm"
+
+    summary, recommendation, follow_up = build_v35_trial_plan(clean)
+    now = v35_now()
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO inquiries (
+            student_name, parent_name, parent_email, phone, age, instrument, source,
+            status, trial_date, trial_time, trial_teacher, notes, converted_student_name,
+            created_at, updated_at, program_interest, preferred_days, preferred_times,
+            trial_location, trial_status, lead_temperature, ai_summary, ai_recommendation,
+            ai_follow_up_draft, next_follow_up_at, follow_up_status, follow_up_notes,
+            owner_verified, converted_enrollment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            clean["student_name"], clean["parent_name"], clean["parent_email"], clean["phone"],
+            clean["age"], clean["instrument"], clean["source"], "New Lead", "", "", "",
+            clean["notes"], "", now, now, clean["program_interest"], clean["preferred_days"],
+            clean["preferred_times"], clean["trial_location"], "Needs Review", clean["lead_temperature"],
+            summary, recommendation, follow_up, "", "New", "", 0, None,
+        ),
+    )
+    inquiry_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    try:
+        subject = "New Public Trial Request" if public else "New Trial Lead"
+        create_notification(
+            "owner",
+            "owner",
+            subject,
+            f"{clean['student_name'] or 'New lead'} needs owner review.",
+            f"/inquiry/{inquiry_id}",
+            "trial_lead",
+            inquiry_id,
+        )
+    except Exception:
+        pass
+
+    return inquiry_id
+
+
+def v35_public_trial_form(error="", values=None):
+    values = values or {}
+
+    def val(name):
+        return v35_safe(values.get(name, ""))
+
+    program_options = []
+    for option in ["Trial Lesson", "Private Piano", "Group Piano", "Voice", "Violin", "Other"]:
+        selected = "selected" if values.get("program_interest") == option else ""
+        program_options.append(f'<option value="{option}" {selected}>{option}</option>')
+    error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
+    return f"""
+    <html>
+    <head>
+        <title>H-Music Trial Request</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f6f7fb; color:#111827; }}
+            .wrap {{ max-width:860px; margin:0 auto; padding:34px 18px 56px; }}
+            .card {{ background:white; border-radius:18px; padding:34px; box-shadow:0 18px 44px rgba(15,23,42,.08); }}
+            .brand {{ display:flex; align-items:center; gap:14px; margin-bottom:22px; }}
+            .logo {{ width:58px; height:58px; border-radius:16px; background:#050505; display:grid; place-items:center; color:#d7a943; font-size:25px; font-weight:800; }}
+            h1 {{ font-size:38px; line-height:1.05; margin:0; }}
+            p {{ color:#667085; font-size:17px; line-height:1.5; }}
+            form {{ margin-top:24px; display:grid; gap:18px; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
+            label {{ font-weight:800; font-size:15px; display:grid; gap:8px; }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d7dce5; border-radius:12px; padding:14px 15px; font-size:16px; font-family:inherit; }}
+            textarea {{ min-height:120px; resize:vertical; }}
+            button {{ border:0; border-radius:13px; background:#4f46e5; color:white; padding:16px 20px; font-size:17px; font-weight:900; cursor:pointer; }}
+            .hint {{ background:#fff8db; border:1px solid #ffe08a; border-radius:14px; padding:14px 16px; color:#684b00; }}
+            .error {{ background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:13px 15px; font-weight:800; }}
+            @media (max-width:720px) {{ .card {{ padding:26px 20px; }} .grid {{ grid-template-columns:1fr; }} h1 {{ font-size:31px; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <div class="card">
+                <div class="brand"><div class="logo">H</div><div><h1>Trial Lesson Request</h1><p>H-Music will review your request and contact you with next steps.</p></div></div>
+                <div class="hint">Please share your preferred days and times. We will match you with the best available teacher after owner review.</div>
+                {error_html}
+                <form method="post">
+                    <div class="grid">
+                        <label>Student Name *<input name="student_name" value="{val('student_name')}" required></label>
+                        <label>Student Age<input name="age" value="{val('age')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Parent Name *<input name="parent_name" value="{val('parent_name')}" required></label>
+                        <label>Parent Email<input type="email" name="parent_email" value="{val('parent_email')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Phone<input name="phone" value="{val('phone')}"></label>
+                        <label>Program Interest<select name="program_interest">{''.join(program_options)}</select></label>
+                    </div>
+                    <div class="grid">
+                        <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
+                        <label>Preferred Location<input name="trial_location" placeholder="In studio / online / other" value="{val('trial_location')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Preferred Days<input name="preferred_days" placeholder="Example: Tue, Thu, Sat" value="{val('preferred_days')}"></label>
+                        <label>Preferred Times<input name="preferred_times" placeholder="Example: after 4 PM" value="{val('preferred_times')}"></label>
+                    </div>
+                    <label>Anything we should know?<textarea name="notes" placeholder="Goals, level, previous experience, scheduling notes...">{val('notes')}</textarea></label>
+                    <button type="submit">Submit Trial Request</button>
+                </form>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def v35_public_trial_thank_you(inquiry_id, data):
+    return f"""
+    <html>
+    <head>
+        <title>Trial Request Received</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f6f7fb; color:#111827; }}
+            .wrap {{ max-width:720px; margin:0 auto; padding:56px 18px; }}
+            .card {{ background:white; border-radius:18px; padding:34px; box-shadow:0 18px 44px rgba(15,23,42,.08); }}
+            .logo {{ width:62px; height:62px; border-radius:17px; background:#050505; display:grid; place-items:center; color:#d7a943; font-size:27px; font-weight:800; margin-bottom:20px; }}
+            h1 {{ font-size:38px; margin:0 0 12px; }}
+            p {{ color:#667085; font-size:17px; line-height:1.55; }}
+            .box {{ background:#eef2ff; border-radius:14px; padding:14px 16px; color:#3730a3; font-weight:800; }}
+            a {{ color:#4f46e5; font-weight:800; }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap"><div class="card">
+            <div class="logo">H</div>
+            <h1>Thank you!</h1>
+            <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
+            <div class="box">Request #{inquiry_id}</div>
+            <p><a href="/">Back to H-Music</a></p>
+        </div></div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/trial", methods=["GET", "POST"])
+def public_trial_request():
+    ensure_v17_schema()
+    if request.method == "POST":
+        data = {
+            "student_name": request.form.get("student_name", "").strip(),
+            "parent_name": request.form.get("parent_name", "").strip(),
+            "parent_email": request.form.get("parent_email", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "age": request.form.get("age", "").strip(),
+            "instrument": request.form.get("instrument", "").strip(),
+            "program_interest": request.form.get("program_interest", "").strip(),
+            "preferred_days": request.form.get("preferred_days", "").strip(),
+            "preferred_times": request.form.get("preferred_times", "").strip(),
+            "trial_location": request.form.get("trial_location", "").strip(),
+            "notes": request.form.get("notes", "").strip(),
+            "source": "Public Trial Form",
+            "lead_temperature": "Warm",
+        }
+        if not data["student_name"] or not data["parent_name"]:
+            return v35_public_trial_form("Please enter student and parent names.", data)
+        if not data["parent_email"] and not data["phone"]:
+            return v35_public_trial_form("Please enter either email or phone.", data)
+        inquiry_id = v35_insert_trial_lead(data, public=True)
+        return v35_public_trial_thank_you(inquiry_id, data)
+    return v35_public_trial_form()
+
+
+@app.route("/trial_form")
+@app.route("/trial_request")
+def public_trial_alias():
+    return redirect("/trial")
+
+
 @app.route("/v17_setup")
 def v17_setup():
-    if not require_owner():
-        return redirect("/owner_login")
-
+    ensure_owner()
     ensure_v17_schema()
+    return "Lead / Trial Intake setup complete."
 
-    return """
-    <h1>V17 Inquiry CRM Setup Complete</h1>
-    <p>Inquiry CRM tables are ready.</p>
-    <p><a href="/inquiries">Go to Inquiry CRM</a></p>
-    <p><a href="/">Back Home</a></p>
-    """
+
+@app.route("/trial_leads")
+def trial_leads():
+    return inquiries()
+
+
+@app.route("/add_trial_lead", methods=["GET", "POST"])
+def add_trial_lead():
+    return add_inquiry()
 
 
 @app.route("/inquiries")
 def inquiries():
-    if not require_owner():
-        return redirect("/owner_login")
-
+    ensure_owner()
     ensure_v17_schema()
 
-    conn = sqlite3.connect("hmusic.db")
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-
-    statuses = [
-        "Inquiry",
-        "Trial Scheduled",
-        "Trial Completed",
-        "Active Student",
-        "Inactive"
-    ]
-
-    counts = {}
-
-    for status in statuses:
-        cursor.execute("""
-        SELECT COUNT(*)
-        FROM inquiries
-        WHERE status = ?
-        """, (status,))
-        counts[status] = cursor.fetchone()[0]
-
-    cursor.execute("""
-    SELECT
-        id,
-        student_name,
-        parent_name,
-        phone,
-        age,
-        instrument,
-        source,
-        status,
-        trial_date,
-        trial_teacher,
-        created_at
-    FROM inquiries
-    ORDER BY id DESC
-    """)
-
-    rows_data = cursor.fetchall()
-
-    cursor.execute("""
-    SELECT COUNT(*)
-    FROM inquiries
-    """)
-    total_inquiries = cursor.fetchone()[0]
-
-    cursor.execute("""
-    SELECT COUNT(*)
-    FROM inquiries
-    WHERE status IN ('Trial Scheduled', 'Trial Completed', 'Active Student')
-    """)
-    total_trials = cursor.fetchone()[0]
-
-    cursor.execute("""
-    SELECT COUNT(*)
-    FROM inquiries
-    WHERE status = 'Active Student'
-    """)
-    total_active = cursor.fetchone()[0]
-
-    inquiry_to_trial = 0
-    trial_to_active = 0
-    overall_conversion = 0
-
-    if total_inquiries > 0:
-        inquiry_to_trial = round(total_trials * 100 / total_inquiries, 1)
-        overall_conversion = round(total_active * 100 / total_inquiries, 1)
-
-    if total_trials > 0:
-        trial_to_active = round(total_active * 100 / total_trials, 1)
-
-    cursor.execute("""
-    SELECT
-        trial_teacher,
-        COUNT(*) as trials,
-        SUM(CASE WHEN status = 'Active Student' THEN 1 ELSE 0 END) as converted
-    FROM inquiries
-    WHERE trial_teacher IS NOT NULL
-    AND trial_teacher != ''
-    GROUP BY trial_teacher
-    ORDER BY trials DESC
-    """)
-
-    teacher_rows = cursor.fetchall()
-
-    cursor.execute("""
-    SELECT source, COUNT(*)
-    FROM inquiries
-    GROUP BY source
-    ORDER BY COUNT(*) DESC
-    """)
-
-    source_rows = cursor.fetchall()
-
+    cursor.execute("SELECT * FROM inquiries ORDER BY datetime(updated_at) DESC, id DESC")
+    rows = cursor.fetchall()
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead', 'Inquiry')")
+    new_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE ai_recommendation IS NOT NULL AND COALESCE(owner_verified, 0) = 0")
+    ai_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status='Trial Scheduled' OR trial_status='Scheduled'")
+    scheduled_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Trial Completed', 'Follow Up') OR follow_up_status='Follow Up'")
+    follow_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Active Student', 'Converted')")
+    converted_count = cursor.fetchone()[0]
     conn.close()
+    public_trial_url = request.host_url.rstrip("/") + "/trial"
 
-    cards = ""
+    cards = "".join([
+        f"<div class='metric'><span>New Leads</span><b>{new_count}</b></div>",
+        f"<div class='metric'><span>AI Suggested</span><b>{ai_count}</b></div>",
+        f"<div class='metric'><span>Trial Scheduled</span><b>{scheduled_count}</b></div>",
+        f"<div class='metric'><span>Follow Up</span><b>{follow_count}</b></div>",
+        f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
+    ])
 
-    for status in statuses:
-        cards += f"""
-        <div class="card">
-            <div class="label">{status}</div>
-            <div class="value">{counts[status]}</div>
-        </div>
-        """
-
-    rows = ""
-
-    for r in rows_data:
-        rows += f"""
+    body = ""
+    for r in rows:
+        verified = "Verified" if r["owner_verified"] else "Needs Review"
+        verify_class = "ok" if r["owner_verified"] else "warn"
+        contact = "<br>".join([x for x in [v35_safe(r["parent_email"]), v35_safe(r["phone"])] if x]) or "-"
+        trial_bits = [v35_safe(r["trial_date"]), v35_safe(r["trial_time"]), v35_safe(r["trial_teacher"]), v35_safe(r["trial_location"])]
+        trial = "<br>".join([x for x in trial_bits if x]) or v35_safe(r["trial_status"], "Needs Review")
+        program = v35_safe(r["program_interest"] or r["instrument"], "-")
+        preferred = "<br>".join([x for x in [v35_safe(r["preferred_days"]), v35_safe(r["preferred_times"])] if x]) or "-"
+        latest = v35_safe(r["ai_summary"] or r["notes"], "-")
+        body += f"""
         <tr>
-            <td><a href="/inquiry/{r[0]}">{r[1]}</a></td>
-            <td>{r[2]}</td>
-            <td>{r[3]}</td>
-            <td>{r[4]}</td>
-            <td>{r[5]}</td>
-            <td>{r[6]}</td>
-            <td><span class="status">{r[7]}</span></td>
-            <td>{r[8] or ''}</td>
-            <td>{r[9] or ''}</td>
-            <td>{r[10]}</td>
+            <td><a href="/inquiry/{r['id']}"><b>{v35_safe(r['student_name'], 'Unnamed')}</b></a><br><small>#{r['id']} {v35_safe(r['lead_temperature'], 'Warm')}</small></td>
+            <td>{v35_safe(r['parent_name'], '-')}<br><small>{contact}</small></td>
+            <td>{program}</td>
+            <td>{preferred}</td>
+            <td><span class="pill {verify_class}">{verified}</span><br><small>{latest}</small></td>
+            <td>{trial}</td>
+            <td><span class="pill">{v35_safe(r['status'], 'New Lead')}</span></td>
+            <td>{v35_safe(r['next_follow_up_at'], '-')}<br><small>{v35_safe(r['follow_up_status'], 'New')}</small></td>
+            <td>{v35_safe(r['updated_at'], '-')}</td>
         </tr>
         """
 
-    teacher_html = ""
-
-    for t in teacher_rows:
-        teacher = t[0]
-        trials = t[1] or 0
-        converted = t[2] or 0
-        rate = 0
-
-        if trials > 0:
-            rate = round(converted * 100 / trials, 1)
-
-        teacher_html += f"""
-        <tr>
-            <td>{teacher}</td>
-            <td>{trials}</td>
-            <td>{converted}</td>
-            <td>{rate}%</td>
-        </tr>
-        """
-
-    source_html = ""
-
-    for s in source_rows:
-        source_html += f"""
-        <tr>
-            <td>{s[0]}</td>
-            <td>{s[1]}</td>
-        </tr>
-        """
+    if not body:
+        body = "<tr><td colspan='9'>No trial leads yet.</td></tr>"
 
     return f"""
     <html>
     <head>
-        <title>Inquiry CRM</title>
+        <title>Lead / Trial Intake</title>
         <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-                background: #f7f8fc;
-                margin: 0;
-                color: #111827;
-            }}
-
-            .container {{
-                max-width: 1300px;
-                margin: 0 auto;
-                padding: 30px;
-            }}
-
-            .header {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 20px;
-            }}
-
-            h1 {{
-                margin: 0;
-                font-size: 30px;
-            }}
-
-            .button {{
-                display: inline-block;
-                background: #635bff;
-                color: white;
-                padding: 10px 14px;
-                border-radius: 10px;
-                text-decoration: none;
-                font-weight: 700;
-                margin-left: 8px;
-            }}
-
-            .cards {{
-                display: grid;
-                grid-template-columns: repeat(5, 1fr);
-                gap: 14px;
-                margin-bottom: 20px;
-            }}
-
-            .card {{
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                padding: 18px;
-            }}
-
-            .label {{
-                color: #6b7280;
-                font-size: 13px;
-                margin-bottom: 8px;
-            }}
-
-            .value {{
-                font-size: 30px;
-                font-weight: 850;
-            }}
-
-            .section {{
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                padding: 20px;
-                margin-bottom: 20px;
-            }}
-
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-
-            th, td {{
-                padding: 10px;
-                border-bottom: 1px solid #eee;
-                text-align: left;
-                font-size: 14px;
-            }}
-
-            th {{
-                background: #fafafa;
-                font-size: 12px;
-                text-transform: uppercase;
-                color: #6b7280;
-            }}
-
-            .analytics {{
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 14px;
-            }}
-
-            .status {{
-                background: #f1efff;
-                color: #4f46e5;
-                padding: 4px 8px;
-                border-radius: 999px;
-                font-size: 12px;
-                font-weight: 700;
-            }}
-
-            @media (max-width: 800px) {{
-                .cards,
-                .analytics {{
-                    grid-template-columns: repeat(2, 1fr);
-                }}
-
-                .container {{
-                    padding: 14px;
-                }}
-
-                table {{
-                    font-size: 12px;
-                }}
-            }}
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .actions a {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border-radius:8px; text-decoration:none; font-weight:700; margin-left:8px; }}
+            .actions a.secondary {{ background:#111827; }}
+            .metrics {{ display:grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap:12px; margin:22px 0; }}
+            .share {{ display:flex; justify-content:space-between; gap:16px; align-items:center; border:1px solid #dbeafe; background:#eff6ff; border-radius:12px; padding:16px; margin:18px 0 24px; }}
+            .share p {{ margin:6px 0 10px; color:#4b5563; }}
+            .share code {{ display:block; background:white; border:1px solid #bfdbfe; border-radius:8px; padding:10px; color:#1d4ed8; font-weight:700; word-break:break-all; }}
+            .share a {{ flex:0 0 auto; display:inline-block; padding:11px 16px; border-radius:8px; background:#111827; color:white; text-decoration:none; font-weight:700; }}
+            .metric {{ background:#f2f2ff; border:1px solid #e0e0ff; border-radius:10px; padding:14px; }}
+            .metric span {{ display:block; color:#6b7280; font-size:13px; }}
+            .metric b {{ font-size:28px; }}
+            table {{ width:100%; border-collapse:collapse; background:white; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; vertical-align:top; text-align:left; }}
+            th {{ background:#ececff; }}
+            small {{ color:#6b7280; }}
+            .pill {{ display:inline-block; padding:5px 9px; border-radius:999px; background:#eef2ff; color:#3730a3; font-weight:700; font-size:12px; }}
+            .pill.ok {{ background:#dcfce7; color:#166534; }}
+            .pill.warn {{ background:#fef3c7; color:#92400e; }}
         </style>
     </head>
-
     <body>
-        <div class="container">
-
-            <div class="header">
+        <div class="panel">
+            <div class="top">
                 <div>
-                    <h1>Inquiry CRM</h1>
-                    <p>Inquiry → Trial → Active Student</p>
+                    <h1>Lead / Trial Intake</h1>
+                    <p>New leads, AI trial suggestions, owner verification, trial scheduling, follow-up, and conversion.</p>
                 </div>
-
+                <div class="actions">
+                    <a class="secondary" href="/">Home</a>
+                    <a href="/add_trial_lead">Add Trial Lead</a>
+                </div>
+            </div>
+            <div class="metrics">{cards}</div>
+            <div class="share">
                 <div>
-                    <a class="button" href="/">Home</a>
-                    <a class="button" href="/add_inquiry">Add Inquiry</a>
+                    <b>Public Trial Form</b>
+                    <p>Send this link to new families. Submitted forms create a lead, AI trial plan, and owner notification.</p>
+                    <code>{v35_safe(public_trial_url)}</code>
                 </div>
+                <a href="/trial" target="_blank">Open Form</a>
             </div>
-
-            <div class="cards">
-                {cards}
-            </div>
-
-            <div class="analytics">
-                <div class="card">
-                    <div class="label">Inquiry → Trial</div>
-                    <div class="value">{inquiry_to_trial}%</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Trial → Active</div>
-                    <div class="value">{trial_to_active}%</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Overall Conversion</div>
-                    <div class="value">{overall_conversion}%</div>
-                </div>
-            </div>
-
-            <br>
-
-            <div class="section">
-                <h2>Inquiry List</h2>
-
-                <table>
-                    <tr>
-                        <th>Student</th>
-                        <th>Parent</th>
-                        <th>Phone</th>
-                        <th>Age</th>
-                        <th>Instrument</th>
-                        <th>Source</th>
-                        <th>Status</th>
-                        <th>Trial Date</th>
-                        <th>Teacher</th>
-                        <th>Created</th>
-                    </tr>
-                    {rows}
-                </table>
-            </div>
-
-            <div class="section">
-                <h2>Teacher Conversion Ranking</h2>
-
-                <table>
-                    <tr>
-                        <th>Teacher</th>
-                        <th>Trials</th>
-                        <th>Converted</th>
-                        <th>Conversion Rate</th>
-                    </tr>
-                    {teacher_html}
-                </table>
-            </div>
-
-            <div class="section">
-                <h2>Inquiry Sources</h2>
-
-                <table>
-                    <tr>
-                        <th>Source</th>
-                        <th>Count</th>
-                    </tr>
-                    {source_html}
-                </table>
-            </div>
-
+            <table>
+                <tr>
+                    <th>Student</th><th>Parent / Contact</th><th>Program</th><th>Preferred</th><th>AI / Verify</th><th>Trial</th><th>Status</th><th>Follow Up</th><th>Updated</th>
+                </tr>
+                {body}
+            </table>
         </div>
     </body>
     </html>
@@ -14736,433 +14760,337 @@ def inquiries():
 
 @app.route("/add_inquiry", methods=["GET", "POST"])
 def add_inquiry():
-    if not require_owner():
-        return redirect("/owner_login")
-
+    ensure_owner()
     ensure_v17_schema()
 
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM teachers ORDER BY name")
+    teachers = cursor.fetchall()
+    conn.close()
+
     if request.method == "POST":
-        student_name = request.form.get("student_name")
-        parent_name = request.form.get("parent_name")
-        parent_email = request.form.get("parent_email")
-        phone = request.form.get("phone")
-        age = request.form.get("age")
-        instrument = request.form.get("instrument")
-        source = request.form.get("source")
-        notes = request.form.get("notes")
-
-        conn = sqlite3.connect("hmusic.db")
-        cursor = conn.cursor()
-
-        cursor.execute("""
-        INSERT INTO inquiries (
-            student_name,
-            parent_name,
-            parent_email,
-            phone,
-            age,
-            instrument,
-            source,
-            status,
-            notes,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            student_name,
-            parent_name,
-            parent_email,
-            phone,
-            age,
-            instrument,
-            source,
-            "Inquiry",
-            notes,
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            datetime.now().strftime("%Y-%m-%d %H:%M")
-        ))
-
-        inquiry_id = cursor.lastrowid
-
-        conn.commit()
-        conn.close()
-
+        data = {
+            "student_name": request.form.get("student_name", "").strip(),
+            "parent_name": request.form.get("parent_name", "").strip(),
+            "parent_email": request.form.get("parent_email", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "age": request.form.get("age", "").strip(),
+            "instrument": request.form.get("instrument", "").strip(),
+            "program_interest": request.form.get("program_interest", "").strip(),
+            "preferred_days": request.form.get("preferred_days", "").strip(),
+            "preferred_times": request.form.get("preferred_times", "").strip(),
+            "source": request.form.get("source", "").strip(),
+            "lead_temperature": request.form.get("lead_temperature", "Warm"),
+            "trial_location": request.form.get("trial_location", "").strip(),
+            "notes": request.form.get("notes", "").strip(),
+        }
+        inquiry_id = v35_insert_trial_lead(data, public=False)
         return redirect(f"/inquiry/{inquiry_id}")
 
-    return """
-    <h1>Add Inquiry</h1>
-
-    <form method="POST">
-
-        Student Name:<br>
-        <input name="student_name" required><br><br>
-
-        Parent Name:<br>
-        <input name="parent_name"><br><br>
-
-        Parent Email:<br>
-        <input name="parent_email"><br><br>
-
-        Phone:<br>
-        <input name="phone"><br><br>
-
-        Age:<br>
-        <input name="age"><br><br>
-
-        Instrument:<br>
-        <select name="instrument">
-            <option value="Piano">Piano</option>
-            <option value="Voice">Voice</option>
-            <option value="Guitar">Guitar</option>
-            <option value="Violin">Violin</option>
-            <option value="Drums">Drums</option>
-            <option value="Music Theory">Music Theory</option>
-            <option value="Other">Other</option>
-        </select><br><br>
-
-        Source:<br>
-        <select name="source">
-            <option value="Google">Google</option>
-            <option value="Referral">Referral</option>
-            <option value="Website">Website</option>
-            <option value="Wechat">Wechat</option>
-            <option value="Walk-in">Walk-in</option>
-            <option value="Instagram">Instagram</option>
-            <option value="Facebook">Facebook</option>
-            <option value="Other">Other</option>
-        </select><br><br>
-
-        Notes:<br>
-        <textarea name="notes" rows="5" cols="50"></textarea><br><br>
-
-        <button type="submit">Save Inquiry</button>
-
-    </form>
-
-    <br>
-    <a href="/inquiries">Back to Inquiry CRM</a>
+    teacher_options = "".join(f"<option>{v35_safe(t['name'])}</option>" for t in teachers)
+    return f"""
+    <html>
+    <head>
+        <title>Add Trial Lead</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .panel {{ max-width:900px; background:white; border-radius:16px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            label {{ font-weight:700; display:block; margin-top:16px; }}
+            input, select, textarea {{ width:100%; padding:12px; border:1px solid #d1d5db; border-radius:8px; font-size:16px; box-sizing:border-box; }}
+            textarea {{ min-height:120px; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+            button, a.btn {{ display:inline-block; margin-top:20px; padding:12px 16px; background:#4f46e5; color:white; border:0; border-radius:8px; text-decoration:none; font-weight:700; }}
+            a.btn.secondary {{ background:#111827; }}
+        </style>
+    </head>
+    <body>
+        <div class="panel">
+            <h1>Add Trial Lead</h1>
+            <p>Create the lead first. The system will draft an AI trial plan and follow-up message for owner verification.</p>
+            <form method="POST">
+                <div class="grid">
+                    <div><label>Student Name</label><input name="student_name" required></div>
+                    <div><label>Age</label><input name="age"></div>
+                    <div><label>Parent Name</label><input name="parent_name"></div>
+                    <div><label>Parent Email</label><input name="parent_email" type="email"></div>
+                    <div><label>Phone</label><input name="phone"></div>
+                    <div><label>Source</label><input name="source" placeholder="Website / Referral / Walk-in / Instagram"></div>
+                    <div><label>Instrument</label><input name="instrument" placeholder="Piano / Voice / Violin"></div>
+                    <div><label>Program Interest</label><input name="program_interest" placeholder="Trial / Private 30m / Group Piano"></div>
+                    <div><label>Preferred Days</label><input name="preferred_days" placeholder="Mon/Wed/Sat"></div>
+                    <div><label>Preferred Times</label><input name="preferred_times" placeholder="After 4pm / weekend morning"></div>
+                    <div><label>Lead Temperature</label><select name="lead_temperature"><option>Warm</option><option>Hot</option><option>Cold</option></select></div>
+                    <div><label>Preferred Trial Location / Room</label><input name="trial_location" placeholder="Room 1 / Online / Cupertino"></div>
+                </div>
+                <label>Notes</label><textarea name="notes" placeholder="Parent goals, student level, availability, questions..."></textarea>
+                <button type="submit">Create Lead + AI Trial Plan</button>
+                <a class="btn secondary" href="/trial_leads">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
     """
 
 
 @app.route("/inquiry/<int:inquiry_id>")
 def inquiry_detail(inquiry_id):
-    if not require_owner():
-        return redirect("/owner_login")
-
+    ensure_owner()
     ensure_v17_schema()
 
-    conn = sqlite3.connect("hmusic.db")
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-
-    cursor.execute("""
-    SELECT
-        id,
-        student_name,
-        parent_name,
-        parent_email,
-        phone,
-        age,
-        instrument,
-        source,
-        status,
-        trial_date,
-        trial_time,
-        trial_teacher,
-        notes,
-        converted_student_name,
-        created_at,
-        updated_at
-    FROM inquiries
-    WHERE id = ?
-    """, (inquiry_id,))
-
+    cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
     inquiry = cursor.fetchone()
-
-    if not inquiry:
-        conn.close()
-        return "<h1>Inquiry not found</h1>"
-
-    cursor.execute("""
-    SELECT teacher_name
-    FROM teachers
-    ORDER BY teacher_name
-    """)
-
+    cursor.execute("SELECT name FROM teachers ORDER BY name")
     teachers = cursor.fetchall()
     conn.close()
 
-    teacher_options = ""
+    if not inquiry:
+        return "Lead not found"
 
+    status_options = ["New Lead", "AI Suggested", "Trial Proposed", "Trial Scheduled", "Trial Completed", "Follow Up", "Active Student", "Inactive"]
+    follow_options = ["New", "Waiting Parent", "Follow Up", "Ready to Enroll", "Converted", "Closed"]
+    temp_options = ["Warm", "Hot", "Cold"]
+
+    def opts(options, current):
+        return "".join(f"<option {'selected' if x == current else ''}>{v35_safe(x)}</option>" for x in options)
+
+    teacher_options = "<option value=''>Select teacher</option>"
     for t in teachers:
-        selected = ""
-        if inquiry[11] == t[0]:
-            selected = "selected"
+        name = t["name"]
+        teacher_options += f"<option {'selected' if name == inquiry['trial_teacher'] else ''}>{v35_safe(name)}</option>"
 
-        teacher_options += f"""
-        <option value="{t[0]}" {selected}>{t[0]}</option>
-        """
-
-    status_options = ""
-
-    statuses = [
-        "Inquiry",
-        "Trial Scheduled",
-        "Trial Completed",
-        "Active Student",
-        "Inactive"
-    ]
-
-    for s in statuses:
-        selected = ""
-        if inquiry[8] == s:
-            selected = "selected"
-
-        status_options += f"""
-        <option value="{s}" {selected}>{s}</option>
-        """
-
+    verified_checked = "checked" if inquiry["owner_verified"] else ""
     convert_button = ""
-
-    if inquiry[8] != "Active Student":
-        convert_button = f"""
-        <form method="POST" action="/convert_inquiry_to_student/{inquiry_id}">
-            <button type="submit" style="background:#16a34a;color:white;padding:10px 14px;border:none;border-radius:8px;">
-                Convert to Active Student
-            </button>
-        </form>
-        """
+    if inquiry["status"] != "Active Student":
+        convert_button = f"<form method='POST' action='/convert_inquiry_to_student/{inquiry_id}'><button class='success' type='submit'>Convert to Student</button></form>"
 
     return f"""
-    <h1>Inquiry Detail</h1>
+    <html>
+    <head>
+        <title>Trial Lead Detail</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .wrap {{ max-width:1120px; margin:0 auto; }}
+            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); margin-bottom:18px; }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .btn, button {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border:0; border-radius:8px; text-decoration:none; font-weight:700; cursor:pointer; }}
+            .secondary {{ background:#111827; }}
+            .success {{ background:#16a34a; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+            .cards {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-top:16px; }}
+            .card {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
+            .card span {{ display:block; color:#6b7280; font-size:13px; }}
+            label {{ display:block; font-weight:700; margin-top:14px; }}
+            input, select, textarea {{ width:100%; padding:12px; border:1px solid #d1d5db; border-radius:8px; font-size:16px; box-sizing:border-box; }}
+            textarea {{ min-height:120px; }}
+            .ai {{ background:#fffbeb; border:1px solid #fde68a; border-radius:12px; padding:18px; }}
+            .inline-check {{ display:flex; align-items:center; gap:8px; margin-top:14px; font-weight:700; }}
+            .inline-check input {{ width:auto; }}
+        </style>
+    </head>
+    <body>
+    <div class="wrap">
+        <div class="panel top">
+            <div>
+                <h1>{v35_safe(inquiry['student_name'], 'Trial Lead')}</h1>
+                <p>Lead / Trial Intake #{inquiry_id}</p>
+            </div>
+            <div>
+                <a class="btn secondary" href="/trial_leads">Back to Leads</a>
+                <a class="btn" href="/add_trial_lead">Add Lead</a>
+            </div>
+        </div>
 
-    <p><a href="/inquiries">Back to Inquiry CRM</a></p>
+        <div class="panel">
+            <div class="cards">
+                <div class="card"><span>Parent</span><b>{v35_safe(inquiry['parent_name'], '-')}</b></div>
+                <div class="card"><span>Email</span><b>{v35_safe(inquiry['parent_email'], '-')}</b></div>
+                <div class="card"><span>Phone</span><b>{v35_safe(inquiry['phone'], '-')}</b></div>
+                <div class="card"><span>Status</span><b>{v35_safe(inquiry['status'], '-')}</b></div>
+            </div>
+        </div>
 
-    <h2>{inquiry[1]}</h2>
+        <div class="panel ai">
+            <h2>AI Trial Plan - Owner Verification Required</h2>
+            <p><b>Summary:</b> {v35_safe(inquiry['ai_summary'], 'No AI summary yet.')}</p>
+            <p><b>Recommendation:</b> {v35_safe(inquiry['ai_recommendation'], 'No AI recommendation yet.')}</p>
+            <p><b>Follow-up Draft:</b> {v35_safe(inquiry['ai_follow_up_draft'], 'No follow-up draft yet.')}</p>
+        </div>
 
-    <p><b>Parent:</b> {inquiry[2]}</p>
-    <p><b>Email:</b> {inquiry[3]}</p>
-    <p><b>Phone:</b> {inquiry[4]}</p>
-    <p><b>Age:</b> {inquiry[5]}</p>
-    <p><b>Instrument:</b> {inquiry[6]}</p>
-    <p><b>Source:</b> {inquiry[7]}</p>
-    <p><b>Status:</b> {inquiry[8]}</p>
-    <p><b>Created:</b> {inquiry[14]}</p>
-
-    <hr>
-
-    <h2>Edit Inquiry</h2>
-
-    <form method="POST" action="/update_inquiry/{inquiry_id}">
-
-        Student Name:<br>
-        <input name="student_name" value="{inquiry[1] or ''}"><br><br>
-
-        Parent Name:<br>
-        <input name="parent_name" value="{inquiry[2] or ''}"><br><br>
-
-        Parent Email:<br>
-        <input name="parent_email" value="{inquiry[3] or ''}"><br><br>
-
-        Phone:<br>
-        <input name="phone" value="{inquiry[4] or ''}"><br><br>
-
-        Age:<br>
-        <input name="age" value="{inquiry[5] or ''}"><br><br>
-
-        Instrument:<br>
-        <input name="instrument" value="{inquiry[6] or ''}"><br><br>
-
-        Source:<br>
-        <input name="source" value="{inquiry[7] or ''}"><br><br>
-
-        Status:<br>
-        <select name="status">
-            {status_options}
-        </select><br><br>
-
-        Trial Date:<br>
-        <input type="date" name="trial_date" value="{inquiry[9] or ''}"><br><br>
-
-        Trial Time:<br>
-        <input type="time" name="trial_time" value="{inquiry[10] or ''}"><br><br>
-
-        Trial Teacher:<br>
-        <select name="trial_teacher">
-            <option value="">Select Teacher</option>
-            {teacher_options}
-        </select><br><br>
-
-        Notes:<br>
-        <textarea name="notes" rows="6" cols="60">{inquiry[12] or ''}</textarea><br><br>
-
-        <button type="submit">Update Inquiry</button>
-
-    </form>
-
-    <hr>
-
-    <h2>Convert</h2>
-
-    {convert_button}
+        <div class="panel">
+            <h2>Review / Schedule Trial / Follow Up</h2>
+            <form method="POST" action="/update_inquiry/{inquiry_id}">
+                <div class="grid">
+                    <div><label>Student Name</label><input name="student_name" value="{v35_safe(inquiry['student_name'])}"></div>
+                    <div><label>Age</label><input name="age" value="{v35_safe(inquiry['age'])}"></div>
+                    <div><label>Parent Name</label><input name="parent_name" value="{v35_safe(inquiry['parent_name'])}"></div>
+                    <div><label>Parent Email</label><input name="parent_email" value="{v35_safe(inquiry['parent_email'])}"></div>
+                    <div><label>Phone</label><input name="phone" value="{v35_safe(inquiry['phone'])}"></div>
+                    <div><label>Source</label><input name="source" value="{v35_safe(inquiry['source'])}"></div>
+                    <div><label>Instrument</label><input name="instrument" value="{v35_safe(inquiry['instrument'])}"></div>
+                    <div><label>Program Interest</label><input name="program_interest" value="{v35_safe(inquiry['program_interest'])}"></div>
+                    <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
+                    <div><label>Preferred Times</label><input name="preferred_times" value="{v35_safe(inquiry['preferred_times'])}"></div>
+                    <div><label>Lead Temperature</label><select name="lead_temperature">{opts(temp_options, inquiry['lead_temperature'] or 'Warm')}</select></div>
+                    <div><label>Status</label><select name="status">{opts(status_options, inquiry['status'] or 'New Lead')}</select></div>
+                    <div><label>Trial Date</label><input type="date" name="trial_date" value="{v35_safe(inquiry['trial_date'])}"></div>
+                    <div><label>Trial Time</label><input type="time" name="trial_time" value="{v35_safe(inquiry['trial_time'])}"></div>
+                    <div><label>Trial Teacher</label><select name="trial_teacher">{teacher_options}</select></div>
+                    <div><label>Location / Room</label><input name="trial_location" value="{v35_safe(inquiry['trial_location'])}" placeholder="Room 1 / Online"></div>
+                    <div><label>Next Follow-up</label><input type="datetime-local" name="next_follow_up_at" value="{v35_safe(inquiry['next_follow_up_at']).replace(' ', 'T')}"></div>
+                    <div><label>Follow-up Status</label><select name="follow_up_status">{opts(follow_options, inquiry['follow_up_status'] or 'New')}</select></div>
+                </div>
+                <label>Lead Notes</label><textarea name="notes">{v35_safe(inquiry['notes'])}</textarea>
+                <label>Follow-up Notes</label><textarea name="follow_up_notes">{v35_safe(inquiry['follow_up_notes'])}</textarea>
+                <label class="inline-check"><input type="checkbox" name="owner_verified" value="1" {verified_checked}> Owner verified trial plan and schedule</label>
+                <button type="submit">Save Lead / Trial Plan</button>
+            </form>
+            {convert_button}
+        </div>
+    </div>
+    </body>
+    </html>
     """
 
 
 @app.route("/update_inquiry/<int:inquiry_id>", methods=["POST"])
 def update_inquiry(inquiry_id):
+    ensure_owner()
+    ensure_v17_schema()
 
-    student_name = request.form.get("student_name")
-    parent_email = request.form.get("parent_email")
-    phone = request.form.get("phone")
-    source = request.form.get("source")
-    status = request.form.get("status")
-
-    trial_date = request.form.get("trial_date")
-    trial_time = request.form.get("trial_time")
-    trial_teacher = request.form.get("trial_teacher")
-
-    notes = request.form.get("notes")
+    data = {
+        "student_name": request.form.get("student_name", "").strip(),
+        "parent_name": request.form.get("parent_name", "").strip(),
+        "parent_email": request.form.get("parent_email", "").strip(),
+        "phone": request.form.get("phone", "").strip(),
+        "age": request.form.get("age", "").strip(),
+        "instrument": request.form.get("instrument", "").strip(),
+        "program_interest": request.form.get("program_interest", "").strip(),
+        "preferred_days": request.form.get("preferred_days", "").strip(),
+        "preferred_times": request.form.get("preferred_times", "").strip(),
+        "source": request.form.get("source", "").strip(),
+        "lead_temperature": request.form.get("lead_temperature", "Warm"),
+        "status": request.form.get("status", "New Lead"),
+        "trial_date": request.form.get("trial_date", "").strip(),
+        "trial_time": request.form.get("trial_time", "").strip(),
+        "trial_teacher": request.form.get("trial_teacher", "").strip(),
+        "trial_location": request.form.get("trial_location", "").strip(),
+        "next_follow_up_at": request.form.get("next_follow_up_at", "").replace("T", " ").strip(),
+        "follow_up_status": request.form.get("follow_up_status", "New"),
+        "notes": request.form.get("notes", "").strip(),
+        "follow_up_notes": request.form.get("follow_up_notes", "").strip(),
+        "owner_verified": 1 if request.form.get("owner_verified") == "1" else 0,
+    }
+    summary, recommendation, follow_up = build_v35_trial_plan(data)
+    trial_status = "Needs Review"
+    status = data["status"]
+    if data["owner_verified"]:
+        if data["trial_date"] and data["trial_time"] and data["trial_teacher"]:
+            trial_status = "Scheduled"
+            if status in ("New Lead", "AI Suggested", "Inquiry", "Trial Proposed"):
+                status = "Trial Scheduled"
+        else:
+            trial_status = "Verified - Missing Info"
+    data["status"] = status
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
+    now = v35_now()
     cursor.execute("""
-    UPDATE inquiries
-    SET
-        student_name=?,
-        parent_email=?,
-        phone=?,
-        source=?,
-        status=?,
-        trial_date=?,
-        trial_time=?,
-        trial_teacher=?,
-        notes=?
+    UPDATE inquiries SET
+        student_name=?, parent_name=?, parent_email=?, phone=?, age=?, instrument=?, source=?, status=?,
+        trial_date=?, trial_time=?, trial_teacher=?, notes=?, updated_at=?, program_interest=?, preferred_days=?,
+        preferred_times=?, trial_location=?, trial_status=?, lead_temperature=?, ai_summary=?, ai_recommendation=?,
+        ai_follow_up_draft=?, next_follow_up_at=?, follow_up_status=?, follow_up_notes=?, owner_verified=?
     WHERE id=?
     """, (
-        student_name,
-        parent_email,
-        phone,
-        source,
-        status,
-        trial_date,
-        trial_time,
-        trial_teacher,
-        notes,
-        inquiry_id
+        data["student_name"], data["parent_name"], data["parent_email"], data["phone"], data["age"],
+        data["instrument"], data["source"], data["status"], data["trial_date"], data["trial_time"],
+        data["trial_teacher"], data["notes"], now, data["program_interest"], data["preferred_days"],
+        data["preferred_times"], data["trial_location"], trial_status, data["lead_temperature"], summary,
+        recommendation, follow_up, data["next_follow_up_at"], data["follow_up_status"], data["follow_up_notes"],
+        data["owner_verified"], inquiry_id
     ))
 
-    # Trial → Calendar
-    if trial_date and trial_time and trial_teacher:
-
+    scheduled = False
+    if data["owner_verified"] and data["trial_date"] and data["trial_time"] and data["trial_teacher"]:
         cursor.execute("""
-        SELECT id
-        FROM schedule
-        WHERE student_name=?
-        AND lesson_date=?
-        AND lesson_time=?
-        """, (
-            student_name,
-            trial_date,
-            trial_time
-        ))
-
-        existing = cursor.fetchone()
-
-        if not existing:
-
-            try:
-
-                cursor.execute("""
-                INSERT INTO schedule (
-                    student_name,
-                    teacher,
-                    lesson_date,
-                    lesson_time,
-                    classroom,
-                    status
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    student_name,
-                    trial_teacher,
-                    trial_date,
-                    trial_time,
-                    "Trial Room",
-                    "scheduled"
-                ))
-
-            except Exception as e:
-                print("Trial Calendar Error:", e)
+        SELECT id FROM schedule
+        WHERE student_name=? AND lesson_date=? AND lesson_time=?
+        LIMIT 1
+        """, (data["student_name"], data["trial_date"], data["trial_time"]))
+        if not cursor.fetchone():
+            cursor.execute("""
+            INSERT INTO schedule (student_name, teacher, lesson_date, lesson_time, classroom, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                data["student_name"], data["trial_teacher"], data["trial_date"], data["trial_time"],
+                data["trial_location"] or "Trial Room", "scheduled"
+            ))
+            scheduled = True
 
     conn.commit()
     conn.close()
+
+    if scheduled:
+        try:
+            create_notification(
+                "owner", "owner", "Trial Scheduled",
+                f"Trial scheduled for {data['student_name']} with {data['trial_teacher']} on {data['trial_date']} {data['trial_time']}.",
+                f"/inquiry/{inquiry_id}", "trial_lead", inquiry_id
+            )
+        except Exception:
+            pass
 
     return redirect(f"/inquiry/{inquiry_id}")
 
 
 @app.route("/convert_inquiry_to_student/<int:inquiry_id>", methods=["POST"])
 def convert_inquiry_to_student(inquiry_id):
-    if not require_owner():
-        return redirect("/owner_login")
-
+    ensure_owner()
     ensure_v17_schema()
 
-    conn = sqlite3.connect("hmusic.db")
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-
-    cursor.execute("""
-    SELECT
-        student_name,
-        parent_email,
-        trial_teacher,
-        instrument
-    FROM inquiries
-    WHERE id = ?
-    """, (inquiry_id,))
-
+    cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
     inquiry = cursor.fetchone()
 
     if not inquiry:
         conn.close()
-        return "<h1>Inquiry not found</h1>"
+        return "Lead not found"
 
-    student_name = inquiry[0]
-    parent_email = inquiry[1]
-    teacher = inquiry[2] or "Unassigned"
+    student_name = inquiry["student_name"] or "New Student"
+    teacher = inquiry["trial_teacher"] or "Unassigned"
+    parent_email = inquiry["parent_email"] or ""
 
-    cursor.execute("""
-    INSERT OR IGNORE INTO students (
-        name,
-        teacher,
-        parent_email,
-        lessons_left
-    )
-    VALUES (?, ?, ?, ?)
-    """, (
-        student_name,
-        teacher,
-        parent_email,
-        0
-    ))
+    cursor.execute("SELECT id FROM students WHERE name=?", (student_name,))
+    existing = cursor.fetchone()
+    if not existing:
+        cursor.execute("""
+        INSERT INTO students (name, teacher, parent_email, lessons_left)
+        VALUES (?, ?, ?, ?)
+        """, (student_name, teacher, parent_email, 0))
 
     cursor.execute("""
     UPDATE inquiries
-    SET status = ?,
-        converted_student_name = ?,
-        updated_at = ?
-    WHERE id = ?
-    """, (
-        "Active Student",
-        student_name,
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        inquiry_id
-    ))
-
+    SET status=?, converted_student_name=?, follow_up_status=?, updated_at=?
+    WHERE id=?
+    """, ("Active Student", student_name, "Converted", v35_now(), inquiry_id))
     conn.commit()
     conn.close()
 
+    try:
+        create_notification("owner", "owner", "Lead Converted", f"{student_name} was converted into a student record.", f"/student/{student_name}", "trial_lead", inquiry_id)
+    except Exception:
+        pass
+
     return redirect(f"/student/{student_name}")
+
 
 # =========================
 # V18 Core Data Model Upgrade
