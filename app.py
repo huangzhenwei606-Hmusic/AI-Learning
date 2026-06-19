@@ -14381,6 +14381,8 @@ def ensure_v17_schema():
         ("program_interest", "program_interest TEXT"),
         ("preferred_days", "preferred_days TEXT"),
         ("preferred_times", "preferred_times TEXT"),
+        ("previous_experience", "previous_experience TEXT"),
+        ("experience_duration", "experience_duration TEXT"),
         ("trial_location", "trial_location TEXT"),
         ("trial_status", "trial_status TEXT DEFAULT 'Needs Review'"),
         ("lead_temperature", "lead_temperature TEXT DEFAULT 'Warm'"),
@@ -14418,6 +14420,8 @@ def build_v35_trial_plan(data):
     preferred_days = (data.get("preferred_days") or "").strip()
     preferred_times = (data.get("preferred_times") or "").strip()
     source = (data.get("source") or "Unknown source").strip()
+    previous_experience = (data.get("previous_experience") or "").strip()
+    experience_duration = (data.get("experience_duration") or "").strip()
     temp = (data.get("lead_temperature") or "Warm").strip()
     notes = (data.get("notes") or "").strip()
 
@@ -14432,9 +14436,14 @@ def build_v35_trial_plan(data):
             missing.append(label)
 
     preferred = " / ".join([x for x in [preferred_days, preferred_times] if x]) or "No preference yet"
+    experience = "Previous learning: " + previous_experience
+    if previous_experience.lower() in ("yes", "y", "true") and experience_duration:
+        experience += f" ({experience_duration})"
+    elif experience_duration:
+        experience += f" - {experience_duration}"
     summary = (
         f"{student} is a {temp.lower()} trial lead for {program}. "
-        f"Parent: {parent}. Age: {age}. Source: {source}. Preferred time: {preferred}."
+        f"Parent: {parent}. Age: {age}. Source/referrer: {source}. Preferred time: {preferred}. {experience}."
     )
     if notes:
         summary += f" Notes: {notes[:220]}"
@@ -14458,6 +14467,7 @@ def v35_insert_trial_lead(data, public=False):
     fields = [
         "student_name", "parent_name", "parent_email", "phone", "age", "instrument",
         "program_interest", "preferred_days", "preferred_times", "source",
+        "previous_experience", "experience_duration",
         "lead_temperature", "trial_location", "notes",
     ]
     clean = {key: (data.get(key, "") or "").strip() for key in fields}
@@ -14477,16 +14487,18 @@ def v35_insert_trial_lead(data, public=False):
             student_name, parent_name, parent_email, phone, age, instrument, source,
             status, trial_date, trial_time, trial_teacher, notes, converted_student_name,
             created_at, updated_at, program_interest, preferred_days, preferred_times,
+            previous_experience, experience_duration,
             trial_location, trial_status, lead_temperature, ai_summary, ai_recommendation,
             ai_follow_up_draft, next_follow_up_at, follow_up_status, follow_up_notes,
             owner_verified, converted_enrollment_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             clean["student_name"], clean["parent_name"], clean["parent_email"], clean["phone"],
             clean["age"], clean["instrument"], clean["source"], "New Lead", "", "", "",
             clean["notes"], "", now, now, clean["program_interest"], clean["preferred_days"],
-            clean["preferred_times"], clean["trial_location"], "Needs Review", clean["lead_temperature"],
+            clean["preferred_times"], clean["previous_experience"], clean["experience_duration"],
+            clean["trial_location"], "Needs Review", clean["lead_temperature"],
             summary, recommendation, follow_up, "", "New", "", 0, None,
         ),
     )
@@ -14518,7 +14530,7 @@ def v35_public_trial_form(error="", values=None):
         return v35_safe(values.get(name, ""))
 
     program_options = []
-    for option in ["Trial Lesson", "Private Piano", "Group Piano", "Voice", "Violin", "Other"]:
+    for option in ["Group Class", "Private Class"]:
         selected = "selected" if values.get("program_interest") == option else ""
         program_options.append(f'<option value="{option}" {selected}>{option}</option>')
     error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
@@ -14539,6 +14551,7 @@ def v35_public_trial_form(error="", values=None):
             .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
             label {{ font-weight:800; font-size:15px; display:grid; gap:8px; }}
             input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d7dce5; border-radius:12px; padding:14px 15px; font-size:16px; font-family:inherit; }}
+            .slot-title {{ margin:4px 0 -8px; font-weight:900; color:#374151; }}
             textarea {{ min-height:120px; resize:vertical; }}
             button {{ border:0; border-radius:13px; background:#4f46e5; color:white; padding:16px 20px; font-size:17px; font-weight:900; cursor:pointer; }}
             .hint {{ background:#fff8db; border:1px solid #ffe08a; border-radius:14px; padding:14px 16px; color:#684b00; }}
@@ -14550,7 +14563,7 @@ def v35_public_trial_form(error="", values=None):
         <div class="wrap">
             <div class="card">
                 <div class="brand"><div class="logo">H</div><div><h1>Trial Lesson Request</h1><p>H-Music will review your request and contact you with next steps.</p></div></div>
-                <div class="hint">Please share your preferred days and times. We will match you with the best available teacher after owner review.</div>
+                <div class="hint">Please share 1-3 preferred dates and times. We will match you with the best available teacher after owner review.</div>
                 {error_html}
                 <form method="post">
                     <div class="grid">
@@ -14569,11 +14582,27 @@ def v35_public_trial_form(error="", values=None):
                         <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
                         <label>Preferred Location<input name="trial_location" placeholder="In studio / online / other" value="{val('trial_location')}"></label>
                     </div>
+                    <div class="slot-title">Preferred Date / Time 1 *</div>
                     <div class="grid">
-                        <label>Preferred Days<input name="preferred_days" placeholder="Example: Tue, Thu, Sat" value="{val('preferred_days')}"></label>
-                        <label>Preferred Times<input name="preferred_times" placeholder="Example: after 4 PM" value="{val('preferred_times')}"></label>
+                        <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
+                        <label>Time<input type="time" name="preferred_time_1" value="{val('preferred_time_1')}" required></label>
                     </div>
-                    <label>Anything we should know?<textarea name="notes" placeholder="Goals, level, previous experience, scheduling notes...">{val('notes')}</textarea></label>
+                    <div class="slot-title">Preferred Date / Time 2</div>
+                    <div class="grid">
+                        <label>Date<input type="date" name="preferred_date_2" value="{val('preferred_date_2')}"></label>
+                        <label>Time<input type="time" name="preferred_time_2" value="{val('preferred_time_2')}"></label>
+                    </div>
+                    <div class="slot-title">Preferred Date / Time 3</div>
+                    <div class="grid">
+                        <label>Date<input type="date" name="preferred_date_3" value="{val('preferred_date_3')}"></label>
+                        <label>Time<input type="time" name="preferred_time_3" value="{val('preferred_time_3')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Has the student learned before?<select name="previous_experience"><option value="No" {'selected' if values.get('previous_experience') == 'No' else ''}>No</option><option value="Yes" {'selected' if values.get('previous_experience') == 'Yes' else ''}>Yes</option></select></label>
+                        <label>If yes, how long?<input name="experience_duration" placeholder="Example: 6 months / 2 years" value="{val('experience_duration')}"></label>
+                    </div>
+                    <label>How did you hear about us? / Who referred you?<input name="source" placeholder="Google, Instagram, friend name, current family..." value="{val('source')}"></label>
+                    <label>Anything we should know?<textarea name="notes" placeholder="Goals, level, scheduling notes...">{val('notes')}</textarea></label>
                     <button type="submit">Submit Trial Request</button>
                 </form>
             </div>
@@ -14617,6 +14646,14 @@ def v35_public_trial_thank_you(inquiry_id, data):
 def public_trial_request():
     ensure_v17_schema()
     if request.method == "POST":
+        preferred_dates = []
+        preferred_times = []
+        for idx in range(1, 4):
+            date_value = request.form.get(f"preferred_date_{idx}", "").strip()
+            time_value = request.form.get(f"preferred_time_{idx}", "").strip()
+            if date_value or time_value:
+                preferred_dates.append(f"{idx}. {date_value or 'Date TBD'}")
+                preferred_times.append(f"{idx}. {time_value or 'Time TBD'}")
         data = {
             "student_name": request.form.get("student_name", "").strip(),
             "parent_name": request.form.get("parent_name", "").strip(),
@@ -14625,17 +14662,22 @@ def public_trial_request():
             "age": request.form.get("age", "").strip(),
             "instrument": request.form.get("instrument", "").strip(),
             "program_interest": request.form.get("program_interest", "").strip(),
-            "preferred_days": request.form.get("preferred_days", "").strip(),
-            "preferred_times": request.form.get("preferred_times", "").strip(),
+            "preferred_days": "; ".join(preferred_dates),
+            "preferred_times": "; ".join(preferred_times),
             "trial_location": request.form.get("trial_location", "").strip(),
+            "previous_experience": request.form.get("previous_experience", "").strip(),
+            "experience_duration": request.form.get("experience_duration", "").strip(),
             "notes": request.form.get("notes", "").strip(),
-            "source": "Public Trial Form",
+            "source": request.form.get("source", "").strip() or "Public Trial Form",
             "lead_temperature": "Warm",
         }
+        form_values = {**request.form, **data}
         if not data["student_name"] or not data["parent_name"]:
-            return v35_public_trial_form("Please enter student and parent names.", data)
+            return v35_public_trial_form("Please enter student and parent names.", form_values)
         if not data["parent_email"] and not data["phone"]:
-            return v35_public_trial_form("Please enter either email or phone.", data)
+            return v35_public_trial_form("Please enter either email or phone.", form_values)
+        if not data["preferred_days"] or not data["preferred_times"]:
+            return v35_public_trial_form("Please enter at least one preferred date and time.", form_values)
         inquiry_id = v35_insert_trial_lead(data, public=True)
         return v35_public_trial_thank_you(inquiry_id, data)
     return v35_public_trial_form()
@@ -14806,6 +14848,8 @@ def add_inquiry():
             "preferred_days": request.form.get("preferred_days", "").strip(),
             "preferred_times": request.form.get("preferred_times", "").strip(),
             "source": request.form.get("source", "").strip(),
+            "previous_experience": request.form.get("previous_experience", "").strip(),
+            "experience_duration": request.form.get("experience_duration", "").strip(),
             "lead_temperature": request.form.get("lead_temperature", "Warm"),
             "trial_location": request.form.get("trial_location", "").strip(),
             "notes": request.form.get("notes", "").strip(),
@@ -14842,7 +14886,9 @@ def add_inquiry():
                     <div><label>Phone</label><input name="phone"></div>
                     <div><label>Source</label><input name="source" placeholder="Website / Referral / Walk-in / Instagram"></div>
                     <div><label>Instrument</label><input name="instrument" placeholder="Piano / Voice / Violin"></div>
-                    <div><label>Program Interest</label><input name="program_interest" placeholder="Trial / Private 30m / Group Piano"></div>
+                    <div><label>Program Interest</label><select name="program_interest"><option>Group Class</option><option>Private Class</option></select></div>
+                    <div><label>Previous Learning?</label><select name="previous_experience"><option>No</option><option>Yes</option></select></div>
+                    <div><label>If yes, how long?</label><input name="experience_duration" placeholder="6 months / 2 years"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" placeholder="Mon/Wed/Sat"></div>
                     <div><label>Preferred Times</label><input name="preferred_times" placeholder="After 4pm / weekend morning"></div>
                     <div><label>Lead Temperature</label><select name="lead_temperature"><option>Warm</option><option>Hot</option><option>Cold</option></select></div>
@@ -14956,7 +15002,9 @@ def inquiry_detail(inquiry_id):
                     <div><label>Phone</label><input name="phone" value="{v35_safe(inquiry['phone'])}"></div>
                     <div><label>Source</label><input name="source" value="{v35_safe(inquiry['source'])}"></div>
                     <div><label>Instrument</label><input name="instrument" value="{v35_safe(inquiry['instrument'])}"></div>
-                    <div><label>Program Interest</label><input name="program_interest" value="{v35_safe(inquiry['program_interest'])}"></div>
+                    <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
+                    <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
+                    <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
                     <div><label>Preferred Times</label><input name="preferred_times" value="{v35_safe(inquiry['preferred_times'])}"></div>
                     <div><label>Lead Temperature</label><select name="lead_temperature">{opts(temp_options, inquiry['lead_temperature'] or 'Warm')}</select></div>
@@ -14997,6 +15045,8 @@ def update_inquiry(inquiry_id):
         "preferred_days": request.form.get("preferred_days", "").strip(),
         "preferred_times": request.form.get("preferred_times", "").strip(),
         "source": request.form.get("source", "").strip(),
+        "previous_experience": request.form.get("previous_experience", "").strip(),
+        "experience_duration": request.form.get("experience_duration", "").strip(),
         "lead_temperature": request.form.get("lead_temperature", "Warm"),
         "status": request.form.get("status", "New Lead"),
         "trial_date": request.form.get("trial_date", "").strip(),
@@ -15028,14 +15078,15 @@ def update_inquiry(inquiry_id):
     UPDATE inquiries SET
         student_name=?, parent_name=?, parent_email=?, phone=?, age=?, instrument=?, source=?, status=?,
         trial_date=?, trial_time=?, trial_teacher=?, notes=?, updated_at=?, program_interest=?, preferred_days=?,
-        preferred_times=?, trial_location=?, trial_status=?, lead_temperature=?, ai_summary=?, ai_recommendation=?,
+        preferred_times=?, previous_experience=?, experience_duration=?, trial_location=?, trial_status=?, lead_temperature=?, ai_summary=?, ai_recommendation=?,
         ai_follow_up_draft=?, next_follow_up_at=?, follow_up_status=?, follow_up_notes=?, owner_verified=?
     WHERE id=?
     """, (
         data["student_name"], data["parent_name"], data["parent_email"], data["phone"], data["age"],
         data["instrument"], data["source"], data["status"], data["trial_date"], data["trial_time"],
         data["trial_teacher"], data["notes"], now, data["program_interest"], data["preferred_days"],
-        data["preferred_times"], data["trial_location"], trial_status, data["lead_temperature"], summary,
+        data["preferred_times"], data["previous_experience"], data["experience_duration"],
+        data["trial_location"], trial_status, data["lead_temperature"], summary,
         recommendation, follow_up, data["next_follow_up_at"], data["follow_up_status"], data["follow_up_notes"],
         data["owner_verified"], inquiry_id
     ))
