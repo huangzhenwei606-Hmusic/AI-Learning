@@ -772,18 +772,15 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-day.today {{ background:#fbfdff; }}
             .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; min-height:24px; margin-bottom:10px; color:var(--td-muted); font-size:12px; }}
             .calendar-day-head strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
-            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:3px solid var(--td-blue); border-radius:8px; padding:8px 9px; margin-bottom:8px; background:#fbfcff; min-width:0; overflow:visible; }}
-            .calendar-event.present {{ border-left-color:var(--td-green); background:var(--td-green-soft); }}
-            .calendar-event.noshow {{ border-left-color:var(--td-red); background:var(--td-red-soft); }}
-            .calendar-event.cancelled {{ border-left-color:var(--td-faint); background:var(--td-gray-soft); }}
-            .event-top {{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }}
-            .event-time {{ flex:0 0 auto; font-size:12px; color:var(--td-muted); line-height:1.2; }}
+            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:5px solid var(--td-blue); border-radius:8px; padding:8px 9px; margin-bottom:8px; background:#fbfcff; min-width:0; overflow:visible; }}
+            .calendar-event.duration-30 {{ border-left-color:#2563eb; background:#f8fbff; }}
+            .calendar-event.duration-45 {{ border-left-color:#16a34a; background:#f7fdf9; }}
+            .calendar-event.duration-60 {{ border-left-color:#d97706; background:#fffaf0; }}
+            .calendar-event.duration-long {{ border-left-color:#7c3aed; background:#fbf8ff; }}
+            .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:5px; }}
+            .event-time {{ flex:1 1 auto; min-width:0; font-size:12px; color:var(--td-muted); line-height:1.25; }}
             .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:13px; font-weight:500; line-height:1.25; margin-bottom:5px; }}
             .event-line {{ overflow-wrap:anywhere; font-size:12px; color:var(--td-muted); line-height:1.35; margin-top:2px; }}
-            .event-status {{ flex:0 0 auto; display:inline-flex; border-radius:999px; padding:1px 6px; background:white; color:var(--td-blue); font-size:11px; font-weight:500; line-height:1.4; }}
-            .calendar-event.present .event-status {{ color:var(--td-green); }}
-            .calendar-event.noshow .event-status {{ color:var(--td-red); }}
-            .event-notes-link {{ display:inline-block; margin-top:6px; color:var(--td-blue); font-size:12px; font-weight:500; }}
             .event-status-form {{ display:grid; grid-template-columns:1fr; gap:6px; margin-top:8px; }}
             .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:30px; border:1px solid var(--td-line); border-radius:7px; background:white; color:var(--td-text); font:inherit; font-size:12px; padding:4px 7px; }}
             .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; }}
@@ -4132,17 +4129,8 @@ def teacher_dashboard():
     cursor.execute("""
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
-        c.display_color,
-        COALESCE((
-            SELECT l.homework
-            FROM lessons l
-            WHERE l.student_name = s.student_name
-            AND l.lesson_date <= s.lesson_date
-            ORDER BY l.lesson_date DESC, l.id DESC
-            LIMIT 1
-        ), '') AS homework
+        COALESCE(s.duration, 30)
     FROM schedule s
-    LEFT JOIN course_types c ON s.course_type_id = c.id
     WHERE s.teacher = ?
     AND s.lesson_date LIKE ?
     ORDER BY s.lesson_date, s.lesson_time
@@ -4152,17 +4140,8 @@ def teacher_dashboard():
     cursor.execute("""
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
-        c.display_color,
-        COALESCE((
-            SELECT l.homework
-            FROM lessons l
-            WHERE l.student_name = s.student_name
-            AND l.lesson_date <= s.lesson_date
-            ORDER BY l.lesson_date DESC, l.id DESC
-            LIMIT 1
-        ), '') AS homework
+        COALESCE(s.duration, 30)
     FROM schedule s
-    LEFT JOIN course_types c ON s.course_type_id = c.id
     WHERE s.teacher = ?
     AND s.lesson_date >= ?
     AND s.lesson_date <= ?
@@ -4237,23 +4216,42 @@ def teacher_dashboard():
 
     schedule_return_url = f"/teacher_dashboard?view=schedule&week={week_start.strftime('%Y-%m-%d')}"
 
+    def duration_class(duration):
+        try:
+            minutes = int(float(duration or 30))
+        except (TypeError, ValueError):
+            minutes = 30
+        if minutes <= 30:
+            return "duration-30"
+        if minutes <= 45:
+            return "duration-45"
+        if minutes <= 60:
+            return "duration-60"
+        return "duration-long"
+
+    def teacher_time_range(time_text, duration):
+        start_minutes = minutes_from_time_text(time_text)
+        if start_minutes is None:
+            return time_text or ""
+        try:
+            minutes = int(float(duration or 30))
+        except (TypeError, ValueError):
+            minutes = 30
+        return f"{time_text_from_minutes(start_minutes)}-{time_text_from_minutes(start_minutes + minutes)}"
+
     def calendar_event(lesson):
-        key = hstudio_status_key(lesson[5])
-        homework = (lesson[7] or "No homework assigned").strip()
+        time_range = teacher_time_range(lesson[2], lesson[6])
         return f"""
-        <div class="calendar-event {key}">
+        <div class="calendar-event {duration_class(lesson[6])}">
             <div class="event-top">
-                <span class="event-time">{lesson[2] or '-'}</span>
-                <span class="event-status">{status_label(lesson[5])}</span>
+                <span class="event-time">{time_range}</span>
             </div>
             <a class="event-student" href="/add_lesson/{lesson[3]}">{escape(lesson[3] or '-')}</a>
-            <div class="event-line">Room: {escape(lesson[4] or '-')} · Attendance: {status_label(lesson[5])}</div>
-            <div class="event-line">HW: {escape(homework)}</div>
-            <a class="event-notes-link" href="/add_lesson/{lesson[3]}">Lesson Notes / Homework</a>
+            <div class="event-line">Room: {escape(lesson[4] or '-')}</div>
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
                 <input type="hidden" name="return_to" value="{schedule_return_url}">
-                <select name="status">{status_options(lesson[5])}</select>
+                <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
                 <button type="submit">Update</button>
             </form>
         </div>
