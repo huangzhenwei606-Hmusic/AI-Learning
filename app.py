@@ -772,25 +772,25 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .schedule-tabs a {{ border:0; border-radius:0; background:white; padding:7px 11px; }}
             .schedule-tabs a.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
-            .calendar-day {{ min-height:560px; background:white; padding:10px; min-width:0; }}
+            .calendar-day {{ min-height:560px; background:white; padding:8px; min-width:0; }}
             .calendar-day.today {{ background:#fbfdff; }}
-            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; min-height:24px; margin-bottom:10px; color:var(--td-muted); font-size:12px; }}
-            .calendar-day-head strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
-            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:5px solid var(--td-blue); border-radius:8px; padding:8px 9px; margin-bottom:8px; background:#fbfcff; min-width:0; overflow:visible; }}
-            .calendar-event.private-30 {{ border-left-color:#93c5fd; background:#eff6ff; }}
-            .calendar-event.private-45 {{ border-left-color:#3b82f6; background:#dbeafe; }}
-            .calendar-event.private-60 {{ border-left-color:#1e3a8a; background:#dbeafe; }}
-            .calendar-event.private-long {{ border-left-color:#1e40af; background:#eff6ff; }}
-            .calendar-event.group-small {{ border-left-color:#c4b5fd; background:#f5f3ff; }}
-            .calendar-event.group-large {{ border-left-color:#7c3aed; background:#ede9fe; }}
-            .calendar-event.trial {{ border-left-color:#facc15; background:#fefce8; }}
-            .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:5px; }}
-            .event-time {{ flex:1 1 auto; min-width:0; font-size:12px; color:var(--td-muted); line-height:1.25; }}
-            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:13px; font-weight:500; line-height:1.25; margin-bottom:5px; }}
-            .event-line {{ overflow-wrap:anywhere; font-size:12px; color:var(--td-muted); line-height:1.35; margin-top:2px; }}
-            .event-status-form {{ display:grid; grid-template-columns:1fr; gap:6px; margin-top:8px; }}
-            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:30px; border:1px solid var(--td-line); border-radius:7px; background:white; color:var(--td-text); font:inherit; font-size:12px; padding:4px 7px; }}
-            .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; }}
+            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:6px; align-items:center; min-height:20px; margin-bottom:7px; color:var(--td-muted); font-size:11px; }}
+            .calendar-day-head strong {{ color:var(--td-text); font-size:13px; font-weight:500; }}
+            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:6px solid var(--td-blue); border-radius:7px; padding:5px 6px; margin-bottom:5px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
+            .calendar-event.private-30 {{ border-left-color:#38bdf8; background:#dff4ff; border-color:#8bdcff; }}
+            .calendar-event.private-45 {{ border-left-color:#2563eb; background:#bfdbfe; border-color:#60a5fa; }}
+            .calendar-event.private-60 {{ border-left-color:#0f172a; background:#93c5fd; border-color:#1d4ed8; }}
+            .calendar-event.private-long {{ border-left-color:#172554; background:#bfdbfe; border-color:#1e40af; }}
+            .calendar-event.group-small {{ border-left-color:#a855f7; background:#eadcff; border-color:#c084fc; }}
+            .calendar-event.group-large {{ border-left-color:#4c1d95; background:#c4b5fd; border-color:#7c3aed; }}
+            .calendar-event.trial {{ border-left-color:#eab308; background:#fde68a; border-color:#facc15; }}
+            .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:5px; margin-bottom:2px; }}
+            .event-time {{ flex:1 1 auto; min-width:0; font-size:10px; color:#334155; line-height:1.1; font-weight:500; }}
+            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:11.5px; font-weight:600; line-height:1.12; margin-bottom:2px; }}
+            .event-line {{ overflow-wrap:anywhere; font-size:10px; color:#334155; line-height:1.12; margin-top:0; }}
+            .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 36px; gap:3px; margin-top:4px; align-items:center; }}
+            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:21px; border:1px solid rgba(51,65,85,.28); border-radius:5px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:10px; padding:1px 4px; }}
+            .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; padding:0 4px; }}
             .calendar-empty {{ color:var(--td-faint); font-size:13px; padding:8px 2px; }}
             @media (max-width:900px) {{
                 .td-shell {{ grid-template-columns:64px 1fr; }}
@@ -4386,12 +4386,12 @@ def teacher_dashboard():
                 <span class="event-time">{time_range}</span>
             </div>
             <a class="event-student" href="/add_lesson/{lesson[3]}">{escape(lesson[3] or '-')}</a>
-            <div class="event-line">Room: {escape(lesson[4] or '-')}</div>
+            <div class="event-line">{escape(lesson[4] or '-')}</div>
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
                 <input type="hidden" name="return_to" value="{schedule_return_url}">
                 <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
-                <button type="submit">Update</button>
+                <button type="submit">Save</button>
             </form>
         </div>
         """
