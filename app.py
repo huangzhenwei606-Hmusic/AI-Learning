@@ -657,19 +657,19 @@ def hstudio_badge(count):
 def hstudio_teacher_dark_nav(unread_messages=0):
     message_badge = hstudio_badge(unread_messages)
     return f"""
-        <div class="td-nav-section">今日</div>
-        <a class="td-nav-item active" href="/teacher_dashboard"><i class="ti ti-home"></i><span>主页</span></a>
-        <a class="td-nav-item" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i><span>我的课表</span></a>
-        <a class="td-nav-item" href="/teacher_messages"><i class="ti ti-message"></i><span>消息</span>{message_badge}</a>
-        <div class="td-nav-section">课程</div>
-        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-notes"></i><span>课程记录</span></a>
-        <a class="td-nav-item" href="/teacher_sub_request"><i class="ti ti-replace"></i><span>代课申请</span></a>
-        <a class="td-nav-item" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i><span>调课申请</span></a>
-        <div class="td-nav-section">薪资</div>
-        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-coin"></i><span>薪资明细</span><span class="td-new-badge">新</span></a>
-        <div class="td-nav-section">账号</div>
-        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-settings"></i><span>个人设置</span></a>
-        <a class="td-nav-item" href="/teacher_logout"><i class="ti ti-logout"></i><span>退出</span></a>
+        <div class="td-nav-section">Today</div>
+        <a class="td-nav-item active" href="/teacher_dashboard"><i class="ti ti-home"></i><span>Home</span></a>
+        <a class="td-nav-item" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i><span>My Schedule</span></a>
+        <a class="td-nav-item" href="/teacher_messages"><i class="ti ti-message"></i><span>Messages</span>{message_badge}</a>
+        <div class="td-nav-section">Lessons</div>
+        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-notes"></i><span>Lesson Records</span></a>
+        <a class="td-nav-item" href="/teacher_sub_request"><i class="ti ti-replace"></i><span>Sub Request</span></a>
+        <a class="td-nav-item" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i><span>Reschedule Request</span></a>
+        <div class="td-nav-section">Payroll</div>
+        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-coin"></i><span>Payroll Detail</span><span class="td-new-badge">New</span></a>
+        <div class="td-nav-section">Account</div>
+        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-settings"></i><span>Profile Settings</span></a>
+        <a class="td-nav-item" href="/teacher_logout"><i class="ti ti-logout"></i><span>Logout</span></a>
     """
 
 
@@ -678,7 +678,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html):
     return f"""
     <html>
     <head>
-        <title>老师端 · {HSTUDIO_APP_NAME}</title>
+        <title>Teacher Portal · {HSTUDIO_APP_NAME}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
         <style>
@@ -765,7 +765,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html):
         <div class="td-shell">
             <header class="td-topbar">
                 <div class="td-brand"><span class="td-mark"><i class="ti ti-music"></i></span><span>{HSTUDIO_APP_NAME}</span></div>
-                <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> 老师端</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
+                <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> Teacher</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
             </header>
             <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages)}</aside>
             <main class="td-main">{content_html}</main>
@@ -4115,17 +4115,17 @@ def teacher_dashboard():
     actual_payroll = round(payroll_summary[0] or 0, 2)
     projected_payroll = round(payroll_summary[1] or 0, 2)
     pending_count = unread_messages
-    today_label = "今天没有课程安排" if not today_lessons else f"今天有 {len(today_lessons)} 节课"
+    today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
 
     def zh_status(status):
         key = hstudio_status_key(status)
         if key == "present":
-            return "已上课"
+            return "Present"
         if key == "noshow":
-            return "未到课"
+            return "No show"
         if key == "cancelled":
-            return "已取消"
-        return "已排课"
+            return "Cancelled"
+        return "Scheduled"
 
     lesson_records_html = ""
     for lesson in lessons[:6]:
@@ -4141,54 +4141,54 @@ def teacher_dashboard():
         </a>
         """
     if not lesson_records_html:
-        lesson_records_html = "<div class='td-empty'>本月还没有课程记录。</div>"
+        lesson_records_html = "<div class='td-empty'>No lesson records this month.</div>"
 
-    rate_display = f"{hstudio_money_whole(teacher_rate)} / 节" if teacher_rate else "按课程规则"
+    rate_display = f"{hstudio_money_whole(teacher_rate)} / lesson" if teacher_rate else "Course rule"
     note_student = lessons[0][3] if lessons else ""
     note_href = f"/add_lesson/{note_student}" if note_student else "/teacher_dashboard"
     content = f"""
         <div class="td-greeting">
-            <h1>你好，{escape(teacher_name or 'Teacher')}</h1>
+            <h1>Hello, {escape(teacher_name or 'Teacher')}</h1>
             <span>{today_label}</span>
         </div>
 
         <div class="td-kpis">
             <div class="td-kpi">
-                <div class="td-kpi-label">本月课时</div>
+                <div class="td-kpi-label">Lessons This Month</div>
                 <div class="td-kpi-value green">{completed_count}</div>
-                <div class="td-kpi-sub">已完成</div>
+                <div class="td-kpi-sub">Completed</div>
             </div>
             <div class="td-kpi">
-                <div class="td-kpi-label">本月薪资</div>
+                <div class="td-kpi-label">Payroll This Month</div>
                 <div class="td-kpi-value">{hstudio_money_whole(actual_payroll)}</div>
-                <div class="td-kpi-sub">预计 {hstudio_money_whole(projected_payroll)}</div>
+                <div class="td-kpi-sub">Projected {hstudio_money_whole(projected_payroll)}</div>
             </div>
             <div class="td-kpi">
-                <div class="td-kpi-label">待处理</div>
+                <div class="td-kpi-label">Pending Items</div>
                 <div class="td-kpi-value gold">{pending_count}</div>
-                <div class="td-kpi-sub">未读消息</div>
+                <div class="td-kpi-sub">Unread messages</div>
             </div>
         </div>
 
         <div class="td-layout">
             <section class="td-card td-records">
-                <h2>本月课程记录</h2>
+                <h2>Lesson Records This Month</h2>
                 {lesson_records_html}
                 <a class="td-down" href="/teacher_dashboard?view=week"><i class="ti ti-arrow-down"></i></a>
             </section>
             <div class="td-stack">
                 <section class="td-card">
-                    <h2>快速操作</h2>
-                    <a class="td-action" href="{note_href}"><i class="ti ti-notes"></i>填写课程笔记</a>
-                    <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>申请代课</a>
-                    <a class="td-action" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i>查看本周课表</a>
+                    <h2>Quick Actions</h2>
+                    <a class="td-action" href="{note_href}"><i class="ti ti-notes"></i>Write Lesson Notes</a>
+                    <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>Request a Sub</a>
+                    <a class="td-action" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i>View This Week</a>
                 </section>
                 <section class="td-card">
-                    <h2>薪资摘要 · {month_num}月</h2>
-                    <div class="td-pay-row"><span>已完成课时</span><strong>{completed_count} 节</strong></div>
-                    <div class="td-pay-row"><span>课时费率</span><strong>{rate_display}</strong></div>
-                    <div class="td-pay-row"><span>本月薪资</span><strong class="green">{hstudio_money_whole(actual_payroll)} 已结算</strong></div>
-                    <div class="td-pay-row"><span>预计总薪资</span><strong class="gold">{hstudio_money_whole(projected_payroll)}</strong></div>
+                    <h2>Payroll Summary · {month_start.strftime("%B")}</h2>
+                    <div class="td-pay-row"><span>Completed Lessons</span><strong>{completed_count}</strong></div>
+                    <div class="td-pay-row"><span>Lesson Rate</span><strong>{rate_display}</strong></div>
+                    <div class="td-pay-row"><span>Settled Payroll</span><strong class="green">{hstudio_money_whole(actual_payroll)} settled</strong></div>
+                    <div class="td-pay-row"><span>Projected Total</span><strong class="gold">{hstudio_money_whole(projected_payroll)}</strong></div>
                 </section>
             </div>
         </div>
