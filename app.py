@@ -3564,6 +3564,7 @@ def add_schedule():
 
     if request.method == "POST":
         action = request.form.get("action")
+        student_mode = request.form.get("student_mode", "existing")
         allow_unassigned_teacher_schedule = (
             action == "create_unassigned_teacher_schedule"
             and require_teacher()
@@ -3571,10 +3572,12 @@ def add_schedule():
         )
         temporary_schedule_note = (request.form.get("temporary_schedule_note") or "").strip()
 
-        if action == "request_student_setup" and require_teacher() and not require_owner():
+        if (action == "request_student_setup" or student_mode == "new") and require_teacher() and not require_owner():
             teacher_name = session.get("teacher_name")
-            requested_student = (request.form.get("requested_student") or "").strip()
-            request_note = (request.form.get("request_note") or "").strip()
+            requested_student = (request.form.get("requested_student") or request.form.get("new_student_name") or "").strip()
+            parent_name = (request.form.get("new_parent_name") or "").strip()
+            parent_contact = (request.form.get("new_parent_contact") or "").strip()
+            request_note = (request.form.get("request_note") or request.form.get("new_student_note") or "").strip()
             if not requested_student:
                 conn.close()
                 return "<h1>Please enter the student name.</h1><p><a href='/add_schedule'>Back</a></p>"
@@ -3592,6 +3595,8 @@ def add_schedule():
             body = (
                 f"{teacher_name} tried to add a schedule for {requested_student}, but the student is not active in their enrollment list."
             )
+            if parent_name or parent_contact:
+                body += f"\n\nParent info: {parent_name or 'N/A'} | {parent_contact or 'N/A'}"
             if request_note:
                 body += f"\n\nTeacher note: {request_note}"
             add_message(thread_id, "teacher", teacher_name, "owner", body)
@@ -3924,6 +3929,19 @@ def add_schedule():
     """)
     course_types = cursor.fetchall()
 
+    if require_teacher() and not require_owner():
+        cursor.execute("""
+        SELECT DISTINCT student_name
+        FROM enrollments
+        WHERE teacher_name = ?
+        AND status = 'active'
+        ORDER BY student_name
+        """, (session.get("teacher_name"),))
+        student_rows = cursor.fetchall()
+    else:
+        cursor.execute("SELECT name FROM students ORDER BY name")
+        student_rows = cursor.fetchall()
+
     conn.close()
 
     teacher_options = ""
@@ -3951,8 +3969,42 @@ def add_schedule():
     if not course_options:
         course_options = '<option value="">No active course types found</option>'
 
+    student_options = "".join([
+        f'<option value="{escape(s[0])}">{escape(s[0])}</option>'
+        for s in student_rows
+    ]) or '<option value="">No students found</option>'
+
     back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
     teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
+    teacher_student_mode_html = ""
+    existing_student_input = '<input name="student_name" required>'
+    new_student_request_html = ""
+    submit_label = "Generate Schedule"
+
+    if require_teacher() and not require_owner():
+        existing_student_input = f'<select id="student_name" name="student_name">{student_options}</select>'
+        teacher_student_mode_html = """
+                <div class="student-mode">
+                    <label><input type="radio" name="student_mode" value="existing" checked onchange="toggleStudentMode()"> Existing student</label>
+                    <label><input type="radio" name="student_mode" value="new" onchange="toggleStudentMode()"> New student - notify owner</label>
+                </div>
+        """
+        new_student_request_html = """
+                <div id="new-student-box" class="custom-box" style="display:none;">
+                    <b>New Student Request</b><br><br>
+                    Student Name:<br>
+                    <input name="new_student_name" placeholder="Student name">
+
+                    Parent Name:<br>
+                    <input name="new_parent_name" placeholder="Optional">
+
+                    Parent Contact:<br>
+                    <input name="new_parent_contact" placeholder="Phone or email, optional">
+
+                    Note to Owner:<br>
+                    <textarea name="new_student_note" placeholder="Please add this student/enrollment so I can schedule lessons."></textarea>
+                </div>
+        """
 
     return f"""
     <html>
@@ -3979,6 +4031,22 @@ def add_schedule():
                 margin-top: 6px;
                 margin-bottom: 16px;
                 font-size: 14px;
+            }}
+            .student-mode {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                margin: 8px 0 16px;
+            }}
+            .student-mode label {{
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+                padding: 12px;
+                font-weight: 800;
+            }}
+            .student-mode input {{
+                width: auto;
+                margin: 0 6px 0 0;
             }}
             textarea {{
                 min-height: 92px;
@@ -4020,8 +4088,13 @@ def add_schedule():
             <form method="POST">
 
                 Student:<br>
-                <input name="student_name" required>
+                {teacher_student_mode_html}
+                <div id="existing-student-box">
+                    {existing_student_input}
+                </div>
+                {new_student_request_html}
 
+                <div id="schedule-fields">
                 Teacher:<br>
                 <select name="teacher" {teacher_disabled}>
                     {teacher_options}
@@ -4086,8 +4159,9 @@ def add_schedule():
 
                 Start Date:<br>
                 <input type="date" name="start_date" required>
+                </div>
 
-                <button type="submit">Generate Schedule</button>
+                <button id="submit-button" type="submit">{submit_label}</button>
 
             </form>
 
@@ -4108,7 +4182,40 @@ def add_schedule():
                 const format = document.getElementById("lesson_format");
                 groupFields.style.display = format && format.value === "group" ? "block" : "none";
             }}
+            function toggleStudentMode() {{
+                const selected = document.querySelector("input[name='student_mode']:checked");
+                const mode = selected ? selected.value : "existing";
+                const existingBox = document.getElementById("existing-student-box");
+                const newBox = document.getElementById("new-student-box");
+                const existingInput = document.getElementById("student_name");
+                const newStudentInput = document.querySelector("input[name='new_student_name']");
+                const scheduleFields = document.getElementById("schedule-fields");
+                const submitButton = document.getElementById("submit-button");
+                if (!newBox || !existingBox) return;
+                if (mode === "new") {{
+                    existingBox.style.display = "none";
+                    newBox.style.display = "block";
+                    if (existingInput) existingInput.removeAttribute("required");
+                    if (newStudentInput) newStudentInput.setAttribute("required", "required");
+                    if (scheduleFields) {{
+                        scheduleFields.style.display = "none";
+                        scheduleFields.querySelectorAll("input, select, textarea").forEach(el => el.disabled = true);
+                    }}
+                    submitButton.textContent = "Send New Student Request to Owner";
+                }} else {{
+                    existingBox.style.display = "block";
+                    newBox.style.display = "none";
+                    if (existingInput) existingInput.setAttribute("required", "required");
+                    if (newStudentInput) newStudentInput.removeAttribute("required");
+                    if (scheduleFields) {{
+                        scheduleFields.style.display = "block";
+                        scheduleFields.querySelectorAll("input, select, textarea").forEach(el => el.disabled = false);
+                    }}
+                    submitButton.textContent = "Generate Schedule";
+                }}
+            }}
             toggleCustomProgram();
+            toggleStudentMode();
         </script>
     </body>
     </html>
@@ -6756,7 +6863,10 @@ def ensure_v28_schema():
         ("backup_date_2", "backup_date_2 TEXT"),
         ("backup_time_2", "backup_time_2 TEXT"),
         ("backup_date_3", "backup_date_3 TEXT"),
-        ("backup_time_3", "backup_time_3 TEXT")
+        ("backup_time_3", "backup_time_3 TEXT"),
+        ("batch_group_id", "batch_group_id TEXT"),
+        ("affected_schedule_ids", "affected_schedule_ids TEXT"),
+        ("affected_teachers", "affected_teachers TEXT")
     ]:
         if column_name not in existing_columns:
             cursor.execute(f"ALTER TABLE reschedule_requests ADD COLUMN {column_sql}")
@@ -9258,6 +9368,7 @@ def new_parent_message():
         message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "teacher", body or "")
         save_message_attachments(message_id, files)
         create_notification("teacher", teacher_name, "New parent message", body or "Parent sent a message.", f"/message_thread/{thread_id}")
+        create_notification("owner", "owner", "Parent messaged teacher", f"{session.get('parent_name', 'Parent')} messaged {teacher_name} about {student_name}.", f"/message_thread/{thread_id}")
 
         conn.close()
         return redirect(f"/message_thread/{thread_id}")
@@ -9366,10 +9477,31 @@ def new_teacher_message():
     cursor = conn.cursor()
 
     if request.method == "POST":
+        recipient_mode = request.form.get("recipient_mode", "parent")
         student_name = request.form.get("student_name")
         parent_id = request.form.get("parent_id")
         body = request.form.get("body")
         files = request.files.getlist("attachments")
+
+        if recipient_mode == "director":
+            subject = "Teacher / Administrator Message"
+            if student_name:
+                subject += f" - {student_name}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name or None,
+                parent_id=None,
+                teacher_name=teacher_name,
+                thread_type="teacher_director",
+                related_type=None,
+                related_id=None
+            )
+            message_id = add_message(thread_id, "teacher", teacher_name, "owner", body or "")
+            save_message_attachments(message_id, files)
+            create_notification("owner", "owner", "New teacher message to Administrator", body or "Teacher sent a message.", f"/message_thread/{thread_id}")
+
+            conn.close()
+            return redirect(f"/message_thread/{thread_id}")
 
         cursor.execute("""
         SELECT id
@@ -9427,6 +9559,9 @@ def new_teacher_message():
             .container {{ background:white; padding:30px; border-radius:12px; max-width:760px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
             input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
             button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
+            .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .recipient-options input {{ width:auto; margin:0 6px 0 0; }}
         </style>
         <script>
             function splitStudentParent(value) {{
@@ -9434,17 +9569,38 @@ def new_teacher_message():
                 document.getElementById("student_name").value = parts[0] || "";
                 document.getElementById("parent_id").value = parts[1] || "";
             }}
+            function toggleTeacherRecipientMode() {{
+                const selected = document.querySelector("input[name='recipient_mode']:checked");
+                const mode = selected ? selected.value : "parent";
+                const parentBlock = document.getElementById("parent-recipient-block");
+                const studentSelect = document.getElementById("student-parent-select");
+                if (mode === "director") {{
+                    parentBlock.style.display = "none";
+                    studentSelect.removeAttribute("required");
+                }} else {{
+                    parentBlock.style.display = "block";
+                    studentSelect.setAttribute("required", "required");
+                }}
+            }}
         </script>
     </head>
-    <body>
+    <body onload="toggleTeacherRecipientMode()">
         <div class="container">
-            <h1>New Message to Parent</h1>
+            <h1>New Message</h1>
             <form method="POST" enctype="multipart/form-data">
-                Student / Parent:<br>
-                <select onchange="splitStudentParent(this.value)" required>
-                    <option value="">Select student</option>
-                    {options}
-                </select>
+                Send To:<br>
+                <div class="recipient-options">
+                    <label><input type="radio" name="recipient_mode" value="parent" checked onchange="toggleTeacherRecipientMode()">Parent</label>
+                    <label><input type="radio" name="recipient_mode" value="director" onchange="toggleTeacherRecipientMode()">Administrator</label>
+                </div>
+
+                <div id="parent-recipient-block">
+                    Student / Parent:<br>
+                    <select id="student-parent-select" onchange="splitStudentParent(this.value)" required>
+                        <option value="">Select student</option>
+                        {options}
+                    </select>
+                </div>
                 <input type="hidden" id="student_name" name="student_name">
                 <input type="hidden" id="parent_id" name="parent_id">
 
@@ -9719,7 +9875,7 @@ def teacher_messages():
         "Back to Dashboard",
         rows,
         new_href="/new_teacher_message",
-        new_label="New Message to Parent"
+        new_label="New Message"
     )
 
 
@@ -10251,6 +10407,7 @@ def parent_reschedule():
         <div class="container">
             <h1>Request Reschedule - {student_name}</h1>
             <p><b>Policy:</b> Please request reschedules at least 24 hours before class. Within 24 hours, a last-minute reschedule fee may apply. The first exception may be free per package if available.</p>
+            <p><a class="button" href="/parent_reschedule_group">Coordinate multiple lessons / siblings</a></p>
 
             <form method="POST">
                 Current Lesson:<br>
@@ -10320,6 +10477,216 @@ def parent_reschedule():
                 </tr>
                 {request_rows}
             </table>
+        </div>
+        {parent_bottom_nav("reschedule")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_reschedule_group", methods=["GET", "POST"])
+def parent_reschedule_group():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v282_schema()
+
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return redirect("/parent_dashboard")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        schedule_ids = request.form.getlist("schedule_ids")
+        requested_date = request.form.get("requested_date")
+        requested_time = request.form.get("requested_time")
+        backup_date_2 = request.form.get("backup_date_2")
+        backup_time_2 = request.form.get("backup_time_2")
+        backup_date_3 = request.form.get("backup_date_3")
+        backup_time_3 = request.form.get("backup_time_3")
+        reason = (request.form.get("reason") or "").strip()
+
+        if len(schedule_ids) < 2:
+            conn.close()
+            return "<h1>Please select at least two lessons to coordinate.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+        placeholders = ",".join(["?"] * len(schedule_ids))
+        cursor.execute(f"""
+        SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom, s.status
+        FROM schedule s
+        JOIN parent_students ps
+            ON ps.student_name = s.student_name
+            AND ps.active = 1
+            AND ps.parent_id = ?
+        WHERE s.id IN ({placeholders})
+        ORDER BY s.lesson_date, s.lesson_time
+        """, [parent_id] + schedule_ids)
+        selected_lessons = cursor.fetchall()
+
+        if len(selected_lessons) != len(schedule_ids):
+            conn.close()
+            return "<h1>Permission denied or lesson not found.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+        invalid = [l for l in selected_lessons if l[6] not in (None, "", "scheduled")]
+        if invalid:
+            conn.close()
+            return "<h1>Only scheduled lessons can be coordinated.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        batch_group_id = f"batch-{parent_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        affected_schedule_ids = ",".join([str(l[0]) for l in selected_lessons])
+        affected_teachers = ", ".join(sorted(set([l[4] or "" for l in selected_lessons if l[4]])))
+        affected_students = ", ".join(sorted(set([l[1] or "" for l in selected_lessons if l[1]])))
+        request_ids = []
+
+        for lesson in selected_lessons:
+            batch_reason = (
+                f"[Coordinated family request {batch_group_id}] "
+                f"Affected students: {affected_students}. Affected teachers: {affected_teachers}. "
+                f"{reason}"
+            ).strip()
+            cursor.execute("""
+            INSERT INTO reschedule_requests (
+                parent_id,
+                student_name,
+                original_schedule_id,
+                original_date,
+                original_time,
+                original_teacher,
+                original_classroom,
+                requested_date,
+                requested_time,
+                backup_date_2,
+                backup_time_2,
+                backup_date_3,
+                backup_time_3,
+                reason,
+                status,
+                created_at,
+                updated_at,
+                batch_group_id,
+                affected_schedule_ids,
+                affected_teachers
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                parent_id,
+                lesson[1],
+                lesson[0],
+                lesson[2],
+                lesson[3],
+                lesson[4],
+                lesson[5],
+                requested_date,
+                requested_time,
+                backup_date_2,
+                backup_time_2,
+                backup_date_3,
+                backup_time_3,
+                batch_reason,
+                "pending",
+                now,
+                now,
+                batch_group_id,
+                affected_schedule_ids,
+                affected_teachers
+            ))
+            request_ids.append(cursor.lastrowid)
+
+        conn.commit()
+        conn.close()
+
+        summary = (
+            f"Family coordinated reschedule request for {affected_students}. "
+            f"Target: {requested_date or 'not specified'} {requested_time or ''}. "
+            f"Affected teachers: {affected_teachers}. Request IDs: {', '.join(str(x) for x in request_ids)}."
+        )
+        create_notification("owner", "owner", "Coordinated reschedule request", summary, "/owner_reschedule_requests")
+        for teacher in sorted(set([l[4] for l in selected_lessons if l[4]])):
+            create_notification("teacher", teacher, "Coordinated reschedule request", summary, "/teacher_messages")
+
+        return f"""
+        <h1>Coordinated Reschedule Submitted</h1>
+        <p>{summary}</p>
+        <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
+        """
+
+    today = date.today().strftime("%Y-%m-%d")
+    cursor.execute("""
+    SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom, COALESCE(s.course_type_name, '')
+    FROM schedule s
+    JOIN parent_students ps
+        ON ps.student_name = s.student_name
+        AND ps.active = 1
+        AND ps.parent_id = ?
+    WHERE s.lesson_date >= ?
+    AND (s.status IS NULL OR s.status = '' OR s.status = 'scheduled')
+    ORDER BY s.student_name, s.lesson_date, s.lesson_time
+    """, (parent_id, today))
+    lessons = cursor.fetchall()
+    conn.close()
+
+    lesson_rows = ""
+    for l in lessons:
+        lesson_rows += f"""
+        <label class="lesson-choice">
+            <input type="checkbox" name="schedule_ids" value="{l[0]}">
+            <span><b>{escape(l[1] or '')}</b> · {l[2]} {l[3]} · {escape(l[4] or '')} · {escape(l[6] or l[5] or '')}</span>
+        </label>
+        """
+
+    if not lesson_rows:
+        lesson_rows = "<p>No upcoming scheduled lessons found.</p>"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Coordinate Lessons")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:900px; margin:0 auto; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 12px; }}
+            p {{ color:#6b7280; line-height:1.5; }}
+            input, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:120px; }}
+            .lesson-choice {{ display:flex; gap:10px; align-items:flex-start; border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin:8px 0; }}
+            .lesson-choice input {{ width:auto; min-height:auto; margin:3px 0 0; }}
+            .backup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
+            .secondary {{ background:#111827 !important; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{ .backup-grid {{ grid-template-columns:1fr; gap:0; }} }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Coordinate Multiple Lessons</h1>
+            <p>Select two or more lessons from your family account. H-Music will coordinate the shared time with all affected teachers.</p>
+            <form method="POST">
+                {lesson_rows}
+                <h2>Preferred Shared Time</h2>
+                <div class="backup-grid">
+                    <div>Date:<br><input type="date" name="requested_date"></div>
+                    <div>Time:<br><input type="time" name="requested_time"></div>
+                </div>
+                <h2>Backup Options</h2>
+                <div class="backup-grid">
+                    <div>Backup Date 2:<br><input type="date" name="backup_date_2"></div>
+                    <div>Backup Time 2:<br><input type="time" name="backup_time_2"></div>
+                    <div>Backup Date 3:<br><input type="date" name="backup_date_3"></div>
+                    <div>Backup Time 3:<br><input type="time" name="backup_time_3"></div>
+                </div>
+                Reason / notes:<br>
+                <textarea name="reason" placeholder="Example: We want sibling lessons closer together on the same day."></textarea>
+                <button type="submit">Submit Coordinated Request</button>
+                <a class="button secondary" href="/parent_reschedule">Back</a>
+            </form>
         </div>
         {parent_bottom_nav("reschedule")}
     </body>
