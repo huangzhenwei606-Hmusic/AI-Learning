@@ -615,6 +615,165 @@ def teacher_login_username(teacher_name):
     return base or "teacher"
 
 
+
+HSTUDIO_APP_NAME = "H-Music Studio"
+
+
+def hstudio_money_whole(value):
+    try:
+        return f"${float(value):,.0f}"
+    except (TypeError, ValueError):
+        return "$0"
+
+
+def hstudio_date_short(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%-m/%-d")
+    except Exception:
+        return value or "-"
+
+
+def hstudio_status_key(status):
+    status = (status or "scheduled").lower()
+    if status == "present":
+        return "present"
+    if status in ("no_show", "no show"):
+        return "noshow"
+    if status.startswith("cancel") or status == "teacher_cancelled":
+        return "cancelled"
+    return "scheduled"
+
+
+def hstudio_badge(count):
+    try:
+        number = int(count or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        return ""
+    return f'<span class="nav-badge">{number}</span>'
+
+
+def hstudio_teacher_dark_nav(unread_messages=0):
+    message_badge = hstudio_badge(unread_messages)
+    return f"""
+        <div class="td-nav-section">今日</div>
+        <a class="td-nav-item active" href="/teacher_dashboard"><i class="ti ti-home"></i><span>主页</span></a>
+        <a class="td-nav-item" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i><span>我的课表</span></a>
+        <a class="td-nav-item" href="/teacher_messages"><i class="ti ti-message"></i><span>消息</span>{message_badge}</a>
+        <div class="td-nav-section">课程</div>
+        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-notes"></i><span>课程记录</span></a>
+        <a class="td-nav-item" href="/teacher_sub_request"><i class="ti ti-replace"></i><span>代课申请</span></a>
+        <a class="td-nav-item" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i><span>调课申请</span></a>
+        <div class="td-nav-section">薪资</div>
+        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-coin"></i><span>薪资明细</span><span class="td-new-badge">新</span></a>
+        <div class="td-nav-section">账号</div>
+        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-settings"></i><span>个人设置</span></a>
+        <a class="td-nav-item" href="/teacher_logout"><i class="ti ti-logout"></i><span>退出</span></a>
+    """
+
+
+def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html):
+    initials = (teacher_name or "T")[:2].upper()
+    return f"""
+    <html>
+    <head>
+        <title>老师端 · {HSTUDIO_APP_NAME}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+        <style>
+            :root {{
+                --td-bg:#111111;
+                --td-panel:#292927;
+                --td-panel-soft:#252523;
+                --td-sidebar:#30312e;
+                --td-line:#474844;
+                --td-text:#f5f2ea;
+                --td-muted:#b8b5ad;
+                --td-faint:#8f8b83;
+                --td-blue:#284c77;
+                --td-blue-text:#9dc7ff;
+                --td-green:#184f13;
+                --td-green-text:#79c953;
+                --td-gold:#e6b84d;
+                --td-radius:14px;
+            }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:var(--td-bg); color:var(--td-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; font-weight:500; }}
+            a {{ color:inherit; text-decoration:none; }}
+            .td-shell {{ display:grid; grid-template-columns:300px 1fr; grid-template-rows:84px 1fr; min-height:100vh; background:var(--td-bg); }}
+            .td-topbar {{ grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:0 26px; background:#2f302d; border-bottom:1px solid var(--td-line); }}
+            .td-brand {{ display:flex; align-items:center; gap:12px; font-size:24px; font-weight:650; }}
+            .td-mark {{ width:40px; height:40px; display:grid; place-items:center; border-radius:8px; background:#294c78; color:#9cc8ff; font-size:20px; }}
+            .td-top-actions {{ display:flex; align-items:center; gap:14px; }}
+            .td-role {{ display:inline-flex; gap:7px; align-items:center; padding:9px 14px; border:1px solid var(--td-line); border-radius:999px; color:var(--td-text); font-size:18px; }}
+            .td-avatar {{ width:48px; height:48px; border-radius:999px; display:grid; place-items:center; background:#166310; color:#fff; font-size:15px; font-weight:700; }}
+            .td-more {{ width:48px; height:48px; border-radius:9px; display:grid; place-items:center; background:#252522; color:var(--td-muted); font-size:24px; }}
+            .td-sidebar {{ background:var(--td-sidebar); border-right:1px solid var(--td-line); padding:30px 0; }}
+            .td-nav-section {{ padding:12px 22px 8px; color:var(--td-faint); font-size:18px; }}
+            .td-nav-item {{ display:flex; align-items:center; gap:14px; min-height:52px; padding:0 24px; color:#cfccc4; font-size:22px; font-weight:650; }}
+            .td-nav-item i {{ width:26px; font-size:25px; color:#cfccc4; }}
+            .td-nav-item.active {{ background:var(--td-blue); color:var(--td-blue-text); }}
+            .td-nav-item.active i {{ color:var(--td-blue-text); }}
+            .nav-badge {{ margin-left:auto; display:inline-grid; place-items:center; min-width:28px; height:28px; padding:0 8px; border-radius:999px; background:#9f3d3d; color:#ffd7d7; font-size:16px; }}
+            .td-new-badge {{ margin-left:auto; border-radius:8px; padding:2px 7px; background:#1b7215; color:#78d35a; font-size:18px; }}
+            .td-main {{ padding:32px 32px 52px; overflow:auto; }}
+            .td-greeting {{ display:flex; align-items:baseline; gap:18px; margin-bottom:26px; }}
+            .td-greeting h1 {{ margin:0; font-size:28px; line-height:1.2; font-weight:750; }}
+            .td-greeting span {{ color:#d1cec7; font-size:22px; }}
+            .td-kpis {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin-bottom:28px; }}
+            .td-kpi {{ background:var(--td-panel-soft); border-radius:14px; padding:22px 24px; min-height:124px; }}
+            .td-kpi-label {{ color:#c8c5bd; font-size:22px; margin-bottom:8px; }}
+            .td-kpi-value {{ font-size:34px; line-height:1; font-weight:800; }}
+            .td-kpi-sub {{ margin-top:6px; color:var(--td-muted); font-size:20px; }}
+            .green {{ color:var(--td-green-text); }} .gold {{ color:var(--td-gold); }}
+            .td-layout {{ display:grid; grid-template-columns:minmax(420px,1fr) minmax(360px,0.95fr); gap:20px; align-items:start; }}
+            .td-card {{ background:var(--td-panel); border:1px solid var(--td-line); border-radius:var(--td-radius); padding:26px 28px; }}
+            .td-card h2 {{ margin:0 0 20px; font-size:23px; color:#d7d3ca; }}
+            .td-records {{ min-height:560px; position:relative; }}
+            .td-lesson-row {{ display:grid; grid-template-columns:78px 1fr auto; gap:10px; align-items:center; padding:16px; margin-bottom:10px; border-radius:13px; color:#eee; }}
+            .td-lesson-row.present {{ background:var(--td-green); }}
+            .td-lesson-row.scheduled {{ background:var(--td-blue); }}
+            .td-lesson-row.noshow {{ background:#71302c; }}
+            .td-lesson-row.cancelled {{ background:#44443f; }}
+            .td-date {{ color:#d7d3ca; font-size:22px; font-weight:700; }}
+            .td-student {{ font-size:22px; font-weight:800; line-height:1.15; }}
+            .td-meta {{ color:#d7d3ca; font-size:20px; line-height:1.2; }}
+            .td-status {{ font-size:20px; color:var(--td-blue-text); white-space:nowrap; }}
+            .td-lesson-row.present .td-status {{ color:var(--td-green-text); }}
+            .td-lesson-row.noshow .td-status {{ color:#ffaaa2; }}
+            .td-empty {{ color:var(--td-muted); font-size:20px; }}
+            .td-down {{ position:absolute; left:50%; bottom:-14px; transform:translateX(-50%); width:72px; height:72px; border-radius:999px; border:1px solid var(--td-line); background:#2d2d2b; display:grid; place-items:center; font-size:36px; }}
+            .td-stack {{ display:grid; gap:20px; }}
+            .td-action {{ display:flex; align-items:center; gap:16px; width:100%; min-height:74px; padding:0 28px; border:1px solid #666761; border-radius:12px; color:#f4f1e8; font-size:25px; font-weight:750; margin-bottom:10px; }}
+            .td-action i {{ color:#aaa69d; font-size:24px; width:28px; }}
+            .td-pay-row {{ display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--td-line); padding:12px 0; color:#d7d3ca; font-size:22px; }}
+            .td-pay-row:last-child {{ border-bottom:0; }}
+            .td-pay-row strong {{ color:#f6f2ea; font-size:23px; }}
+            .td-pay-row strong.green {{ color:var(--td-green-text); }}
+            .td-pay-row strong.gold {{ color:var(--td-gold); }}
+            @media (max-width:900px) {{
+                .td-shell {{ grid-template-columns:76px 1fr; }}
+                .td-brand span, .td-nav-item span, .td-nav-section, .td-new-badge, .nav-badge {{ display:none; }}
+                .td-nav-item {{ justify-content:center; padding:0; }}
+                .td-main {{ padding:22px 18px; }}
+                .td-layout, .td-kpis {{ grid-template-columns:1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="td-shell">
+            <header class="td-topbar">
+                <div class="td-brand"><span class="td-mark"><i class="ti ti-music"></i></span><span>{HSTUDIO_APP_NAME}</span></div>
+                <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> 老师端</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
+            </header>
+            <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages)}</aside>
+            <main class="td-main">{content_html}</main>
+        </div>
+    </body>
+    </html>
+    """
+
 @app.route("/")
 def home():
     conn = sqlite3.connect("hmusic.db")
@@ -3911,65 +4070,27 @@ def teacher_dashboard():
 
     teacher_name = session.get("teacher_name")
     unread_messages = get_unread_message_count("teacher", teacher_name)
-    message_label = f"Messages ({unread_messages})" if unread_messages else "Messages"
     today_obj = date.today()
     today = today_obj.strftime("%Y-%m-%d")
-
-    view = request.args.get("view", "month")
     selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
-    selected_week = request.args.get("week")
-
-    if selected_week:
-        week_start = datetime.strptime(selected_week, "%Y-%m-%d").date()
+    month_year = int(selected_month[:4])
+    month_num = int(selected_month[5:7])
+    month_start = date(month_year, month_num, 1)
+    if month_num == 12:
+        month_end = date(month_year + 1, 1, 1) - timedelta(days=1)
     else:
-        week_start = today_obj - timedelta(days=today_obj.weekday())
-
-    week_end = week_start + timedelta(days=6)
-    if view == "week":
-        payroll_start = week_start.strftime("%Y-%m-%d")
-        payroll_end = week_end.strftime("%Y-%m-%d")
-        dashboard_return_url = f"/teacher_dashboard?{urlencode({'view': 'week', 'week': week_start.strftime('%Y-%m-%d')})}"
-    else:
-        month_year = int(selected_month[:4])
-        month_num = int(selected_month[5:7])
-        payroll_start_obj = date(month_year, month_num, 1)
-        if month_num == 12:
-            payroll_end_obj = date(month_year + 1, 1, 1) - timedelta(days=1)
-        else:
-            payroll_end_obj = date(month_year, month_num + 1, 1) - timedelta(days=1)
-        payroll_start = payroll_start_obj.strftime("%Y-%m-%d")
-        payroll_end = payroll_end_obj.strftime("%Y-%m-%d")
-        dashboard_return_url = f"/teacher_dashboard?{urlencode({'view': 'month', 'month': selected_month})}"
+        month_end = date(month_year, month_num + 1, 1) - timedelta(days=1)
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-
-    if view == "week":
-        cursor.execute("""
-        SELECT s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status, c.display_color
-        FROM schedule s
-        LEFT JOIN course_types c
-            ON s.course_type_id = c.id
-        WHERE s.teacher = ?
-        AND s.lesson_date >= ?
-        AND s.lesson_date <= ?
-        ORDER BY lesson_date, lesson_time
-        """, (
-            teacher_name,
-            week_start.strftime("%Y-%m-%d"),
-            week_end.strftime("%Y-%m-%d")
-        ))
-    else:
-        cursor.execute("""
-        SELECT s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status, c.display_color
-        FROM schedule s
-        LEFT JOIN course_types c
-            ON s.course_type_id = c.id
-        WHERE s.teacher = ?
-        AND s.lesson_date LIKE ?
-        ORDER BY lesson_date, lesson_time
-        """, (teacher_name, selected_month + "%"))
-
+    cursor.execute("""
+    SELECT s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status, c.display_color
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE s.teacher = ?
+    AND s.lesson_date LIKE ?
+    ORDER BY s.lesson_date, s.lesson_time
+    """, (teacher_name, selected_month + "%"))
     lessons = cursor.fetchall()
 
     cursor.execute("""
@@ -3981,677 +4102,98 @@ def teacher_dashboard():
     WHERE teacher = ?
     AND lesson_date >= ?
     AND lesson_date <= ?
-    """, (teacher_name, payroll_start, payroll_end))
+    """, (teacher_name, month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")))
     payroll_summary = cursor.fetchone()
+
+    cursor.execute("SELECT COALESCE(hourly_rate, 0) FROM teachers WHERE teacher_name=?", (teacher_name,))
+    rate_row = cursor.fetchone()
+    teacher_rate = rate_row[0] if rate_row else 0
     conn.close()
 
-    lessons_by_date = {}
-    for lesson in lessons:
-        lessons_by_date.setdefault(lesson[1], []).append(lesson)
-
-    def status_class(status):
-        status = status or "scheduled"
-        if status == "present":
-            return "present"
-        if status == "no_show":
-            return "noshow"
-        if str(status).startswith("cancel"):
-            return "cancel"
-        if status == "excused_24h":
-            return "excused"
-        return "scheduled"
-
-    def lesson_block(lesson):
-        lesson_id = lesson[0]
-        lesson_time = lesson[2]
-        student_name = lesson[3]
-        room = lesson[4]
-        status = lesson[5] or "scheduled"
-        display_color = lesson[6] or "#3b82f6"
-        cls = status_class(status)
-        lesson_style = f'style="--lesson-color:{display_color};"' if cls == "scheduled" else ""
-
-        return f"""
-        <div class="lesson {cls}" {lesson_style}>
-            <div class="lesson-main">
-                <span class="lesson-time">{lesson_time}</span>
-                <span class="lesson-student">{student_name}</span>
-            </div>
-            <div class="lesson-room">{room}</div>
-            <a class="lesson-note-link" href="/add_lesson/{student_name}">Lesson Notes</a>
-
-            <form method="POST" action="/update_lesson_status" class="status-form">
-                <input type="hidden" name="schedule_id" value="{lesson_id}">
-                <input type="hidden" name="return_to" value="{escape(dashboard_return_url)}">
-            <select name="status">
-                <option value="present">Present</option>
-                <option value="no_show">No Show</option>
-                <option value="cancel_3h">Cancel &lt; 3h</option>
-                <option value="cancel_12h">Cancel &lt; 12h</option>
-                <option value="cancel_24h">Cancel &lt; 24h</option>
-                <option value="excused_24h">Cancel &gt; 24h</option>
-                <option value="teacher_cancelled">Teacher Cancel</option>
-                <option value="makeup">Makeup</option>
-            </select>
-                <button type="submit">Update</button>
-            </form>
-        </div>
-        """
-
-    def mobile_agenda():
-        agenda_html = ""
-
-        for lesson_date in sorted(lessons_by_date.keys()):
-            agenda_html += f"""
-            <div class="mobile-day">
-                <div class="mobile-date">{lesson_date}</div>
-            """
-
-            for lesson in lessons_by_date[lesson_date]:
-                agenda_html += lesson_block(lesson)
-
-            agenda_html += "</div>"
-
-        if agenda_html == "":
-            agenda_html = "<div class='mobile-day'>No lessons found.</div>"
-
-        return agenda_html
-
-    if view == "week":
-        content_cells = ""
-
-        for i in range(7):
-            current_day = week_start + timedelta(days=i)
-            current_date = current_day.strftime("%Y-%m-%d")
-            day_lessons = lessons_by_date.get(current_date, [])
-
-            lesson_html = ""
-            for lesson in day_lessons:
-                lesson_html += lesson_block(lesson)
-
-            content_cells += f"""
-            <div class="week-cell">
-                <div class="day-number">
-                    {current_day.strftime("%a")} {current_day.strftime("%m/%d")}
-                    {"<span class='today-badge'>Today</span>" if current_date == today else ""}
-                </div>
-                {lesson_html}
-            </div>
-            """
-
-        prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
-        next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
-
-        calendar_html = f"""
-        <div class="week-nav">
-            <a href="/teacher_dashboard?view=week&week={prev_week}">← Previous Week</a>
-            <strong>{week_start.strftime("%b %d")} - {week_end.strftime("%b %d")}</strong>
-            <a href="/teacher_dashboard?view=week&week={next_week}">Next Week →</a>
-        </div>
-
-        <div class="week-grid">
-            {content_cells}
-        </div>
-        """
-
-        title = f"Week of {week_start.strftime('%b %d, %Y')}"
-
-    else:
-        year = int(selected_month[:4])
-        month = int(selected_month[5:7])
-        month_start = date(year, month, 1)
-
-        if month == 12:
-            next_month = date(year + 1, 1, 1)
-        else:
-            next_month = date(year, month + 1, 1)
-
-        days_in_month = (next_month - month_start).days
-        first_weekday = month_start.weekday()
-
-        cells = ""
-
-        for _ in range(first_weekday):
-            cells += "<div class='month-cell empty-cell'></div>"
-
-        for day in range(1, days_in_month + 1):
-            current_date = f"{selected_month}-{day:02d}"
-            day_lessons = lessons_by_date.get(current_date, [])
-
-            today_badge = ""
-            if current_date == today:
-                today_badge = "<span class='today-badge'>Today</span>"
-
-            lesson_html = ""
-            for lesson in day_lessons:
-                lesson_html += lesson_block(lesson)
-
-            cells += f"""
-            <div class="month-cell">
-                <div class="day-number">{day} {today_badge}</div>
-                {lesson_html}
-            </div>
-            """
-
-        calendar_html = f"""
-        <div class="month-grid">
-            <div class="day-header">Mon</div>
-            <div class="day-header">Tue</div>
-            <div class="day-header">Wed</div>
-            <div class="day-header">Thu</div>
-            <div class="day-header">Fri</div>
-            <div class="day-header">Sat</div>
-            <div class="day-header">Sun</div>
-            {cells}
-        </div>
-        """
-
-        title = month_start.strftime("%B %Y")
-
-    total_lessons = len(lessons)
-    present_count = len([l for l in lessons if l[5] == "present"])
-    no_show_count = len([l for l in lessons if l[5] == "no_show"])
-    cancel_count = len([l for l in lessons if str(l[5]).startswith("cancel")])
-    student_count = len(set([l[3] for l in lessons]))
+    completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
+    today_lessons = [lesson for lesson in lessons if lesson[1] == today]
     actual_payroll = round(payroll_summary[0] or 0, 2)
     projected_payroll = round(payroll_summary[1] or 0, 2)
-    payroll_label = "Week Payroll" if view == "week" else "Month Payroll"
-
-    return f"""
-    <html>
-    <head>
-        <title>Teacher Calendar</title>
-        <style>
-            body {{
-                margin: 0;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-                background: #f7f8fc;
-                color: #111827;
-            }}
-
-            .topbar {{
-                height: 62px;
-                background: white;
-                border-bottom: 1px solid #e5e7eb;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 0 28px;
-            }}
-
-            .brand {{
-                font-size: 22px;
-                font-weight: 850;
-            }}
-
-            .user {{
-                font-weight: 700;
-            }}
-
-            .container {{
-                max-width: 1380px;
-                margin: 0 auto;
-                padding: 24px 28px;
-            }}
-
-            .header {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 14px;
-            }}
-
-            h1 {{
-                font-size: 32px;
-                margin: 0;
-            }}
-
-            .payroll-pill {{
-                display: inline-flex;
-                gap: 8px;
-                align-items: baseline;
-                margin-top: 8px;
-                padding: 8px 12px;
-                border-radius: 999px;
-                background: #eef2ff;
-                color: #3730a3;
-                font-weight: 850;
-            }}
-
-            .payroll-pill span {{
-                color: #6b7280;
-                font-size: 12px;
-                font-weight: 750;
-            }}
-
-            .controls {{
-                display: flex;
-                gap: 10px;
-                align-items: center;
-            }}
-
-            input, button, select {{
-                font-size: 12px;
-                padding: 6px 8px;
-            }}
-
-            button, .tab {{
-                border: 1px solid #ddd;
-                background: white;
-                border-radius: 10px;
-                font-weight: 750;
-                text-decoration: none;
-                color: #111827;
-                padding: 8px 14px;
-            }}
-
-            .tab.active {{
-                background: #f1efff;
-                color: #5b5cff;
-                border-color: #c9c2ff;
-            }}
-
-            .legend {{
-                display: flex;
-                justify-content: flex-end;
-                gap: 18px;
-                font-size: 12px;
-                margin-bottom: 12px;
-            }}
-
-            .dot {{
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                display: inline-block;
-                margin-right: 5px;
-            }}
-
-            .blue {{ background:#3b82f6; }}
-            .green {{ background:#16a34a; }}
-            .red {{ background:#dc2626; }}
-            .orange {{ background:#f59e0b; }}
-            .gray {{ background:#9ca3af; }}
-
-            .calendar {{
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 16px;
-                overflow: hidden;
-            }}
-
-            .month-grid {{
-                display: grid;
-                grid-template-columns: repeat(7, 1fr);
-            }}
-
-            .day-header {{
-                height: 38px;
-                background: #fafafa;
-                border-bottom: 1px solid #e5e7eb;
-                border-right: 1px solid #e5e7eb;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 12px;
-                font-weight: 800;
-            }}
-
-            .month-cell {{
-                min-height: 116px;
-                border-right: 1px solid #e5e7eb;
-                border-bottom: 1px solid #e5e7eb;
-                padding: 8px;
-                background: white;
-            }}
-
-            .week-nav {{
-                display: flex;
-                justify-content: space-between;
-                margin-bottom: 12px;
-            }}
-
-            .week-nav a {{
-                color: #5b5cff;
-                font-weight: 800;
-                text-decoration: none;
-            }}
-
-            .week-grid {{
-                display: grid;
-                grid-template-columns: repeat(7, 1fr);
-                gap: 10px;
-            }}
-
-            .week-cell {{
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                min-height: 420px;
-                padding: 8px;
-            }}
-
-            .empty-cell {{
-                background: #f9fafb;
-            }}
-
-            .day-number {{
-                font-size: 13px;
-                font-weight: 850;
-                margin-bottom: 6px;
-            }}
-
-            .today-badge {{
-                background: #7c5cff;
-                color: white;
-                font-size: 9px;
-                padding: 2px 6px;
-                border-radius: 999px;
-                margin-left: 4px;
-            }}
-
-            .lesson {{
-                border-radius: 7px;
-                padding: 5px 6px;
-                margin-bottom: 5px;
-                font-size: 10px;
-                border: 2px solid var(--lesson-color, #3b82f6);
-                border-left-width: 8px;
-                box-shadow: 0 1px 2px rgba(17, 24, 39, 0.08);
-                background: #eff6ff;
-            }}
-
-            .lesson.present {{
-                background: #ecfdf3;
-                border-color: #16a34a;
-                border-left-width: 8px;
-            }}
-
-            .lesson.noshow {{
-                background: #fff1f2;
-                border-color: #dc2626;
-                border-left-width: 8px;
-            }}
-
-            .lesson.cancel {{
-                background: #fffbeb;
-                border-color: #f59e0b;
-                border-left-width: 8px;
-            }}
-
-            .lesson.excused {{
-                background: #f3f4f6;
-                border-color: #9ca3af;
-                border-left-width: 8px;
-            }}
-
-            .lesson-main {{
-                display: flex;
-                gap: 5px;
-                align-items: center;
-            }}
-
-            .lesson-time,
-            .lesson-student {{
-                font-size: 10px;
-                font-weight: 850;
-            }}
-
-            .lesson-room {{
-                color: #6b7280;
-                font-size: 9px;
-                margin-top: 1px;
-            }}
-
-            .lesson-note-link {{
-                display: inline-block;
-                margin-top: 4px;
-                color: #4f46e5;
-                font-size: 9px;
-                font-weight: 850;
-                text-decoration: none;
-            }}
-
-            .status-form {{
-                display: none;
-                margin-top: 5px;
-            }}
-
-            .lesson:hover .status-form {{
-                display: block;
-            }}
-
-            .status-form select {{
-                width: 100%;
-                font-size: 10px;
-                padding: 3px;
-                margin-bottom: 3px;
-            }}
-
-            .status-form button {{
-                width: 100%;
-                background: #5b5cff;
-                color: white;
-                border: none;
-                font-size: 10px;
-                padding: 4px;
-            }}
-
-            .summary {{
-                display: grid;
-                grid-template-columns: repeat(6, 1fr);
-                gap: 12px;
-                margin-top: 20px;
-            }}
-
-            .summary-card {{
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                padding: 14px;
-            }}
-
-            .summary-label {{
-                color: #6b7280;
-                font-size: 12px;
-            }}
-
-            .summary-value {{
-                font-size: 24px;
-                font-weight: 850;
-                margin-top: 4px;
-            }}
-
-            .mobile-agenda {{
-                display: none;
-            }}
-
-            @media (max-width: 760px) {{
-                .topbar {{
-                    height: 52px;
-                    padding: 0 12px;
-                }}
-
-                .brand {{
-                    font-size: 17px;
-                }}
-
-                .user {{
-                    font-size: 11px;
-                }}
-
-                .container {{
-                    padding: 12px 10px;
-                }}
-
-                .header {{
-                    display: block;
-                }}
-
-                h1 {{
-                    font-size: 21px;
-                    margin-bottom: 10px;
-                }}
-
-                .controls {{
-                    flex-wrap: wrap;
-                    gap: 6px;
-                }}
-
-                .legend {{
-                    display: none;
-                }}
-
-                .calendar {{
-                    display: none;
-                }}
-
-                .week-nav,
-                .week-grid {{
-                    display: none;
-                }}
-
-                .mobile-agenda {{
-                    display: block;
-                }}
-
-                .mobile-day {{
-                    background: white;
-                    border: 1px solid #e5e7eb;
-                    border-radius: 12px;
-                    padding: 8px;
-                    margin-bottom: 8px;
-                }}
-
-                .mobile-date {{
-                    font-size: 12px;
-                    font-weight: 850;
-                    margin-bottom: 6px;
-                }}
-
-                .lesson {{
-                    font-size: 9px;
-                    padding: 6px 7px;
-                    margin-bottom: 5px;
-                    border-left-width: 8px;
-                }}
-
-                .lesson-time,
-                .lesson-student {{
-                    font-size: 9px;
-                }}
-
-                .lesson-room {{
-                    font-size: 8px;
-                }}
-
-                .status-form {{
-                    display: none;
-                }}
-
-                .summary {{
-                    grid-template-columns: repeat(2, 1fr);
-                    gap: 8px;
-                }}
-
-                .summary-card {{
-                    padding: 10px;
-                }}
-
-                .summary-value {{
-                    font-size: 20px;
-                }}
-            }}
-        </style>
-    </head>
-
-    <body>
-        <div class="topbar">
-            <div class="brand">♪ H-Music</div>
-            <div class="user">
-                Welcome, {teacher_name}
-                &nbsp; <a href="/teacher_logout">Logout</a>
+    pending_count = unread_messages
+    today_label = "今天没有课程安排" if not today_lessons else f"今天有 {len(today_lessons)} 节课"
+
+    def zh_status(status):
+        key = hstudio_status_key(status)
+        if key == "present":
+            return "已上课"
+        if key == "noshow":
+            return "未到课"
+        if key == "cancelled":
+            return "已取消"
+        return "已排课"
+
+    lesson_records_html = ""
+    for lesson in lessons[:6]:
+        key = hstudio_status_key(lesson[5])
+        lesson_records_html += f"""
+        <a class="td-lesson-row {key}" href="/add_lesson/{lesson[3]}">
+            <div class="td-date">{hstudio_date_short(lesson[1])}</div>
+            <div>
+                <div class="td-student">{escape(lesson[3] or '-')}</div>
+                <div class="td-meta">{lesson[2] or '-'} · {escape(lesson[4] or '-')}</div>
+            </div>
+            <div class="td-status">{zh_status(lesson[5])}</div>
+        </a>
+        """
+    if not lesson_records_html:
+        lesson_records_html = "<div class='td-empty'>本月还没有课程记录。</div>"
+
+    rate_display = f"{hstudio_money_whole(teacher_rate)} / 节" if teacher_rate else "按课程规则"
+    note_student = lessons[0][3] if lessons else ""
+    note_href = f"/add_lesson/{note_student}" if note_student else "/teacher_dashboard"
+    content = f"""
+        <div class="td-greeting">
+            <h1>你好，{escape(teacher_name or 'Teacher')}</h1>
+            <span>{today_label}</span>
+        </div>
+
+        <div class="td-kpis">
+            <div class="td-kpi">
+                <div class="td-kpi-label">本月课时</div>
+                <div class="td-kpi-value green">{completed_count}</div>
+                <div class="td-kpi-sub">已完成</div>
+            </div>
+            <div class="td-kpi">
+                <div class="td-kpi-label">本月薪资</div>
+                <div class="td-kpi-value">{hstudio_money_whole(actual_payroll)}</div>
+                <div class="td-kpi-sub">预计 {hstudio_money_whole(projected_payroll)}</div>
+            </div>
+            <div class="td-kpi">
+                <div class="td-kpi-label">待处理</div>
+                <div class="td-kpi-value gold">{pending_count}</div>
+                <div class="td-kpi-sub">未读消息</div>
             </div>
         </div>
 
-        <div class="container">
-
-            <div class="header">
-                <div>
-                    <h1>{title}</h1>
-                    <div class="payroll-pill">{payroll_label}: ${actual_payroll} <span>Projected ${projected_payroll}</span></div>
-                </div>
-
-                <div class="controls">
-                    <a class="tab {'active' if view == 'month' else ''}" href="/teacher_dashboard?view=month&month={selected_month}">Month</a>
-                    <a class="tab {'active' if view == 'week' else ''}" href="/teacher_dashboard?view=week&week={week_start.strftime('%Y-%m-%d')}">Week</a>
-                    <a class="tab" href="/teacher_sub_request">Sub Request</a>
-                    <a class="tab" href="/teacher_reschedule">Reschedule</a>
-                    <a class="tab" href="/teacher_messages">{message_label}</a>
-                    <a class="tab" href="/open_slots">Open Slots</a>
-                    <a class="tab" href="/add_schedule">Add Schedule</a>
-                    
-                    <form method="GET">
-                        <input type="hidden" name="view" value="{view}">
-                        {"<input type='month' name='month' value='" + selected_month + "'>" if view == "month" else "<input type='date' name='week' value='" + week_start.strftime("%Y-%m-%d") + "'>"}
-                        <button type="submit">View</button>
-                    </form>
-                </div>
+        <div class="td-layout">
+            <section class="td-card td-records">
+                <h2>本月课程记录</h2>
+                {lesson_records_html}
+                <a class="td-down" href="/teacher_dashboard?view=week"><i class="ti ti-arrow-down"></i></a>
+            </section>
+            <div class="td-stack">
+                <section class="td-card">
+                    <h2>快速操作</h2>
+                    <a class="td-action" href="{note_href}"><i class="ti ti-notes"></i>填写课程笔记</a>
+                    <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>申请代课</a>
+                    <a class="td-action" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i>查看本周课表</a>
+                </section>
+                <section class="td-card">
+                    <h2>薪资摘要 · {month_num}月</h2>
+                    <div class="td-pay-row"><span>已完成课时</span><strong>{completed_count} 节</strong></div>
+                    <div class="td-pay-row"><span>课时费率</span><strong>{rate_display}</strong></div>
+                    <div class="td-pay-row"><span>本月薪资</span><strong class="green">{hstudio_money_whole(actual_payroll)} 已结算</strong></div>
+                    <div class="td-pay-row"><span>预计总薪资</span><strong class="gold">{hstudio_money_whole(projected_payroll)}</strong></div>
+                </section>
             </div>
-
-            <div class="legend">
-                <span><span class="dot blue"></span>Scheduled</span>
-                <span><span class="dot green"></span>Present</span>
-                <span><span class="dot red"></span>No Show</span>
-                <span><span class="dot orange"></span>Cancelled</span>
-                <span><span class="dot gray"></span>Excused</span>
-            </div>
-
-            <div class="calendar">
-                {calendar_html}
-            </div>
-
-            <div class="mobile-agenda">
-                {mobile_agenda()}
-            </div>
-
-            <div class="summary">
-                <div class="summary-card">
-                    <div class="summary-label">Lessons</div>
-                    <div class="summary-value">{total_lessons}</div>
-                </div>
-
-                <div class="summary-card">
-                    <div class="summary-label">Present</div>
-                    <div class="summary-value">{present_count}</div>
-                </div>
-
-                <div class="summary-card">
-                    <div class="summary-label">No Show</div>
-                    <div class="summary-value">{no_show_count}</div>
-                </div>
-
-                <div class="summary-card">
-                    <div class="summary-label">Cancelled</div>
-                    <div class="summary-value">{cancel_count}</div>
-                </div>
-
-                <div class="summary-card">
-                    <div class="summary-label">Students</div>
-                    <div class="summary-value">{student_count}</div>
-                </div>
-
-                <div class="summary-card">
-                    <div class="summary-label">{payroll_label}</div>
-                    <div class="summary-value">${actual_payroll}</div>
-                    <div class="summary-label">Projected ${projected_payroll}</div>
-                </div>
-            </div>
-
         </div>
-    </body>
-    </html>
     """
+    return hstudio_teacher_dark_shell(teacher_name or "Teacher", unread_messages, content)
 
 @app.route("/teacher_login", methods=["GET", "POST"])
 def teacher_login():
