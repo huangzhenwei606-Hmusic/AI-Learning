@@ -667,9 +667,10 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home"):
         {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Schedule")}
         {item("messages", "/teacher_messages", "ti-message", "Messages", message_badge)}
         <div class="td-nav-section">Lessons</div>
-        {item("records", "/teacher_dashboard", "ti-notes", "Lesson Records")}
+        {item("records", "/teacher_lesson_notes", "ti-notes", "Lesson Records")}
         {item("sub", "/teacher_sub_request", "ti-replace", "Sub Request")}
         {item("reschedule", "/teacher_reschedule", "ti-calendar-x", "Reschedule Request")}
+        {item("add_schedule", "/add_schedule", "ti-calendar-plus", "Add Schedule")}
         <div class="td-nav-section">Payroll</div>
         {item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>')}
         <div class="td-nav-section">Account</div>
@@ -767,16 +768,22 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .schedule-controls {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
             .schedule-controls a, .schedule-controls button {{ border:1px solid var(--td-line); border-radius:8px; background:white; padding:7px 10px; color:var(--td-text); font:inherit; font-size:13px; }}
             .schedule-controls input {{ border:1px solid var(--td-line); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px; }}
+            .schedule-tabs {{ display:inline-flex; border:1px solid var(--td-line); border-radius:8px; overflow:hidden; background:white; }}
+            .schedule-tabs a {{ border:0; border-radius:0; background:white; padding:7px 11px; }}
+            .schedule-tabs a.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
             .calendar-day {{ min-height:560px; background:white; padding:10px; min-width:0; }}
             .calendar-day.today {{ background:#fbfdff; }}
             .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; min-height:24px; margin-bottom:10px; color:var(--td-muted); font-size:12px; }}
             .calendar-day-head strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
             .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:5px solid var(--td-blue); border-radius:8px; padding:8px 9px; margin-bottom:8px; background:#fbfcff; min-width:0; overflow:visible; }}
-            .calendar-event.duration-30 {{ border-left-color:#2563eb; background:#f8fbff; }}
-            .calendar-event.duration-45 {{ border-left-color:#16a34a; background:#f7fdf9; }}
-            .calendar-event.duration-60 {{ border-left-color:#d97706; background:#fffaf0; }}
-            .calendar-event.duration-long {{ border-left-color:#7c3aed; background:#fbf8ff; }}
+            .calendar-event.private-30 {{ border-left-color:#93c5fd; background:#eff6ff; }}
+            .calendar-event.private-45 {{ border-left-color:#3b82f6; background:#dbeafe; }}
+            .calendar-event.private-60 {{ border-left-color:#1e3a8a; background:#dbeafe; }}
+            .calendar-event.private-long {{ border-left-color:#1e40af; background:#eff6ff; }}
+            .calendar-event.group-small {{ border-left-color:#c4b5fd; background:#f5f3ff; }}
+            .calendar-event.group-large {{ border-left-color:#7c3aed; background:#ede9fe; }}
+            .calendar-event.trial {{ border-left-color:#facc15; background:#fefce8; }}
             .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:5px; }}
             .event-time {{ flex:1 1 auto; min-width:0; font-size:12px; color:var(--td-muted); line-height:1.25; }}
             .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:13px; font-weight:500; line-height:1.25; margin-bottom:5px; }}
@@ -2108,6 +2115,125 @@ def student_detail(name):
     {payment_html}
     """
 
+
+
+@app.route("/teacher_lesson_notes", methods=["GET", "POST"])
+def teacher_lesson_notes():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    selected_date = request.values.get("lesson_date") or date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT DISTINCT student_name
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date = ?
+    ORDER BY lesson_time, student_name
+    """, (teacher_name, selected_date))
+    day_students = [row[0] for row in cursor.fetchall() if row[0]]
+
+    selected_student = request.values.get("student_name") or (day_students[0] if day_students else "")
+
+    if request.method == "POST":
+        if not selected_student or selected_student not in day_students:
+            conn.close()
+            return "<h1>Please choose a student scheduled for this date.</h1><p><a href='/teacher_lesson_notes'>Back</a></p>"
+
+        lesson_content = request.form.get("lesson_content") or "Lesson note"
+        performance = request.form.get("performance", "")
+        homework = request.form.get("homework", "")
+
+        cursor.execute("""
+        INSERT INTO lessons
+        (
+            student_name,
+            lesson_content,
+            performance,
+            homework,
+            lesson_date
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (selected_student, lesson_content, performance, homework, selected_date))
+
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = lessons_left - 1
+        WHERE name = ?
+        """, (selected_student,))
+
+        conn.commit()
+        conn.close()
+        return f"""
+        <h1>Lesson Notes Saved!</h1>
+        <p>{escape(selected_student)}</p>
+        <p><a href="/teacher_dashboard">Back</a></p>
+        """
+
+    conn.close()
+
+    student_options = "".join(
+        f'<option value="{escape(student)}" {"selected" if student == selected_student else ""}>{escape(student)}</option>'
+        for student in day_students
+    )
+    if not student_options:
+        student_options = '<option value="">No students scheduled on this date</option>'
+
+    disabled = "disabled" if not day_students else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Write Lesson Notes</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ max-width:760px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+            textarea {{ min-height:170px; }}
+            textarea.homework {{ min-height:260px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
+            a.button.secondary {{ background:#111827; }}
+            .inline-form {{ margin:0 0 10px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Write Lesson Notes</h1>
+
+            <form method="GET" class="inline-form">
+                Date:<br>
+                <input type="date" name="lesson_date" value="{selected_date}" onchange="this.form.submit()" required>
+            </form>
+
+            <form method="POST">
+                <input type="hidden" name="lesson_date" value="{selected_date}">
+                Student:<br>
+                <select name="student_name" required {disabled}>
+                    {student_options}
+                </select>
+                <input type="hidden" name="lesson_content" value="Lesson note">
+
+                Performance:<br>
+                <select name="performance" required {disabled}>
+                    <option value="Excellent focus and progress">Excellent focus and progress</option>
+                    <option value="Strong effort with steady growth">Strong effort with steady growth</option>
+                    <option value="Good participation, keep practicing">Good participation, keep practicing</option>
+                    <option value="Building consistency and confidence">Building consistency and confidence</option>
+                </select>
+
+                Homework:<br>
+                <textarea class="homework" name="homework" placeholder="Write homework clearly for the parent and student." {disabled}></textarea>
+
+                <button type="submit" {disabled}>Save Notes</button>
+                <a class="button secondary" href="/teacher_dashboard">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.route("/add_lesson/<name>", methods=["GET", "POST"])
 def add_lesson(name):
@@ -4129,7 +4255,8 @@ def teacher_dashboard():
     cursor.execute("""
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
-        COALESCE(s.duration, 30)
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, '')
     FROM schedule s
     WHERE s.teacher = ?
     AND s.lesson_date LIKE ?
@@ -4140,7 +4267,8 @@ def teacher_dashboard():
     cursor.execute("""
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
-        COALESCE(s.duration, 30)
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, '')
     FROM schedule s
     WHERE s.teacher = ?
     AND s.lesson_date >= ?
@@ -4216,18 +4344,29 @@ def teacher_dashboard():
 
     schedule_return_url = f"/teacher_dashboard?view=schedule&week={week_start.strftime('%Y-%m-%d')}"
 
-    def duration_class(duration):
+    def lesson_color_class(lesson):
+        course_name = (lesson[7] or "").lower()
+        schedule_type = (lesson[10] or "").lower()
         try:
-            minutes = int(float(duration or 30))
+            minutes = int(float(lesson[6] or 30))
         except (TypeError, ValueError):
             minutes = 30
+        try:
+            group_size = int(float(lesson[9] or 0))
+        except (TypeError, ValueError):
+            group_size = 0
+        is_group = bool(lesson[8]) or "group" in course_name
+        if "trial" in course_name or "trial" in schedule_type:
+            return "trial"
+        if is_group:
+            return "group-large" if group_size >= 4 else "group-small"
         if minutes <= 30:
-            return "duration-30"
+            return "private-30"
         if minutes <= 45:
-            return "duration-45"
+            return "private-45"
         if minutes <= 60:
-            return "duration-60"
-        return "duration-long"
+            return "private-60"
+        return "private-long"
 
     def teacher_time_range(time_text, duration):
         start_minutes = minutes_from_time_text(time_text)
@@ -4242,7 +4381,7 @@ def teacher_dashboard():
     def calendar_event(lesson):
         time_range = teacher_time_range(lesson[2], lesson[6])
         return f"""
-        <div class="calendar-event {duration_class(lesson[6])}">
+        <div class="calendar-event {lesson_color_class(lesson)}">
             <div class="event-top">
                 <span class="event-time">{time_range}</span>
             </div>
@@ -4258,38 +4397,86 @@ def teacher_dashboard():
         """
 
     if view in ("schedule", "week"):
-        by_date = {}
-        for lesson in week_lessons:
-            by_date.setdefault(lesson[1], []).append(lesson)
-        day_columns = ""
-        for offset in range(7):
-            current_day = week_start + timedelta(days=offset)
-            day_key = current_day.strftime("%Y-%m-%d")
-            day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
-            if not day_events:
-                day_events = "<div class='calendar-empty'>No lessons</div>"
-            day_columns += f"""
-            <section class="calendar-day {'today' if day_key == today else ''}">
-                <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
-                {day_events}
-            </section>
+        schedule_mode = request.args.get("mode", "week")
+        if schedule_mode not in ("week", "month"):
+            schedule_mode = "week"
+
+        if schedule_mode == "month":
+            month_grid_start = month_start - timedelta(days=month_start.weekday())
+            month_grid_end = month_end + timedelta(days=(6 - month_end.weekday()))
+            by_date = {}
+            for lesson in lessons:
+                by_date.setdefault(lesson[1], []).append(lesson)
+            day_columns = ""
+            current_day = month_grid_start
+            while current_day <= month_grid_end:
+                day_key = current_day.strftime("%Y-%m-%d")
+                day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+                if not day_events:
+                    day_events = "<div class='calendar-empty'>No lessons</div>"
+                day_columns += f"""
+                <section class="calendar-day {'today' if day_key == today else ''}">
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
+                    {day_events}
+                </section>
+                """
+                current_day += timedelta(days=1)
+            prev_month_date = (month_start - timedelta(days=1)).strftime("%Y-%m")
+            next_month_date = (month_end + timedelta(days=1)).strftime("%Y-%m")
+            controls = f"""
+                <a href="/teacher_dashboard?view=schedule&mode=month&month={prev_month_date}">Previous</a>
+                <a href="/teacher_dashboard?view=schedule&mode=month&month={next_month_date}">Next</a>
+                <form method="GET" class="schedule-controls">
+                    <input type="hidden" name="view" value="schedule">
+                    <input type="hidden" name="mode" value="month">
+                    <input type="month" name="month" value="{selected_month}">
+                    <button type="submit">View</button>
+                </form>
             """
-        prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
-        next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+        else:
+            by_date = {}
+            for lesson in week_lessons:
+                by_date.setdefault(lesson[1], []).append(lesson)
+            day_columns = ""
+            for offset in range(7):
+                current_day = week_start + timedelta(days=offset)
+                day_key = current_day.strftime("%Y-%m-%d")
+                day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+                if not day_events:
+                    day_events = "<div class='calendar-empty'>No lessons</div>"
+                day_columns += f"""
+                <section class="calendar-day {'today' if day_key == today else ''}">
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
+                    {day_events}
+                </section>
+                """
+            prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
+            next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+            controls = f"""
+                <a href="/teacher_dashboard?view=schedule&mode=week&week={prev_week}">Previous</a>
+                <a href="/teacher_dashboard?view=schedule&mode=week&week={next_week}">Next</a>
+                <form method="GET" class="schedule-controls">
+                    <input type="hidden" name="view" value="schedule">
+                    <input type="hidden" name="mode" value="week">
+                    <input type="date" name="week" value="{week_start.strftime('%Y-%m-%d')}">
+                    <button type="submit">View</button>
+                </form>
+            """
+
+        week_active = "active" if schedule_mode == "week" else ""
+        month_active = "active" if schedule_mode == "month" else ""
         content = f"""
             <div class="schedule-head">
                 <div class="schedule-title">
                     <h1>My Schedule</h1>
-                    <p>Daily lessons, class time, attendance status, and homework.</p>
+                    <p>Daily lessons, class time, and attendance status.</p>
                 </div>
                 <div class="schedule-controls">
-                    <a href="/teacher_dashboard?view=schedule&week={prev_week}">Previous</a>
-                    <a href="/teacher_dashboard?view=schedule&week={next_week}">Next</a>
-                    <form method="GET" class="schedule-controls">
-                        <input type="hidden" name="view" value="schedule">
-                        <input type="date" name="week" value="{week_start.strftime('%Y-%m-%d')}">
-                        <button type="submit">View</button>
-                    </form>
+                    <div class="schedule-tabs">
+                        <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
+                        <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
+                    </div>
+                    {controls}
                 </div>
             </div>
             <div class="calendar-grid">{day_columns}</div>
@@ -4336,9 +4523,11 @@ def teacher_dashboard():
             <div class="td-stack">
                 <section class="td-card">
                     <h2>Quick Actions</h2>
-                    <a class="td-action" href="/teacher_dashboard?view=schedule"><i class="ti ti-calendar-week"></i>This Week</a>
-                    <a class="td-action" href="/teacher_dashboard?view=schedule"><i class="ti ti-checkup-list"></i>Update Attendance</a>
-                    <a class="td-action" href="{note_href}"><i class="ti ti-notes"></i>Write Lesson Notes</a>
+                    <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i>This Week</a>
+                    <a class="td-action" href="/teacher_dashboard?view=schedule&mode=month"><i class="ti ti-calendar-month"></i>This Month</a>
+                    <a class="td-action" href="/teacher_lesson_notes"><i class="ti ti-notes"></i>Write Lesson Notes</a>
+                    <a class="td-action" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i>Reschedule</a>
+                    <a class="td-action" href="/open_slots"><i class="ti ti-clock-plus"></i>Open Slot Settings</a>
                     <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>Request a Sub</a>
                 </section>
                 <section class="td-card">
