@@ -3,6 +3,7 @@ import sqlite3
 import os
 import smtplib
 import calendar as calendar_lib
+import json
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -10613,9 +10614,19 @@ def parent_reschedule_group():
         <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
         """
 
-    today = date.today().strftime("%Y-%m-%d")
+    today_obj = date.today()
+    week_param = request.args.get("week")
+    try:
+        week_start = datetime.strptime(week_param, "%Y-%m-%d").date() if week_param else today_obj - timedelta(days=today_obj.weekday())
+    except ValueError:
+        week_start = today_obj - timedelta(days=today_obj.weekday())
+    week_days = [week_start + timedelta(days=i) for i in range(7)]
+    week_end = week_days[-1]
+    prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
+    next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+    today = today_obj.strftime("%Y-%m-%d")
     cursor.execute("""
-    SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom, COALESCE(s.course_type_name, '')
+    SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom, COALESCE(s.course_type_name, ''), COALESCE(s.duration, 30)
     FROM schedule s
     JOIN parent_students ps
         ON ps.student_name = s.student_name
@@ -10626,19 +10637,66 @@ def parent_reschedule_group():
     ORDER BY s.student_name, s.lesson_date, s.lesson_time
     """, (parent_id, today))
     lessons = cursor.fetchall()
+
+    teachers = sorted(set([l[4] for l in lessons if l[4]]))
+    open_slots = get_available_open_slots(teachers=teachers) if teachers else []
     conn.close()
 
-    lesson_rows = ""
-    for l in lessons:
-        lesson_rows += f"""
-        <label class="lesson-choice">
-            <input type="checkbox" name="schedule_ids" value="{l[0]}">
-            <span><b>{escape(l[1] or '')}</b> · {l[2]} {l[3]} · {escape(l[4] or '')} · {escape(l[6] or l[5] or '')}</span>
-        </label>
-        """
+    color_keys = ["piano", "guitar", "ukulele", "voice", "drum", "violin"]
+    grouped_lessons = {}
+    for lesson in lessons:
+        group_key = f"{lesson[1]}|{lesson[4]}|{lesson[6] or 'Lesson'}"
+        if group_key not in grouped_lessons:
+            grouped_lessons[group_key] = lesson
 
-    if not lesson_rows:
-        lesson_rows = "<p>No upcoming scheduled lessons found.</p>"
+    calendar_lessons = []
+    for idx, lesson in enumerate(grouped_lessons.values()):
+        calendar_lessons.append({
+            "id": lesson[0],
+            "student": lesson[1] or "",
+            "date": lesson[2] or "",
+            "time": lesson[3] or "",
+            "teacher": lesson[4] or "",
+            "room": lesson[5] or "",
+            "course": lesson[6] or "Lesson",
+            "duration": lesson[7] or 30,
+            "color": color_keys[idx % len(color_keys)],
+        })
+
+    slot_data = []
+    for slot in open_slots:
+        if not slot.get("teacher") or not slot.get("slot_date") or not slot.get("slot_time"):
+            continue
+        slot_date = slot["slot_date"]
+        if slot_date < week_start.strftime("%Y-%m-%d") or slot_date > week_end.strftime("%Y-%m-%d"):
+            continue
+        slot_data.append({
+            "teacher": slot["teacher"],
+            "date": slot_date,
+            "time": slot["slot_time"],
+            "room": slot.get("classroom", ""),
+            "source": slot.get("source", "open_slot"),
+        })
+
+    default_times = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00", "17:00"]
+    time_set = set(default_times)
+    for lesson in calendar_lessons:
+        if week_start.strftime("%Y-%m-%d") <= lesson["date"] <= week_end.strftime("%Y-%m-%d"):
+            time_set.add(lesson["time"])
+    for slot in slot_data:
+        time_set.add(slot["time"])
+
+    def sort_time_value(value):
+        mins = minutes_from_time_text(value)
+        return mins if mins is not None else 9999
+
+    calendar_times = sorted(time_set, key=sort_time_value)
+    day_data = [{"key": d.strftime("%Y-%m-%d"), "label": d.strftime("%a"), "display": d.strftime("%-m/%-d")} for d in week_days]
+    lessons_json = json.dumps(calendar_lessons)
+    slots_json = json.dumps(slot_data)
+    days_json = json.dumps(day_data)
+    times_json = json.dumps(calendar_times)
+    empty_state = "true" if not calendar_lessons else "false"
 
     return f"""
     <html>
@@ -10646,48 +10704,298 @@ def parent_reschedule_group():
         {parent_app_meta("Coordinate Lessons")}
         <style>
             * {{ box-sizing:border-box; }}
-            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
-            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:900px; margin:0 auto; }}
-            h1 {{ font-size:30px; line-height:1.08; margin:0 0 12px; }}
-            p {{ color:#6b7280; line-height:1.5; }}
-            input, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
-            textarea {{ min-height:120px; }}
-            .lesson-choice {{ display:flex; gap:10px; align-items:flex-start; border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin:8px 0; }}
-            .lesson-choice input {{ width:auto; min-height:auto; margin:3px 0 0; }}
-            .backup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
-            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
-            .secondary {{ background:#111827 !important; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f5f5f7; margin:0; color:#1c1c1e; }}
+            .page {{ min-height:100vh; padding:max(18px, env(safe-area-inset-top)) 14px calc(96px + env(safe-area-inset-bottom)); max-width:980px; margin:0 auto; }}
+            .topbar {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; }}
+            h1 {{ font-size:26px; line-height:1.08; margin:0; }}
+            .sub {{ color:#636366; line-height:1.45; margin:6px 0 0; }}
+            .week-nav a {{ display:inline-block; padding:8px 10px; border:1px solid #e5e5ea; border-radius:999px; background:white; color:#4f46e5; font-weight:800; text-decoration:none; margin-left:6px; }}
+            .wrap {{ display:grid; grid-template-columns:220px 1fr; gap:14px; align-items:start; }}
+            .card, .cal-wrap, .bottom-bar {{ background:#fff; border:1px solid #e5e5ea; border-radius:12px; }}
+            .card {{ padding:14px; }}
+            .student-row {{ display:flex; align-items:center; gap:9px; padding:9px 10px; background:#f2f2f7; border-radius:8px; margin-bottom:12px; }}
+            .avatar {{ width:34px; height:34px; border-radius:50%; background:#e8e6ff; color:#5e5ce6; display:flex; align-items:center; justify-content:center; font-weight:800; }}
+            .sname {{ font-size:13px; font-weight:800; }}
+            .sage {{ font-size:11px; color:#8e8e93; }}
+            .sec {{ font-size:10px; font-weight:800; color:#8e8e93; text-transform:uppercase; letter-spacing:.06em; margin:10px 0 8px; }}
+            .legend-item {{ display:flex; gap:8px; padding:8px; border-radius:8px; border:1px solid transparent; margin-bottom:6px; cursor:pointer; background:#fff; }}
+            .legend-item.active {{ border-color:#e5e5ea; background:#f2f2f7; }}
+            .legend-item.dimmed {{ opacity:.38; }}
+            .leg-color {{ width:10px; height:10px; border-radius:2px; margin-top:3px; flex:0 0 auto; }}
+            .leg-name {{ font-size:12px; font-weight:800; }}
+            .leg-teacher, .leg-now {{ font-size:11px; color:#8e8e93; }}
+            .hint-row {{ display:flex; align-items:center; gap:7px; margin-bottom:4px; font-size:11px; color:#636366; }}
+            .swatch {{ width:10px; height:10px; border-radius:2px; flex:0 0 auto; }}
+            .cal-wrap {{ overflow:hidden; }}
+            .filter-row {{ display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid #e5e5ea; flex-wrap:wrap; background:#fafafa; }}
+            .filter-label {{ font-size:11px; color:#8e8e93; font-weight:700; }}
+            .filter-btn {{ padding:5px 11px; border-radius:20px; font-size:11px; border:1px solid #e5e5ea; color:#636366; cursor:pointer; background:#fff; font-family:inherit; }}
+            .filter-btn.on {{ background:#e8e6ff; border-color:#9d9bf5; color:#3634a3; font-weight:800; }}
+            .cal-header, .cal-row {{ display:grid; grid-template-columns:52px repeat(7, minmax(82px, 1fr)); }}
+            .cal-header {{ border-bottom:1px solid #e5e5ea; background:#fafafa; }}
+            .cal-hcell {{ padding:7px 4px; text-align:center; font-size:11px; color:#636366; font-weight:700; border-right:1px solid #e5e5ea; }}
+            .cal-hcell.today-col {{ color:#5e5ce6; }}
+            .today-badge {{ background:#5e5ce6; color:white; border-radius:10px; padding:1px 6px; font-size:9px; margin-left:3px; }}
+            .time-cell {{ height:44px; border-bottom:1px solid #f2f2f7; font-size:10px; color:#c7c7cc; text-align:right; padding:4px 6px 0 0; border-right:1px solid #e5e5ea; background:#fafafa; }}
+            .cell {{ height:44px; border-bottom:1px solid #f2f2f7; border-right:1px solid #e5e5ea; position:relative; padding:2px 3px; overflow:hidden; }}
+            .cell:last-child, .cal-hcell:last-child {{ border-right:none; }}
+            .ev, .avail {{ border-radius:4px; padding:3px 5px; font-size:10px; line-height:1.25; width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
+            .ev {{ font-weight:800; border-left:2px solid transparent; }}
+            .ev-piano, .avail-piano {{ background:#e8e6ff; color:#3634a3; border-color:#9d9bf5; }}
+            .ev-guitar, .avail-guitar {{ background:#d1f2e0; color:#1c7a3a; border-color:#30d158; }}
+            .ev-ukulele, .avail-ukulele {{ background:#fff3d0; color:#7d5200; border-color:#ff9f0a; }}
+            .ev-voice, .avail-voice {{ background:#e0f2fe; color:#075985; border-color:#38bdf8; }}
+            .ev-drum, .avail-drum {{ background:#fee2e2; color:#991b1b; border-color:#f87171; }}
+            .ev-violin, .avail-violin {{ background:#f3e8ff; color:#6b21a8; border-color:#c084fc; }}
+            .avail {{ cursor:pointer; border:1.5px dashed; margin-top:1px; }}
+            .avail-all {{ background:#d1f2e0; border:2px solid #1c7a3a; color:#0d3d1d; font-weight:900; }}
+            .avail-both {{ background:#e8f9ef; border:1.5px solid #30d158; color:#1c7a3a; font-weight:800; }}
+            .selected-slot {{ outline:2.5px solid #5e5ce6; outline-offset:-1px; }}
+            .bottom-bar {{ display:none; margin-top:10px; padding:12px 14px; }}
+            .bottom-bar.show {{ display:block; }}
+            .confirm-inner {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }}
+            .confirm-text {{ font-size:14px; font-weight:900; flex:1; min-width:180px; }}
+            .confirm-sub {{ font-size:11px; color:#636366; margin-top:2px; }}
+            .btn-ok, .btn-cancel {{ padding:10px 14px; border-radius:8px; font-size:13px; cursor:pointer; font-family:inherit; font-weight:800; }}
+            .btn-ok {{ background:#5e5ce6; color:white; border:none; }}
+            .btn-ok:disabled {{ opacity:.45; cursor:not-allowed; }}
+            .btn-cancel {{ background:white; border:1px solid #e5e5ea; color:#636366; }}
+            .empty {{ padding:18px; color:#636366; background:white; border:1px solid #e5e5ea; border-radius:12px; }}
+            .hidden-form {{ display:none; }}
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
-            @media (max-width:760px) {{ .backup-grid {{ grid-template-columns:1fr; gap:0; }} }}
-            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
+            @media (max-width:760px) {{
+                .page {{ padding-left:10px; padding-right:10px; }}
+                .topbar {{ display:block; }}
+                .week-nav {{ margin-top:10px; }}
+                .wrap {{ grid-template-columns:1fr; }}
+                .cal-wrap {{ overflow-x:auto; }}
+                .cal-header, .cal-row {{ min-width:680px; }}
+            }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1>Coordinate Multiple Lessons</h1>
-            <p>Select two or more lessons from your family account. H-Music will coordinate the shared time with all affected teachers.</p>
-            <form method="POST">
-                {lesson_rows}
-                <h2>Preferred Shared Time</h2>
-                <div class="backup-grid">
-                    <div>Date:<br><input type="date" name="requested_date"></div>
-                    <div>Time:<br><input type="time" name="requested_time"></div>
+        <div class="page">
+            <div class="topbar">
+                <div>
+                    <h1>Coordinate Multiple Lessons</h1>
+                    <p class="sub">Select lessons on the left, then choose a shared open slot on the calendar.</p>
                 </div>
-                <h2>Backup Options</h2>
-                <div class="backup-grid">
-                    <div>Backup Date 2:<br><input type="date" name="backup_date_2"></div>
-                    <div>Backup Time 2:<br><input type="time" name="backup_time_2"></div>
-                    <div>Backup Date 3:<br><input type="date" name="backup_date_3"></div>
-                    <div>Backup Time 3:<br><input type="time" name="backup_time_3"></div>
+                <div class="week-nav">
+                    <a href="/parent_reschedule_group?week={prev_week}">Prev</a>
+                    <a href="/parent_reschedule_group?week={next_week}">Next</a>
                 </div>
-                Reason / notes:<br>
-                <textarea name="reason" placeholder="Example: We want sibling lessons closer together on the same day."></textarea>
-                <button type="submit">Submit Coordinated Request</button>
-                <a class="button secondary" href="/parent_reschedule">Back</a>
+            </div>
+            <div id="emptyState" class="empty" style="display:none;">No upcoming scheduled lessons were found for this family account.</div>
+            <div class="wrap" id="calendarApp">
+                <div class="sidebar">
+                    <div class="card">
+                        <div class="student-row">
+                            <div class="avatar" id="familyAvatar">H</div>
+                            <div><div class="sname">Family Lessons</div><div class="sage">{week_start.strftime('%b %-d')} - {week_end.strftime('%b %-d')}</div></div>
+                        </div>
+                        <div class="sec">Lessons</div>
+                        <div id="lessonList"></div>
+                    </div>
+                    <div class="card">
+                        <div class="sec">Legend</div>
+                        <div class="hint-row"><div class="swatch" style="background:#f5f4ff;border:1.5px dashed #9d9bf5"></div><span>Single teacher slot</span></div>
+                        <div class="hint-row"><div class="swatch" style="background:#d1f2e0;border:2px solid #1c7a3a"></div><span><b>All selected teachers free</b></span></div>
+                        <div style="font-size:11px;color:#8e8e93;line-height:1.5;margin-top:8px">Tap a lesson to include/exclude it. Use filters to inspect one teacher's slots.</div>
+                    </div>
+                </div>
+                <div>
+                    <div class="cal-wrap">
+                        <div class="filter-row" id="filterRow"></div>
+                        <div class="cal-header" id="calHeader"></div>
+                        <div id="calGrid"></div>
+                    </div>
+                    <div class="bottom-bar" id="bottomBar">
+                        <div class="confirm-inner">
+                            <div style="flex:1">
+                                <div class="confirm-text" id="confirmText"></div>
+                                <div class="confirm-sub" id="confirmSub"></div>
+                            </div>
+                            <button class="btn-cancel" onclick="clearSelection()" type="button">Cancel</button>
+                            <button class="btn-ok" id="confirmButton" onclick="submitSelection()" type="button">Confirm · Notify teachers</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <form class="hidden-form" id="batchForm" method="POST">
+                <div id="selectedInputs"></div>
+                <input type="date" name="requested_date" id="requestedDate">
+                <input type="time" name="requested_time" id="requestedTime">
+                <textarea name="reason" id="requestReason">Coordinated family calendar request.</textarea>
             </form>
         </div>
+        <script>
+            const LESSONS = {lessons_json};
+            const SLOTS = {slots_json};
+            const DAYS = {days_json};
+            const TIMES = {times_json};
+            const COLOR_HEX = {{piano:"#5E5CE6", guitar:"#30D158", ukulele:"#FF9F0A", voice:"#38BDF8", drum:"#F87171", violin:"#C084FC"}};
+            let activeIds = new Set(LESSONS.map(l => String(l.id)));
+            let viewMode = "all";
+            let selectedSlot = null;
+
+            function selectedLessons() {{
+                return LESSONS.filter(l => activeIds.has(String(l.id)));
+            }}
+            function selectedTeachers() {{
+                return [...new Set(selectedLessons().map(l => l.teacher).filter(Boolean))];
+            }}
+            function slotsForTeacherDateTime(teacher, date, time) {{
+                return SLOTS.filter(s => s.teacher === teacher && s.date === date && s.time === time);
+            }}
+            function activeSlotTeachers(date, time) {{
+                return selectedTeachers().filter(t => slotsForTeacherDateTime(t, date, time).length > 0);
+            }}
+            function setView(mode) {{
+                viewMode = mode;
+                selectedSlot = null;
+                render();
+            }}
+            function toggleLesson(id) {{
+                const key = String(id);
+                if (activeIds.has(key) && activeIds.size > 1) activeIds.delete(key);
+                else activeIds.add(key);
+                selectedSlot = null;
+                render();
+            }}
+            function pickSlot(date, time, teachers, mode) {{
+                selectedSlot = {{date, time, teachers, mode}};
+                render();
+                const names = selectedLessons().filter(l => teachers.includes(l.teacher)).map(l => `${{l.course}} (${{l.teacher}})`);
+                document.getElementById("confirmText").textContent = `Move to ${{date}}, ${{time}}`;
+                document.getElementById("confirmSub").textContent = `Lessons affected: ${{names.join(" + ") || "None"}}`;
+                const button = document.getElementById("confirmButton");
+                button.disabled = selectedLessons().filter(l => teachers.includes(l.teacher)).length < 2;
+                button.textContent = button.disabled ? "Select at least 2 lessons" : "Confirm · Notify teachers";
+                document.getElementById("bottomBar").classList.add("show");
+            }}
+            function clearSelection() {{
+                selectedSlot = null;
+                document.getElementById("bottomBar").classList.remove("show");
+                render();
+            }}
+            function submitSelection() {{
+                if (!selectedSlot) return;
+                const affected = selectedLessons().filter(l => selectedSlot.teachers.includes(l.teacher));
+                if (affected.length < 2) return;
+                const inputs = document.getElementById("selectedInputs");
+                inputs.innerHTML = "";
+                affected.forEach(l => {{
+                    const input = document.createElement("input");
+                    input.type = "hidden";
+                    input.name = "schedule_ids";
+                    input.value = l.id;
+                    inputs.appendChild(input);
+                }});
+                document.getElementById("requestedDate").value = selectedSlot.date;
+                document.getElementById("requestedTime").value = selectedSlot.time;
+                document.getElementById("requestReason").value = `Coordinated family calendar request. Calendar mode: ${{selectedSlot.mode}}.`;
+                document.getElementById("batchForm").submit();
+            }}
+            function renderLessonList() {{
+                const box = document.getElementById("lessonList");
+                box.innerHTML = "";
+                LESSONS.forEach(l => {{
+                    const row = document.createElement("div");
+                    const active = activeIds.has(String(l.id));
+                    row.className = "legend-item " + (active ? "active" : "dimmed");
+                    row.onclick = () => toggleLesson(l.id);
+                    row.innerHTML = `<div class="leg-color" style="background:${{COLOR_HEX[l.color] || "#5E5CE6"}}"></div>
+                        <div><div class="leg-name">${{l.course}}</div><div class="leg-teacher">${{l.student}} · ${{l.teacher}}</div><div class="leg-now">Now: ${{l.date}} ${{l.time}}</div></div>`;
+                    box.appendChild(row);
+                }});
+            }}
+            function renderFilters() {{
+                const row = document.getElementById("filterRow");
+                row.innerHTML = `<span class="filter-label">Show:</span>`;
+                const all = document.createElement("button");
+                all.type = "button";
+                all.className = "filter-btn " + (viewMode === "all" ? "on" : "");
+                all.textContent = "All teachers free";
+                all.onclick = () => setView("all");
+                row.appendChild(all);
+                selectedLessons().forEach(l => {{
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "filter-btn " + (viewMode === String(l.id) ? "on" : "");
+                    btn.textContent = `${{l.course}} · ${{l.teacher}}`;
+                    btn.onclick = () => setView(String(l.id));
+                    row.appendChild(btn);
+                }});
+            }}
+            function renderHeader() {{
+                const header = document.getElementById("calHeader");
+                header.innerHTML = `<div class="time-cell" style="border-bottom:none"></div>`;
+                const today = new Date().toISOString().slice(0,10);
+                DAYS.forEach(d => {{
+                    const cell = document.createElement("div");
+                    cell.className = "cal-hcell " + (d.key === today ? "today-col" : "");
+                    cell.innerHTML = `${{d.label}}<br><span>${{d.display}}</span>` + (d.key === today ? `<span class="today-badge">Today</span>` : "");
+                    header.appendChild(cell);
+                }});
+            }}
+            function renderGrid() {{
+                const grid = document.getElementById("calGrid");
+                grid.innerHTML = "";
+                TIMES.forEach(time => {{
+                    const row = document.createElement("div");
+                    row.className = "cal-row";
+                    const timeCell = document.createElement("div");
+                    timeCell.className = "time-cell";
+                    timeCell.textContent = time;
+                    row.appendChild(timeCell);
+                    DAYS.forEach(day => {{
+                        const cell = document.createElement("div");
+                        cell.className = "cell";
+                        LESSONS.filter(l => l.date === day.key && l.time === time).forEach(l => {{
+                            const ev = document.createElement("div");
+                            ev.className = `ev ev-${{l.color}}`;
+                            ev.textContent = l.course;
+                            cell.appendChild(ev);
+                        }});
+                        if (viewMode === "all") {{
+                            const teachers = activeSlotTeachers(day.key, time);
+                            const selectedTeacherCount = selectedTeachers().length;
+                            if (selectedTeacherCount && teachers.length === selectedTeacherCount) {{
+                                const slot = document.createElement("div");
+                                slot.className = selectedTeacherCount >= 2 ? "avail avail-all" : "avail avail-both";
+                                slot.textContent = selectedTeacherCount >= 2 ? "All free" : "Free";
+                                if (selectedSlot && selectedSlot.date === day.key && selectedSlot.time === time) slot.classList.add("selected-slot");
+                                slot.onclick = () => pickSlot(day.key, time, teachers, "all");
+                                cell.appendChild(slot);
+                            }}
+                        }} else {{
+                            const lesson = LESSONS.find(l => String(l.id) === viewMode);
+                            if (lesson && slotsForTeacherDateTime(lesson.teacher, day.key, time).length) {{
+                                const slot = document.createElement("div");
+                                slot.className = `avail avail-${{lesson.color}}`;
+                                slot.textContent = lesson.course;
+                                if (selectedSlot && selectedSlot.date === day.key && selectedSlot.time === time) slot.classList.add("selected-slot");
+                                slot.onclick = () => pickSlot(day.key, time, [lesson.teacher], "single");
+                                cell.appendChild(slot);
+                            }}
+                        }}
+                        row.appendChild(cell);
+                    }});
+                    grid.appendChild(row);
+                }});
+            }}
+            function render() {{
+                document.getElementById("emptyState").style.display = {empty_state} ? "block" : "none";
+                document.getElementById("calendarApp").style.display = {empty_state} ? "none" : "grid";
+                renderLessonList();
+                renderFilters();
+                renderHeader();
+                renderGrid();
+            }}
+            render();
+        </script>
         {parent_bottom_nav("reschedule")}
     </body>
     </html>
