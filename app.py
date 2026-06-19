@@ -730,8 +730,9 @@ def get_missing_homework_count(teacher_name=None):
     return count
 
 
-def hstudio_teacher_dark_nav(unread_messages=0, active="home"):
+def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_count=0):
     message_badge = hstudio_badge(unread_messages)
+    homework_badge = hstudio_badge(missing_homework_count)
 
     def item(key, href, icon, label, extra=""):
         active_class = " active" if key == active else ""
@@ -743,7 +744,8 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home"):
         {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Schedule")}
         {item("messages", "/teacher_messages", "ti-message", "Messages", message_badge)}
         <div class="td-nav-section">Lessons</div>
-        {item("records", "/teacher_lesson_notes", "ti-notes", "Lesson Records")}
+        {item("records", "/teacher_lesson_notes", "ti-notes", "Lesson Records", homework_badge)}
+        {item("homework", "/teacher_missing_homework", "ti-alert-circle", "Missing Homework", homework_badge)}
         {item("sub", "/teacher_sub_request", "ti-replace", "Sub Request")}
         {item("reschedule", "/teacher_reschedule", "ti-calendar-x", "Reschedule Request")}
         {item("add_schedule", "/add_schedule", "ti-calendar-plus", "Add Schedule")}
@@ -755,7 +757,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home"):
     """
 
 
-def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, active="home"):
+def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, active="home", missing_homework_count=0):
     initials = (teacher_name or "T")[:2].upper()
     return f"""
     <html>
@@ -885,7 +887,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
                 <div class="td-brand"><span class="td-mark"><i class="ti ti-music"></i></span><span>{HSTUDIO_APP_NAME}</span></div>
                 <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> Teacher</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
             </header>
-            <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages, active)}</aside>
+            <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages, active, missing_homework_count)}</aside>
             <main class="td-main">{content_html}</main>
         </div>
     </body>
@@ -4438,6 +4440,7 @@ def teacher_dashboard():
 
     teacher_name = session.get("teacher_name")
     unread_messages = get_unread_message_count("teacher", teacher_name)
+    missing_homework_count = get_missing_homework_count(teacher_name)
     today_obj = date.today()
     today = today_obj.strftime("%Y-%m-%d")
     selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
@@ -4505,8 +4508,9 @@ def teacher_dashboard():
     today_lessons = [lesson for lesson in lessons if lesson[1] == today]
     actual_payroll = round(payroll_summary[0] or 0, 2)
     projected_payroll = round(payroll_summary[1] or 0, 2)
-    pending_count = unread_messages
+    pending_count = unread_messages + missing_homework_count
     today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
+    homework_badge = hstudio_badge(missing_homework_count)
 
     def status_label(status):
         key = hstudio_status_key(status)
@@ -4688,7 +4692,13 @@ def teacher_dashboard():
             </div>
             <div class="calendar-grid">{day_columns}</div>
         """
-        return hstudio_teacher_dark_shell(teacher_name or "Teacher", unread_messages, content, active="schedule")
+        return hstudio_teacher_dark_shell(
+            teacher_name or "Teacher",
+            unread_messages,
+            content,
+            active="schedule",
+            missing_homework_count=missing_homework_count
+        )
 
     today_html = "".join(lesson_row(lesson) for lesson in today_lessons)
     if not today_html:
@@ -4717,7 +4727,7 @@ def teacher_dashboard():
             <div class="td-kpi">
                 <div class="td-kpi-label">Pending Items</div>
                 <div class="td-kpi-value gold">{pending_count}</div>
-                <div class="td-kpi-sub">Unread messages</div>
+                <div class="td-kpi-sub">{unread_messages} unread message(s) · {missing_homework_count} missing homework</div>
             </div>
         </div>
 
@@ -4732,6 +4742,7 @@ def teacher_dashboard():
                     <h2>Quick Actions</h2>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i>This Week</a>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=month"><i class="ti ti-calendar-month"></i>This Month</a>
+                    <a class="td-action" href="/teacher_missing_homework"><i class="ti ti-alert-circle"></i>Missing Homework {homework_badge}</a>
                     <a class="td-action" href="/teacher_lesson_notes"><i class="ti ti-notes"></i>Write Lesson Notes</a>
                     <a class="td-action" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i>Reschedule</a>
                     <a class="td-action" href="/open_slots"><i class="ti ti-clock-plus"></i>Open Slot Settings</a>
@@ -4747,7 +4758,77 @@ def teacher_dashboard():
             </div>
         </div>
     """
-    return hstudio_teacher_dark_shell(teacher_name or "Teacher", unread_messages, content, active="home")
+    return hstudio_teacher_dark_shell(
+        teacher_name or "Teacher",
+        unread_messages,
+        content,
+        active="home",
+        missing_homework_count=missing_homework_count
+    )
+
+
+@app.route("/teacher_missing_homework")
+def teacher_missing_homework():
+    if session.get("user_role") != "teacher":
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    unread_messages = get_unread_message_count("teacher", teacher_name)
+    missing_homework_count = get_missing_homework_count(teacher_name)
+    lessons = get_missing_homework_lessons(teacher_name=teacher_name)
+
+    rows = ""
+    for lesson in lessons:
+        rows += f"""
+        <tr>
+            <td>{lesson[3]}</td>
+            <td>{lesson[4] or '-'}</td>
+            <td>{escape(lesson[1] or '-')}</td>
+            <td>{escape(lesson[5] or '-')}</td>
+            <td><a class="mini-button" href="/add_lesson/{lesson[1]}">Add Homework</a></td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='5'>No missing homework right now.</td></tr>"
+
+    content = f"""
+        <div class="schedule-head">
+            <div class="schedule-title">
+                <h1>Missing Homework</h1>
+                <p>Present lessons that still need homework notes for parents.</p>
+            </div>
+            <div class="schedule-controls">
+                <a href="/teacher_dashboard">Home</a>
+                <a href="/teacher_lesson_notes">Lesson Records</a>
+            </div>
+        </div>
+        <section class="td-card">
+            <table class="teacher-homework-table">
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Student</th>
+                    <th>Room</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </section>
+        <style>
+            .teacher-homework-table {{ width:100%; border-collapse:collapse; }}
+            .teacher-homework-table th, .teacher-homework-table td {{ border-bottom:1px solid var(--td-line); padding:12px; text-align:left; }}
+            .teacher-homework-table th {{ color:var(--td-muted); font-weight:500; font-size:13px; }}
+            .mini-button {{ display:inline-block; padding:8px 11px; border-radius:8px; background:var(--td-red-soft); color:var(--td-red); font-weight:600; }}
+        </style>
+    """
+    return hstudio_teacher_dark_shell(
+        teacher_name or "Teacher",
+        unread_messages,
+        content,
+        active="homework",
+        missing_homework_count=missing_homework_count
+    )
 
 @app.route("/teacher_login", methods=["GET", "POST"])
 def teacher_login():
