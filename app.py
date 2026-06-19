@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, Response, send_from_directory
+from flask import Flask, request, redirect, session, Response, send_from_directory, abort
 import sqlite3
 import os
 import smtplib
@@ -38,6 +38,11 @@ OWNER_PASSWORD = "1234"
 
 def require_owner():
     return session.get("user_role") == "owner"
+
+
+def ensure_owner():
+    if not require_owner():
+        abort(redirect("/owner_login"))
 
 
 def require_teacher():
@@ -654,6 +659,77 @@ def hstudio_badge(count):
     return f'<span class="nav-badge">{number}</span>'
 
 
+def get_missing_homework_lessons(limit=None, teacher_name=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    filters = ["LOWER(COALESCE(s.status, '')) = 'present'"]
+    params = []
+    if teacher_name:
+        filters.append("s.teacher = ?")
+        params.append(teacher_name)
+
+    limit_sql = ""
+    if limit:
+        limit_sql = "LIMIT ?"
+        params.append(limit)
+
+    cursor.execute(f"""
+    SELECT
+        s.id,
+        s.student_name,
+        s.teacher,
+        s.lesson_date,
+        s.lesson_time,
+        s.classroom
+    FROM schedule s
+    WHERE {" AND ".join(filters)}
+    AND NOT EXISTS (
+        SELECT 1
+        FROM lessons l
+        WHERE l.student_name = s.student_name
+        AND l.lesson_date = s.lesson_date
+        AND TRIM(COALESCE(l.homework, '')) != ''
+    )
+    ORDER BY s.lesson_date DESC, s.lesson_time DESC, s.id DESC
+    {limit_sql}
+    """, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_missing_homework_count(teacher_name=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    filters = ["LOWER(COALESCE(s.status, '')) = 'present'"]
+    params = []
+    if teacher_name:
+        filters.append("s.teacher = ?")
+        params.append(teacher_name)
+
+    cursor.execute(f"""
+    SELECT COUNT(*)
+    FROM schedule s
+    WHERE {" AND ".join(filters)}
+    AND NOT EXISTS (
+        SELECT 1
+        FROM lessons l
+        WHERE l.student_name = s.student_name
+        AND l.lesson_date = s.lesson_date
+        AND TRIM(COALESCE(l.homework, '')) != ''
+    )
+    """, params)
+    count = cursor.fetchone()[0] or 0
+    conn.close()
+    return count
+
+
 def hstudio_teacher_dark_nav(unread_messages=0, active="home"):
     message_badge = hstudio_badge(unread_messages)
 
@@ -912,7 +988,22 @@ def home():
     """)
     unpaid_invoice_total = cursor.fetchone()[0] or 0
 
+    try:
+        ensure_v17_schema()
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM inquiries
+        WHERE status IN ('New Lead', 'Inquiry')
+        OR COALESCE(owner_verified, 0) = 0
+        """)
+        pending_trial_count = cursor.fetchone()[0] or 0
+    except sqlite3.Error:
+        pending_trial_count = 0
+
     conn.close()
+
+    missing_homework_lessons = get_missing_homework_lessons(limit=5)
+    missing_homework_count = get_missing_homework_count()
 
     renewal_html = ""
     if renewal_students:
@@ -971,6 +1062,27 @@ def home():
             <span>Review inbox</span>
         </div>
         """
+    if pending_trial_count:
+        attention_html += f"""
+        <div class="task-row high">
+            <div>
+                <span class="task-badge">Trial</span>
+                <a href="/trial_leads">{pending_trial_count} trial request(s) need review</a>
+            </div>
+            <span>Open lead intake</span>
+        </div>
+        """
+    if missing_homework_lessons:
+        for lesson in missing_homework_lessons:
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Homework</span>
+                    <a href="/add_lesson/{lesson[1]}">{lesson[1]} needs homework</a>
+                </div>
+                <span>{lesson[3]} {lesson[4] or ''} · {lesson[2] or 'Teacher'}</span>
+            </div>
+            """
     if unpaid_invoice_count:
         attention_html += f"""
         <div class="task-row low">
@@ -988,6 +1100,10 @@ def home():
     reschedule_badge = f" ({pending_reschedule_count})" if pending_reschedule_count else ""
     sub_badge = f" ({pending_sub_count})" if pending_sub_count else ""
     invoice_badge = f" ({unpaid_invoice_count})" if unpaid_invoice_count else ""
+    trial_badge = f" ({pending_trial_count})" if pending_trial_count else ""
+    homework_badge = f" ({missing_homework_count})" if missing_homework_count else ""
+    trial_red_badge = f' <span class="red-dot">{pending_trial_count}</span>' if pending_trial_count else ""
+    homework_red_badge = f' <span class="red-dot">{missing_homework_count}</span>' if missing_homework_count else ""
 
     return f"""
     <html>
@@ -1032,7 +1148,7 @@ def home():
             }}
             .attention-cards {{
                 display: grid;
-                grid-template-columns: repeat(5, 1fr);
+                grid-template-columns: repeat(6, 1fr);
                 gap: 12px;
                 margin-bottom: 20px;
             }}
@@ -1137,6 +1253,20 @@ def home():
                 font-size: 12px;
                 font-weight: 800;
                 text-align: center;
+            }}
+            .red-dot {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 20px;
+                height: 20px;
+                padding: 0 6px;
+                border-radius: 999px;
+                background: #dc2626;
+                color: white;
+                font-size: 12px;
+                font-weight: 900;
+                vertical-align: middle;
             }}
 
             .actions h3 {{
@@ -1296,8 +1426,12 @@ def home():
                         <span>Create package and tuition invoice</span>
                     </a>
                     <a class="primary-action" href="/trial_leads">
-                        <strong>Trial Leads</strong>
+                        <strong>Trial Leads{trial_red_badge}</strong>
                         <span>AI intake, trial scheduling, follow-up, convert to enrollment</span>
+                    </a>
+                    <a class="primary-action" href="/missing_homework">
+                        <strong>Missing Homework{homework_red_badge}</strong>
+                        <span>Present lessons that still need parent homework notes</span>
                     </a>
                     <a class="primary-action" href="/add_schedule">
                         <strong>Add Schedule</strong>
@@ -1335,6 +1469,14 @@ def home():
                         <div class="label">Low Lessons</div>
                         <div class="value">{renewal_count}</div>
                     </a>
+                    <a class="attention-card {'alert' if pending_trial_count else ''}" href="/trial_leads">
+                        <div class="label">Trial Requests</div>
+                        <div class="value">{pending_trial_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if missing_homework_count else ''}" href="/missing_homework">
+                        <div class="label">Missing Homework</div>
+                        <div class="value">{missing_homework_count}</div>
+                    </a>
                 </div>
                 {attention_html}
             </div>
@@ -1356,8 +1498,9 @@ def home():
     <div class="action-group">
         <a href="/enrollments">Enrollment Detail</a>
         <a href="/add_enrollment">New Enrollment</a>
-        <a href="/trial_leads">Trial Leads</a>
+        <a href="/trial_leads">Trial Leads{trial_badge}</a>
         <a href="/add_trial_lead">Add Trial Lead</a>
+        <a href="/missing_homework">Missing Homework{homework_badge}</a>
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
         <a href="/calendar">Calendar</a>
@@ -1436,6 +1579,70 @@ def students():
         """
 
     return html
+
+
+@app.route("/missing_homework")
+def missing_homework():
+    ensure_owner()
+
+    lessons = get_missing_homework_lessons()
+    rows = ""
+    for lesson in lessons:
+        rows += f"""
+        <tr>
+            <td>{lesson[3]}</td>
+            <td>{lesson[4] or '-'}</td>
+            <td><a href="/student/{lesson[1]}">{escape(lesson[1] or '-')}</a></td>
+            <td>{escape(lesson[2] or '-')}</td>
+            <td>{escape(lesson[5] or '-')}</td>
+            <td><a class="button" href="/add_lesson/{lesson[1]}">Add Homework</a></td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='6'>No missing homework right now.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Missing Homework</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:20px; background:white; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; text-align:left; }}
+            th {{ background:#fee2e2; color:#7f1d1d; }}
+            a {{ color:#4f46e5; font-weight:800; text-decoration:none; }}
+            .button {{ display:inline-block; padding:9px 12px; border-radius:8px; background:#dc2626; color:white; }}
+            .secondary {{ display:inline-block; padding:10px 14px; border-radius:8px; background:#111827; color:white; }}
+            p {{ color:#6b7280; }}
+        </style>
+    </head>
+    <body>
+        <div class="panel">
+            <div class="top">
+                <div>
+                    <h1>Missing Homework</h1>
+                    <p>Present lessons that still need homework notes for parents.</p>
+                </div>
+                <a class="secondary" href="/">Home</a>
+            </div>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Student</th>
+                    <th>Teacher</th>
+                    <th>Room</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
 
 
 
@@ -21036,6 +21243,7 @@ def ensure_production_schema():
     ensure_v26_schema()
     ensure_v27_schema()
     ensure_v29_schema()
+    ensure_v17_schema()
     ensure_v321_schema()
     ensure_v33_schema()
     ensure_v145_schema()
