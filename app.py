@@ -654,26 +654,31 @@ def hstudio_badge(count):
     return f'<span class="nav-badge">{number}</span>'
 
 
-def hstudio_teacher_dark_nav(unread_messages=0):
+def hstudio_teacher_dark_nav(unread_messages=0, active="home"):
     message_badge = hstudio_badge(unread_messages)
+
+    def item(key, href, icon, label, extra=""):
+        active_class = " active" if key == active else ""
+        return f'<a class="td-nav-item{active_class}" href="{href}"><i class="ti {icon}"></i><span>{label}</span>{extra}</a>'
+
     return f"""
         <div class="td-nav-section">Today</div>
-        <a class="td-nav-item active" href="/teacher_dashboard"><i class="ti ti-home"></i><span>Home</span></a>
-        <a class="td-nav-item" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i><span>My Schedule</span></a>
-        <a class="td-nav-item" href="/teacher_messages"><i class="ti ti-message"></i><span>Messages</span>{message_badge}</a>
+        {item("home", "/teacher_dashboard", "ti-home", "Home")}
+        {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Schedule")}
+        {item("messages", "/teacher_messages", "ti-message", "Messages", message_badge)}
         <div class="td-nav-section">Lessons</div>
-        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-notes"></i><span>Lesson Records</span></a>
-        <a class="td-nav-item" href="/teacher_sub_request"><i class="ti ti-replace"></i><span>Sub Request</span></a>
-        <a class="td-nav-item" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i><span>Reschedule Request</span></a>
+        {item("records", "/teacher_dashboard", "ti-notes", "Lesson Records")}
+        {item("sub", "/teacher_sub_request", "ti-replace", "Sub Request")}
+        {item("reschedule", "/teacher_reschedule", "ti-calendar-x", "Reschedule Request")}
         <div class="td-nav-section">Payroll</div>
-        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-coin"></i><span>Payroll Detail</span><span class="td-new-badge">New</span></a>
+        {item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>')}
         <div class="td-nav-section">Account</div>
-        <a class="td-nav-item" href="/teacher_dashboard"><i class="ti ti-settings"></i><span>Profile Settings</span></a>
-        <a class="td-nav-item" href="/teacher_logout"><i class="ti ti-logout"></i><span>Logout</span></a>
+        {item("profile", "/teacher_dashboard", "ti-settings", "Profile Settings")}
+        {item("logout", "/teacher_logout", "ti-logout", "Logout")}
     """
 
 
-def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html):
+def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, active="home"):
     initials = (teacher_name or "T")[:2].upper()
     return f"""
     <html>
@@ -683,81 +688,106 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html):
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
         <style>
             :root {{
-                --td-bg:#111111;
-                --td-panel:#292927;
-                --td-panel-soft:#252523;
-                --td-sidebar:#30312e;
-                --td-line:#474844;
-                --td-text:#f5f2ea;
-                --td-muted:#b8b5ad;
-                --td-faint:#8f8b83;
-                --td-blue:#284c77;
-                --td-blue-text:#9dc7ff;
-                --td-green:#184f13;
-                --td-green-text:#79c953;
-                --td-gold:#e6b84d;
-                --td-radius:14px;
+                --td-bg:#f6f7f9;
+                --td-surface:#ffffff;
+                --td-sidebar:#ffffff;
+                --td-line:#e3e7ee;
+                --td-line-strong:#cfd6e1;
+                --td-text:#17202a;
+                --td-muted:#667085;
+                --td-faint:#98a2b3;
+                --td-blue:#2563eb;
+                --td-blue-soft:#eaf2ff;
+                --td-green:#16803c;
+                --td-green-soft:#e9f8ef;
+                --td-gold:#b7791f;
+                --td-gold-soft:#fff6df;
+                --td-red:#b42318;
+                --td-red-soft:#fff0ef;
+                --td-gray-soft:#f2f4f7;
+                --td-radius:12px;
             }}
             * {{ box-sizing:border-box; }}
-            body {{ margin:0; background:var(--td-bg); color:var(--td-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; font-weight:500; }}
+            body {{ margin:0; background:var(--td-bg); color:var(--td-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; font-weight:400; }}
             a {{ color:inherit; text-decoration:none; }}
-            .td-shell {{ display:grid; grid-template-columns:300px 1fr; grid-template-rows:84px 1fr; min-height:100vh; background:var(--td-bg); }}
-            .td-topbar {{ grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:0 26px; background:#2f302d; border-bottom:1px solid var(--td-line); }}
-            .td-brand {{ display:flex; align-items:center; gap:12px; font-size:24px; font-weight:650; }}
-            .td-mark {{ width:40px; height:40px; display:grid; place-items:center; border-radius:8px; background:#294c78; color:#9cc8ff; font-size:20px; }}
-            .td-top-actions {{ display:flex; align-items:center; gap:14px; }}
-            .td-role {{ display:inline-flex; gap:7px; align-items:center; padding:9px 14px; border:1px solid var(--td-line); border-radius:999px; color:var(--td-text); font-size:18px; }}
-            .td-avatar {{ width:48px; height:48px; border-radius:999px; display:grid; place-items:center; background:#166310; color:#fff; font-size:15px; font-weight:700; }}
-            .td-more {{ width:48px; height:48px; border-radius:9px; display:grid; place-items:center; background:#252522; color:var(--td-muted); font-size:24px; }}
-            .td-sidebar {{ background:var(--td-sidebar); border-right:1px solid var(--td-line); padding:30px 0; }}
-            .td-nav-section {{ padding:12px 22px 8px; color:var(--td-faint); font-size:18px; }}
-            .td-nav-item {{ display:flex; align-items:center; gap:14px; min-height:52px; padding:0 24px; color:#cfccc4; font-size:22px; font-weight:650; }}
-            .td-nav-item i {{ width:26px; font-size:25px; color:#cfccc4; }}
-            .td-nav-item.active {{ background:var(--td-blue); color:var(--td-blue-text); }}
-            .td-nav-item.active i {{ color:var(--td-blue-text); }}
-            .nav-badge {{ margin-left:auto; display:inline-grid; place-items:center; min-width:28px; height:28px; padding:0 8px; border-radius:999px; background:#9f3d3d; color:#ffd7d7; font-size:16px; }}
-            .td-new-badge {{ margin-left:auto; border-radius:8px; padding:2px 7px; background:#1b7215; color:#78d35a; font-size:18px; }}
-            .td-main {{ padding:32px 32px 52px; overflow:auto; }}
-            .td-greeting {{ display:flex; align-items:baseline; gap:18px; margin-bottom:26px; }}
-            .td-greeting h1 {{ margin:0; font-size:28px; line-height:1.2; font-weight:750; }}
-            .td-greeting span {{ color:#d1cec7; font-size:22px; }}
-            .td-kpis {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin-bottom:28px; }}
-            .td-kpi {{ background:var(--td-panel-soft); border-radius:14px; padding:22px 24px; min-height:124px; }}
-            .td-kpi-label {{ color:#c8c5bd; font-size:22px; margin-bottom:8px; }}
-            .td-kpi-value {{ font-size:34px; line-height:1; font-weight:800; }}
-            .td-kpi-sub {{ margin-top:6px; color:var(--td-muted); font-size:20px; }}
-            .green {{ color:var(--td-green-text); }} .gold {{ color:var(--td-gold); }}
-            .td-layout {{ display:grid; grid-template-columns:minmax(420px,1fr) minmax(360px,0.95fr); gap:20px; align-items:start; }}
-            .td-card {{ background:var(--td-panel); border:1px solid var(--td-line); border-radius:var(--td-radius); padding:26px 28px; }}
-            .td-card h2 {{ margin:0 0 20px; font-size:23px; color:#d7d3ca; }}
-            .td-records {{ min-height:560px; position:relative; }}
-            .td-lesson-row {{ display:grid; grid-template-columns:78px 1fr auto; gap:10px; align-items:center; padding:16px; margin-bottom:10px; border-radius:13px; color:#eee; }}
-            .td-lesson-row.present {{ background:var(--td-green); }}
-            .td-lesson-row.scheduled {{ background:var(--td-blue); }}
-            .td-lesson-row.noshow {{ background:#71302c; }}
-            .td-lesson-row.cancelled {{ background:#44443f; }}
-            .td-date {{ color:#d7d3ca; font-size:22px; font-weight:700; }}
-            .td-student {{ font-size:22px; font-weight:800; line-height:1.15; }}
-            .td-meta {{ color:#d7d3ca; font-size:20px; line-height:1.2; }}
-            .td-status {{ font-size:20px; color:var(--td-blue-text); white-space:nowrap; }}
-            .td-lesson-row.present .td-status {{ color:var(--td-green-text); }}
-            .td-lesson-row.noshow .td-status {{ color:#ffaaa2; }}
-            .td-empty {{ color:var(--td-muted); font-size:20px; }}
-            .td-down {{ position:absolute; left:50%; bottom:-14px; transform:translateX(-50%); width:72px; height:72px; border-radius:999px; border:1px solid var(--td-line); background:#2d2d2b; display:grid; place-items:center; font-size:36px; }}
-            .td-stack {{ display:grid; gap:20px; }}
-            .td-action {{ display:flex; align-items:center; gap:16px; width:100%; min-height:74px; padding:0 28px; border:1px solid #666761; border-radius:12px; color:#f4f1e8; font-size:25px; font-weight:750; margin-bottom:10px; }}
-            .td-action i {{ color:#aaa69d; font-size:24px; width:28px; }}
-            .td-pay-row {{ display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--td-line); padding:12px 0; color:#d7d3ca; font-size:22px; }}
+            .td-shell {{ display:grid; grid-template-columns:240px 1fr; grid-template-rows:56px 1fr; min-height:100vh; background:var(--td-bg); }}
+            .td-topbar {{ grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:var(--td-surface); border-bottom:1px solid var(--td-line); }}
+            .td-brand {{ display:flex; align-items:center; gap:10px; font-size:18px; font-weight:500; }}
+            .td-mark {{ width:32px; height:32px; display:grid; place-items:center; border-radius:8px; background:var(--td-blue-soft); color:var(--td-blue); font-size:18px; }}
+            .td-top-actions {{ display:flex; align-items:center; gap:10px; }}
+            .td-role {{ display:inline-flex; gap:6px; align-items:center; padding:6px 10px; border:1px solid var(--td-line); border-radius:999px; color:var(--td-muted); font-size:13px; }}
+            .td-avatar {{ width:32px; height:32px; border-radius:999px; display:grid; place-items:center; background:var(--td-blue); color:white; font-size:12px; font-weight:500; }}
+            .td-more {{ width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--td-gray-soft); color:var(--td-muted); font-size:18px; }}
+            .td-sidebar {{ background:var(--td-sidebar); border-right:1px solid var(--td-line); padding:18px 0; }}
+            .td-nav-section {{ padding:12px 18px 6px; color:var(--td-faint); font-size:11px; letter-spacing:.05em; text-transform:uppercase; font-weight:500; }}
+            .td-nav-item {{ display:flex; align-items:center; gap:10px; min-height:38px; padding:0 18px; color:var(--td-muted); font-size:14px; font-weight:400; }}
+            .td-nav-item i {{ width:18px; font-size:18px; color:var(--td-muted); }}
+            .td-nav-item.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
+            .td-nav-item.active i {{ color:var(--td-blue); }}
+            .nav-badge {{ margin-left:auto; display:inline-grid; place-items:center; min-width:20px; height:20px; padding:0 6px; border-radius:999px; background:var(--td-red-soft); color:var(--td-red); font-size:11px; font-weight:500; }}
+            .td-new-badge {{ margin-left:auto; border-radius:999px; padding:1px 6px; background:var(--td-green-soft); color:var(--td-green); font-size:11px; font-weight:500; }}
+            .td-main {{ padding:22px 24px 42px; overflow:auto; }}
+            .td-greeting {{ display:flex; align-items:baseline; gap:12px; margin-bottom:18px; }}
+            .td-greeting h1 {{ margin:0; font-size:22px; line-height:1.25; font-weight:500; }}
+            .td-greeting span {{ color:var(--td-muted); font-size:14px; }}
+            .td-kpis {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:18px; }}
+            .td-kpi {{ background:var(--td-surface); border:1px solid var(--td-line); border-radius:var(--td-radius); padding:16px 18px; min-height:96px; }}
+            .td-kpi-label {{ color:var(--td-muted); font-size:13px; margin-bottom:6px; }}
+            .td-kpi-value {{ font-size:26px; line-height:1; font-weight:500; }}
+            .td-kpi-sub {{ margin-top:6px; color:var(--td-faint); font-size:12px; }}
+            .green {{ color:var(--td-green); }} .gold {{ color:var(--td-gold); }}
+            .td-layout {{ display:grid; grid-template-columns:minmax(430px,1fr) minmax(320px,.85fr); gap:16px; align-items:start; }}
+            .td-card {{ background:var(--td-surface); border:1px solid var(--td-line); border-radius:var(--td-radius); padding:18px; }}
+            .td-card h2 {{ margin:0 0 14px; font-size:16px; color:var(--td-text); font-weight:500; }}
+            .td-records {{ min-height:420px; position:relative; }}
+            .td-lesson-row {{ display:grid; grid-template-columns:56px 1fr auto; gap:10px; align-items:center; padding:11px 12px; margin-bottom:8px; border-radius:10px; color:var(--td-text); border:1px solid transparent; }}
+            .td-lesson-row.present {{ background:var(--td-green-soft); border-color:#c9efd5; }}
+            .td-lesson-row.scheduled {{ background:var(--td-blue-soft); border-color:#cfe1ff; }}
+            .td-lesson-row.noshow {{ background:var(--td-red-soft); border-color:#ffd0cc; }}
+            .td-lesson-row.cancelled {{ background:var(--td-gray-soft); border-color:var(--td-line); }}
+            .td-date {{ color:var(--td-muted); font-size:14px; font-weight:500; }}
+            .td-student {{ font-size:15px; font-weight:500; line-height:1.25; }}
+            .td-meta {{ color:var(--td-muted); font-size:13px; line-height:1.3; }}
+            .td-status {{ font-size:13px; color:var(--td-blue); white-space:nowrap; font-weight:500; }}
+            .td-lesson-row.present .td-status {{ color:var(--td-green); }}
+            .td-lesson-row.noshow .td-status {{ color:var(--td-red); }}
+            .td-empty {{ color:var(--td-muted); font-size:14px; }}
+            .td-down {{ position:absolute; left:50%; bottom:-18px; transform:translateX(-50%); width:44px; height:44px; border-radius:999px; border:1px solid var(--td-line); background:white; display:grid; place-items:center; font-size:22px; color:var(--td-muted); }}
+            .td-stack {{ display:grid; gap:16px; }}
+            .td-action {{ display:flex; align-items:center; gap:12px; width:100%; min-height:48px; padding:0 14px; border:1px solid var(--td-line-strong); border-radius:10px; color:var(--td-text); font-size:15px; font-weight:400; margin-bottom:8px; }}
+            .td-action i {{ color:var(--td-muted); font-size:18px; width:20px; }}
+            .td-pay-row {{ display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--td-line); padding:9px 0; color:var(--td-muted); font-size:14px; }}
             .td-pay-row:last-child {{ border-bottom:0; }}
-            .td-pay-row strong {{ color:#f6f2ea; font-size:23px; }}
-            .td-pay-row strong.green {{ color:var(--td-green-text); }}
+            .td-pay-row strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
+            .td-pay-row strong.green {{ color:var(--td-green); }}
             .td-pay-row strong.gold {{ color:var(--td-gold); }}
+            .schedule-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }}
+            .schedule-title h1 {{ margin:0 0 4px; font-size:22px; font-weight:500; }}
+            .schedule-title p {{ margin:0; color:var(--td-muted); font-size:13px; }}
+            .schedule-controls {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
+            .schedule-controls a, .schedule-controls button {{ border:1px solid var(--td-line); border-radius:8px; background:white; padding:7px 10px; color:var(--td-text); font:inherit; font-size:13px; }}
+            .schedule-controls input {{ border:1px solid var(--td-line); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px; }}
+            .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(128px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:hidden; }}
+            .calendar-day {{ min-height:520px; background:white; padding:10px; }}
+            .calendar-day.today {{ background:#fbfdff; }}
+            .calendar-day-head {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; color:var(--td-muted); font-size:12px; }}
+            .calendar-day-head strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
+            .calendar-event {{ border:1px solid var(--td-line); border-left:3px solid var(--td-blue); border-radius:10px; padding:9px; margin-bottom:8px; background:#fbfcff; }}
+            .calendar-event.present {{ border-left-color:var(--td-green); background:var(--td-green-soft); }}
+            .calendar-event.noshow {{ border-left-color:var(--td-red); background:var(--td-red-soft); }}
+            .calendar-event.cancelled {{ border-left-color:var(--td-faint); background:var(--td-gray-soft); }}
+            .event-time {{ font-size:12px; color:var(--td-muted); margin-bottom:3px; }}
+            .event-student {{ font-size:14px; font-weight:500; margin-bottom:4px; }}
+            .event-line {{ font-size:12px; color:var(--td-muted); line-height:1.35; margin-top:3px; }}
+            .event-status {{ display:inline-flex; border-radius:999px; padding:1px 6px; background:white; color:var(--td-blue); font-size:11px; font-weight:500; margin-top:6px; }}
             @media (max-width:900px) {{
-                .td-shell {{ grid-template-columns:76px 1fr; }}
+                .td-shell {{ grid-template-columns:64px 1fr; }}
                 .td-brand span, .td-nav-item span, .td-nav-section, .td-new-badge, .nav-badge {{ display:none; }}
                 .td-nav-item {{ justify-content:center; padding:0; }}
-                .td-main {{ padding:22px 18px; }}
+                .td-main {{ padding:16px; }}
                 .td-layout, .td-kpis {{ grid-template-columns:1fr; }}
+                .calendar-grid {{ grid-template-columns:1fr; }}
+                .calendar-day {{ min-height:auto; }}
             }}
         </style>
     </head>
@@ -767,7 +797,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html):
                 <div class="td-brand"><span class="td-mark"><i class="ti ti-music"></i></span><span>{HSTUDIO_APP_NAME}</span></div>
                 <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> Teacher</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
             </header>
-            <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages)}</aside>
+            <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages, active)}</aside>
             <main class="td-main">{content_html}</main>
         </div>
     </body>
@@ -4073,6 +4103,14 @@ def teacher_dashboard():
     today_obj = date.today()
     today = today_obj.strftime("%Y-%m-%d")
     selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
+    view = request.args.get("view", "home")
+    selected_week = request.args.get("week")
+    if selected_week:
+        week_start = datetime.strptime(selected_week, "%Y-%m-%d").date()
+    else:
+        week_start = today_obj - timedelta(days=today_obj.weekday())
+    week_end = week_start + timedelta(days=6)
+
     month_year = int(selected_month[:4])
     month_num = int(selected_month[5:7])
     month_start = date(month_year, month_num, 1)
@@ -4084,7 +4122,17 @@ def teacher_dashboard():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status, c.display_color
+    SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
+        c.display_color,
+        COALESCE((
+            SELECT l.homework
+            FROM lessons l
+            WHERE l.student_name = s.student_name
+            AND l.lesson_date <= s.lesson_date
+            ORDER BY l.lesson_date DESC, l.id DESC
+            LIMIT 1
+        ), '') AS homework
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     WHERE s.teacher = ?
@@ -4092,6 +4140,27 @@ def teacher_dashboard():
     ORDER BY s.lesson_date, s.lesson_time
     """, (teacher_name, selected_month + "%"))
     lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
+        c.display_color,
+        COALESCE((
+            SELECT l.homework
+            FROM lessons l
+            WHERE l.student_name = s.student_name
+            AND l.lesson_date <= s.lesson_date
+            ORDER BY l.lesson_date DESC, l.id DESC
+            LIMIT 1
+        ), '') AS homework
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE s.teacher = ?
+    AND s.lesson_date >= ?
+    AND s.lesson_date <= ?
+    ORDER BY s.lesson_date, s.lesson_time
+    """, (teacher_name, week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
+    week_lessons = cursor.fetchall()
 
     cursor.execute("""
     SELECT
@@ -4117,7 +4186,7 @@ def teacher_dashboard():
     pending_count = unread_messages
     today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
 
-    def zh_status(status):
+    def status_label(status):
         key = hstudio_status_key(status)
         if key == "present":
             return "Present"
@@ -4127,24 +4196,78 @@ def teacher_dashboard():
             return "Cancelled"
         return "Scheduled"
 
-    lesson_records_html = ""
-    for lesson in lessons[:6]:
+    def lesson_row(lesson):
         key = hstudio_status_key(lesson[5])
-        lesson_records_html += f"""
+        return f"""
         <a class="td-lesson-row {key}" href="/add_lesson/{lesson[3]}">
             <div class="td-date">{hstudio_date_short(lesson[1])}</div>
             <div>
                 <div class="td-student">{escape(lesson[3] or '-')}</div>
                 <div class="td-meta">{lesson[2] or '-'} · {escape(lesson[4] or '-')}</div>
             </div>
-            <div class="td-status">{zh_status(lesson[5])}</div>
+            <div class="td-status">{status_label(lesson[5])}</div>
         </a>
         """
-    if not lesson_records_html:
-        lesson_records_html = "<div class='td-empty'>No lesson records this month.</div>"
+
+    def calendar_event(lesson):
+        key = hstudio_status_key(lesson[5])
+        homework = (lesson[7] or "No homework assigned").strip()
+        return f"""
+        <a class="calendar-event {key}" href="/add_lesson/{lesson[3]}">
+            <div class="event-time">{lesson[2] or '-'}</div>
+            <div class="event-student">{escape(lesson[3] or '-')}</div>
+            <div class="event-line">Room: {escape(lesson[4] or '-')}</div>
+            <div class="event-line">Attendance: {status_label(lesson[5])}</div>
+            <div class="event-line">Homework: {escape(homework[:90])}</div>
+            <span class="event-status">{status_label(lesson[5])}</span>
+        </a>
+        """
+
+    if view in ("schedule", "week"):
+        by_date = {}
+        for lesson in week_lessons:
+            by_date.setdefault(lesson[1], []).append(lesson)
+        day_columns = ""
+        for offset in range(7):
+            current_day = week_start + timedelta(days=offset)
+            day_key = current_day.strftime("%Y-%m-%d")
+            day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+            if not day_events:
+                day_events = "<div class='event-line'>No lessons</div>"
+            day_columns += f"""
+            <section class="calendar-day {'today' if day_key == today else ''}">
+                <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
+                {day_events}
+            </section>
+            """
+        prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+        content = f"""
+            <div class="schedule-head">
+                <div class="schedule-title">
+                    <h1>My Schedule</h1>
+                    <p>Daily lessons, class time, attendance status, and homework.</p>
+                </div>
+                <div class="schedule-controls">
+                    <a href="/teacher_dashboard?view=schedule&week={prev_week}">Previous</a>
+                    <a href="/teacher_dashboard?view=schedule&week={next_week}">Next</a>
+                    <form method="GET" class="schedule-controls">
+                        <input type="hidden" name="view" value="schedule">
+                        <input type="date" name="week" value="{week_start.strftime('%Y-%m-%d')}">
+                        <button type="submit">View</button>
+                    </form>
+                </div>
+            </div>
+            <div class="calendar-grid">{day_columns}</div>
+        """
+        return hstudio_teacher_dark_shell(teacher_name or "Teacher", unread_messages, content, active="schedule")
+
+    today_html = "".join(lesson_row(lesson) for lesson in today_lessons)
+    if not today_html:
+        today_html = "<div class='td-empty'>No lessons scheduled today.</div>"
 
     rate_display = f"{hstudio_money_whole(teacher_rate)} / lesson" if teacher_rate else "Course rule"
-    note_student = lessons[0][3] if lessons else ""
+    note_student = today_lessons[0][3] if today_lessons else (lessons[0][3] if lessons else "")
     note_href = f"/add_lesson/{note_student}" if note_student else "/teacher_dashboard"
     content = f"""
         <div class="td-greeting">
@@ -4172,16 +4295,16 @@ def teacher_dashboard():
 
         <div class="td-layout">
             <section class="td-card td-records">
-                <h2>Lesson Records This Month</h2>
-                {lesson_records_html}
-                <a class="td-down" href="/teacher_dashboard?view=week"><i class="ti ti-arrow-down"></i></a>
+                <h2>Today</h2>
+                {today_html}
+                <a class="td-down" href="/teacher_dashboard?view=schedule"><i class="ti ti-arrow-down"></i></a>
             </section>
             <div class="td-stack">
                 <section class="td-card">
                     <h2>Quick Actions</h2>
                     <a class="td-action" href="{note_href}"><i class="ti ti-notes"></i>Write Lesson Notes</a>
                     <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>Request a Sub</a>
-                    <a class="td-action" href="/teacher_dashboard?view=week"><i class="ti ti-calendar"></i>View This Week</a>
+                    <a class="td-action" href="/teacher_dashboard?view=schedule"><i class="ti ti-calendar"></i>View My Schedule</a>
                 </section>
                 <section class="td-card">
                     <h2>Payroll Summary · {month_start.strftime("%B")}</h2>
@@ -4193,7 +4316,7 @@ def teacher_dashboard():
             </div>
         </div>
     """
-    return hstudio_teacher_dark_shell(teacher_name or "Teacher", unread_messages, content)
+    return hstudio_teacher_dark_shell(teacher_name or "Teacher", unread_messages, content, active="home")
 
 @app.route("/teacher_login", methods=["GET", "POST"])
 def teacher_login():
