@@ -726,7 +726,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .td-nav-item.active i {{ color:var(--td-blue); }}
             .nav-badge {{ margin-left:auto; display:inline-grid; place-items:center; min-width:20px; height:20px; padding:0 6px; border-radius:999px; background:var(--td-red-soft); color:var(--td-red); font-size:11px; font-weight:500; }}
             .td-new-badge {{ margin-left:auto; border-radius:999px; padding:1px 6px; background:var(--td-green-soft); color:var(--td-green); font-size:11px; font-weight:500; }}
-            .td-main {{ padding:22px 24px 42px; overflow:auto; }}
+            .td-main {{ padding:20px 24px 40px; overflow:auto; }}
             .td-greeting {{ display:flex; align-items:baseline; gap:12px; margin-bottom:18px; }}
             .td-greeting h1 {{ margin:0; font-size:22px; line-height:1.25; font-weight:500; }}
             .td-greeting span {{ color:var(--td-muted); font-size:14px; }}
@@ -767,19 +767,23 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .schedule-controls {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
             .schedule-controls a, .schedule-controls button {{ border:1px solid var(--td-line); border-radius:8px; background:white; padding:7px 10px; color:var(--td-text); font:inherit; font-size:13px; }}
             .schedule-controls input {{ border:1px solid var(--td-line); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px; }}
-            .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(128px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:hidden; }}
-            .calendar-day {{ min-height:520px; background:white; padding:10px; }}
+            .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:hidden; }}
+            .calendar-day {{ min-height:560px; background:white; padding:10px; min-width:0; }}
             .calendar-day.today {{ background:#fbfdff; }}
-            .calendar-day-head {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; color:var(--td-muted); font-size:12px; }}
+            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; min-height:24px; margin-bottom:10px; color:var(--td-muted); font-size:12px; }}
             .calendar-day-head strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
-            .calendar-event {{ border:1px solid var(--td-line); border-left:3px solid var(--td-blue); border-radius:10px; padding:9px; margin-bottom:8px; background:#fbfcff; }}
+            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:3px solid var(--td-blue); border-radius:8px; padding:8px 9px; margin-bottom:8px; background:#fbfcff; min-width:0; overflow:hidden; }}
             .calendar-event.present {{ border-left-color:var(--td-green); background:var(--td-green-soft); }}
             .calendar-event.noshow {{ border-left-color:var(--td-red); background:var(--td-red-soft); }}
             .calendar-event.cancelled {{ border-left-color:var(--td-faint); background:var(--td-gray-soft); }}
-            .event-time {{ font-size:12px; color:var(--td-muted); margin-bottom:3px; }}
-            .event-student {{ font-size:14px; font-weight:500; margin-bottom:4px; }}
-            .event-line {{ font-size:12px; color:var(--td-muted); line-height:1.35; margin-top:3px; }}
-            .event-status {{ display:inline-flex; border-radius:999px; padding:1px 6px; background:white; color:var(--td-blue); font-size:11px; font-weight:500; margin-top:6px; }}
+            .event-top {{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }}
+            .event-time {{ flex:0 0 auto; font-size:12px; color:var(--td-muted); line-height:1.2; }}
+            .event-student {{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:500; line-height:1.25; margin-bottom:5px; }}
+            .event-line {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--td-muted); line-height:1.35; margin-top:2px; }}
+            .event-status {{ flex:0 0 auto; display:inline-flex; border-radius:999px; padding:1px 6px; background:white; color:var(--td-blue); font-size:11px; font-weight:500; line-height:1.4; }}
+            .calendar-event.present .event-status {{ color:var(--td-green); }}
+            .calendar-event.noshow .event-status {{ color:var(--td-red); }}
+            .calendar-empty {{ color:var(--td-faint); font-size:13px; padding:8px 2px; }}
             @media (max-width:900px) {{
                 .td-shell {{ grid-template-columns:64px 1fr; }}
                 .td-brand span, .td-nav-item span, .td-nav-section, .td-new-badge, .nav-badge {{ display:none; }}
@@ -4214,12 +4218,13 @@ def teacher_dashboard():
         homework = (lesson[7] or "No homework assigned").strip()
         return f"""
         <a class="calendar-event {key}" href="/add_lesson/{lesson[3]}">
-            <div class="event-time">{lesson[2] or '-'}</div>
+            <div class="event-top">
+                <span class="event-time">{lesson[2] or '-'}</span>
+                <span class="event-status">{status_label(lesson[5])}</span>
+            </div>
             <div class="event-student">{escape(lesson[3] or '-')}</div>
-            <div class="event-line">Room: {escape(lesson[4] or '-')}</div>
-            <div class="event-line">Attendance: {status_label(lesson[5])}</div>
-            <div class="event-line">Homework: {escape(homework[:90])}</div>
-            <span class="event-status">{status_label(lesson[5])}</span>
+            <div class="event-line">Room: {escape(lesson[4] or '-')} · Attendance: {status_label(lesson[5])}</div>
+            <div class="event-line">HW: {escape(homework[:72])}</div>
         </a>
         """
 
@@ -4233,7 +4238,7 @@ def teacher_dashboard():
             day_key = current_day.strftime("%Y-%m-%d")
             day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
             if not day_events:
-                day_events = "<div class='event-line'>No lessons</div>"
+                day_events = "<div class='calendar-empty'>No lessons</div>"
             day_columns += f"""
             <section class="calendar-day {'today' if day_key == today else ''}">
                 <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
