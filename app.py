@@ -14363,6 +14363,21 @@ def ensure_v17_schema():
     """)
 
     upgrades = [
+        ("student_name", "student_name TEXT"),
+        ("parent_name", "parent_name TEXT"),
+        ("parent_email", "parent_email TEXT"),
+        ("phone", "phone TEXT"),
+        ("age", "age TEXT"),
+        ("instrument", "instrument TEXT"),
+        ("source", "source TEXT"),
+        ("status", "status TEXT DEFAULT 'Inquiry'"),
+        ("trial_date", "trial_date TEXT"),
+        ("trial_time", "trial_time TEXT"),
+        ("trial_teacher", "trial_teacher TEXT"),
+        ("notes", "notes TEXT"),
+        ("converted_student_name", "converted_student_name TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
         ("program_interest", "program_interest TEXT"),
         ("preferred_days", "preferred_days TEXT"),
         ("preferred_times", "preferred_times TEXT"),
@@ -14380,6 +14395,15 @@ def ensure_v17_schema():
     ]
     for column_name, column_sql in upgrades:
         v35_add_column_if_missing(cursor, "inquiries", column_name, column_sql)
+
+    now = v35_now()
+    cursor.execute("UPDATE inquiries SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
+    cursor.execute("UPDATE inquiries SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''")
+    cursor.execute("UPDATE inquiries SET status = 'Inquiry' WHERE status IS NULL OR status = ''")
+    cursor.execute("UPDATE inquiries SET trial_status = 'Needs Review' WHERE trial_status IS NULL OR trial_status = ''")
+    cursor.execute("UPDATE inquiries SET lead_temperature = 'Warm' WHERE lead_temperature IS NULL OR lead_temperature = ''")
+    cursor.execute("UPDATE inquiries SET follow_up_status = 'New' WHERE follow_up_status IS NULL OR follow_up_status = ''")
+    cursor.execute("UPDATE inquiries SET owner_verified = 0 WHERE owner_verified IS NULL")
 
     conn.commit()
     conn.close()
@@ -14766,7 +14790,7 @@ def add_inquiry():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM teachers ORDER BY name")
+    cursor.execute("SELECT teacher_name AS name FROM teachers ORDER BY teacher_name")
     teachers = cursor.fetchall()
     conn.close()
 
@@ -14844,7 +14868,7 @@ def inquiry_detail(inquiry_id):
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
     inquiry = cursor.fetchone()
-    cursor.execute("SELECT name FROM teachers ORDER BY name")
+    cursor.execute("SELECT teacher_name AS name FROM teachers ORDER BY teacher_name")
     teachers = cursor.fetchall()
     conn.close()
 
