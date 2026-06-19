@@ -14578,10 +14578,7 @@ def v35_public_trial_form(error="", values=None):
                         <label>Phone<input name="phone" value="{val('phone')}"></label>
                         <label>Program Interest<select name="program_interest">{''.join(program_options)}</select></label>
                     </div>
-                    <div class="grid">
-                        <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
-                        <label>Preferred Location<input name="trial_location" placeholder="In studio / online / other" value="{val('trial_location')}"></label>
-                    </div>
+                    <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
                     <div class="slot-title">Preferred Date / Time 1 *</div>
                     <div class="grid">
                         <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
