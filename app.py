@@ -3122,6 +3122,8 @@ H-Music
 @app.route("/calendar")
 def calendar():
     ensure_v321_schema()
+    if not require_owner():
+        return redirect("/owner_login")
 
     selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
     selected_teacher = (request.args.get("teacher") or "").strip()
@@ -3817,6 +3819,11 @@ def calendar():
           showSuccess(`Moved to ${{movedTo}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}. Teacher notified.`);
           setTimeout(() => location.reload(), 1800);
         }} else {{
+          if ((d.error || '').toLowerCase().includes('permission') || (d.error || '').toLowerCase().includes('logged')) {{
+            alert('Please log in as Owner again before moving lessons.');
+            window.location.href = '/owner_login';
+            return;
+          }}
           alert('Error: ' + d.error);
         }}
       }})
