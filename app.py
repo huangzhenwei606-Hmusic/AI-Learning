@@ -3285,6 +3285,24 @@ def calendar():
             return "Excused"
         return "Scheduled"
 
+    def owner_status_options(current_status):
+        options = [
+            ("scheduled", "Scheduled"),
+            ("present", "Present"),
+            ("no_show", "No Show"),
+            ("cancel_3h", "Cancel < 3h"),
+            ("cancel_12h", "Cancel < 12h"),
+            ("cancel_24h", "Cancel < 24h"),
+            ("excused_24h", "Cancel > 24h"),
+            ("teacher_cancelled", "Teacher Cancel"),
+            ("makeup", "Makeup"),
+        ]
+        current_status = current_status or "scheduled"
+        return "".join(
+            f'<option value="{value}" {"selected" if value == current_status else ""}>{label}</option>'
+            for value, label in options
+        )
+
     def warning_pill(lessons_left):
         try:
             left = int(float(lessons_left or 0))
@@ -3356,6 +3374,12 @@ def calendar():
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
                     {warning}
+                    <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
+                        <input type="hidden" name="schedule_id" value="{event[0]}">
+                        <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
+                        <select name="status" aria-label="Attendance status">{owner_status_options(event_status)}</select>
+                        <button type="submit">Save</button>
+                    </form>
                 </div>
                 """
             for slot in slots_by_date.get(date_key, []):
@@ -3530,6 +3554,14 @@ def calendar():
             .ev-status-badge:before{{content:"";width:6px;height:6px;border-radius:50%;
                                      background:currentColor;filter:brightness(0) invert(1);
                                      opacity:.96}}
+            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 34px;
+                                gap:4px;margin-top:4px;align-items:center}}
+            .owner-status-form select,.owner-status-form button{{height:22px;border:1px solid rgba(0,0,0,.16);
+                                border-radius:6px;background:rgba(255,255,255,.92);
+                                font-family:inherit;font-size:9px;color:#1C1C1E;
+                                min-width:0;padding:1px 4px}}
+            .owner-status-form button{{background:#185FA5;color:#fff;border-color:#185FA5;
+                                font-weight:800;cursor:pointer;padding:0 4px}}
             /* instrument colors */
             .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
             .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
@@ -3777,6 +3809,10 @@ def calendar():
 
     document.querySelectorAll('.ev[data-id]').forEach(el => {{
       el.addEventListener('dragstart', e => {{
+        if (e.target.closest('.owner-status-form')) {{
+          e.preventDefault();
+          return;
+        }}
         dragId      = el.dataset.id;
         dragStudent = el.dataset.student;
         dragTeacher = el.dataset.teacher;
@@ -5969,26 +6005,36 @@ def parent_cancel():
 @app.route("/update_lesson_status", methods=["POST"])
 def update_lesson_status():
 
-    if "teacher_name" not in session:
+    if not (require_owner() or require_teacher()):
         return redirect("/teacher_login")
 
     schedule_id = request.form.get("schedule_id")
     status = request.form.get("status")
     return_to = request.form.get("return_to") or "/teacher_dashboard"
-    if not return_to.startswith("/teacher_dashboard"):
-        return_to = "/teacher_dashboard"
+    if require_owner():
+        if not return_to.startswith("/calendar"):
+            return_to = "/calendar"
+        actor = "owner"
+        back_link = "/calendar"
+        back_label = "Back to Calendar"
+    else:
+        if not return_to.startswith("/teacher_dashboard"):
+            return_to = "/teacher_dashboard"
+        actor = f"teacher:{session.get('teacher_name')}"
+        back_link = "/teacher_dashboard"
+        back_label = "Back to Teacher Dashboard"
 
     result = apply_lesson_status(
         schedule_id,
         status,
-        actor=f"teacher:{session.get('teacher_name')}"
+        actor=actor
     )
 
     if not result["ok"]:
         return f"""
         <h1>Lesson Status Not Updated</h1>
         <p>{result["error"]}</p>
-        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        <p><a href="{back_link}">{back_label}</a></p>
         """
 
     return redirect(return_to)
