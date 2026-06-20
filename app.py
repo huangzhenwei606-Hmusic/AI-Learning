@@ -3126,6 +3126,7 @@ def calendar():
     selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
     selected_teacher = (request.args.get("teacher") or "").strip()
     selected_student = (request.args.get("student") or "").strip()
+    selected_status = (request.args.get("status_filter") or "").strip()
 
     try:
         month_start = datetime.strptime(selected_month + "-01", "%Y-%m-%d").date()
@@ -3170,6 +3171,17 @@ def calendar():
         where_clauses.append("s.student_name = ?")
         params.append(selected_student)
 
+    if selected_status:
+        if selected_status == "cancelled":
+            where_clauses.append("(s.status = ? OR s.status LIKE 'cancel_%')")
+            params.append("cancelled")
+        elif selected_status == "excused":
+            where_clauses.append("(s.status = ? OR s.status = 'excused_24h' OR s.status = 'teacher_cancelled')")
+            params.append("excused")
+        else:
+            where_clauses.append("COALESCE(s.status, 'scheduled') = ?")
+            params.append(selected_status)
+
     where_sql = " AND ".join(where_clauses)
 
     cursor.execute("""
@@ -3196,37 +3208,107 @@ def calendar():
     """, params)
 
     schedules = cursor.fetchall()
+
+    slot_params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
+    slot_filter = ""
+    if selected_teacher:
+        slot_filter = " AND teacher = ?"
+        slot_params.append(selected_teacher)
+    cursor.execute(f"""
+    SELECT id, teacher, slot_date, slot_time, COALESCE(classroom, ''), COALESCE(notes, '')
+    FROM teacher_open_slots
+    WHERE active = 1
+    AND slot_date BETWEEN ? AND ?
+    {slot_filter}
+    ORDER BY slot_date, slot_time
+    """, slot_params)
+    open_slots = cursor.fetchall()
     conn.close()
 
     teacher_options = '<option value="">All Teachers</option>'
+    teacher_picker_options = '<option value="">Choose teacher</option>'
     for t in teacher_options_data:
         selected = "selected" if t[0] == selected_teacher else ""
         teacher_options += f'<option value="{escape(str(t[0]))}" {selected}>{escape(str(t[0]))}</option>'
+        teacher_picker_options += f'<option value="{escape(str(t[0]))}" {selected}>{escape(str(t[0]))}</option>'
 
     student_options = '<option value="">All Students</option>'
+    student_picker_options = '<option value="">Choose student</option>'
     for s in student_options_data:
         selected = "selected" if s[0] == selected_student else ""
         student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
+        student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
 
     events_by_date = {}
     for item in schedules:
         events_by_date.setdefault(item[1], []).append(item)
 
-    status_class = {
-        "scheduled": "scheduled",
-        "present": "present",
-        "no_show": "no-show",
-        "cancelled": "cancelled",
-        "cancel_3h": "cancelled",
-        "cancel_12h": "cancelled",
-        "cancel_24h": "cancelled",
-        "excused_24h": "excused",
-        "teacher_cancelled": "excused",
-        "makeup": "makeup",
-    }
+    slots_by_date = {}
+    for slot in open_slots:
+        slots_by_date.setdefault(slot[2], []).append(slot)
+
+    def owner_time_range(time_text, duration):
+        return escape(format_lesson_time_range(time_text, duration))
+
+    def owner_instr_class(course_name, package_type=""):
+        name = f"{course_name or ''} {package_type or ''}".lower()
+        if "piano" in name:
+            return "ic-piano"
+        if "guitar" in name:
+            return "ic-guitar"
+        if "violin" in name:
+            return "ic-violin"
+        if "voice" in name or "vocal" in name:
+            return "ic-voice"
+        if "drum" in name:
+            return "ic-drums"
+        if "ukulele" in name:
+            return "ic-ukulele"
+        return "ic-default"
+
+    def owner_status_dot(status):
+        status = status or "scheduled"
+        if status == "present":
+            return "sd-present"
+        if status in ("no_show", "no-show"):
+            return "sd-noshow"
+        if status.startswith("cancel"):
+            return "sd-cancelled"
+        if status in ("excused_24h", "excused", "teacher_cancelled"):
+            return "sd-excused"
+        return "sd-scheduled"
+
+    def warning_pill(lessons_left):
+        try:
+            left = int(float(lessons_left or 0))
+        except (TypeError, ValueError):
+            return ""
+        if left <= 0:
+            return '<span class="last-pill">Last!</span>'
+        if left == 1:
+            return '<span class="warn-pill">1 left</span>'
+        if left == 2:
+            return '<span class="warn-pill">2 left</span>'
+        return ""
+
+    def open_slot_label(slot):
+        start_label = format_display_time(slot[3])
+        end_time = ""
+        notes = slot[5] or ""
+        if "end_time=" in notes:
+            end_time = notes.split("end_time=", 1)[1].split("|", 1)[0].strip()
+        if end_time:
+            return f"{start_label}-{format_display_time(end_time)}"
+        return start_label
 
     month_label = month_start.strftime("%B %Y")
     calendar_weeks = calendar_lib.Calendar(firstweekday=0).monthdatescalendar(month_start.year, month_start.month)
+    weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weekday_header = "".join(
+        f'<th class="today-th">{name}</th>' if i == date.today().weekday() and month_start.strftime("%Y-%m") == date.today().strftime("%Y-%m")
+        else f"<th>{name}</th>"
+        for i, name in enumerate(weekday_names)
+    )
 
     calendar_html = ""
     for week in calendar_weeks:
@@ -3234,23 +3316,37 @@ def calendar():
         for day_obj in week:
             date_key = day_obj.strftime("%Y-%m-%d")
             muted = "muted-day" if day_obj.month != month_start.month else ""
-            today_class = "today" if day_obj == date.today() else ""
+            today_class = "today-cell" if day_obj == date.today() else ""
             event_cards = ""
             for event in events_by_date.get(date_key, []):
                 event_status = event[9] or "scheduled"
-                css_status = status_class.get(event_status, "scheduled")
-                event_color = event[10] or "#3b82f6"
-                event_style = f'style="border-left-color:{event_color};"' if css_status == "scheduled" else ""
+                course_name = event[11] or event[8] or ""
+                instrument_class = owner_instr_class(course_name, event[8])
+                dot_class = owner_status_dot(event_status)
+                time_range = owner_time_range(event[2], event[12])
+                warning = warning_pill(event[13])
                 event_cards += f"""
-                <div class="event {css_status}" {event_style}>
-                    <div class="event-main">{escape(str(event[2] or ""))} {escape(str(event[3] or ""))}</div>
-                    <div class="event-sub">{escape(str(event[4] or ""))} · {escape(str(event[5] or ""))}</div>
-                    <div class="event-status">{escape(str(event_status))}</div>
+                <div class="ev {instrument_class}" draggable="true"
+                     data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
+                     data-time="{escape(str(event[2] or ''))}"
+                     data-student="{escape(str(event[3] or ''))}"
+                     data-teacher="{escape(str(event[4] or ''))}">
+                    <span class="ev-name"><span class="ev-status-dot {dot_class}"></span>{escape(str(event[3] or ""))}</span>
+                    <span class="ev-time">{time_range}</span>
+                    <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
+                    {warning}
                 </div>
                 """
+            for slot in slots_by_date.get(date_key, []):
+                event_cards += f"""
+                <div class="open-slot">
+                    Open {escape(open_slot_label(slot))} · {escape(str(slot[1] or ""))}
+                </div>
+                """
+            day_badge = "today-badge" if day_obj == date.today() else ""
             calendar_html += f"""
-            <td class="{muted} {today_class}">
-                <div class="day-number">{day_obj.day}</div>
+            <td class="{muted} {today_class}" data-date="{date_key}">
+                <button type="button" class="day-num {day_badge}" onclick="openPop('{day_obj.day}', '{date_key}', this); event.stopPropagation();">{day_obj.day}</button>
                 {event_cards}
             </td>
             """
@@ -3288,12 +3384,14 @@ def calendar():
     prev_query = urlencode({
         "month": prev_month,
         "teacher": selected_teacher,
-        "student": selected_student
+        "student": selected_student,
+        "status_filter": selected_status
     })
     next_query = urlencode({
         "month": next_month,
         "teacher": selected_teacher,
-        "student": selected_student
+        "student": selected_student,
+        "status_filter": selected_status
     })
 
     return f"""
@@ -3388,7 +3486,8 @@ def calendar():
             .day-num{{font-size:11px;color:var(--muted);display:inline-flex;
                       align-items:center;justify-content:center;
                       min-width:20px;height:20px;border-radius:50%;
-                      cursor:pointer;margin:0 2px 2px;font-weight:400}}
+                      cursor:pointer;margin:0 2px 2px;font-weight:400;
+                      border:0;background:transparent;font-family:inherit}}
             .day-num:hover{{background:var(--blue-bg);color:var(--blue)}}
             .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
@@ -3519,11 +3618,11 @@ def calendar():
         <select name="student" onchange="this.form.submit()">{student_options}</select>
         <select name="status_filter" onchange="this.form.submit()">
           <option value="">All Status</option>
-          <option value="scheduled" {"selected" if request.args.get("status_filter")=="scheduled" else ""}>Scheduled</option>
-          <option value="present"   {"selected" if request.args.get("status_filter")=="present"   else ""}>Present</option>
-          <option value="no_show"   {"selected" if request.args.get("status_filter")=="no_show"   else ""}>No Show</option>
-          <option value="cancelled" {"selected" if request.args.get("status_filter")=="cancelled" else ""}>Cancelled</option>
-          <option value="excused"   {"selected" if request.args.get("status_filter")=="excused"   else ""}>Excused</option>
+          <option value="scheduled" {"selected" if selected_status=="scheduled" else ""}>Scheduled</option>
+          <option value="present"   {"selected" if selected_status=="present"   else ""}>Present</option>
+          <option value="no_show"   {"selected" if selected_status=="no_show"   else ""}>No Show</option>
+          <option value="cancelled" {"selected" if selected_status=="cancelled" else ""}>Cancelled</option>
+          <option value="excused"   {"selected" if selected_status=="excused"   else ""}>Excused</option>
         </select>
         <span class="hint-text"><i class="ti ti-click" style="font-size:12px;vertical-align:-1px"></i> Click date to add</span>
       </form>
@@ -3566,8 +3665,7 @@ def calendar():
       <div class="cal-grid-wrap">
         <table class="cal-table" id="calTable">
           <thead><tr>
-            <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th>
-            <th class="today-th">Fri</th><th>Sat</th><th>Sun</th>
+            {weekday_header}
           </tr></thead>
           <tbody>{calendar_html}</tbody>
         </table>
@@ -3582,10 +3680,10 @@ def calendar():
         <span class="pop-close" onclick="closePop()"><i class="ti ti-x"></i></span>
       </div>
       <select class="pop-sel" id="popTeacher">
-        {teacher_options}
+        {teacher_picker_options}
       </select>
       <select class="pop-sel" id="popStudent">
-        {student_options}
+        {student_picker_options}
       </select>
       <select class="pop-sel" id="popRoom">
         <option>Room 1</option><option>Room 2</option><option>Room 3</option>
@@ -3702,6 +3800,7 @@ def calendar():
     function confirmReschedule() {{
       if (!pendingDrop) return;
       const scope = document.querySelector('[name=rscope]:checked').value;
+      const movedTo = pendingDrop.to;
       fetch('/reschedule_schedule', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
@@ -3715,7 +3814,7 @@ def calendar():
       .then(d => {{
         closeModal();
         if (d.ok) {{
-          showSuccess(`Moved to ${{pendingDrop.to}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}. Teacher notified.`);
+          showSuccess(`Moved to ${{movedTo}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}. Teacher notified.`);
           setTimeout(() => location.reload(), 1800);
         }} else {{
           alert('Error: ' + d.error);
@@ -4280,16 +4379,30 @@ def add_schedule():
 
     conn.close()
 
+    prefill_date = (request.args.get("prefill_date") or "").strip()
+    prefill_teacher = (request.args.get("prefill_teacher") or "").strip()
+    prefill_student = (request.args.get("prefill_student") or "").strip()
+    prefill_room = (request.args.get("prefill_room") or "").strip()
+    prefill_start = (request.args.get("prefill_start") or "").strip()
+    prefill_weekday = ""
+    if prefill_date:
+        try:
+            prefill_weekday = datetime.strptime(prefill_date, "%Y-%m-%d").strftime("%A")
+        except ValueError:
+            prefill_weekday = ""
+
     teacher_options = ""
     for teacher in teachers:
+        selected = "selected" if prefill_teacher and teacher[0] == prefill_teacher else ""
         teacher_options += f"""
-        <option value="{teacher[0]}">{teacher[0]}</option>
+        <option value="{teacher[0]}" {selected}>{teacher[0]}</option>
         """
 
     classroom_options = ""
     for classroom in classrooms:
+        selected = "selected" if prefill_room and classroom[0] == prefill_room else ""
         classroom_options += f"""
-        <option value="{classroom[0]}">{classroom[0]}</option>
+        <option value="{classroom[0]}" {selected}>{classroom[0]}</option>
         """
 
     course_options = ""
@@ -4306,14 +4419,14 @@ def add_schedule():
         course_options = '<option value="">No active course types found</option>'
 
     student_options = "".join([
-        f'<option value="{escape(s[0])}">{escape(s[0])}</option>'
+        f'<option value="{escape(s[0])}" {"selected" if prefill_student and s[0] == prefill_student else ""}>{escape(s[0])}</option>'
         for s in student_rows
     ]) or '<option value="">No students found</option>'
 
     back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
     teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
     teacher_student_mode_html = ""
-    existing_student_input = '<input name="student_name" required>'
+    existing_student_input = f'<input name="student_name" value="{escape(prefill_student)}" required>'
     new_student_request_html = ""
     submit_label = "Generate Schedule"
 
@@ -4468,17 +4581,17 @@ def add_schedule():
 
                 Day of Week:<br>
                 <select name="weekday">
-                    <option value="Monday">Monday</option>
-                    <option value="Tuesday">Tuesday</option>
-                    <option value="Wednesday">Wednesday</option>
-                    <option value="Thursday">Thursday</option>
-                    <option value="Friday">Friday</option>
-                    <option value="Saturday">Saturday</option>
-                    <option value="Sunday">Sunday</option>
+                    <option value="Monday" {"selected" if prefill_weekday=="Monday" else ""}>Monday</option>
+                    <option value="Tuesday" {"selected" if prefill_weekday=="Tuesday" else ""}>Tuesday</option>
+                    <option value="Wednesday" {"selected" if prefill_weekday=="Wednesday" else ""}>Wednesday</option>
+                    <option value="Thursday" {"selected" if prefill_weekday=="Thursday" else ""}>Thursday</option>
+                    <option value="Friday" {"selected" if prefill_weekday=="Friday" else ""}>Friday</option>
+                    <option value="Saturday" {"selected" if prefill_weekday=="Saturday" else ""}>Saturday</option>
+                    <option value="Sunday" {"selected" if prefill_weekday=="Sunday" else ""}>Sunday</option>
                 </select>
 
                 Time:<br>
-                <input type="time" name="lesson_time" required>
+                <input type="time" name="lesson_time" value="{escape(prefill_start)}" required>
 
                 Schedule Type:<br>
                 <select name="schedule_type">
@@ -4494,7 +4607,7 @@ def add_schedule():
                 </select>
 
                 Start Date:<br>
-                <input type="date" name="start_date" required>
+                <input type="date" name="start_date" value="{escape(prefill_date)}" required>
                 </div>
 
                 <button id="submit-button" type="submit">{submit_label}</button>
@@ -5023,14 +5136,7 @@ def teacher_dashboard():
         return "private-long"
 
     def teacher_time_range(time_text, duration):
-        start_minutes = minutes_from_time_text(time_text)
-        if start_minutes is None:
-            return time_text or ""
-        try:
-            minutes = int(float(duration or 30))
-        except (TypeError, ValueError):
-            minutes = 30
-        return f"{time_text_from_minutes(start_minutes)}-{time_text_from_minutes(start_minutes + minutes)}"
+        return format_lesson_time_range(time_text, duration)
 
     def _t_instr_class(name):
         n = (name or "").lower()
@@ -5076,6 +5182,21 @@ def teacher_dashboard():
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
     .calendar-event{border-left:4px solid var(--blue)!important}
+    .calendar-event{cursor:grab;user-select:none}
+    .calendar-event.dragging{opacity:.35}
+    .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
+    .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:2px 8px}
+    .calendar-day-head strong:hover{background:rgba(24,95,165,.14)}
+    .teacher-rs-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:9999}
+    .teacher-rs-overlay.show{display:flex}
+    .teacher-rs-modal{background:#fff;color:#172033;border-radius:14px;padding:20px;width:330px;box-shadow:0 18px 60px rgba(0,0,0,.28)}
+    .teacher-rs-modal h3{margin:0 0 6px;font-size:18px}
+    .teacher-rs-modal p{margin:0 0 14px;color:#667085;font-size:13px;line-height:1.45}
+    .teacher-rs-option{border:1px solid #D9DEE8;border-radius:10px;padding:10px;margin:8px 0;display:flex;gap:8px;cursor:pointer}
+    .teacher-rs-option.sel{border-color:var(--blue);background:var(--blue-bg)}
+    .teacher-rs-buttons{display:flex;gap:8px;margin-top:14px}
+    .teacher-rs-buttons button{flex:1;border:1px solid #D9DEE8;border-radius:10px;padding:9px 10px;font-weight:700;cursor:pointer}
+    .teacher-rs-ok{background:var(--blue);border-color:var(--blue)!important;color:white}
     </style>
     """
 
@@ -5085,7 +5206,11 @@ def teacher_dashboard():
         dot = _t_status_dot(lesson[5] or "scheduled")
         return f"""
         <div class="calendar-event {lesson_color_class(lesson)} {ic}"
-             style="border-left-width:3px">
+             draggable="true" style="border-left-width:3px"
+             data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
+             data-time="{escape(str(lesson[2] or ''))}"
+             data-student="{escape(str(lesson[3] or ''))}"
+             data-teacher="{escape(str(teacher_name or ''))}">
             <div class="event-top">
                 <span class="event-time">
                   <span class="t-ev-dot {dot}"></span>{time_range}
@@ -5121,8 +5246,8 @@ def teacher_dashboard():
                 if not day_events:
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
-                <section class="calendar-day {'today' if day_key == today else ''}">
-                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
+                <section class="calendar-day {'today' if day_key == today else ''}" data-date="{day_key}">
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
                     {day_events}
                 </section>
                 """
@@ -5151,8 +5276,8 @@ def teacher_dashboard():
                 if not day_events:
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
-                <section class="calendar-day {'today' if day_key == today else ''}">
-                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong>{hstudio_date_short(day_key)}</strong></div>
+                <section class="calendar-day {'today' if day_key == today else ''}" data-date="{day_key}">
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
                     {day_events}
                 </section>
                 """
@@ -5187,6 +5312,94 @@ def teacher_dashboard():
             </div>
             {TEACHER_CAL_CSS}
         <div class="calendar-grid">{day_columns}</div>
+        <div class="teacher-rs-overlay" id="teacherRsOverlay">
+            <div class="teacher-rs-modal">
+                <h3>Move lesson</h3>
+                <p id="teacherRsText">Choose how to apply this schedule change.</p>
+                <label class="teacher-rs-option sel" id="teacherOptOnce" onclick="teacherScope('once')">
+                    <input type="radio" name="teacher_scope" value="once" checked>
+                    <span><b>This lesson only</b><br><small>Move just this class.</small></span>
+                </label>
+                <label class="teacher-rs-option" id="teacherOptForward" onclick="teacherScope('forward')">
+                    <input type="radio" name="teacher_scope" value="forward">
+                    <span><b>This and all future lessons</b><br><small>Shift this lesson and future recurring lessons.</small></span>
+                </label>
+                <div class="teacher-rs-buttons">
+                    <button type="button" onclick="teacherCloseRs()">Cancel</button>
+                    <button type="button" class="teacher-rs-ok" onclick="teacherConfirmRs()">Confirm</button>
+                </div>
+            </div>
+        </div>
+        <script>
+        let teacherDrag = null;
+        function teacherAddOnDate(dateStr) {{
+            window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
+        }}
+        document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
+            card.addEventListener("dragstart", e => {{
+                teacherDrag = {{
+                    id: card.dataset.id,
+                    from: card.dataset.date,
+                    student: card.dataset.student
+                }};
+                card.classList.add("dragging");
+                e.dataTransfer.effectAllowed = "move";
+            }});
+            card.addEventListener("dragend", () => {{
+                card.classList.remove("dragging");
+                document.querySelectorAll(".calendar-day.drop-active").forEach(day => day.classList.remove("drop-active"));
+            }});
+        }});
+        document.querySelectorAll(".calendar-day[data-date]").forEach(day => {{
+            day.addEventListener("dragover", e => {{
+                if (!teacherDrag) return;
+                e.preventDefault();
+                day.classList.add("drop-active");
+            }});
+            day.addEventListener("dragleave", () => day.classList.remove("drop-active"));
+            day.addEventListener("drop", e => {{
+                e.preventDefault();
+                day.classList.remove("drop-active");
+                if (!teacherDrag || teacherDrag.from === day.dataset.date) return;
+                teacherDrag.to = day.dataset.date;
+                document.getElementById("teacherRsText").innerHTML = `Moving <b>${{teacherDrag.student}}</b><br>${{teacherDrag.from}} &rarr; ${{teacherDrag.to}}`;
+                teacherScope("once");
+                document.getElementById("teacherRsOverlay").classList.add("show");
+            }});
+        }});
+        function teacherScope(scope) {{
+            document.getElementById("teacherOptOnce").classList.toggle("sel", scope === "once");
+            document.getElementById("teacherOptForward").classList.toggle("sel", scope === "forward");
+            document.querySelector('[name="teacher_scope"][value="once"]').checked = scope === "once";
+            document.querySelector('[name="teacher_scope"][value="forward"]').checked = scope === "forward";
+        }}
+        function teacherCloseRs() {{
+            document.getElementById("teacherRsOverlay").classList.remove("show");
+            teacherDrag = null;
+        }}
+        function teacherConfirmRs() {{
+            if (!teacherDrag) return;
+            const scope = document.querySelector('[name="teacher_scope"]:checked').value;
+            fetch("/reschedule_schedule", {{
+                method: "POST",
+                headers: {{"Content-Type": "application/json"}},
+                body: JSON.stringify({{
+                    schedule_id: teacherDrag.id,
+                    new_date: teacherDrag.to,
+                    scope
+                }})
+            }})
+            .then(r => r.json())
+            .then(data => {{
+                if (!data.ok) {{
+                    alert(data.error || "Could not move lesson.");
+                    return;
+                }}
+                location.reload();
+            }})
+            .catch(() => alert("Network error"));
+        }}
+        </script>
         """
         return hstudio_teacher_dark_shell(
             teacher_name or "Teacher",
@@ -22717,6 +22930,7 @@ def add_open_slot_quick():
     teacher    = data.get("teacher") or session.get("teacher_name")
     slot_date  = data.get("date")
     start_time = data.get("start_time")
+    end_time   = data.get("end_time")
 
     if not teacher or not slot_date or not start_time:
         return {"ok": False, "error": "teacher, date and start_time required"}, 400
@@ -22726,9 +22940,10 @@ def add_open_slot_quick():
     now    = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("""
         INSERT INTO teacher_open_slots
-            (teacher, slot_date, slot_time, source, active, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, 'manual', 1, ?, ?, ?)
+            (teacher, slot_date, slot_time, source, active, notes, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, 'manual', 1, ?, ?, ?, ?)
     """, (teacher, slot_date, start_time,
+          f"end_time={end_time}" if end_time else "",
           session.get("teacher_name") or "owner", now, now))
     conn.commit()
     conn.close()
