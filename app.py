@@ -3199,7 +3199,8 @@ def calendar():
         c.display_color,
         COALESCE(s.course_type_name, ''),
         COALESCE(s.duration, 30),
-        COALESCE(st.lessons_left, 0)
+        COALESCE(st.lessons_left, 0),
+        COALESCE(s.is_group, 0)
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN students st    ON s.student_name    = st.name
@@ -3223,6 +3224,14 @@ def calendar():
     ORDER BY slot_date, slot_time
     """, slot_params)
     open_slots = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT name, duration, COALESCE(is_group, 0), COALESCE(display_color, '')
+    FROM course_types
+    WHERE active = 1
+    ORDER BY is_group DESC, name, duration
+    """)
+    course_legend_rows = cursor.fetchall()
     conn.close()
 
     teacher_options = '<option value="">All Teachers</option>'
@@ -3249,22 +3258,6 @@ def calendar():
 
     def owner_time_range(time_text, duration):
         return escape(format_lesson_time_range(time_text, duration))
-
-    def owner_instr_class(course_name, package_type=""):
-        name = f"{course_name or ''} {package_type or ''}".lower()
-        if "piano" in name:
-            return "ic-piano"
-        if "guitar" in name:
-            return "ic-guitar"
-        if "violin" in name:
-            return "ic-violin"
-        if "voice" in name or "vocal" in name:
-            return "ic-voice"
-        if "drum" in name:
-            return "ic-drums"
-        if "ukulele" in name:
-            return "ic-ukulele"
-        return "ic-default"
 
     def owner_status_dot(status):
         status = status or "scheduled"
@@ -3301,6 +3294,17 @@ def calendar():
             return f"{start_label}-{format_display_time(end_time)}"
         return start_label
 
+    course_legend_html = ""
+    for course_name, duration, is_group, display_color in course_legend_rows:
+        color = normalize_hex_color(display_color) or default_course_color(course_name, duration, is_group)
+        label = f"{course_name} {int(duration or 0)}m" if duration else str(course_name or "Course")
+        course_legend_html += f"""
+        <span class="leg">
+          <span class="leg-bar" style="background:{course_color_background(color)};border-left-color:{color}"></span>
+          {escape(label)}
+        </span>
+        """
+
     month_label = month_start.strftime("%B %Y")
     calendar_weeks = calendar_lib.Calendar(firstweekday=0).monthdatescalendar(month_start.year, month_start.month)
     weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -3321,12 +3325,13 @@ def calendar():
             for event in events_by_date.get(date_key, []):
                 event_status = event[9] or "scheduled"
                 course_name = event[11] or event[8] or ""
-                instrument_class = owner_instr_class(course_name, event[8])
                 dot_class = owner_status_dot(event_status)
                 time_range = owner_time_range(event[2], event[12])
                 warning = warning_pill(event[13])
+                course_color = event[10] or default_course_color(course_name, event[12], event[14])
+                course_style = course_calendar_style(course_color)
                 event_cards += f"""
-                <div class="ev {instrument_class}" draggable="true"
+                <div class="ev" draggable="true" style="{course_style}"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
@@ -3629,13 +3634,8 @@ def calendar():
 
       <!-- Legend -->
       <div class="legend">
-        <span class="filter-label">Instrument:</span>
-        <span class="leg"><span class="leg-bar" style="background:var(--blue-bg);border-left-color:var(--blue)"></span>Piano</span>
-        <span class="leg"><span class="leg-bar" style="background:var(--green-bg);border-left-color:var(--green)"></span>Guitar</span>
-        <span class="leg"><span class="leg-bar" style="background:var(--purple-bg);border-left-color:var(--purple)"></span>Violin</span>
-        <span class="leg"><span class="leg-bar" style="background:var(--pink-bg);border-left-color:var(--pink)"></span>Voice</span>
-        <span class="leg"><span class="leg-bar" style="background:var(--amber-bg);border-left-color:var(--amber)"></span>Drums</span>
-        <span class="leg"><span class="leg-bar" style="background:var(--coral-bg);border-left-color:var(--coral)"></span>Ukulele</span>
+        <span class="filter-label">Course Type:</span>
+        {course_legend_html}
         <span class="leg-sep"></span>
         <span class="filter-label">Status:</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-present)"></span>Present</span>
@@ -5022,8 +5022,9 @@ def teacher_dashboard():
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
-        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, '')
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
     FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
     WHERE s.teacher = ?
     AND s.lesson_date LIKE ?
     ORDER BY s.lesson_date, s.lesson_time
@@ -5034,8 +5035,9 @@ def teacher_dashboard():
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
-        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, '')
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
     FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
     WHERE s.teacher = ?
     AND s.lesson_date >= ?
     AND s.lesson_date <= ?
@@ -5138,16 +5140,6 @@ def teacher_dashboard():
     def teacher_time_range(time_text, duration):
         return format_lesson_time_range(time_text, duration)
 
-    def _t_instr_class(name):
-        n = (name or "").lower()
-        if "piano"   in n: return "ic-piano"
-        if "guitar"  in n: return "ic-guitar"
-        if "violin"  in n: return "ic-violin"
-        if "voice"   in n or "vocal" in n: return "ic-voice"
-        if "drum"    in n: return "ic-drums"
-        if "ukulele" in n: return "ic-ukulele"
-        return "ic-default"
-
     def _t_status_dot(st):
         if st == "present":   return "sd-present"
         if st in ("no_show","no-show"): return "sd-noshow"
@@ -5167,13 +5159,6 @@ def teacher_dashboard():
         --s-present:#639922;--s-scheduled:#378ADD;
         --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
     }
-    .ic-piano   {background:var(--blue-bg);  border-left-color:var(--blue);  color:#0C447C}
-    .ic-guitar  {background:var(--green-bg); border-left-color:var(--green); color:#27500A}
-    .ic-violin  {background:var(--purple-bg);border-left-color:var(--purple);color:#3C3489}
-    .ic-voice   {background:var(--pink-bg);  border-left-color:var(--pink);  color:#72243E}
-    .ic-drums   {background:var(--amber-bg); border-left-color:var(--amber); color:#633806}
-    .ic-ukulele {background:var(--coral-bg); border-left-color:var(--coral); color:#712B13}
-    .ic-default {background:var(--blue-bg);  border-left-color:var(--blue);  color:#0C447C}
     .t-ev-dot{display:inline-block;width:5px;height:5px;border-radius:50%;
               margin-right:3px;vertical-align:middle}
     .sd-present  {background:var(--s-present)}
@@ -5181,7 +5166,7 @@ def teacher_dashboard():
     .sd-noshow   {background:var(--s-noshow)}
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
-    .calendar-event{border-left:4px solid var(--blue)!important}
+    .calendar-event{border-left:4px solid var(--blue)}
     .calendar-event{cursor:grab;user-select:none}
     .calendar-event.dragging{opacity:.35}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
@@ -5202,11 +5187,12 @@ def teacher_dashboard():
 
     def calendar_event(lesson):
         time_range = teacher_time_range(lesson[2], lesson[6])
-        ic  = _t_instr_class(lesson[7])
         dot = _t_status_dot(lesson[5] or "scheduled")
+        course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
+        course_style = course_calendar_style(course_color)
         return f"""
-        <div class="calendar-event {lesson_color_class(lesson)} {ic}"
-             draggable="true" style="border-left-width:3px"
+        <div class="calendar-event"
+             draggable="true" style="border-left-width:3px;{course_style}"
              data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
              data-time="{escape(str(lesson[2] or ''))}"
              data-student="{escape(str(lesson[3] or ''))}"
@@ -11376,8 +11362,19 @@ def parent_reschedule_group():
     next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
     today = today_obj.strftime("%Y-%m-%d")
     cursor.execute("""
-    SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom, COALESCE(s.course_type_name, ''), COALESCE(s.duration, 30)
+    SELECT
+        s.id,
+        s.student_name,
+        s.lesson_date,
+        s.lesson_time,
+        s.teacher,
+        s.classroom,
+        COALESCE(s.course_type_name, ''),
+        COALESCE(s.duration, 30),
+        COALESCE(s.is_group, 0),
+        COALESCE(c.display_color, '')
     FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
     JOIN parent_students ps
         ON ps.student_name = s.student_name
         AND ps.active = 1
@@ -11392,7 +11389,6 @@ def parent_reschedule_group():
     open_slots = get_available_open_slots(teachers=teachers) if teachers else []
     conn.close()
 
-    color_keys = ["piano", "guitar", "ukulele", "voice", "drum", "violin"]
     grouped_lessons = {}
     for lesson in lessons:
         group_key = f"{lesson[1]}|{lesson[4]}|{lesson[6] or 'Lesson'}"
@@ -11400,7 +11396,8 @@ def parent_reschedule_group():
             grouped_lessons[group_key] = lesson
 
     calendar_lessons = []
-    for idx, lesson in enumerate(grouped_lessons.values()):
+    for lesson in grouped_lessons.values():
+        course_color = normalize_hex_color(lesson[9]) or default_course_color(lesson[6], lesson[7], lesson[8])
         calendar_lessons.append({
             "id": lesson[0],
             "student": lesson[1] or "",
@@ -11410,7 +11407,10 @@ def parent_reschedule_group():
             "room": lesson[5] or "",
             "course": lesson[6] or "Lesson",
             "duration": lesson[7] or 30,
-            "color": color_keys[idx % len(color_keys)],
+            "color": course_color,
+            "bg": course_color_background(course_color),
+            "text": course_color_text(course_color),
+            "border": course_color,
         })
 
     slot_data = []
@@ -11585,7 +11585,6 @@ def parent_reschedule_group():
             const SLOTS = {slots_json};
             const DAYS = {days_json};
             const TIMES = {times_json};
-            const COLOR_HEX = {{piano:"#5E5CE6", guitar:"#30D158", ukulele:"#FF9F0A", voice:"#38BDF8", drum:"#F87171", violin:"#C084FC"}};
             let activeIds = new Set(LESSONS.map(l => String(l.id)));
             let viewMode = "all";
             let selectedSlot = null;
@@ -11656,7 +11655,7 @@ def parent_reschedule_group():
                     const active = activeIds.has(String(l.id));
                     row.className = "legend-item " + (active ? "active" : "dimmed");
                     row.onclick = () => toggleLesson(l.id);
-                    row.innerHTML = `<div class="leg-color" style="background:${{COLOR_HEX[l.color] || "#5E5CE6"}}"></div>
+                    row.innerHTML = `<div class="leg-color" style="background:${{l.color || "#5E5CE6"}}"></div>
                         <div><div class="leg-name">${{l.course}}</div><div class="leg-teacher">${{l.student}} · ${{l.teacher}}</div><div class="leg-now">Now: ${{l.date}} ${{l.time}}</div></div>`;
                     box.appendChild(row);
                 }});
@@ -11705,7 +11704,10 @@ def parent_reschedule_group():
                         cell.className = "cell";
                         LESSONS.filter(l => l.date === day.key && l.time === time).forEach(l => {{
                             const ev = document.createElement("div");
-                            ev.className = `ev ev-${{l.color}}`;
+                            ev.className = "ev";
+                            ev.style.background = l.bg || "#eef2ff";
+                            ev.style.color = l.text || "#3730a3";
+                            ev.style.borderLeftColor = l.border || l.color || "#5E5CE6";
                             ev.textContent = l.course;
                             cell.appendChild(ev);
                         }});
@@ -11724,7 +11726,10 @@ def parent_reschedule_group():
                             const lesson = LESSONS.find(l => String(l.id) === viewMode);
                             if (lesson && slotsForTeacherDateTime(lesson.teacher, day.key, time).length) {{
                                 const slot = document.createElement("div");
-                                slot.className = `avail avail-${{lesson.color}}`;
+                                slot.className = "avail";
+                                slot.style.background = lesson.bg || "#eef2ff";
+                                slot.style.color = lesson.text || "#3730a3";
+                                slot.style.borderColor = lesson.border || lesson.color || "#5E5CE6";
                                 slot.textContent = lesson.course;
                                 if (selectedSlot && selectedSlot.date === day.key && selectedSlot.time === time) slot.classList.add("selected-slot");
                                 slot.onclick = () => pickSlot(day.key, time, [lesson.teacher], "single");
@@ -12922,18 +12927,22 @@ def parent_dashboard():
 
     cursor.execute("""
     SELECT
-        lesson_date,
-        lesson_time,
-        teacher,
-        classroom,
-        COALESCE(location, ''),
-        COALESCE(duration, 30),
-        status
-    FROM schedule
+        s.lesson_date,
+        s.lesson_time,
+        s.teacher,
+        s.classroom,
+        COALESCE(s.location, ''),
+        COALESCE(s.duration, 30),
+        s.status,
+        COALESCE(c.display_color, ''),
+        COALESCE(s.course_type_name, ''),
+        COALESCE(s.is_group, 0)
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
     WHERE student_name = ?
     AND lesson_date >= ?
     AND (status IS NULL OR status='scheduled')
-    ORDER BY lesson_date, lesson_time
+    ORDER BY s.lesson_date, s.lesson_time
     LIMIT 3
     """, (current_student, today))
     upcoming_lessons = cursor.fetchall()
@@ -13014,8 +13023,15 @@ def parent_dashboard():
         lesson_teacher = escape(str(l[2] or ""))
         lesson_place = escape(str(location_room or "TBD"))
         lesson_status = escape(str(l[6] or "scheduled"))
+        course_color = normalize_hex_color(l[7]) or default_course_color(l[8], l[5], l[9])
+        lesson_style = (
+            f"--course-color:{course_color};"
+            f"background:{course_color_background(course_color)};"
+            f"border-color:{course_color_border(course_color)};"
+            f"color:{course_color_text(course_color)};"
+        )
         upcoming_cards += f"""
-        <div class="lesson-card">
+        <div class="lesson-card" style="{lesson_style}">
             <div>
                 <div class="lesson-date">{lesson_date}</div>
                 <div class="lesson-main">{lesson_time}</div>
@@ -13455,7 +13471,7 @@ def parent_dashboard():
                 top: 0;
                 bottom: 0;
                 width: 8px;
-                background: #60a5fa;
+                background: var(--course-color, #60a5fa);
                 border-radius: 16px 0 0 16px;
             }}
             .lesson-date {{
@@ -16822,6 +16838,57 @@ def default_course_color(name="", duration=None, is_group=0):
     if rule_color:
         return rule_color
     return "#64748b"
+
+
+def normalize_hex_color(color, fallback=None):
+    value = str(color or "").strip()
+    if value.startswith("#"):
+        value = value[1:]
+    if len(value) == 3 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+        value = "".join(ch * 2 for ch in value)
+    if len(value) == 6 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+        return "#" + value.lower()
+    return fallback
+
+
+def _hex_rgb(color):
+    color = normalize_hex_color(color, "#64748b").lstrip("#")
+    return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _blend_hex(color, target="#ffffff", amount=0.84):
+    r1, g1, b1 = _hex_rgb(color)
+    r2, g2, b2 = _hex_rgb(target)
+    r = round(r1 * (1 - amount) + r2 * amount)
+    g = round(g1 * (1 - amount) + g2 * amount)
+    b = round(b1 * (1 - amount) + b2 * amount)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def course_color_background(color):
+    return _blend_hex(color, "#ffffff", 0.84)
+
+
+def course_color_border(color):
+    return _blend_hex(color, "#ffffff", 0.52)
+
+
+def course_color_text(color):
+    r, g, b = _hex_rgb(color)
+    luminance = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
+    if luminance > 170:
+        return "#6b4b00"
+    return normalize_hex_color(color, "#334155")
+
+
+def course_calendar_style(color):
+    color = normalize_hex_color(color, "#64748b")
+    return (
+        f"background:{course_color_background(color)};"
+        f"border-left-color:{color};"
+        f"border-color:{course_color_border(color)};"
+        f"color:{course_color_text(color)};"
+    )
 
 
 def course_color_options(current_color=None):
