@@ -2051,6 +2051,7 @@ def add_student():
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_v27_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -2059,6 +2060,7 @@ def add_student():
         teacher = request.form.get("teacher")
         parent_name = request.form.get("parent_name")
         parent_email = request.form.get("parent_email")
+        parent_phone = request.form.get("parent_phone")
         lessons_left = request.form.get("lessons_left") or 0
 
         cursor.execute("""
@@ -2067,17 +2069,20 @@ def add_student():
             teacher,
             parent_name,
             parent_email,
+            parent_phone,
             lessons_left
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
         """, (
             name,
             teacher,
             parent_name,
             parent_email,
+            parent_phone,
             int(float(lessons_left or 0))
         ))
 
+        sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
         conn.commit()
         conn.close()
 
@@ -2116,6 +2121,9 @@ def add_student():
                 Parent Email:<br>
                 <input type="email" name="parent_email">
 
+                Parent Phone:<br>
+                <input name="parent_phone" placeholder="Phone number">
+
                 Lessons Left:<br>
                 <input type="number" name="lessons_left" value="0">
 
@@ -2133,6 +2141,7 @@ def edit_student(name):
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_v27_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -2140,6 +2149,7 @@ def edit_student(name):
         teacher = request.form.get("teacher")
         parent_name = request.form.get("parent_name")
         parent_email = request.form.get("parent_email")
+        parent_phone = request.form.get("parent_phone")
         lessons_left = request.form.get("lessons_left") or 0
 
         cursor.execute("""
@@ -2147,23 +2157,26 @@ def edit_student(name):
         SET teacher = ?,
             parent_name = ?,
             parent_email = ?,
+            parent_phone = ?,
             lessons_left = ?
         WHERE name = ?
         """, (
             teacher,
             parent_name,
             parent_email,
+            parent_phone,
             int(float(lessons_left or 0)),
             name
         ))
 
+        sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
         conn.commit()
         conn.close()
 
         return redirect(f"/student/{name}")
 
     cursor.execute("""
-    SELECT name, teacher, parent_name, parent_email, lessons_left
+    SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left
     FROM students
     WHERE name = ?
     """, (name,))
@@ -2206,8 +2219,11 @@ def edit_student(name):
                 Parent Email:<br>
                 <input type="email" name="parent_email" value="{student[3] or ''}">
 
+                Parent Phone:<br>
+                <input name="parent_phone" value="{student[4] or ''}">
+
                 Lessons Left:<br>
-                <input type="number" name="lessons_left" value="{student[4] or 0}">
+                <input type="number" name="lessons_left" value="{student[5] or 0}">
 
                 <button type="submit">Save Student</button>
                 <a class="button" href="/student/{student[0]}">Back</a>
@@ -2224,7 +2240,7 @@ def student_detail(name):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT name, teacher, parent_email, lessons_left
+    SELECT name, teacher, parent_email, parent_phone, lessons_left
     FROM students
     WHERE name = ?
     """, (name,))
@@ -2285,7 +2301,7 @@ def student_detail(name):
         payment_html = "<p>No payment history found.</p>"
 
     renewal_status = ""
-    if student[3] <= 2:
+    if student[4] <= 2:
         renewal_status = "<h3 style='color:red;'>⚠ Renewal Needed</h3>"
 
     action_links = ""
@@ -2312,7 +2328,8 @@ def student_detail(name):
 
     <p>Teacher: {student[1]}</p>
     <p>Parent Email: {student[2]}</p>
-    <p>Lessons Left: {student[3]}</p>
+    <p>Parent Phone: {student[3] or ''}</p>
+    <p>Lessons Left: {student[4]}</p>
 
     {renewal_status}
 
@@ -5946,39 +5963,66 @@ def ensure_v27_schema():
     )
     """)
 
+    cursor.execute("PRAGMA table_info(students)")
+    student_columns = [row[1] for row in cursor.fetchall()]
+    if "parent_phone" not in student_columns:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_phone TEXT")
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     cursor.execute("""
-    SELECT name, parent_name, parent_email
+    SELECT name, parent_name, parent_email, parent_phone
     FROM students
-    WHERE parent_email IS NOT NULL
-    AND parent_email != ''
+    WHERE (
+        parent_email IS NOT NULL
+        AND parent_email != ''
+    )
+    OR (
+        parent_phone IS NOT NULL
+        AND parent_phone != ''
+    )
     """)
 
     students = cursor.fetchall()
 
     for student in students:
         student_name = student[0]
-        parent_name = student[1] or (student[2].split("@")[0] if "@" in student[2] else "Parent")
-        parent_email = student[2]
+        parent_name = student[1] or (student[2].split("@")[0] if student[2] and "@" in student[2] else "Parent")
+        parent_email = student[2] or f"phone-{student[3]}@hmusic.local"
+        parent_phone = student[3]
 
         cursor.execute("""
         INSERT OR IGNORE INTO parent_profiles (
             parent_name,
             email,
+            phone,
             password,
             active,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             parent_name,
             parent_email,
+            parent_phone,
             "1234",
             1,
             now,
             now
+        ))
+
+        cursor.execute("""
+        UPDATE parent_profiles
+        SET parent_name = COALESCE(NULLIF(parent_name, ''), ?),
+            phone = COALESCE(NULLIF(phone, ''), ?),
+            updated_at = ?
+        WHERE email = ?
+        """, (
+            parent_name,
+            parent_phone,
+            now,
+            parent_email
         ))
 
         cursor.execute("""
@@ -6009,6 +6053,71 @@ def ensure_v27_schema():
 
     conn.commit()
     conn.close()
+
+
+def sync_parent_profile_for_student(cursor, student_name, parent_name=None, parent_email=None, parent_phone=None):
+    if not parent_email and not parent_phone:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
+    display_name = parent_name or (email_key.split("@")[0] if "@" in email_key else "Parent")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO parent_profiles (
+        parent_name,
+        email,
+        phone,
+        password,
+        active,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        display_name,
+        email_key,
+        parent_phone,
+        "1234",
+        1,
+        now,
+        now
+    ))
+
+    cursor.execute("""
+    UPDATE parent_profiles
+    SET parent_name = ?,
+        phone = ?,
+        updated_at = ?
+    WHERE email = ?
+    """, (
+        display_name,
+        parent_phone,
+        now,
+        email_key
+    ))
+
+    cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (email_key,))
+    parent = cursor.fetchone()
+    if not parent:
+        return
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO parent_students (
+        parent_id,
+        student_name,
+        relationship,
+        active,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        parent[0],
+        student_name,
+        "Parent",
+        1,
+        now
+    ))
 
 
 def get_parent_students(parent_id):
@@ -21868,10 +21977,16 @@ def ensure_base_schema():
         teacher TEXT,
         parent_name TEXT,
         parent_email TEXT,
+        parent_phone TEXT,
         lessons_left INTEGER DEFAULT 0,
         free_cancel_used INTEGER DEFAULT 0
     )
     """)
+
+    cursor.execute("PRAGMA table_info(students)")
+    student_columns = [row[1] for row in cursor.fetchall()]
+    if "parent_phone" not in student_columns:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_phone TEXT")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS schedule (
