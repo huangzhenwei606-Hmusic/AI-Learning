@@ -3184,10 +3184,13 @@ def calendar():
         s.schedule_type,
         s.package_type,
         COALESCE(s.status, 'scheduled'),
-        c.display_color
+        c.display_color,
+        COALESCE(s.course_type_name, ''),
+        COALESCE(s.duration, 30),
+        COALESCE(st.lessons_left, 0)
     FROM schedule s
-    LEFT JOIN course_types c
-        ON s.course_type_id = c.id
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN students st    ON s.student_name    = st.name
     WHERE """ + where_sql + """
     ORDER BY s.lesson_date, s.lesson_time
     """, params)
@@ -3296,288 +3299,496 @@ def calendar():
     return f"""
     <html>
     <head>
-        <title>Owner Calendar</title>
+        <title>Owner Calendar — H-Music</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
         <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #f7f7fb;
-                padding: 40px;
-                color: #111827;
+            :root{{
+                --blue:#185FA5;--blue-bg:#E6F1FB;
+                --green:#3B6D11;--green-bg:#EAF3DE;
+                --purple:#534AB7;--purple-bg:#EEEDFE;
+                --pink:#993556;--pink-bg:#FBEAF0;
+                --amber:#854F0B;--amber-bg:#FAEEDA;
+                --coral:#993C1D;--coral-bg:#FAECE7;
+                --s-present:#639922;--s-scheduled:#378ADD;
+                --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
+                --warn-bg:#FFF3E0;--warn-txt:#7D4E00;
+                --last-bg:#FFEBEB;--last-txt:#7D1F1F;
+                --line:#E5E5EA;--bg:#F5F5F7;--surface:#fff;
+                --text:#1C1C1E;--muted:#636366;--faint:#8E8E93;
+                --radius:10px;
             }}
+            *{{box-sizing:border-box;margin:0;padding:0}}
+            body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+                  background:var(--bg);color:var(--text);font-size:13px}}
+            a{{color:inherit;text-decoration:none}}
 
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            }}
+            /* ---- top bar ---- */
+            .cal-shell{{display:flex;flex-direction:column;min-height:100vh}}
+            .cal-topbar{{display:flex;align-items:center;justify-content:space-between;
+                         padding:10px 18px;background:var(--surface);
+                         border-bottom:1px solid var(--line);gap:12px;flex-wrap:wrap}}
+            .cal-brand{{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}}
+            .role-pill{{font-size:10px;font-weight:600;padding:2px 9px;border-radius:20px;
+                        background:var(--warn-bg);color:var(--warn-txt)}}
+            .top-btns{{display:flex;gap:8px;flex-wrap:wrap}}
+            .btn{{padding:6px 12px;border:1px solid var(--line);border-radius:8px;
+                  font-size:12px;color:var(--muted);cursor:pointer;
+                  background:var(--surface);font-family:inherit}}
+            .btn:hover{{background:var(--bg)}}
+            .btn-primary{{background:var(--blue);color:#fff;border-color:var(--blue)}}
+            .btn-primary:hover{{background:#0C447C}}
 
-            h1 {{
-                margin-bottom: 20px;
-            }}
-            .topbar {{
-                display: flex;
-                justify-content: space-between;
-                gap: 16px;
-                align-items: flex-start;
-                flex-wrap: wrap;
-                margin-bottom: 18px;
-            }}
+            /* ---- filter bar ---- */
+            .filter-bar{{display:flex;align-items:center;gap:8px;padding:8px 18px;
+                         background:#FAFAFA;border-bottom:1px solid var(--line);flex-wrap:wrap}}
+            .filter-bar select{{font-family:inherit;font-size:11px;padding:4px 8px;
+                                border:1px solid var(--line);border-radius:7px;
+                                background:var(--surface);color:var(--text)}}
+            .filter-label{{font-size:11px;color:var(--faint);font-weight:600}}
+            .hint-text{{margin-left:auto;font-size:10px;color:var(--faint)}}
 
-            a.button {{
-                display: inline-block;
-                background: #5b5cff;
-                color: white;
-                padding: 10px 16px;
-                border-radius: 8px;
-                text-decoration: none;
-                margin-right: 10px;
-                font-weight: bold;
-            }}
-            a.button.dark {{
-                background: #111827;
-            }}
-            .filters {{
-                display: grid;
-                grid-template-columns: 180px 1fr 1fr auto;
-                gap: 12px;
-                align-items: end;
-                background: #f8f8ff;
-                border: 1px solid #e5e7eb;
-                border-radius: 12px;
-                padding: 14px;
-                margin: 18px 0 22px;
-            }}
-            label {{
-                font-size: 13px;
-                color: #6b7280;
-                font-weight: 700;
-            }}
-            input, select {{
-                width: 100%;
-                box-sizing: border-box;
-                padding: 10px 12px;
-                min-height: 44px;
-                border: 1px solid #d1d5db;
-                border-radius: 8px;
-                font-size: 15px;
-                background: white;
-            }}
-            button {{
-                min-height: 44px;
-                padding: 10px 16px;
-                border: none;
-                border-radius: 8px;
-                background: #111827;
-                color: white;
-                font-weight: 800;
-            }}
-            .month-nav {{
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 12px;
-                margin: 16px 0;
-            }}
-            .month-title {{
-                font-size: 34px;
-                font-weight: 900;
-            }}
-            .legend {{
-                display: flex;
-                flex-wrap: wrap;
-                gap: 12px;
-                color: #4b5563;
-                font-size: 14px;
-                margin-bottom: 12px;
-            }}
-            .dot {{
-                display:inline-block;
-                width: 10px;
-                height: 10px;
-                border-radius: 999px;
-                margin-right: 6px;
-            }}
-            .calendar-grid {{
-                width: 100%;
-                border-collapse: separate;
-                border-spacing: 0;
-                table-layout: fixed;
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                overflow: hidden;
-                margin-bottom: 26px;
-            }}
-            .calendar-grid th {{
-                background: #f8fafc;
-                color: #111827;
-                text-align: center;
-                padding: 12px 8px;
-                border-bottom: 1px solid #e5e7eb;
-            }}
-            .calendar-grid td {{
-                vertical-align: top;
-                height: 145px;
-                padding: 10px;
-                border-right: 1px solid #e5e7eb;
-                border-bottom: 1px solid #e5e7eb;
-                background: white;
-            }}
-            .calendar-grid td:last-child {{
-                border-right: none;
-            }}
-            .day-number {{
-                font-weight: 900;
-                margin-bottom: 7px;
-            }}
-            .muted-day {{
-                background: #f9fafb !important;
-                color: #9ca3af;
-            }}
-            .today .day-number {{
-                display: inline-block;
-                background: #635bff;
-                color: white;
-                border-radius: 999px;
-                padding: 2px 8px;
-            }}
-            .event {{
-                border-left: 4px solid #3b82f6;
-                background: #eff6ff;
-                border-radius: 8px;
-                padding: 7px 8px;
-                margin: 6px 0;
-                overflow: hidden;
-            }}
-            .event-main {{
-                font-weight: 900;
-                font-size: 13px;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }}
-            .event-sub, .event-status {{
-                color: #6b7280;
-                font-size: 12px;
-                line-height: 1.25;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }}
-            .present {{ border-left-color: #16a34a; background: #ecfdf5; }}
-            .no-show {{ border-left-color: #dc2626; background: #fef2f2; }}
-            .cancelled {{ border-left-color: #f59e0b; background: #fffbeb; }}
-            .excused {{ border-left-color: #9ca3af; background: #f3f4f6; }}
-            .makeup {{ border-left-color: #8b5cf6; background: #f5f3ff; }}
+            /* ---- legend ---- */
+            .legend{{display:flex;gap:10px;align-items:center;padding:6px 18px;
+                     border-bottom:1px solid var(--line);flex-wrap:wrap}}
+            .leg{{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted)}}
+            .leg-bar{{width:12px;height:8px;border-radius:1px;border-left:3px solid transparent}}
+            .leg-dot{{width:7px;height:7px;border-radius:50%}}
+            .leg-sep{{width:1px;height:12px;background:var(--line)}}
+            .warn-pill{{font-size:9px;padding:1px 5px;border-radius:20px;
+                        background:var(--warn-bg);color:var(--warn-txt)}}
+            .last-pill{{font-size:9px;padding:1px 5px;border-radius:20px;
+                        background:var(--last-bg);color:var(--last-txt)}}
 
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 25px;
-            }}
+            /* ---- month nav ---- */
+            .month-nav{{display:flex;align-items:center;justify-content:space-between;
+                        padding:10px 18px;gap:12px}}
+            .month-title{{font-size:20px;font-weight:600}}
 
-            th, td {{
-                text-align: left;
-                padding: 12px;
-                border-bottom: 1px solid #eee;
-            }}
+            /* ---- calendar grid ---- */
+            .cal-grid-wrap{{padding:0 18px 24px;overflow-x:auto}}
+            .cal-table{{width:100%;border-collapse:collapse;
+                        border:1px solid var(--line);border-radius:12px;
+                        overflow:hidden;table-layout:fixed}}
+            .cal-table th{{background:#FAFAFA;color:var(--muted);font-size:10px;
+                           font-weight:600;text-align:center;padding:7px 3px;
+                           border-right:1px solid var(--line);
+                           border-bottom:1px solid var(--line)}}
+            .cal-table th:last-child{{border-right:none}}
+            .cal-table th.today-th{{color:var(--blue);font-weight:700}}
+            .cal-table td{{vertical-align:top;height:110px;padding:3px 2px;
+                           border-right:1px solid var(--line);
+                           border-bottom:1px solid var(--line);
+                           background:var(--surface)}}
+            .cal-table td:last-child{{border-right:none}}
+            .cal-table td.muted-day{{background:#FAFAFA}}
+            .cal-table td.today-cell{{background:#EEF5FD}}
 
-            th {{
-                background: #f0f0ff;
-            }}
+            /* date number — clickable */
+            .day-num{{font-size:11px;color:var(--muted);display:inline-flex;
+                      align-items:center;justify-content:center;
+                      min-width:20px;height:20px;border-radius:50%;
+                      cursor:pointer;margin:0 2px 2px;font-weight:400}}
+            .day-num:hover{{background:var(--blue-bg);color:var(--blue)}}
+            .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
-            tr:hover {{
-                background: #fafafa;
-            }}
-            .list-title {{
-                margin-top: 28px;
-            }}
-            @media (max-width: 900px) {{
-                body {{ padding: 16px; }}
-                .container {{ padding: 18px; }}
-                .filters {{ grid-template-columns: 1fr; }}
-                .calendar-grid {{ display: block; overflow-x: auto; }}
-                .calendar-grid table {{ min-width: 900px; }}
-                .month-title {{ font-size: 26px; }}
-                table {{ display:block; overflow-x:auto; }}
+            /* event card */
+            .ev{{border-radius:3px;padding:3px 4px;font-size:10px;margin-bottom:2px;
+                 border-left:3px solid transparent;line-height:1.35;
+                 cursor:grab;user-select:none}}
+            .ev:active{{cursor:grabbing;opacity:.6}}
+            .ev.dragging{{opacity:.35}}
+            .ev-name{{font-weight:600;display:block;color:inherit}}
+            .ev-time{{font-size:9px;opacity:.75;display:block}}
+            .ev-sub{{font-size:9px;opacity:.6;display:block}}
+            .ev-status-dot{{display:inline-block;width:5px;height:5px;
+                            border-radius:50%;margin-right:2px;vertical-align:middle}}
+            /* instrument colors */
+            .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
+            .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
+            .ic-violin{{background:var(--purple-bg);border-left-color:var(--purple);color:#3C3489}}
+            .ic-voice{{background:var(--pink-bg);border-left-color:var(--pink);color:#72243E}}
+            .ic-drums{{background:var(--amber-bg);border-left-color:var(--amber);color:#633806}}
+            .ic-ukulele{{background:var(--coral-bg);border-left-color:var(--coral);color:#712B13}}
+            .ic-default{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
+            /* status dot colors */
+            .sd-present{{background:var(--s-present)}}
+            .sd-scheduled{{background:var(--s-scheduled)}}
+            .sd-noshow{{background:var(--s-noshow)}}
+            .sd-cancelled{{background:var(--s-cancelled)}}
+            .sd-excused{{background:var(--s-excused)}}
+            /* drop target */
+            .drop-active{{outline:2px dashed var(--blue);outline-offset:-2px;
+                          background:#EEF5FD !important}}
+            /* open slot */
+            .open-slot{{border-radius:3px;padding:2px 4px;font-size:9px;
+                        margin-bottom:2px;border:1px dashed var(--line);
+                        color:var(--faint)}}
+
+            /* ---- quick-add popover ---- */
+            .popover{{position:fixed;z-index:999;background:var(--surface);
+                      border:1px solid var(--line);border-radius:12px;
+                      padding:14px;width:230px;box-shadow:0 4px 20px rgba(0,0,0,.12);
+                      display:none}}
+            .popover.show{{display:block}}
+            .pop-title{{font-size:13px;font-weight:600;color:var(--text);
+                        margin-bottom:10px;display:flex;align-items:center;
+                        justify-content:space-between}}
+            .pop-close{{cursor:pointer;color:var(--muted);font-size:16px;line-height:1}}
+            .pop-note{{font-size:10px;color:var(--faint);margin-bottom:8px;
+                       padding:5px 8px;background:var(--bg);border-radius:7px;
+                       line-height:1.5}}
+            .pop-sel,.pop-inp{{width:100%;font-family:inherit;font-size:12px;
+                               padding:5px 8px;border:1px solid var(--line);
+                               border-radius:7px;background:var(--bg);
+                               color:var(--text);margin-bottom:6px}}
+            .pop-row{{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px}}
+            .pop-btns{{display:flex;gap:6px;margin-top:8px}}
+            .btn-add-sched{{flex:1;padding:6px;background:var(--blue);color:#fff;
+                            border:none;border-radius:7px;font-size:11px;
+                            cursor:pointer;font-family:inherit;font-weight:600}}
+            .btn-add-sched:hover{{background:#0C447C}}
+            .btn-add-open{{flex:1;padding:6px;background:transparent;
+                           border:1px solid var(--line);color:var(--muted);
+                           border-radius:7px;font-size:11px;cursor:pointer;
+                           font-family:inherit}}
+            .btn-add-open:hover{{background:var(--bg)}}
+
+            /* ---- reschedule modal ---- */
+            .modal-overlay{{position:fixed;inset:0;background:rgba(0,0,0,.35);
+                            display:none;align-items:center;justify-content:center;
+                            z-index:1000}}
+            .modal-overlay.show{{display:flex}}
+            .modal{{background:var(--surface);border-radius:12px;padding:20px;
+                    width:300px;border:1px solid var(--line)}}
+            .modal-title{{font-size:15px;font-weight:600;margin-bottom:6px}}
+            .modal-sub{{font-size:12px;color:var(--muted);margin-bottom:14px;
+                        line-height:1.5}}
+            .modal-opt{{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
+                        border:1px solid var(--line);border-radius:8px;
+                        margin-bottom:8px;cursor:pointer}}
+            .modal-opt.sel{{border-color:var(--blue);background:var(--blue-bg)}}
+            .modal-opt input{{margin-top:2px;accent-color:var(--blue)}}
+            .modal-opt-title{{font-size:13px;font-weight:600;color:var(--text)}}
+            .modal-opt-desc{{font-size:11px;color:var(--muted);margin-top:2px}}
+            .modal-btns{{display:flex;gap:8px;margin-top:14px}}
+            .modal-btn-ok{{flex:1;padding:8px;background:var(--blue);color:#fff;
+                           border:none;border-radius:8px;font-size:13px;
+                           cursor:pointer;font-family:inherit;font-weight:600}}
+            .modal-btn-ok:hover{{background:#0C447C}}
+            .modal-btn-cancel{{flex:1;padding:8px;background:transparent;
+                               border:1px solid var(--line);color:var(--muted);
+                               border-radius:8px;font-size:13px;cursor:pointer;
+                               font-family:inherit}}
+
+            /* ---- success strip ---- */
+            .success-strip{{background:#EAF3DE;border-radius:8px;padding:8px 14px;
+                            font-size:12px;color:#27500A;margin:0 18px 12px;
+                            display:none;align-items:center;gap:8px}}
+            .success-strip.show{{display:flex}}
+
+            @media(max-width:800px){{
+                .cal-table{{min-width:600px}}
+                .cal-grid-wrap{{padding:0 8px 24px}}
+                .filter-bar,.legend,.month-nav,.cal-topbar{{padding-left:10px;padding-right:10px}}
             }}
         </style>
     </head>
-
     <body>
-        <div class="container">
-            <div class="topbar">
-                <div>
-                    <h1>Owner Calendar</h1>
-                    <div>Filter by teacher or student to see only the calendar you need.</div>
-                </div>
-                <div>
-                    <a class="button dark" href="/">Home</a>
-                    <a class="button" href="/add_schedule">Add Schedule</a>
-                    <a class="button" href="/room_schedule">Room Schedule</a>
-                    <a class="button" href="/owner_dashboard">Owner Dashboard</a>
-                </div>
-            </div>
+    <div class="cal-shell">
 
-            <form class="filters" method="GET" action="/calendar">
-                <div>
-                    <label>Month</label>
-                    <input type="month" name="month" value="{selected_month}">
-                </div>
-                <div>
-                    <label>Teacher</label>
-                    <select name="teacher">{teacher_options}</select>
-                </div>
-                <div>
-                    <label>Student</label>
-                    <select name="student">{student_options}</select>
-                </div>
-                <button type="submit">View</button>
-            </form>
-
-            <div class="month-nav">
-                <a class="button dark" href="/calendar?{prev_query}">Prev</a>
-                <div class="month-title">{month_label}</div>
-                <a class="button dark" href="/calendar?{next_query}">Next</a>
-            </div>
-
-            <div class="legend">
-                <span><span class="dot" style="background:#3b82f6"></span>Scheduled</span>
-                <span><span class="dot" style="background:#16a34a"></span>Present</span>
-                <span><span class="dot" style="background:#dc2626"></span>No Show</span>
-                <span><span class="dot" style="background:#f59e0b"></span>Cancelled</span>
-                <span><span class="dot" style="background:#9ca3af"></span>Excused</span>
-            </div>
-
-            <table class="calendar-grid">
-                <tr>
-                    <th>Mon</th>
-                    <th>Tue</th>
-                    <th>Wed</th>
-                    <th>Thu</th>
-                    <th>Fri</th>
-                    <th>Sat</th>
-                    <th>Sun</th>
-                </tr>
-                {calendar_html}
-            </table>
-
-            <h2 class="list-title">List View</h2>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Day</th>
-                    <th>Time</th>
-                    <th>Student</th>
-                    <th>Teacher</th>
-                    <th>Room</th>
-                    <th>Type</th>
-                    <th>Package</th>
-                    <th>Status</th>
-                </tr>
-                {rows}
-            </table>
+      <!-- Top bar -->
+      <div class="cal-topbar">
+        <div class="cal-brand">
+          <span class="role-pill">Owner</span>
+          Calendar — {month_label}
         </div>
+        <div class="top-btns">
+          <a class="btn" href="/">Home</a>
+          <a class="btn" href="/add_schedule">+ Add Schedule</a>
+          <a class="btn" href="/room_schedule">Rooms</a>
+          <a class="btn btn-primary" href="/owner_dashboard">Dashboard</a>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <form class="filter-bar" method="GET" action="/calendar">
+        <input type="hidden" name="month" value="{selected_month}">
+        <span class="filter-label">Filter:</span>
+        <select name="teacher" onchange="this.form.submit()">{teacher_options}</select>
+        <select name="student" onchange="this.form.submit()">{student_options}</select>
+        <select name="status_filter" onchange="this.form.submit()">
+          <option value="">All Status</option>
+          <option value="scheduled" {"selected" if request.args.get("status_filter")=="scheduled" else ""}>Scheduled</option>
+          <option value="present"   {"selected" if request.args.get("status_filter")=="present"   else ""}>Present</option>
+          <option value="no_show"   {"selected" if request.args.get("status_filter")=="no_show"   else ""}>No Show</option>
+          <option value="cancelled" {"selected" if request.args.get("status_filter")=="cancelled" else ""}>Cancelled</option>
+          <option value="excused"   {"selected" if request.args.get("status_filter")=="excused"   else ""}>Excused</option>
+        </select>
+        <span class="hint-text"><i class="ti ti-click" style="font-size:12px;vertical-align:-1px"></i> Click date to add</span>
+      </form>
+
+      <!-- Legend -->
+      <div class="legend">
+        <span class="filter-label">Instrument:</span>
+        <span class="leg"><span class="leg-bar" style="background:var(--blue-bg);border-left-color:var(--blue)"></span>Piano</span>
+        <span class="leg"><span class="leg-bar" style="background:var(--green-bg);border-left-color:var(--green)"></span>Guitar</span>
+        <span class="leg"><span class="leg-bar" style="background:var(--purple-bg);border-left-color:var(--purple)"></span>Violin</span>
+        <span class="leg"><span class="leg-bar" style="background:var(--pink-bg);border-left-color:var(--pink)"></span>Voice</span>
+        <span class="leg"><span class="leg-bar" style="background:var(--amber-bg);border-left-color:var(--amber)"></span>Drums</span>
+        <span class="leg"><span class="leg-bar" style="background:var(--coral-bg);border-left-color:var(--coral)"></span>Ukulele</span>
+        <span class="leg-sep"></span>
+        <span class="filter-label">Status:</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-present)"></span>Present</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-scheduled)"></span>Scheduled</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-noshow)"></span>No show</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-cancelled)"></span>Cancelled</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-excused)"></span>Excused</span>
+        <span class="leg-sep"></span>
+        <span class="leg"><span class="warn-pill">2 left</span> Low pkg</span>
+        <span class="leg"><span class="last-pill">Last!</span> Final lesson</span>
+      </div>
+
+      <!-- Month nav -->
+      <div class="month-nav">
+        <a class="btn" href="/calendar?{prev_query}"><i class="ti ti-chevron-left"></i> Prev</a>
+        <span class="month-title">{month_label}</span>
+        <a class="btn" href="/calendar?{next_query}">Next <i class="ti ti-chevron-right"></i></a>
+      </div>
+
+      <!-- Success strip -->
+      <div class="success-strip" id="successStrip">
+        <i class="ti ti-check" style="font-size:14px"></i>
+        <span id="successMsg"></span>
+      </div>
+
+      <!-- Calendar grid -->
+      <div class="cal-grid-wrap">
+        <table class="cal-table" id="calTable">
+          <thead><tr>
+            <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th>
+            <th class="today-th">Fri</th><th>Sat</th><th>Sun</th>
+          </tr></thead>
+          <tbody>{calendar_html}</tbody>
+        </table>
+      </div>
+
+    </div><!-- /cal-shell -->
+
+    <!-- Quick-add popover -->
+    <div class="popover" id="popover">
+      <div class="pop-title">
+        <span id="popTitle">Add to —</span>
+        <span class="pop-close" onclick="closePop()"><i class="ti ti-x"></i></span>
+      </div>
+      <select class="pop-sel" id="popTeacher">
+        {teacher_options}
+      </select>
+      <select class="pop-sel" id="popStudent">
+        {student_options}
+      </select>
+      <select class="pop-sel" id="popRoom">
+        <option>Room 1</option><option>Room 2</option><option>Room 3</option>
+      </select>
+      <div class="pop-row">
+        <input type="time" class="pop-inp" id="popStart" value="15:00" style="margin-bottom:0">
+        <input type="time" class="pop-inp" id="popEnd"   value="15:30" style="margin-bottom:0">
+      </div>
+      <div class="pop-btns">
+        <button class="btn-add-sched" onclick="addSchedule()">
+          <i class="ti ti-plus" style="font-size:11px"></i> Add Schedule
+        </button>
+        <button class="btn-add-open" onclick="addOpenSlot()">
+          <i class="ti ti-clock" style="font-size:11px"></i> Open Slot
+        </button>
+      </div>
+    </div>
+
+    <!-- Reschedule modal -->
+    <div class="modal-overlay" id="modalOverlay">
+      <div class="modal">
+        <div class="modal-title">Move lesson</div>
+        <div class="modal-sub" id="modalSub"></div>
+        <div class="modal-opt sel" id="optOnce" onclick="selOpt('once')">
+          <input type="radio" name="rscope" value="once" checked>
+          <div>
+            <div class="modal-opt-title">This lesson only</div>
+            <div class="modal-opt-desc">Move just this occurrence. Future lessons unchanged.</div>
+          </div>
+        </div>
+        <div class="modal-opt" id="optForward" onclick="selOpt('forward')">
+          <input type="radio" name="rscope" value="forward">
+          <div>
+            <div class="modal-opt-title">This and all future lessons</div>
+            <div class="modal-opt-desc">Shift this and every recurring lesson after it.</div>
+          </div>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn-cancel" onclick="closeModal()">Cancel</button>
+          <button class="modal-btn-ok"     onclick="confirmReschedule()">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    // ---- instrument color helper ----
+    function instrClass(courseName) {{
+      const n = (courseName || '').toLowerCase();
+      if (n.includes('piano'))   return 'ic-piano';
+      if (n.includes('guitar'))  return 'ic-guitar';
+      if (n.includes('violin'))  return 'ic-violin';
+      if (n.includes('voice') || n.includes('vocal')) return 'ic-voice';
+      if (n.includes('drum'))    return 'ic-drums';
+      if (n.includes('ukulele')) return 'ic-ukulele';
+      return 'ic-default';
+    }}
+    function statusDotClass(st) {{
+      if (st === 'present')   return 'sd-present';
+      if (st === 'no_show' || st === 'no-show') return 'sd-noshow';
+      if (st && st.startsWith('cancel')) return 'sd-cancelled';
+      if (st === 'excused_24h' || st === 'excused') return 'sd-excused';
+      return 'sd-scheduled';
+    }}
+
+    // ---- drag-and-drop ----
+    let dragId = null, dragStudent = null, dragTeacher = null;
+    let dragDate = null, dragTime = null, pendingDrop = null;
+
+    document.querySelectorAll('.ev[data-id]').forEach(el => {{
+      el.addEventListener('dragstart', e => {{
+        dragId      = el.dataset.id;
+        dragStudent = el.dataset.student;
+        dragTeacher = el.dataset.teacher;
+        dragDate    = el.dataset.date;
+        dragTime    = el.dataset.time;
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      }});
+      el.addEventListener('dragend', () => {{
+        el.classList.remove('dragging');
+        document.querySelectorAll('.drop-active').forEach(c => c.classList.remove('drop-active'));
+      }});
+    }});
+
+    document.querySelectorAll('.cal-table td[data-date]').forEach(cell => {{
+      cell.addEventListener('dragover', e => {{
+        e.preventDefault();
+        cell.classList.add('drop-active');
+      }});
+      cell.addEventListener('dragleave', () => cell.classList.remove('drop-active'));
+      cell.addEventListener('drop', e => {{
+        e.preventDefault();
+        cell.classList.remove('drop-active');
+        if (!dragId || cell.dataset.date === dragDate) return;
+        pendingDrop = {{ id: dragId, from: dragDate, to: cell.dataset.date,
+                         student: dragStudent, time: dragTime }};
+        document.getElementById('modalSub').innerHTML =
+          `Moving <b>${{dragStudent}}</b> lesson<br>${{dragDate}} &rarr; ${{cell.dataset.date}}`;
+        selOpt('once');
+        document.getElementById('modalOverlay').classList.add('show');
+      }});
+    }});
+
+    function selOpt(scope) {{
+      document.getElementById('optOnce').classList.toggle('sel', scope === 'once');
+      document.getElementById('optForward').classList.toggle('sel', scope === 'forward');
+      document.querySelector('[name=rscope][value="once"]').checked    = scope === 'once';
+      document.querySelector('[name=rscope][value="forward"]').checked = scope === 'forward';
+    }}
+    function closeModal() {{
+      document.getElementById('modalOverlay').classList.remove('show');
+      pendingDrop = null;
+    }}
+    function confirmReschedule() {{
+      if (!pendingDrop) return;
+      const scope = document.querySelector('[name=rscope]:checked').value;
+      fetch('/reschedule_schedule', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{
+          schedule_id: pendingDrop.id,
+          new_date:    pendingDrop.to,
+          scope:       scope
+        }})
+      }})
+      .then(r => r.json())
+      .then(d => {{
+        closeModal();
+        if (d.ok) {{
+          showSuccess(`Moved to ${{pendingDrop.to}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}. Teacher notified.`);
+          setTimeout(() => location.reload(), 1800);
+        }} else {{
+          alert('Error: ' + d.error);
+        }}
+      }})
+      .catch(() => alert('Network error'));
+    }}
+
+    // ---- quick-add popover ----
+    let activePopDate = null;
+    function openPop(day, dateStr, el) {{
+      activePopDate = dateStr;
+      document.getElementById('popTitle').textContent = 'Add to ' + dateStr;
+      const pop = document.getElementById('popover');
+      const rect = el.getBoundingClientRect();
+      let top  = rect.bottom + window.scrollY + 4;
+      let left = rect.left  + window.scrollX;
+      if (left + 238 > window.innerWidth) left = window.innerWidth - 242;
+      pop.style.top  = top  + 'px';
+      pop.style.left = left + 'px';
+      pop.classList.add('show');
+      setTimeout(() => document.addEventListener('click', outsideClick), 10);
+    }}
+    function closePop() {{
+      document.getElementById('popover').classList.remove('show');
+      document.removeEventListener('click', outsideClick);
+      activePopDate = null;
+    }}
+    function outsideClick(e) {{
+      if (!document.getElementById('popover').contains(e.target)) closePop();
+    }}
+    function fmt12(t) {{
+      if (!t) return '';
+      const [h, m] = t.split(':').map(Number);
+      return `${{h % 12 || 12}}:${{String(m).padStart(2,'0')}}${{h >= 12 ? 'PM' : 'AM'}}`;
+    }}
+    function addSchedule() {{
+      if (!activePopDate) return;
+      const teacher = document.getElementById('popTeacher').value;
+      const student = document.getElementById('popStudent').value;
+      const room    = document.getElementById('popRoom').value;
+      const start   = document.getElementById('popStart').value;
+      const end     = document.getElementById('popEnd').value;
+      // Redirect to add_schedule with pre-filled params
+      window.location.href = `/add_schedule?prefill_date=${{activePopDate}}&prefill_teacher=${{encodeURIComponent(teacher)}}&prefill_student=${{encodeURIComponent(student)}}&prefill_room=${{encodeURIComponent(room)}}&prefill_start=${{encodeURIComponent(start)}}`;
+    }}
+    function addOpenSlot() {{
+      if (!activePopDate) return;
+      const teacher = document.getElementById('popTeacher').value;
+      const start   = document.getElementById('popStart').value;
+      const end     = document.getElementById('popEnd').value;
+      fetch('/add_open_slot_quick', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{ teacher, date: activePopDate,
+                                start_time: start, end_time: end }})
+      }})
+      .then(r => r.json())
+      .then(d => {{
+        closePop();
+        if (d.ok) {{
+          showSuccess(`Open slot added: ${{activePopDate}} ${{fmt12(start)}}`);
+          setTimeout(() => location.reload(), 1500);
+        }}
+      }});
+    }}
+    function showSuccess(msg) {{
+      const s = document.getElementById('successStrip');
+      document.getElementById('successMsg').textContent = msg;
+      s.classList.add('show');
+      setTimeout(() => s.classList.remove('show'), 4000);
+    }}
+    </script>
     </body>
     </html>
     """
@@ -4821,15 +5032,67 @@ def teacher_dashboard():
             minutes = 30
         return f"{time_text_from_minutes(start_minutes)}-{time_text_from_minutes(start_minutes + minutes)}"
 
+    def _t_instr_class(name):
+        n = (name or "").lower()
+        if "piano"   in n: return "ic-piano"
+        if "guitar"  in n: return "ic-guitar"
+        if "violin"  in n: return "ic-violin"
+        if "voice"   in n or "vocal" in n: return "ic-voice"
+        if "drum"    in n: return "ic-drums"
+        if "ukulele" in n: return "ic-ukulele"
+        return "ic-default"
+
+    def _t_status_dot(st):
+        if st == "present":   return "sd-present"
+        if st in ("no_show","no-show"): return "sd-noshow"
+        if st and st.startswith("cancel"): return "sd-cancelled"
+        if st in ("excused_24h","excused"): return "sd-excused"
+        return "sd-scheduled"
+
+    TEACHER_CAL_CSS = """
+    <style>
+    :root{
+        --blue:#185FA5;--blue-bg:#E6F1FB;
+        --green:#3B6D11;--green-bg:#EAF3DE;
+        --purple:#534AB7;--purple-bg:#EEEDFE;
+        --pink:#993556;--pink-bg:#FBEAF0;
+        --amber:#854F0B;--amber-bg:#FAEEDA;
+        --coral:#993C1D;--coral-bg:#FAECE7;
+        --s-present:#639922;--s-scheduled:#378ADD;
+        --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
+    }
+    .ic-piano   {background:var(--blue-bg);  border-left-color:var(--blue);  color:#0C447C}
+    .ic-guitar  {background:var(--green-bg); border-left-color:var(--green); color:#27500A}
+    .ic-violin  {background:var(--purple-bg);border-left-color:var(--purple);color:#3C3489}
+    .ic-voice   {background:var(--pink-bg);  border-left-color:var(--pink);  color:#72243E}
+    .ic-drums   {background:var(--amber-bg); border-left-color:var(--amber); color:#633806}
+    .ic-ukulele {background:var(--coral-bg); border-left-color:var(--coral); color:#712B13}
+    .ic-default {background:var(--blue-bg);  border-left-color:var(--blue);  color:#0C447C}
+    .t-ev-dot{display:inline-block;width:5px;height:5px;border-radius:50%;
+              margin-right:3px;vertical-align:middle}
+    .sd-present  {background:var(--s-present)}
+    .sd-scheduled{background:var(--s-scheduled)}
+    .sd-noshow   {background:var(--s-noshow)}
+    .sd-cancelled{background:var(--s-cancelled)}
+    .sd-excused  {background:var(--s-excused)}
+    .calendar-event{border-left:4px solid var(--blue)!important}
+    </style>
+    """
+
     def calendar_event(lesson):
         time_range = teacher_time_range(lesson[2], lesson[6])
+        ic  = _t_instr_class(lesson[7])
+        dot = _t_status_dot(lesson[5] or "scheduled")
         return f"""
-        <div class="calendar-event {lesson_color_class(lesson)}">
+        <div class="calendar-event {lesson_color_class(lesson)} {ic}"
+             style="border-left-width:3px">
             <div class="event-top">
-                <span class="event-time">{time_range}</span>
+                <span class="event-time">
+                  <span class="t-ev-dot {dot}"></span>{time_range}
+                </span>
             </div>
             <a class="event-student" href="/add_lesson/{lesson[3]}">{escape(lesson[3] or '-')}</a>
-            <div class="event-line">{escape(lesson[4] or '-')}</div>
+            <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
                 <input type="hidden" name="return_to" value="{schedule_return_url}">
@@ -4922,7 +5185,8 @@ def teacher_dashboard():
                     {controls}
                 </div>
             </div>
-            <div class="calendar-grid">{day_columns}</div>
+            {TEACHER_CAL_CSS}
+        <div class="calendar-grid">{day_columns}</div>
         """
         return hstudio_teacher_dark_shell(
             teacher_name or "Teacher",
@@ -22292,3 +22556,180 @@ def prepare_database_for_request():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
+
+
+# ================================================================
+# PATCH: Reschedule drag-and-drop API
+# POST /reschedule_schedule
+# ================================================================
+
+@app.route("/reschedule_schedule", methods=["POST"])
+def reschedule_schedule():
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Not logged in"}, 401
+
+    data        = request.get_json(silent=True) or request.form
+    schedule_id = data.get("schedule_id")
+    new_date    = data.get("new_date")
+    scope       = data.get("scope", "once")   # "once" or "forward"
+
+    if not schedule_id or not new_date:
+        return {"ok": False, "error": "schedule_id and new_date required"}, 400
+
+    try:
+        new_date_obj = datetime.strptime(new_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"ok": False, "error": "Invalid date"}, 400
+
+    conn   = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
+        FROM schedule WHERE id = ?
+    """, (schedule_id,))
+    lesson = cursor.fetchone()
+
+    if not lesson:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found"}, 404
+
+    if require_teacher() and not require_owner():
+        if lesson[2] != session.get("teacher_name"):
+            conn.close()
+            return {"ok": False, "error": "Permission denied"}, 403
+
+    old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
+    day_delta    = (new_date_obj - old_date_obj).days
+    moved_ids    = []
+
+    if scope == "once":
+        cursor.execute("""
+            UPDATE schedule SET lesson_date = ?, weekday = ? WHERE id = ?
+        """, (new_date, new_date_obj.strftime("%A"), int(schedule_id)))
+        moved_ids.append(int(schedule_id))
+
+    elif scope == "forward":
+        cursor.execute("""
+            SELECT id, lesson_date FROM schedule
+            WHERE student_name = ? AND teacher = ? AND lesson_time = ?
+            AND lesson_date >= ?
+            ORDER BY lesson_date
+        """, (lesson[1], lesson[2], lesson[4], lesson[3]))
+        for row in cursor.fetchall():
+            shifted = (datetime.strptime(row[1], "%Y-%m-%d").date()
+                       + timedelta(days=day_delta))
+            cursor.execute("""
+                UPDATE schedule SET lesson_date = ?, weekday = ? WHERE id = ?
+            """, (shifted.strftime("%Y-%m-%d"), shifted.strftime("%A"), row[0]))
+            moved_ids.append(row[0])
+    else:
+        conn.close()
+        return {"ok": False, "error": "Invalid scope"}, 400
+
+    conn.commit()
+
+    # Notify teacher when owner moves a lesson
+    if require_owner() and lesson[2]:
+        try:
+            thread_id = get_or_create_message_thread(
+                f"Schedule change - {lesson[1]}",
+                student_name=lesson[1], teacher_name=lesson[2],
+                thread_type="reschedule_drag"
+            )
+            add_message(
+                thread_id, "owner", "owner", "teacher",
+                f"Owner moved {lesson[1]}'s lesson from {lesson[3]} to {new_date}"
+                + (" (this and all future lessons)" if scope == "forward"
+                   else " (this lesson only)")
+                + f". Time: {lesson[4]}, Room: {lesson[5] or '-'}."
+            )
+            create_notification(
+                "teacher", lesson[2],
+                "Lesson rescheduled",
+                f"{lesson[1]}'s lesson moved to {new_date}.",
+                "/teacher_dashboard?view=schedule"
+            )
+        except Exception:
+            pass
+
+    conn.close()
+    return {"ok": True, "moved": len(moved_ids), "new_date": new_date, "scope": scope}
+
+
+# ================================================================
+# PATCH: Bulk auto-link students who have no primary teacher
+# POST /auto_link_all_students  (owner only, utility route)
+# ================================================================
+
+@app.route("/auto_link_all_students", methods=["POST"])
+def auto_link_all_students():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    conn   = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name FROM students
+        WHERE teacher IS NULL OR teacher = ''
+    """)
+    unlinked = [r[0] for r in cursor.fetchall()]
+
+    linked = 0
+    for name in unlinked:
+        cursor.execute("""
+            SELECT teacher FROM schedule
+            WHERE student_name = ?
+            AND teacher IS NOT NULL AND teacher != ''
+            ORDER BY lesson_date DESC LIMIT 1
+        """, (name,))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute("UPDATE students SET teacher = ? WHERE name = ?",
+                           (row[0], name))
+            linked += 1
+
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <html><body style="font-family:sans-serif;padding:32px">
+    <h1>Auto-Link Complete</h1>
+    <p>Linked <strong>{linked}</strong> student(s) to their primary teacher.</p>
+    <p><a href="/students">Students</a> &nbsp; <a href="/">Home</a></p>
+    </body></html>
+    """
+
+
+# ================================================================
+# PATCH: Quick open-slot creation from calendar popover
+# POST /add_open_slot_quick  (JSON body)
+# ================================================================
+
+@app.route("/add_open_slot_quick", methods=["POST"])
+def add_open_slot_quick():
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Not logged in"}, 401
+
+    ensure_v282_schema()
+    data       = request.get_json(silent=True) or {}
+    teacher    = data.get("teacher") or session.get("teacher_name")
+    slot_date  = data.get("date")
+    start_time = data.get("start_time")
+
+    if not teacher or not slot_date or not start_time:
+        return {"ok": False, "error": "teacher, date and start_time required"}, 400
+
+    conn   = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now    = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+        INSERT INTO teacher_open_slots
+            (teacher, slot_date, slot_time, source, active, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, 'manual', 1, ?, ?, ?)
+    """, (teacher, slot_date, start_time,
+          session.get("teacher_name") or "owner", now, now))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
