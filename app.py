@@ -2268,7 +2268,70 @@ def student_detail(name):
     """, (name,))
 
     payments = cursor.fetchall()
+
+    teacher_links = []
+    if student[1]:
+        teacher_links.append((student[1], "Primary Teacher"))
+
+    cursor.execute("""
+    SELECT DISTINCT teacher_name
+    FROM enrollments
+    WHERE student_name = ?
+    AND status = 'active'
+    AND teacher_name IS NOT NULL
+    AND teacher_name != ''
+    ORDER BY teacher_name
+    """, (name,))
+    for row in cursor.fetchall():
+        teacher_links.append((row[0], "Active Enrollment"))
+
+    cursor.execute("""
+    SELECT DISTINCT teacher
+    FROM schedule
+    WHERE student_name = ?
+    AND teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher
+    """, (name,))
+    for row in cursor.fetchall():
+        teacher_links.append((row[0], "Scheduled Lesson"))
+
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    all_teachers = cursor.fetchall()
+    teacher_has_access = (
+        require_teacher()
+        and teacher_can_access_student_record(cursor, student[0], session.get("teacher_name"))
+    )
     conn.close()
+
+    seen_teacher_links = set()
+    teacher_link_html = ""
+    for teacher_name, source in teacher_links:
+        key = (teacher_name, source)
+        if key in seen_teacher_links:
+            continue
+        seen_teacher_links.add(key)
+        teacher_link_html += f"<li>{escape(teacher_name)} <span style='color:#6b7280;'>({source})</span></li>"
+    if not teacher_link_html:
+        teacher_link_html = "<li>No teacher linked yet.</li>"
+
+    teacher_options = ""
+    for t in all_teachers:
+        selected = "selected" if t[0] == student[1] else ""
+        teacher_options += f'<option value="{escape(t[0])}" {selected}>{escape(t[0])}</option>'
+
+    teacher_link_form = ""
+    if require_owner():
+        teacher_link_form = f"""
+        <h2>Teacher Links</h2>
+        <ul>{teacher_link_html}</ul>
+        <form method="POST" action="/link_student_teacher/{escape(student[0])}" style="margin:14px 0;">
+            Primary Teacher:<br>
+            <select name="teacher" style="padding:8px; min-width:260px;">{teacher_options}</select>
+            <button type="submit" style="padding:8px 12px;">Save Teacher Link</button>
+        </form>
+        <p style="color:#6b7280;">Teacher access is automatic when a student has this Primary Teacher, an active enrollment with the teacher, or a scheduled lesson with the teacher.</p>
+        """
 
     lesson_html = ""
     if lessons:
@@ -2315,7 +2378,7 @@ def student_detail(name):
         <p><a href="/students">Back to Students</a></p>
         <p><a href="/student_ledger/{student[0]}">Student Ledger</a></p>
         """
-    elif require_teacher() and session.get("teacher_name") == student[1]:
+    elif teacher_has_access:
         action_links = f"""
         <p><a href="/add_lesson/{student[0]}">Add Lesson Notes / Homework</a></p>
         <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
@@ -2335,6 +2398,8 @@ def student_detail(name):
 
     {action_links}
 
+    {teacher_link_form}
+
     <h2>Lesson History</h2>
     {lesson_html}
 
@@ -2342,6 +2407,39 @@ def student_detail(name):
     {payment_html}
     """
 
+
+
+@app.route("/link_student_teacher/<name>", methods=["POST"])
+def link_student_teacher(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    teacher = request.form.get("teacher")
+    if not teacher:
+        return f"<h1>Please select a teacher.</h1><p><a href='/student/{name}'>Back</a></p>"
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT 1 FROM students WHERE name = ?", (name,))
+    if not cursor.fetchone():
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    cursor.execute("SELECT 1 FROM teachers WHERE teacher_name = ?", (teacher,))
+    if not cursor.fetchone():
+        conn.close()
+        return "<h1>Teacher not found</h1>"
+
+    cursor.execute("""
+    UPDATE students
+    SET teacher = ?
+    WHERE name = ?
+    """, (teacher, name))
+
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{name}")
 
 
 @app.route("/teacher_lesson_notes", methods=["GET", "POST"])
@@ -3636,18 +3734,9 @@ def add_schedule():
         teacher = request.form.get("teacher")
         if require_teacher() and not require_owner():
             teacher = session.get("teacher_name")
+            teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher)
 
-            cursor.execute("""
-            SELECT id
-            FROM enrollments
-            WHERE student_name = ?
-            AND teacher_name = ?
-            AND status = 'active'
-            LIMIT 1
-            """, (student_name, teacher))
-            teacher_enrollment = cursor.fetchone()
-
-            if not teacher_enrollment and not allow_unassigned_teacher_schedule:
+            if not teacher_linked and not allow_unassigned_teacher_schedule:
                 hidden_fields = {
                     "action": "create_unassigned_teacher_schedule",
                     "student_name": student_name,
@@ -3695,7 +3784,7 @@ def add_schedule():
                 </html>
                 """
 
-            if not teacher_enrollment and allow_unassigned_teacher_schedule and not temporary_schedule_note:
+            if not teacher_linked and allow_unassigned_teacher_schedule and not temporary_schedule_note:
                 conn.close()
                 return "<h1>Temporary schedule note is required.</h1><p><a href='/add_schedule'>Back</a></p>"
 
@@ -3798,6 +3887,7 @@ def add_schedule():
 
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         generated_count = 0
+        auto_link_student_teacher(cursor, student_name, teacher)
 
         for i in range(number_of_lessons):
             if schedule_type == "weekly":
@@ -3950,11 +4040,28 @@ def add_schedule():
     if require_teacher() and not require_owner():
         cursor.execute("""
         SELECT DISTINCT student_name
-        FROM enrollments
-        WHERE teacher_name = ?
-        AND status = 'active'
+        FROM (
+            SELECT student_name
+            FROM enrollments
+            WHERE teacher_name = ?
+            AND status = 'active'
+            UNION
+            SELECT name AS student_name
+            FROM students
+            WHERE teacher = ?
+            UNION
+            SELECT student_name
+            FROM schedule
+            WHERE teacher = ?
+        )
+        WHERE student_name IS NOT NULL
+        AND student_name != ''
         ORDER BY student_name
-        """, (session.get("teacher_name"),))
+        """, (
+            session.get("teacher_name"),
+            session.get("teacher_name"),
+            session.get("teacher_name")
+        ))
         student_rows = cursor.fetchall()
     else:
         cursor.execute("SELECT name FROM students ORDER BY name")
@@ -6118,6 +6225,63 @@ def sync_parent_profile_for_student(cursor, student_name, parent_name=None, pare
         1,
         now
     ))
+
+
+def teacher_can_access_student_record(cursor, student_name, teacher_name):
+    if not student_name or not teacher_name:
+        return False
+
+    cursor.execute("""
+    SELECT 1
+    FROM students
+    WHERE name = ?
+    AND teacher = ?
+    LIMIT 1
+    """, (student_name, teacher_name))
+    if cursor.fetchone():
+        return True
+
+    cursor.execute("""
+    SELECT 1
+    FROM enrollments
+    WHERE student_name = ?
+    AND teacher_name = ?
+    AND status = 'active'
+    LIMIT 1
+    """, (student_name, teacher_name))
+    if cursor.fetchone():
+        return True
+
+    cursor.execute("""
+    SELECT 1
+    FROM schedule
+    WHERE student_name = ?
+    AND teacher = ?
+    LIMIT 1
+    """, (student_name, teacher_name))
+    return cursor.fetchone() is not None
+
+
+def auto_link_student_teacher(cursor, student_name, teacher_name):
+    if not student_name or not teacher_name:
+        return
+
+    cursor.execute("""
+    SELECT teacher
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    current_teacher = (row[0] or "").strip()
+    if not current_teacher:
+        cursor.execute("""
+        UPDATE students
+        SET teacher = ?
+        WHERE name = ?
+        """, (teacher_name, student_name))
 
 
 def get_parent_students(parent_id):
