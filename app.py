@@ -3273,6 +3273,18 @@ def calendar():
             return "sd-excused"
         return "sd-scheduled"
 
+    def owner_status_label(status):
+        status = status or "scheduled"
+        if status == "present":
+            return "Present"
+        if status in ("no_show", "no-show"):
+            return "No show"
+        if status.startswith("cancel"):
+            return "Cancelled"
+        if status in ("excused_24h", "excused", "teacher_cancelled"):
+            return "Excused"
+        return "Scheduled"
+
     def warning_pill(lessons_left):
         try:
             left = int(float(lessons_left or 0))
@@ -3328,6 +3340,7 @@ def calendar():
                 event_status = event[9] or "scheduled"
                 course_name = event[11] or event[8] or ""
                 dot_class = owner_status_dot(event_status)
+                status_label = owner_status_label(event_status)
                 time_range = owner_time_range(event[2], event[12])
                 warning = warning_pill(event[13])
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
@@ -3338,7 +3351,8 @@ def calendar():
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
-                    <span class="ev-name"><span class="ev-status-dot {dot_class}"></span>{escape(str(event[3] or ""))}</span>
+                    <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span></span>
+                    <span class="ev-name">{escape(str(event[3] or ""))}</span>
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
                     {warning}
@@ -3458,7 +3472,8 @@ def calendar():
                      border-bottom:1px solid var(--line);flex-wrap:wrap}}
             .leg{{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted)}}
             .leg-bar{{width:12px;height:8px;border-radius:1px;border-left:3px solid transparent}}
-            .leg-dot{{width:7px;height:7px;border-radius:50%}}
+            .leg-dot{{width:11px;height:11px;border-radius:50%;
+                      box-shadow:0 0 0 2px rgba(255,255,255,.95),0 1px 3px rgba(0,0,0,.18)}}
             .leg-sep{{width:1px;height:12px;background:var(--line)}}
             .warn-pill{{font-size:9px;padding:1px 5px;border-radius:20px;
                         background:var(--warn-bg);color:var(--warn-txt)}}
@@ -3505,10 +3520,16 @@ def calendar():
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
             .ev-name{{font-weight:600;display:block;color:inherit}}
+            .ev-head{{display:flex;align-items:center;justify-content:flex-start;margin-bottom:2px}}
             .ev-time{{font-size:9px;opacity:.75;display:block}}
             .ev-sub{{font-size:9px;opacity:.6;display:block}}
-            .ev-status-dot{{display:inline-block;width:5px;height:5px;
-                            border-radius:50%;margin-right:2px;vertical-align:middle}}
+            .ev-status-badge{{display:inline-flex;align-items:center;gap:3px;
+                              border-radius:999px;padding:2px 6px;font-size:8px;
+                              line-height:1;font-weight:800;color:#fff;
+                              box-shadow:0 1px 2px rgba(0,0,0,.18)}}
+            .ev-status-badge:before{{content:"";width:6px;height:6px;border-radius:50%;
+                                     background:currentColor;filter:brightness(0) invert(1);
+                                     opacity:.96}}
             /* instrument colors */
             .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
             .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
@@ -5154,6 +5175,17 @@ def teacher_dashboard():
         if st in ("excused_24h","excused"): return "sd-excused"
         return "sd-scheduled"
 
+    def _t_status_label(st):
+        if st == "present":
+            return "Present"
+        if st in ("no_show", "no-show"):
+            return "No show"
+        if st and st.startswith("cancel"):
+            return "Cancelled"
+        if st in ("excused_24h", "excused"):
+            return "Excused"
+        return "Scheduled"
+
     TEACHER_CAL_CSS = """
     <style>
     :root{
@@ -5166,8 +5198,12 @@ def teacher_dashboard():
         --s-present:#639922;--s-scheduled:#378ADD;
         --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
     }
-    .t-ev-dot{display:inline-block;width:5px;height:5px;border-radius:50%;
-              margin-right:3px;vertical-align:middle}
+    .t-status-badge{display:inline-flex;align-items:center;gap:4px;
+                    border-radius:999px;padding:2px 7px;font-size:9px;
+                    line-height:1;font-weight:900;color:#fff;
+                    box-shadow:0 1px 2px rgba(0,0,0,.18)}
+    .t-status-badge:before{content:"";width:6px;height:6px;border-radius:50%;
+                           background:currentColor;filter:brightness(0) invert(1)}
     .sd-present  {background:var(--s-present)}
     .sd-scheduled{background:var(--s-scheduled)}
     .sd-noshow   {background:var(--s-noshow)}
@@ -5195,6 +5231,7 @@ def teacher_dashboard():
     def calendar_event(lesson):
         time_range = teacher_time_range(lesson[2], lesson[6])
         dot = _t_status_dot(lesson[5] or "scheduled")
+        status_text = _t_status_label(lesson[5] or "scheduled")
         course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
         return f"""
@@ -5202,11 +5239,12 @@ def teacher_dashboard():
              draggable="true" style="border-left-width:3px;{course_style}"
              data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
              data-time="{escape(str(lesson[2] or ''))}"
-             data-student="{escape(str(lesson[3] or ''))}"
-             data-teacher="{escape(str(teacher_name or ''))}">
+            data-student="{escape(str(lesson[3] or ''))}"
+            data-teacher="{escape(str(teacher_name or ''))}">
             <div class="event-top">
                 <span class="event-time">
-                  <span class="t-ev-dot {dot}"></span>{time_range}
+                  <span class="t-status-badge {dot}">{status_text}</span>
+                  <span style="display:block;margin-top:3px">{time_range}</span>
                 </span>
             </div>
             <a class="event-student" href="/add_lesson/{lesson[3]}">{escape(lesson[3] or '-')}</a>
