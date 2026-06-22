@@ -6,6 +6,7 @@ import calendar as calendar_lib
 import json
 import zipfile
 import secrets
+import re
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -71,6 +72,70 @@ def hmusic_check_password(password, password_hash=None, legacy_password=None):
 
 def hmusic_temp_password():
     return "HMusic-" + secrets.token_urlsafe(6)
+
+
+def hmusic_csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+def hmusic_validate_csrf():
+    if request.path == "/stripe/webhook":
+        return True
+    expected = session.get("_csrf_token")
+    submitted = (
+        request.form.get("_csrf_token")
+        or request.headers.get("X-CSRFToken")
+        or request.headers.get("X-CSRF-Token")
+    )
+    return bool(
+        expected
+        and submitted
+        and secrets.compare_digest(str(expected), str(submitted))
+    )
+
+
+CSRF_FORM_RE = re.compile(
+    r'(<form\b(?=[^>]*\bmethod\s*=\s*["\']?post["\']?)[^>]*>)',
+    re.IGNORECASE
+)
+
+
+def hmusic_inject_csrf(html):
+    token = hmusic_csrf_token()
+    hidden = f'\n<input type="hidden" name="_csrf_token" value="{token}">'
+    html = CSRF_FORM_RE.sub(lambda match: match.group(1) + hidden, html)
+    csrf_script = (
+        f'<meta name="csrf-token" content="{token}">\n'
+        f'<script>window.HMUSIC_CSRF_TOKEN = "{token}";</script>'
+    )
+    if "</head>" in html:
+        html = html.replace("</head>", csrf_script + "\n</head>", 1)
+    return html
+
+
+@app.before_request
+def enforce_csrf_token():
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and not hmusic_validate_csrf():
+        return "CSRF token missing or invalid", 403
+
+
+@app.after_request
+def inject_csrf_token(response):
+    if (
+        response.status_code == 200
+        and response.content_type
+        and response.content_type.startswith("text/html")
+    ):
+        html = response.get_data(as_text=True)
+        if "<form" in html or "</head>" in html:
+            html = hmusic_inject_csrf(html)
+            response.set_data(html)
+            response.content_length = len(response.get_data())
+    return response
 
 
 def add_column_if_missing(cursor, table, column_name, column_sql):
@@ -3976,7 +4041,7 @@ def calendar():
       const movedTo = pendingDrop.to;
       fetch('/reschedule_schedule', {{
         method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
+        headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
         body: JSON.stringify({{
           schedule_id: pendingDrop.id,
           new_date:    pendingDrop.to,
@@ -4046,7 +4111,7 @@ def calendar():
       const end     = document.getElementById('popEnd').value;
       fetch('/add_open_slot_quick', {{
         method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
+        headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
         body: JSON.stringify({{ teacher, date: activePopDate,
                                 start_time: start, end_time: end }})
       }})
@@ -5563,7 +5628,7 @@ def teacher_dashboard():
             const scope = document.querySelector('[name="teacher_scope"]:checked').value;
             fetch("/reschedule_schedule", {{
                 method: "POST",
-                headers: {{"Content-Type": "application/json"}},
+                headers: {{"Content-Type": "application/json", "X-CSRFToken": window.HMUSIC_CSRF_TOKEN || ""}},
                 body: JSON.stringify({{
                     schedule_id: teacherDrag.id,
                     new_date: teacherDrag.to,
