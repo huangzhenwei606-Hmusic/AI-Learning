@@ -266,17 +266,17 @@ def get_parent_unread_notification_count():
 def parent_bottom_nav(active="home"):
     items = [
         ("home", "/parent_dashboard", "Home"),
-        ("reschedule", "/parent_reschedule", "Reschedule"),
-        ("messages", "/parent_messages", "Messages"),
+        ("reschedule", "/parent_reschedule", "Calendar"),
+        ("assistant", "/parent_agent", "Assistant"),
         ("profile", "/parent_profile", "Profile"),
     ]
     links = ""
     unread_messages = get_parent_unread_message_count()
     unread_notifications = get_parent_unread_notification_count()
     for key, href, label in items:
-        active_class = "active" if key == active else ""
+        active_class = "active" if key == active or (key == "assistant" and active == "messages") else ""
         badge = ""
-        if key == "messages" and unread_messages:
+        if key == "assistant" and unread_messages:
             badge = (
                 f' <span class="nav-badge" style="display:inline-flex;'
                 f'align-items:center;justify-content:center;min-width:18px;'
@@ -7980,8 +7980,28 @@ def format_lesson_time_range(time_text, duration_minutes=None):
     except (TypeError, ValueError):
         duration = 30
     start_label = format_display_time(time_text)
-    end_label = format_display_time(time_text_from_minutes(start_minutes + duration))
+    end_label = format_display_time(time_text_from_minutes((start_minutes + duration) % (24 * 60)))
     return f"{start_label}-{end_label}"
+
+
+def format_parent_time_range(time_text, duration_minutes=None):
+    start_minutes = minutes_from_time_text(time_text)
+    if start_minutes is None:
+        return time_text or ""
+    try:
+        duration = int(float(duration_minutes or 30))
+    except (TypeError, ValueError):
+        duration = 30
+    end_minutes = (start_minutes + duration) % (24 * 60)
+    start_dt = datetime.strptime(time_text_from_minutes(start_minutes), "%H:%M")
+    end_dt = datetime.strptime(time_text_from_minutes(end_minutes), "%H:%M")
+    start_meridiem = start_dt.strftime("%p")
+    end_meridiem = end_dt.strftime("%p")
+    start_time = start_dt.strftime("%I:%M").lstrip("0")
+    end_time = end_dt.strftime("%I:%M").lstrip("0")
+    if start_meridiem == end_meridiem:
+        return f"{start_time}–{end_time} {end_meridiem}"
+    return f"{start_time} {start_meridiem}–{end_time} {end_meridiem}"
 
 
 def ensure_v282_schema():
@@ -14020,7 +14040,7 @@ def parent_dashboard():
     upcoming_rows = ""
     upcoming_cards = ""
     for l in upcoming_lessons:
-        time_range = format_lesson_time_range(l[1], l[5])
+        time_range = format_parent_time_range(l[1], l[5])
         location_room = " / ".join([part for part in [l[4], l[3]] if part])
         lesson_date = escape(str(l[0] or ""))
         lesson_time = escape(str(time_range or ""))
@@ -14028,16 +14048,21 @@ def parent_dashboard():
         lesson_place = escape(str(location_room or "TBD"))
         lesson_status = escape(str(l[6] or "scheduled"))
         course_color = normalize_hex_color(l[7]) or default_course_color(l[8], l[5], l[9])
-        lesson_style = (
-            f"--course-color:{course_color};"
-            f"background:{course_color_background(course_color)};"
-            f"border-color:{course_color_border(course_color)};"
-            f"color:{course_color_text(course_color)};"
-        )
+        lesson_style = f"--course-color:{course_color};"
+        try:
+            lesson_dt = datetime.strptime(str(l[0]), "%Y-%m-%d")
+            day_top = lesson_dt.strftime("%a").upper()
+            day_num = lesson_dt.strftime("%d").lstrip("0")
+        except (TypeError, ValueError):
+            day_top = ""
+            day_num = ""
         upcoming_cards += f"""
         <div class="lesson-card" style="{lesson_style}">
-            <div>
-                <div class="lesson-date">{lesson_date}</div>
+            <div class="lesson-day">
+                <span>{escape(day_top)}</span>
+                <strong>{escape(day_num)}</strong>
+            </div>
+            <div class="lesson-info">
                 <div class="lesson-main">{lesson_time}</div>
                 <div class="lesson-meta">{lesson_teacher} · {lesson_place}</div>
             </div>
@@ -14202,12 +14227,59 @@ def parent_dashboard():
 
     next_lesson_title = "No upcoming lessons"
     next_lesson_meta = "Your next scheduled lesson will appear here."
+    next_lesson_date_label = ""
+    next_lesson_days = ""
+    next_lesson_teacher = escape(str(student[1] or ""))
+    next_lesson_room = "TBD"
     if upcoming_lessons:
         next_lesson = upcoming_lessons[0]
-        next_time_range = format_lesson_time_range(next_lesson[1], next_lesson[5])
+        next_time_range = format_parent_time_range(next_lesson[1], next_lesson[5])
         next_location_room = " / ".join([part for part in [next_lesson[4], next_lesson[3]] if part])
-        next_lesson_title = f"{escape(str(next_lesson[0] or ''))} · {escape(str(next_time_range or ''))}"
+        try:
+            next_dt = datetime.strptime(str(next_lesson[0]), "%Y-%m-%d").date()
+            next_lesson_date_label = next_dt.strftime("%a, %b ") + str(next_dt.day)
+            days_delta = (next_dt - date.today()).days
+            if days_delta <= 0:
+                next_lesson_days = "today"
+            elif days_delta == 1:
+                next_lesson_days = "1 day away"
+            else:
+                next_lesson_days = f"{days_delta} days away"
+        except (TypeError, ValueError):
+            next_lesson_date_label = escape(str(next_lesson[0] or ""))
+            next_lesson_days = ""
+        next_lesson_title = escape(str(next_time_range or ""))
         next_lesson_meta = f"{escape(str(next_lesson[2] or ''))} · {escape(str(next_location_room or 'TBD'))}"
+        next_lesson_teacher = escape(str(next_lesson[2] or ""))
+        next_lesson_room = escape(str(next_location_room or "TBD"))
+
+    lessons_left = float(student[3] or 0)
+    package_total = 10
+    package_percent = max(0, min(100, int((lessons_left / package_total) * 100)))
+    lessons_left_label = int(lessons_left) if lessons_left.is_integer() else lessons_left
+    message_sub = f"{unread_messages} unread" if unread_messages else "Open inbox"
+    latest_note_html = lesson_note_cards.split("</div>", 1)[0] + "</div>" if lesson_history else '<div class="empty-card">No lesson notes or homework yet.</div>'
+    if lesson_history:
+        latest_note = lesson_history[0]
+        latest_homework = escape(str(latest_note[3] or latest_note[1] or "No homework assigned yet."))
+        latest_date = escape(str(latest_note[0] or ""))
+        latest_note_html = f"""
+        <div class="homework-card">
+            <div class="homework-top">
+                <strong>Homework from {escape(str(student[1] or 'Teacher'))}</strong>
+                <span>{latest_date}</span>
+            </div>
+            <p>{latest_homework}</p>
+        </div>
+        """
+
+    current_hour = datetime.now().hour
+    if current_hour < 12:
+        greeting = "Good morning"
+    elif current_hour < 18:
+        greeting = "Good afternoon"
+    else:
+        greeting = "Good evening"
 
     return f"""
     <html>
@@ -14710,29 +14782,373 @@ def parent_dashboard():
                     padding: 32px;
                 }}
             }}
+            body {{
+                background:#f6f4ee;
+                color:#1f2933;
+            }}
+            .container {{
+                max-width:430px;
+                background:#f6f4ee;
+                padding:max(18px, env(safe-area-inset-top)) 16px calc(94px + env(safe-area-inset-bottom));
+            }}
+            .phone-header {{
+                margin:-18px -16px 18px;
+                padding:max(24px, env(safe-area-inset-top)) 24px 28px;
+                background:#fff;
+                border-bottom:1px solid #ddd9d1;
+            }}
+            .phone-topline {{
+                display:flex;
+                justify-content:space-between;
+                align-items:center;
+                font-weight:850;
+                margin-bottom:26px;
+            }}
+            .phone-icons {{
+                display:flex;
+                gap:12px;
+            }}
+            .icon-box {{
+                width:16px;
+                height:16px;
+                border:3px solid #333;
+                display:inline-block;
+            }}
+            .student-head {{
+                display:flex;
+                justify-content:space-between;
+                align-items:flex-end;
+                gap:14px;
+            }}
+            .greeting {{
+                color:#444;
+                font-size:18px;
+                font-weight:650;
+            }}
+            .student-head h1 {{
+                margin:2px 0 0;
+                font-size:30px;
+                line-height:1.05;
+            }}
+            .message-orb {{
+                width:48px;
+                height:48px;
+                border-radius:50%;
+                border:1px solid #d8d3ca;
+                background:#f7f5ee;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                position:relative;
+                color:#333;
+                text-decoration:none;
+            }}
+            .message-orb:after {{
+                content:"";
+                width:7px;
+                height:7px;
+                background:#5a4fcf;
+                border-radius:50%;
+                position:absolute;
+                right:10px;
+                top:11px;
+                display:{'block' if unread_messages else 'none'};
+            }}
+            .top, .brand-lockup, .app-hero, .cards, .actions, .desktop-table, .notes-grid {{
+                display:none;
+            }}
+            .student-tabs {{
+                margin:4px 0 14px;
+                padding:0 0 4px;
+            }}
+            .student-tab {{
+                background:white;
+                border-color:#dedbd4;
+                color:#34302a;
+                font-size:13px;
+            }}
+            .student-tab.active {{
+                background:#ece9ff;
+                color:#5145bd;
+                border-color:#b9b0ff;
+            }}
+            .section-label {{
+                margin:20px 0 10px;
+                color:#4b4b4b;
+                font-size:17px;
+                font-weight:900;
+                letter-spacing:.08em;
+            }}
+            .next-card, .homework-card {{
+                background:white;
+                border:1px solid #dedbd4;
+                border-radius:14px;
+                padding:16px;
+                box-shadow:0 1px 2px rgba(15,23,42,.08);
+            }}
+            .next-label {{
+                color:#4b4b4b;
+                font-size:15px;
+                font-weight:900;
+                letter-spacing:.07em;
+                margin-bottom:8px;
+            }}
+            .next-date {{
+                font-size:17px;
+                font-weight:750;
+                margin-bottom:4px;
+            }}
+            .next-main {{
+                display:grid;
+                grid-template-columns:1fr auto;
+                gap:12px;
+                align-items:center;
+            }}
+            .next-time {{
+                font-size:32px;
+                line-height:1;
+                font-weight:950;
+                color:#171717;
+            }}
+            .days-away {{
+                min-width:88px;
+                text-align:center;
+                background:#ece9ff;
+                color:#4f46b5;
+                border-radius:12px;
+                padding:10px 8px;
+                font-weight:900;
+            }}
+            .days-away strong {{
+                display:block;
+                font-size:30px;
+                line-height:1;
+            }}
+            .days-away span {{
+                display:block;
+                font-size:13px;
+                margin-top:4px;
+            }}
+            .next-meta {{
+                display:flex;
+                gap:14px;
+                flex-wrap:wrap;
+                color:#3f3f3f;
+                font-size:16px;
+                font-weight:750;
+                margin:10px 0 12px;
+            }}
+            .card-rule {{
+                height:1px;
+                background:#dedbd4;
+                margin:12px 0;
+            }}
+            .package-row {{
+                display:grid;
+                grid-template-columns:1fr auto auto;
+                gap:12px;
+                align-items:center;
+            }}
+            .package-label {{
+                color:#444;
+                font-weight:750;
+            }}
+            .progress {{
+                height:8px;
+                background:#dedede;
+                border-radius:999px;
+                overflow:hidden;
+                margin-top:8px;
+                max-width:150px;
+            }}
+            .progress span {{
+                display:block;
+                height:100%;
+                width:{package_percent}%;
+                background:#5a4fcf;
+                border-radius:999px;
+            }}
+            .balance-number {{
+                text-align:right;
+                font-weight:950;
+                font-size:24px;
+                line-height:1.1;
+            }}
+            .balance-number small {{
+                display:block;
+                color:#444;
+                font-size:14px;
+                font-weight:650;
+            }}
+            .renew-pill {{
+                background:#fbedd8;
+                color:#805017;
+                border-radius:999px;
+                padding:8px 13px;
+                text-decoration:none;
+                font-weight:850;
+            }}
+            .quick-grid {{
+                display:grid;
+                grid-template-columns:1fr 1fr;
+                gap:12px;
+            }}
+            .quick-card {{
+                min-height:78px;
+                background:white;
+                border:1px solid #dedbd4;
+                border-radius:14px;
+                padding:14px 16px;
+                display:flex;
+                gap:14px;
+                align-items:center;
+                text-decoration:none;
+                color:#202020;
+                box-shadow:0 1px 2px rgba(15,23,42,.08);
+            }}
+            .quick-card.primary {{
+                background:#ece9ff;
+                border-color:#aaa0ff;
+                color:#4f46b5;
+            }}
+            .quick-card.wide {{
+                grid-column:1 / -1;
+            }}
+            .quick-icon {{
+                width:18px;
+                height:18px;
+                border:3px solid currentColor;
+                flex:0 0 auto;
+            }}
+            .quick-title {{
+                display:block;
+                font-size:19px;
+                font-weight:900;
+                line-height:1.1;
+            }}
+            .quick-sub {{
+                display:block;
+                color:#555;
+                font-size:13px;
+                font-weight:700;
+                margin-top:3px;
+            }}
+            .lesson-list {{
+                gap:10px;
+                margin:8px 0 24px;
+            }}
+            .lesson-card {{
+                display:grid;
+                grid-template-columns:72px 1fr auto;
+                align-items:center;
+                padding:14px 14px;
+                background:white !important;
+                color:#2b2b2b !important;
+                border:1px solid #dedbd4 !important;
+                border-radius:14px;
+                box-shadow:0 1px 2px rgba(15,23,42,.08);
+            }}
+            .lesson-card:before {{
+                display:none;
+            }}
+            .lesson-day {{
+                border-right:1px solid #dedbd4;
+                text-align:center;
+                padding-right:12px;
+            }}
+            .lesson-day span {{
+                display:block;
+                color:#4b4b4b;
+                font-size:13px;
+                font-weight:850;
+            }}
+            .lesson-day strong {{
+                display:block;
+                font-size:28px;
+                line-height:1;
+            }}
+            .lesson-info {{
+                padding-left:12px;
+            }}
+            .lesson-main {{
+                color:#1f1f1f;
+                font-size:18px;
+            }}
+            .lesson-meta {{
+                color:#444;
+            }}
+            .status-chip {{
+                background:#ece9ff;
+                color:#5145bd;
+                font-size:12px;
+            }}
+            .homework-top {{
+                display:flex;
+                justify-content:space-between;
+                gap:10px;
+                margin-bottom:10px;
+            }}
+            .homework-top strong {{
+                font-size:18px;
+            }}
+            .homework-top span {{
+                color:#555;
+                font-weight:750;
+                white-space:nowrap;
+            }}
+            .homework-card p {{
+                border-left:3px solid #b9b0ff;
+                margin:0;
+                padding-left:14px;
+                color:#3f3f3f;
+                line-height:1.55;
+                font-size:16px;
+            }}
+            .parent-bottom-nav {{
+                max-width:430px;
+                margin:0 auto;
+                border:1px solid #ddd9d1;
+                border-left:0;
+                border-right:0;
+                background:rgba(255,255,255,.96);
+                box-shadow:none;
+            }}
+            .parent-bottom-nav a {{
+                font-size:13px;
+                color:#444;
+            }}
+            .parent-bottom-nav a.active {{
+                color:#5a4fcf;
+                background:transparent;
+            }}
+            @media (min-width: 900px) {{
+                body {{ padding:0; }}
+                .container {{
+                    min-height:100vh;
+                    border-radius:0;
+                    box-shadow:none;
+                    padding:max(18px, env(safe-area-inset-top)) 16px calc(94px + env(safe-area-inset-bottom));
+                }}
+            }}
         </style>
     </head>
 
     <body>
         <div class="container">
 
-            <div class="brand-lockup">
-                <div class="brand-mark" aria-label="H-Music"></div>
-                <div class="brand-copy">
-                    <strong>H-Music</strong>
-                    <span>Parent App</span>
+            <div class="phone-header">
+                <div class="phone-topline">
+                    <span>{datetime.now().strftime("%-I:%M")}</span>
+                    <span class="phone-icons"><span class="icon-box"></span><span class="icon-box"></span></span>
                 </div>
-            </div>
-
-            <div class="app-hero">
-                <div class="hero-title">
-                    <h1>{student[0]}</h1>
-                    <p>Welcome, {session.get("parent_name", "Parent")}</p>
-                </div>
-                <div class="hero-links">
-                    <button class="install-button" data-install-app hidden onclick="installParentApp()">Install App</button>
-                    <a href="/app_install">App Help</a>
-                    <a href="/parent_logout">Logout</a>
+                <div class="student-head">
+                    <div>
+                        <div class="greeting">{greeting}</div>
+                        <h1>{escape(str(student[0] or ''))}</h1>
+                    </div>
+                    <a class="message-orb" href="/parent_notifications" aria-label="Notifications">
+                        <span class="icon-box"></span>
+                    </a>
                 </div>
             </div>
 
@@ -14744,41 +15160,61 @@ def parent_dashboard():
             {notice_alert}
             {app_notification_alert}
 
-            <div class="cards">
-                <div class="card summary-card">
-                    <div class="label">Lessons Left</div>
-                    <div class="value">{student[3]}</div>
+            <section class="next-card">
+                <div class="next-label">NEXT LESSON</div>
+                <div class="next-date">{escape(next_lesson_date_label)}</div>
+                <div class="next-main">
+                    <div class="next-time">{next_lesson_title}</div>
+                    <div class="days-away">
+                        {f'<strong>{next_lesson_days.split()[0]}</strong><span>{" ".join(next_lesson_days.split()[1:])}</span>' if next_lesson_days and next_lesson_days[0].isdigit() else f'<span>{escape(next_lesson_days or "No lesson")}</span>'}
+                    </div>
                 </div>
+                <div class="next-meta">
+                    <span><span class="icon-box"></span> {next_lesson_teacher}</span>
+                    <span><span class="icon-box"></span> {next_lesson_room}</span>
+                </div>
+                <div class="card-rule"></div>
+                <div class="package-row">
+                    <div>
+                        <div class="package-label">Package balance</div>
+                        <div class="progress"><span></span></div>
+                    </div>
+                    <div class="balance-number">{lessons_left_label} left <small>of {package_total} lessons</small></div>
+                    <a class="renew-pill" href="/parent_billing">Renew</a>
+                </div>
+            </section>
 
-                <div class="card summary-card wide">
-                    <div class="label">Next Lesson</div>
-                    <div class="value" style="font-size:20px;">{next_lesson_title}</div>
-                    <div class="lesson-meta">{next_lesson_meta}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Teacher</div>
-                    <div class="value">{student[1]}</div>
-                </div>
+            <div class="section-label">QUICK ACTIONS</div>
+            <div class="quick-grid">
+                <a class="quick-card primary" href="/parent_agent">
+                    <span class="quick-icon"></span>
+                    <span><span class="quick-title">My Assistant</span><span class="quick-sub">Ask anything</span></span>
+                </a>
+                <a class="quick-card" href="/parent_messages">
+                    <span class="quick-icon"></span>
+                    <span><span class="quick-title">Messages</span><span class="quick-sub">{message_sub}</span></span>
+                </a>
+                <a class="quick-card" href="/parent_reschedule">
+                    <span class="quick-icon"></span>
+                    <span><span class="quick-title">Reschedule</span><span class="quick-sub">Change a lesson</span></span>
+                </a>
+                <a class="quick-card" href="/parent_cancel">
+                    <span class="quick-icon"></span>
+                    <span><span class="quick-title">Cancel lesson</span><span class="quick-sub">Mark absence</span></span>
+                </a>
+                <a class="quick-card wide" href="/parent_billing">
+                    <span class="quick-icon"></span>
+                    <span><span class="quick-title">Billing / AutoPay</span><span class="quick-sub">Manage payments</span></span>
+                </a>
             </div>
 
-            <div class="actions">
-                <a class="button" href="/parent_agent">Ask AI Agent</a>
-                <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
-                <a class="button" href="/parent_messages">{message_label}</a>
-                <a class="button" href="/parent_cancel">Cancel Lesson</a>
-                <a class="button" href="/parent_billing">Billing / AutoPay</a>
-            </div>
-
-            <h2>Upcoming Lessons</h2>
+            <div class="section-label">UPCOMING LESSONS</div>
             <div class="lesson-list">
                 {upcoming_cards}
             </div>
 
-            <h2>Lesson Notes / Homework</h2>
-            <div class="notes-grid">
-                {lesson_note_cards}
-            </div>
+            <div class="section-label">LATEST LESSON NOTES</div>
+            {latest_note_html}
 
             <h2>More</h2>
             <div class="secondary-actions">
@@ -14990,7 +15426,7 @@ def parent_agent():
                 </div>
             </form>
         </div>
-        {parent_bottom_nav("home")}
+        {parent_bottom_nav("assistant")}
     </body>
     </html>
     """
