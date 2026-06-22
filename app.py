@@ -8438,6 +8438,296 @@ def notify_thread_participants(thread_id, sender_role, sender_key, body):
         )
 
 
+def ensure_child_os_schema():
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS child_os_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        parent_name TEXT,
+        student_name TEXT,
+        request_text TEXT,
+        language TEXT,
+        intent TEXT,
+        risk_level TEXT,
+        route_to TEXT,
+        status TEXT,
+        outcome TEXT,
+        related_schedule_id INTEGER,
+        owner_status TEXT DEFAULT 'watching',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def child_os_detect_language(text):
+    return "zh" if any("\u4e00" <= ch <= "\u9fff" for ch in (text or "")) else "en"
+
+
+def child_os_copy(lang, key, **kwargs):
+    text = {
+        "balance": {
+            "en": "{student} has {lessons_left} lesson(s) left.",
+            "zh": "{student} 还剩 {lessons_left} 节课。"
+        },
+        "low_balance": {
+            "en": "{student} has {lessons_left} lesson(s) left. Renewal is recommended soon.",
+            "zh": "{student} 只剩 {lessons_left} 节课，建议尽快续费。"
+        },
+        "reminder": {
+            "en": "Next lesson: {date} {time}, with {teacher}, {room}.",
+            "zh": "下一节课：{date} {time}，老师 {teacher}，{room}。"
+        },
+        "no_lesson": {
+            "en": "I cannot find an upcoming scheduled lesson.",
+            "zh": "我没有找到接下来已排好的课程。"
+        },
+        "cancel_done": {
+            "en": "Done. I cancelled {student}'s lesson on {date} {time}. Status: {status}. Owner can see this action.",
+            "zh": "已完成。我取消了 {student} 在 {date} {time} 的课程。状态：{status}。Owner 已同步可见。"
+        },
+        "reschedule_once": {
+            "en": "I can help reschedule one lesson. Please open the reschedule form to choose the new time.",
+            "zh": "我可以帮你改一次课。请打开改课表单选择新的时间。"
+        },
+        "receipt": {
+            "en": "I can help with receipts. Please open Billing to review or send the receipt.",
+            "zh": "我可以帮你处理收据。请打开账单页面查看或发送收据。"
+        },
+        "amber": {
+            "en": "This request needs confirmation before execution. I logged it for review.",
+            "zh": "这个请求需要确认后才能执行。我已经记录并发送审核。"
+        },
+        "red": {
+            "en": "This request requires owner handling. I sent it to the owner inbox.",
+            "zh": "这个请求必须由 Owner 人工处理。我已经发送到 Owner 收件箱。"
+        },
+        "fallback": {
+            "en": "I logged your request. Owner can see it and will follow up if needed.",
+            "zh": "我已经记录你的请求。Owner 可以看到，如需要会跟进。"
+        },
+    }[key][lang]
+    return text.format(**kwargs)
+
+
+def child_os_classify(text):
+    raw = (text or "").strip()
+    lower = raw.lower()
+    lang = child_os_detect_language(raw)
+
+    red_words = ["换老师", "更换老师", "停课", "停止所有", "stop all", "stop lessons", "change teacher", "switch teacher"]
+    amber_money = ["续费", "renew", "package", "付款", "refund", "退课", "退费", "invoice"]
+    amber_schedule = ["以后都", "所有后续", "future", "recurring", "every week", "all future"]
+    cancel_words = ["取消", "请假", "缺席", "cancel", "absence", "absent", "miss class"]
+    reschedule_words = ["改课", "调课", "换时间", "reschedule", "move lesson", "change time"]
+    balance_words = ["还剩", "几节", "课次", "余额", "balance", "lessons left", "how many lessons"]
+    reminder_words = ["提醒", "下一节", "下节课", "什么时候上课", "reminder", "next lesson", "when is"]
+    receipt_words = ["收据", "receipt"]
+
+    if any(w in lower or w in raw for w in red_words):
+        return lang, "owner_only", "red", "owner"
+    if any(w in lower or w in raw for w in amber_money):
+        return lang, "renewal_or_money", "amber", "owner"
+    if any(w in lower or w in raw for w in amber_schedule):
+        return lang, "reschedule_future", "amber", "teacher"
+    if any(w in lower or w in raw for w in cancel_words):
+        return lang, "cancel_once", "teal", "auto"
+    if any(w in lower or w in raw for w in reschedule_words):
+        return lang, "reschedule_once", "teal", "auto"
+    if any(w in lower or w in raw for w in balance_words):
+        return lang, "balance_query", "teal", "auto"
+    if any(w in lower or w in raw for w in reminder_words):
+        return lang, "lesson_reminder", "teal", "auto"
+    if any(w in lower or w in raw for w in receipt_words):
+        return lang, "receipt", "teal", "auto"
+    return lang, "general", "teal", "auto"
+
+
+def create_child_os_request(parent_id, parent_name, student_name, request_text, language, intent, risk_level, route_to, status, outcome, related_schedule_id=None):
+    ensure_child_os_schema()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO child_os_requests (
+        parent_id,
+        parent_name,
+        student_name,
+        request_text,
+        language,
+        intent,
+        risk_level,
+        route_to,
+        status,
+        outcome,
+        related_schedule_id,
+        owner_status,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'watching', ?, ?)
+    """, (
+        parent_id,
+        parent_name,
+        student_name,
+        request_text,
+        language,
+        intent,
+        risk_level,
+        route_to,
+        status,
+        outcome,
+        related_schedule_id,
+        now,
+        now
+    ))
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return request_id
+
+
+def child_os_next_lesson(cursor, student_name):
+    today = date.today().strftime("%Y-%m-%d")
+    cursor.execute("""
+    SELECT id, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), COALESCE(status, 'scheduled')
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    AND (status IS NULL OR status = '' OR status = 'scheduled')
+    ORDER BY lesson_date, lesson_time
+    LIMIT 1
+    """, (student_name, today))
+    return cursor.fetchone()
+
+
+def handle_child_os_request(parent_id, parent_name, student_name, request_text):
+    ensure_child_os_schema()
+    lang, intent, risk_level, route_to = child_os_classify(request_text)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT lessons_left FROM students WHERE name = ?", (student_name,))
+    student = cursor.fetchone()
+    lessons_left = student[0] if student else 0
+    next_lesson = child_os_next_lesson(cursor, student_name)
+    conn.close()
+
+    status = "logged"
+    outcome = child_os_copy(lang, "fallback")
+    related_schedule_id = None
+    action_href = "/parent_dashboard"
+    action_label = "Dashboard" if lang == "en" else "回首页"
+
+    if intent == "balance_query":
+        key = "low_balance" if float(lessons_left or 0) <= 2 else "balance"
+        outcome = child_os_copy(lang, key, student=student_name, lessons_left=lessons_left)
+        status = "executed"
+        action_href = "/parent_billing" if float(lessons_left or 0) <= 2 else "/parent_dashboard"
+        action_label = "Renew / Billing" if lang == "en" else "续费 / 账单"
+    elif intent == "lesson_reminder":
+        if next_lesson:
+            related_schedule_id = next_lesson[0]
+            outcome = child_os_copy(
+                lang,
+                "reminder",
+                date=next_lesson[1],
+                time=format_lesson_time_range(next_lesson[2], next_lesson[5]),
+                teacher=next_lesson[3] or "",
+                room=next_lesson[4] or ""
+            )
+        else:
+            outcome = child_os_copy(lang, "no_lesson")
+        status = "executed"
+    elif intent == "cancel_once":
+        if next_lesson:
+            related_schedule_id = next_lesson[0]
+            cancel_status = get_parent_cancel_status(next_lesson[1], next_lesson[2])
+            result = apply_lesson_status(
+                next_lesson[0],
+                cancel_status,
+                actor="child_os_agent",
+                reason=request_text,
+                allowed_student_name=student_name
+            )
+            if result["ok"]:
+                status = "executed"
+                outcome = child_os_copy(
+                    lang,
+                    "cancel_done",
+                    student=student_name,
+                    date=next_lesson[1],
+                    time=next_lesson[2],
+                    status=result["status"]
+                )
+                log_parent_activity(parent_id, student_name, "child_os_cancel", outcome, next_lesson[0])
+            else:
+                status = "needs_owner"
+                risk_level = "amber"
+                route_to = "owner"
+                outcome = result["error"]
+        else:
+            status = "executed"
+            outcome = child_os_copy(lang, "no_lesson")
+    elif intent == "reschedule_once":
+        status = "guided"
+        outcome = child_os_copy(lang, "reschedule_once")
+        action_href = "/parent_reschedule"
+        action_label = "Choose new time" if lang == "en" else "选择新时间"
+    elif intent == "receipt":
+        status = "guided"
+        outcome = child_os_copy(lang, "receipt")
+        action_href = "/parent_billing"
+        action_label = "Billing / Receipts" if lang == "en" else "账单 / 收据"
+    elif risk_level == "amber":
+        status = "needs_confirmation"
+        outcome = child_os_copy(lang, "amber")
+        action_href = "/parent_billing" if intent == "renewal_or_money" else "/parent_reschedule"
+        action_label = "Open form" if lang == "en" else "打开表单"
+    elif risk_level == "red":
+        status = "owner_only"
+        outcome = child_os_copy(lang, "red")
+
+    request_id = create_child_os_request(
+        parent_id,
+        parent_name,
+        student_name,
+        request_text,
+        lang,
+        intent,
+        risk_level,
+        route_to,
+        status,
+        outcome,
+        related_schedule_id
+    )
+
+    create_notification(
+        "owner",
+        "owner",
+        "Child OS request",
+        f"{risk_level.upper()} · {intent} · {student_name}: {request_text}",
+        "/owner_child_os"
+    )
+
+    return {
+        "id": request_id,
+        "language": lang,
+        "intent": intent,
+        "risk_level": risk_level,
+        "route_to": route_to,
+        "status": status,
+        "outcome": outcome,
+        "action_href": action_href,
+        "action_label": action_label,
+    }
+
+
 def get_or_create_message_thread(subject, student_name=None, parent_id=None, teacher_name=None, thread_type="general", related_type=None, related_id=None, participants=None, is_group=0, owner_observer=1):
     ensure_v29_schema()
 
@@ -14473,6 +14763,7 @@ def parent_dashboard():
             </div>
 
             <div class="actions">
+                <a class="button" href="/parent_agent">Ask AI Agent</a>
                 <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
                 <a class="button" href="/parent_messages">{message_label}</a>
                 <a class="button" href="/parent_cancel">Cancel Lesson</a>
@@ -14567,6 +14858,137 @@ def parent_dashboard():
                 </div>
             </details>
 
+        </div>
+        {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_agent", methods=["GET", "POST"])
+def parent_agent():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    parent_id = session.get("parent_id")
+    parent_name = session.get("parent_name", "Parent")
+    linked_students = get_parent_students(parent_id) if parent_id else []
+    current_student = session.get("parent_student_name") or (linked_students[0][0] if linked_students else None)
+
+    if request.method == "POST":
+        student_name = request.form.get("student_name") or current_student
+        request_text = (request.form.get("request_text") or "").strip()
+        if not student_name or not parent_can_access_student(parent_id, student_name):
+            return "<h1>Permission denied</h1>"
+        if not request_text:
+            return redirect("/parent_agent")
+        result = handle_child_os_request(parent_id, parent_name, student_name, request_text)
+        return redirect(f"/parent_agent?request_id={result['id']}")
+
+    selected_request_id = request.args.get("request_id")
+    result_card = ""
+    if selected_request_id:
+        ensure_child_os_schema()
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id, request_text, language, intent, risk_level, status, outcome, created_at
+        FROM child_os_requests
+        WHERE id = ?
+        AND parent_id = ?
+        """, (selected_request_id, parent_id))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            result_card = f"""
+            <div class="agent-result {row[4]}">
+                <div class="risk-pill">{row[4].upper()}</div>
+                <h2>{escape(row[5] or '')}</h2>
+                <p>{escape(row[6] or '')}</p>
+                <div class="result-meta">{escape(row[3] or '')} · {escape(row[7] or '')}</div>
+            </div>
+            """
+
+    student_options = "".join([
+        f'<option value="{escape(s[0])}" {"selected" if s[0] == current_student else ""}>{escape(s[0])}</option>'
+        for s in linked_students
+    ])
+
+    quick_zh = "帮我看一下还剩几节课"
+    quick_en = "When is my next lesson?"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Child OS Agent")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            .container {{ max-width:760px; margin:0 auto; min-height:100vh; background:white; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
+            .agent-head {{ display:flex; align-items:center; gap:12px; margin-bottom:18px; }}
+            .agent-avatar {{ width:48px; height:48px; border-radius:16px; background:#ede9fe; color:#4c1d95; display:flex; align-items:center; justify-content:center; font-weight:900; }}
+            h1 {{ margin:0; font-size:30px; }}
+            .sub {{ color:#6b7280; margin-top:4px; line-height:1.45; }}
+            .risk-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:18px 0; }}
+            .risk {{ border-radius:14px; padding:12px; border:1px solid #e5e7eb; }}
+            .risk b {{ display:block; margin-bottom:5px; }}
+            .teal {{ background:#ecfdf5; color:#065f46; border-color:#99f6e4; }}
+            .amber {{ background:#fff7ed; color:#9a3412; border-color:#fed7aa; }}
+            .red {{ background:#fef2f2; color:#991b1b; border-color:#fecaca; }}
+            select, textarea {{ width:100%; border:1px solid #d1d5db; border-radius:12px; padding:12px 14px; font-size:16px; margin:8px 0 14px; }}
+            textarea {{ min-height:120px; }}
+            button, a.button {{ display:inline-block; border:0; background:#4f46e5; color:white; border-radius:10px; padding:12px 16px; font-weight:900; text-decoration:none; }}
+            .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 14px; }}
+            .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; padding:9px 11px; font-weight:800; }}
+            .owner-note {{ margin:14px 0; padding:12px; background:#fff7ed; color:#7c2d12; border:1px solid #fed7aa; border-radius:12px; font-weight:800; }}
+            .agent-result {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; }}
+            .risk-pill {{ display:inline-block; padding:4px 9px; border-radius:999px; background:rgba(255,255,255,.65); font-size:12px; font-weight:900; margin-bottom:8px; }}
+            .result-meta {{ color:#6b7280; font-size:13px; margin-top:8px; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            @media(max-width:760px) {{ .risk-grid {{ grid-template-columns:1fr; }} .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} }}
+        </style>
+        <script>
+            function fillAgent(text) {{
+                document.getElementById("request_text").value = text;
+                document.getElementById("request_text").focus();
+            }}
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="agent-head">
+                <div class="agent-avatar">AI</div>
+                <div>
+                    <h1>Child OS Agent</h1>
+                    <div class="sub">Tell me what you need in English or Chinese. 你可以直接告诉我想做什么。</div>
+                </div>
+            </div>
+
+            <div class="risk-grid">
+                <div class="risk teal"><b>Teal · Auto</b>Cancel one class, check balance, next lesson reminder.</div>
+                <div class="risk amber"><b>Amber · Confirm</b>Future schedule changes or renewal/payment requests.</div>
+                <div class="risk red"><b>Red · Owner</b>Change teacher or stop all lessons.</div>
+            </div>
+
+            <div class="owner-note">Owner can see every request in real time and can block, edit, or escalate.</div>
+            {result_card}
+
+            <form method="POST">
+                Student / Child:<br>
+                <select name="student_name">{student_options}</select>
+                What would you like help with?<br>
+                <textarea id="request_text" name="request_text" placeholder="Example: 帮我取消下一节课 / How many lessons are left? / Please renew package"></textarea>
+                <div class="quick">
+                    <button type="button" onclick="fillAgent('{quick_zh}')">课次余额</button>
+                    <button type="button" onclick="fillAgent('{quick_en}')">Next lesson</button>
+                    <button type="button" onclick="fillAgent('帮我取消下一节课')">取消下一节课</button>
+                    <button type="button" onclick="fillAgent('I want to renew package')">Renew package</button>
+                </div>
+                <div class="form-actions">
+                    <button type="submit">Send to Agent</button>
+                    <a class="button" href="/parent_dashboard">Back</a>
+                </div>
+            </form>
         </div>
         {parent_bottom_nav("home")}
     </body>
@@ -15883,6 +16305,43 @@ def executive_dashboard():
     if not today_rows:
         today_rows = "<tr><td colspan='5'>No lessons today.</td></tr>"
 
+    ensure_child_os_schema()
+    cursor.execute("""
+    SELECT id, parent_name, student_name, request_text, intent, risk_level, route_to, status, owner_status, created_at
+    FROM child_os_requests
+    ORDER BY id DESC
+    LIMIT 8
+    """)
+    child_os_items = cursor.fetchall()
+
+    child_os_rows = ""
+    child_os_pending = 0
+    child_os_revenue = 0
+    child_os_followups = 0
+    for item in child_os_items:
+        risk = item[5] or "teal"
+        owner_status = item[8] or "watching"
+        if item[7] in ("needs_confirmation", "owner_only", "needs_owner") or risk in ("amber", "red"):
+            child_os_pending += 1
+        if item[4] == "renewal_or_money":
+            child_os_revenue += 1
+        if owner_status in ("follow_up", "blocked"):
+            child_os_followups += 1
+        child_os_rows += f"""
+        <tr>
+            <td><span class="risk-badge {escape(risk)}">{escape(risk).upper()}</span></td>
+            <td>{escape(item[2] or '')}</td>
+            <td>{escape(item[4] or '')}</td>
+            <td>{escape(item[7] or '')}</td>
+            <td>{escape(owner_status)}</td>
+            <td>{escape((item[3] or '')[:90])}</td>
+            <td>{escape(item[9] or '')}</td>
+        </tr>
+        """
+
+    if not child_os_rows:
+        child_os_rows = "<tr><td colspan='7'>No Child OS requests yet.</td></tr>"
+
     conn.close()
 
     return f"""
@@ -15993,6 +16452,27 @@ def executive_dashboard():
             .good {{
                 color: #137333;
             }}
+            .risk-badge {{
+                display: inline-block;
+                min-width: 54px;
+                text-align: center;
+                padding: 4px 8px;
+                border-radius: 999px;
+                font-size: 12px;
+                font-weight: 900;
+            }}
+            .risk-badge.teal {{
+                background: #ccfbf1;
+                color: #0f766e;
+            }}
+            .risk-badge.amber {{
+                background: #ffedd5;
+                color: #9a3412;
+            }}
+            .risk-badge.red {{
+                background: #fee2e2;
+                color: #991b1b;
+            }}
         </style>
     </head>
 
@@ -16010,6 +16490,7 @@ def executive_dashboard():
                     <a class="button" href="/payroll?month={selected_month}">Payroll</a>
                     <a class="button" href="/invoices">Invoices</a>
                     <a class="button" href="/calendar">Calendar</a>
+                    <a class="button" href="/owner_child_os">Child OS</a>
                     <a class="button" href="/owner_backup">Backup</a>
                 </div>
             </div>
@@ -16100,6 +16581,45 @@ def executive_dashboard():
             </div>
 
             <div class="section">
+                <h2>Child OS Owner Oversight</h2>
+                <div class="card-grid">
+                    <div class="card">
+                        <div class="label">Live Feed</div>
+                        <div class="value">{len(child_os_items)}</div>
+                        <div class="sub">Latest AI/parent requests</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Needs Attention</div>
+                        <div class="value danger">{child_os_pending}</div>
+                        <div class="sub">Amber / red / owner routes</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Revenue Alerts</div>
+                        <div class="value">{child_os_revenue}</div>
+                        <div class="sub">Renewal or payment requests</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Follow-up Queue</div>
+                        <div class="value">{child_os_followups}</div>
+                        <div class="sub">Blocked or manual follow-up</div>
+                    </div>
+                </div>
+                <table>
+                    <tr>
+                        <th>Risk</th>
+                        <th>Student</th>
+                        <th>Intent</th>
+                        <th>Status</th>
+                        <th>Owner</th>
+                        <th>Request</th>
+                        <th>Time</th>
+                    </tr>
+                    {child_os_rows}
+                </table>
+                <p><a class="button" href="/owner_child_os">Open Owner Control Panel</a></p>
+            </div>
+
+            <div class="section">
                 <h2>Teacher Profitability</h2>
                 <table>
                     <tr>
@@ -16161,6 +16681,285 @@ def executive_dashboard():
     </body>
     </html>
     """
+
+
+def update_child_os_owner_status(request_id, owner_status, status=None, note=None):
+    ensure_child_os_schema()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT parent_id, student_name, outcome
+    FROM child_os_requests
+    WHERE id = ?
+    """, (request_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    parent_id, student_name, old_outcome = row
+    next_outcome = old_outcome or ""
+    if note:
+        next_outcome = (next_outcome + "\n\n" + note).strip()
+
+    if status:
+        cursor.execute("""
+        UPDATE child_os_requests
+        SET owner_status = ?, status = ?, outcome = ?, updated_at = ?
+        WHERE id = ?
+        """, (owner_status, status, next_outcome, now, request_id))
+    else:
+        cursor.execute("""
+        UPDATE child_os_requests
+        SET owner_status = ?, outcome = ?, updated_at = ?
+        WHERE id = ?
+        """, (owner_status, next_outcome, now, request_id))
+    conn.commit()
+    conn.close()
+
+    if parent_id:
+        create_notification(
+            "parent",
+            str(parent_id),
+            "Child OS update",
+            note or "Owner reviewed your request.",
+            f"/parent_agent?request_id={request_id}",
+            "child_os_request",
+            request_id
+        )
+    return {"parent_id": parent_id, "student_name": student_name}
+
+
+@app.route("/owner_child_os")
+def owner_child_os():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_child_os_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, parent_name, student_name, request_text, language, intent, risk_level, route_to,
+           status, outcome, related_schedule_id, owner_status, created_at, updated_at
+    FROM child_os_requests
+    ORDER BY id DESC
+    LIMIT 80
+    """)
+    rows_data = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COUNT(*) FROM child_os_requests
+    WHERE date(created_at) = date('now', 'localtime')
+    """)
+    today_count = cursor.fetchone()[0] or 0
+    cursor.execute("""
+    SELECT COUNT(*) FROM child_os_requests
+    WHERE risk_level IN ('amber', 'red')
+    AND owner_status NOT IN ('resolved', 'blocked')
+    """)
+    pending_count = cursor.fetchone()[0] or 0
+    cursor.execute("""
+    SELECT COUNT(*) FROM child_os_requests
+    WHERE intent = 'renewal_or_money'
+    AND owner_status NOT IN ('resolved', 'blocked')
+    """)
+    revenue_count = cursor.fetchone()[0] or 0
+    cursor.execute("""
+    SELECT COUNT(*) FROM child_os_requests
+    WHERE owner_status = 'follow_up'
+    """)
+    followup_count = cursor.fetchone()[0] or 0
+    conn.close()
+
+    rows = ""
+    for item in rows_data:
+        request_id = item[0]
+        risk = item[6] or "teal"
+        owner_status = item[11] or "watching"
+        rows += f"""
+        <div class="request-card {escape(risk)}">
+            <div class="request-top">
+                <div>
+                    <span class="risk-badge {escape(risk)}">{escape(risk).upper()}</span>
+                    <strong>{escape(item[2] or 'Student')}</strong>
+                    <span class="muted">{escape(item[5] or '')} · route: {escape(item[7] or '')}</span>
+                </div>
+                <div class="muted">{escape(item[12] or '')}</div>
+            </div>
+            <div class="request-text">{escape(item[3] or '')}</div>
+            <div class="outcome">{escape(item[9] or '')}</div>
+            <div class="request-meta">
+                Parent: {escape(item[1] or '')} · Status: {escape(item[8] or '')} · Owner: {escape(owner_status)}
+            </div>
+            <form class="edit-form" method="POST" action="/owner_child_os/{request_id}/edit">
+                <textarea name="outcome" rows="3">{escape(item[9] or '')}</textarea>
+                <button class="edit-btn" type="submit">Save Edited Outcome</button>
+            </form>
+            <div class="owner-actions">
+                <form method="POST" action="/owner_child_os/{request_id}/block">
+                    <button class="danger-btn" type="submit">Block</button>
+                </form>
+                <form method="POST" action="/owner_child_os/{request_id}/escalate">
+                    <button class="amber-btn" type="submit">Needs Follow-up</button>
+                </form>
+                <form method="POST" action="/owner_child_os/{request_id}/resolve">
+                    <button class="good-btn" type="submit">Mark Resolved</button>
+                </form>
+            </div>
+        </div>
+        """
+
+    if not rows:
+        rows = "<div class='empty'>No Child OS requests yet.</div>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Child OS Owner Control</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; }}
+            .shell {{ max-width:1180px; margin:0 auto; padding:34px 22px; }}
+            .header {{ display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:20px; }}
+            h1 {{ margin:0; font-size:34px; }}
+            .sub {{ color:#6b7280; margin-top:6px; }}
+            a.button {{ background:#4f46e5; color:white; text-decoration:none; padding:10px 14px; border-radius:9px; font-weight:900; display:inline-block; }}
+            .grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:18px; }}
+            .metric {{ background:white; border:1px solid #e5e7eb; border-radius:14px; padding:16px; }}
+            .metric .label {{ color:#6b7280; font-weight:800; }}
+            .metric .value {{ font-size:30px; font-weight:950; margin-top:8px; }}
+            .notice {{ background:#fff7ed; border:1px solid #fed7aa; color:#7c2d12; border-radius:14px; padding:14px 16px; margin:0 0 18px; font-weight:850; }}
+            .request-card {{ background:white; border:1px solid #e5e7eb; border-left:7px solid #14b8a6; border-radius:14px; padding:16px; margin:12px 0; box-shadow:0 4px 14px rgba(15,23,42,.06); }}
+            .request-card.amber {{ border-left-color:#f59e0b; }}
+            .request-card.red {{ border-left-color:#ef4444; }}
+            .request-top {{ display:flex; justify-content:space-between; gap:14px; align-items:flex-start; }}
+            .risk-badge {{ display:inline-block; min-width:58px; text-align:center; padding:5px 9px; border-radius:999px; font-size:12px; font-weight:950; margin-right:8px; }}
+            .risk-badge.teal {{ background:#ccfbf1; color:#0f766e; }}
+            .risk-badge.amber {{ background:#ffedd5; color:#9a3412; }}
+            .risk-badge.red {{ background:#fee2e2; color:#991b1b; }}
+            .muted {{ color:#6b7280; }}
+            .request-text {{ margin:14px 0 8px; font-size:17px; font-weight:850; }}
+            .outcome {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:12px; white-space:pre-wrap; line-height:1.45; }}
+            .request-meta {{ color:#6b7280; font-size:13px; margin-top:10px; }}
+            .edit-form {{ margin-top:12px; display:grid; grid-template-columns:1fr auto; gap:8px; align-items:start; }}
+            textarea {{ width:100%; border:1px solid #d1d5db; border-radius:10px; padding:10px; font:inherit; line-height:1.45; }}
+            .owner-actions {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }}
+            form {{ margin:0; }}
+            button {{ border:0; border-radius:9px; padding:10px 12px; font-weight:900; cursor:pointer; }}
+            .edit-btn {{ background:#e0e7ff; color:#3730a3; }}
+            .danger-btn {{ background:#fee2e2; color:#991b1b; }}
+            .amber-btn {{ background:#ffedd5; color:#9a3412; }}
+            .good-btn {{ background:#dcfce7; color:#166534; }}
+            .empty {{ background:white; border:1px dashed #d1d5db; border-radius:14px; padding:24px; color:#6b7280; }}
+            @media(max-width:860px) {{
+                .header {{ display:block; }}
+                .grid {{ grid-template-columns:1fr 1fr; }}
+                .request-top {{ display:block; }}
+                .edit-form {{ grid-template-columns:1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="shell">
+            <div class="header">
+                <div>
+                    <h1>Child OS Owner Control</h1>
+                    <div class="sub">Every parent AI request is visible here. Owner can block, escalate, or resolve at any point.</div>
+                </div>
+                <div>
+                    <a class="button" href="/executive_dashboard">Dashboard</a>
+                    <a class="button" href="/calendar">Calendar</a>
+                </div>
+            </div>
+
+            <div class="notice">Owner is the parallel oversight lane: live feed, override/block, edit outcome, follow-up, calendar sync, revenue alert, daily summary.</div>
+
+            <div class="grid">
+                <div class="metric"><div class="label">Live Feed Today</div><div class="value">{today_count}</div></div>
+                <div class="metric"><div class="label">Amber / Red Pending</div><div class="value">{pending_count}</div></div>
+                <div class="metric"><div class="label">Revenue Alerts</div><div class="value">{revenue_count}</div></div>
+                <div class="metric"><div class="label">Follow-up Queue</div><div class="value">{followup_count}</div></div>
+            </div>
+
+            {rows}
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/owner_child_os/<int:request_id>/block", methods=["POST"])
+def owner_child_os_block(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    update_child_os_owner_status(
+        request_id,
+        "blocked",
+        "blocked",
+        "Owner blocked this request before further processing. H-Music will follow up manually."
+    )
+    return redirect("/owner_child_os")
+
+
+@app.route("/owner_child_os/<int:request_id>/edit", methods=["POST"])
+def owner_child_os_edit(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    edited_outcome = (request.form.get("outcome") or "").strip()
+    ensure_child_os_schema()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT parent_id FROM child_os_requests WHERE id = ?", (request_id,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute("""
+        UPDATE child_os_requests
+        SET outcome = ?, owner_status = 'edited', updated_at = ?
+        WHERE id = ?
+        """, (edited_outcome, now, request_id))
+        conn.commit()
+    conn.close()
+    if row and row[0]:
+        create_notification(
+            "parent",
+            str(row[0]),
+            "Child OS update",
+            "Owner updated the result for your request.",
+            f"/parent_agent?request_id={request_id}",
+            "child_os_request",
+            request_id
+        )
+    return redirect("/owner_child_os")
+
+
+@app.route("/owner_child_os/<int:request_id>/escalate", methods=["POST"])
+def owner_child_os_escalate(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    update_child_os_owner_status(
+        request_id,
+        "follow_up",
+        "human_follow_up",
+        "Owner marked this request for human follow-up. H-Music will contact the family."
+    )
+    return redirect("/owner_child_os")
+
+
+@app.route("/owner_child_os/<int:request_id>/resolve", methods=["POST"])
+def owner_child_os_resolve(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    update_child_os_owner_status(
+        request_id,
+        "resolved",
+        None,
+        "Owner reviewed and marked this request resolved."
+    )
+    return redirect("/owner_child_os")
+
+
 @app.route("/owner_dashboard")
 def owner_dashboard():
     if not require_owner():
@@ -23752,6 +24551,7 @@ def ensure_production_schema():
     ensure_v17_schema()
     ensure_v321_schema()
     ensure_v33_schema()
+    ensure_child_os_schema()
     ensure_v145_schema()
 
     _production_schema_ready = True
