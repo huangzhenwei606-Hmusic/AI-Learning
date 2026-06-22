@@ -8252,6 +8252,8 @@ def ensure_v29_schema():
         parent_id INTEGER,
         teacher_name TEXT,
         thread_type TEXT,
+        is_group INTEGER DEFAULT 0,
+        owner_observer INTEGER DEFAULT 1,
         related_type TEXT,
         related_id INTEGER,
         status TEXT DEFAULT 'open',
@@ -8259,6 +8261,8 @@ def ensure_v29_schema():
         updated_at TEXT
     )
     """)
+    add_column_if_missing(cursor, "message_threads", "is_group", "is_group INTEGER DEFAULT 0")
+    add_column_if_missing(cursor, "message_threads", "owner_observer", "owner_observer INTEGER DEFAULT 1")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS messages (
@@ -8299,13 +8303,136 @@ def ensure_v29_schema():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS message_participants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id INTEGER,
+        participant_role TEXT,
+        participant_key TEXT,
+        display_name TEXT,
+        is_observer INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        last_read_at TEXT,
+        created_at TEXT,
+        UNIQUE(thread_id, participant_role, participant_key)
+    )
+    """)
+
+    cursor.execute("""
+    SELECT id, parent_id, teacher_name, COALESCE(owner_observer, 1)
+    FROM message_threads
+    """)
+    legacy_threads = cursor.fetchall()
+    for thread_id, parent_id, teacher_name, owner_observer in legacy_threads:
+        sync_thread_default_participants(
+            cursor,
+            thread_id,
+            parent_id,
+            teacher_name,
+            owner_observer=owner_observer
+        )
+
     os.makedirs(HMUSIC_UPLOAD_DIR, exist_ok=True)
 
     conn.commit()
     conn.close()
 
 
-def get_or_create_message_thread(subject, student_name=None, parent_id=None, teacher_name=None, thread_type="general", related_type=None, related_id=None):
+def ensure_message_participant(cursor, thread_id, role, key, display_name=None, is_observer=0):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT OR IGNORE INTO message_participants (
+        thread_id,
+        participant_role,
+        participant_key,
+        display_name,
+        is_observer,
+        active,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, 1, ?)
+    """, (
+        thread_id,
+        role,
+        str(key),
+        display_name or str(key),
+        1 if is_observer else 0,
+        now
+    ))
+    cursor.execute("""
+    UPDATE message_participants
+    SET display_name = COALESCE(NULLIF(display_name, ''), ?),
+        is_observer = ?,
+        active = 1
+    WHERE thread_id = ?
+    AND participant_role = ?
+    AND participant_key = ?
+    """, (
+        display_name or str(key),
+        1 if is_observer else 0,
+        thread_id,
+        role,
+        str(key)
+    ))
+
+
+def sync_thread_default_participants(cursor, thread_id, parent_id=None, teacher_name=None, owner_observer=1):
+    if owner_observer:
+        ensure_message_participant(cursor, thread_id, "owner", "owner", "Owner", is_observer=1)
+    if parent_id:
+        cursor.execute("SELECT parent_name, email FROM parent_profiles WHERE id = ?", (parent_id,))
+        parent = cursor.fetchone()
+        parent_label = parent[0] if parent and parent[0] else (parent[1] if parent and parent[1] else f"Parent #{parent_id}")
+        ensure_message_participant(cursor, thread_id, "parent", str(parent_id), parent_label)
+    if teacher_name:
+        ensure_message_participant(cursor, thread_id, "teacher", teacher_name, teacher_name)
+
+
+def get_student_teacher_names(cursor, student_name):
+    teachers = []
+    seen = set()
+    for sql, params in [
+        ("SELECT teacher FROM students WHERE name = ?", (student_name,)),
+        ("SELECT DISTINCT teacher FROM schedule WHERE student_name = ? AND teacher IS NOT NULL AND teacher != ''", (student_name,)),
+        ("SELECT DISTINCT teacher_name FROM enrollments WHERE student_name = ? AND status = 'active' AND teacher_name IS NOT NULL AND teacher_name != ''", (student_name,)),
+    ]:
+        try:
+            cursor.execute(sql, params)
+            for row in cursor.fetchall():
+                teacher = row[0]
+                if teacher and teacher not in seen:
+                    seen.add(teacher)
+                    teachers.append(teacher)
+        except sqlite3.OperationalError:
+            continue
+    return teachers
+
+
+def notify_thread_participants(thread_id, sender_role, sender_key, body):
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT participant_role, participant_key, COALESCE(is_observer, 0)
+    FROM message_participants
+    WHERE thread_id = ?
+    AND active = 1
+    """, (thread_id,))
+    participants = cursor.fetchall()
+    conn.close()
+    for role, key, is_observer in participants:
+        if role == sender_role and str(key) == str(sender_key):
+            continue
+        create_notification(
+            role,
+            str(key),
+            "New message",
+            body or "New attachment",
+            f"/message_thread/{thread_id}"
+        )
+
+
+def get_or_create_message_thread(subject, student_name=None, parent_id=None, teacher_name=None, thread_type="general", related_type=None, related_id=None, participants=None, is_group=0, owner_observer=1):
     ensure_v29_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -8322,6 +8449,11 @@ def get_or_create_message_thread(subject, student_name=None, parent_id=None, tea
         existing = cursor.fetchone()
 
         if existing:
+            sync_thread_default_participants(cursor, existing[0], parent_id, teacher_name, owner_observer=owner_observer)
+            if participants:
+                for p in participants:
+                    ensure_message_participant(cursor, existing[0], p["role"], p["key"], p.get("display_name"), p.get("is_observer", 0))
+            conn.commit()
             conn.close()
             return existing[0]
 
@@ -8334,19 +8466,23 @@ def get_or_create_message_thread(subject, student_name=None, parent_id=None, tea
         parent_id,
         teacher_name,
         thread_type,
+        is_group,
+        owner_observer,
         related_type,
         related_id,
         status,
         created_at,
         updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         subject,
         student_name,
         parent_id,
         teacher_name,
         thread_type,
+        1 if is_group else 0,
+        1 if owner_observer else 0,
         related_type,
         related_id,
         "open",
@@ -8355,6 +8491,10 @@ def get_or_create_message_thread(subject, student_name=None, parent_id=None, tea
     ))
 
     thread_id = cursor.lastrowid
+    sync_thread_default_participants(cursor, thread_id, parent_id, teacher_name, owner_observer=owner_observer)
+    if participants:
+        for p in participants:
+            ensure_message_participant(cursor, thread_id, p["role"], p["key"], p.get("display_name"), p.get("is_observer", 0))
     conn.commit()
     conn.close()
 
@@ -9425,36 +9565,55 @@ def get_unread_message_count(viewer_role, viewer_key):
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-
-    if viewer_role == "teacher":
-        cursor.execute("""
-        SELECT COUNT(*)
-        FROM messages m
-        JOIN message_threads t
-            ON m.thread_id = t.id
-        WHERE m.recipient_role = 'teacher'
-        AND m.read_at IS NULL
-        AND t.teacher_name = ?
-        """, (viewer_key,))
-    elif viewer_role == "parent":
-        cursor.execute("""
-        SELECT COUNT(*)
-        FROM messages m
-        JOIN message_threads t
-            ON m.thread_id = t.id
-        WHERE m.recipient_role = 'parent'
-        AND m.read_at IS NULL
-        AND t.parent_id = ?
-        """, (viewer_key,))
-    else:
-        cursor.execute("""
-        SELECT COUNT(*)
-        FROM messages
-        WHERE recipient_role = ?
-        AND read_at IS NULL
-        """, (viewer_role,))
-
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM messages m
+    JOIN message_participants mp
+        ON mp.thread_id = m.thread_id
+        AND mp.active = 1
+    WHERE mp.participant_role = ?
+    AND mp.participant_key = ?
+    AND NOT (
+        m.sender_role = ?
+        AND m.sender_name = mp.display_name
+    )
+    AND (
+        mp.last_read_at IS NULL
+        OR m.created_at > mp.last_read_at
+    )
+    """, (viewer_role, str(viewer_key), viewer_role))
     count = cursor.fetchone()[0] or 0
+
+    if count == 0:
+        if viewer_role == "teacher":
+            cursor.execute("""
+            SELECT COUNT(*)
+            FROM messages m
+            JOIN message_threads t
+                ON m.thread_id = t.id
+            WHERE m.recipient_role = 'teacher'
+            AND m.read_at IS NULL
+            AND t.teacher_name = ?
+            """, (viewer_key,))
+        elif viewer_role == "parent":
+            cursor.execute("""
+            SELECT COUNT(*)
+            FROM messages m
+            JOIN message_threads t
+                ON m.thread_id = t.id
+            WHERE m.recipient_role = 'parent'
+            AND m.read_at IS NULL
+            AND t.parent_id = ?
+            """, (viewer_key,))
+        else:
+            cursor.execute("""
+            SELECT COUNT(*)
+            FROM messages
+            WHERE recipient_role = ?
+            AND read_at IS NULL
+            """, (viewer_role,))
+        count = cursor.fetchone()[0] or 0
+
     conn.close()
     return count
 
@@ -9801,6 +9960,14 @@ def mark_message_thread_read(thread_id):
     cursor = conn.cursor()
 
     cursor.execute("""
+    UPDATE message_participants
+    SET last_read_at = ?
+    WHERE thread_id = ?
+    AND participant_role = ?
+    AND participant_key = ?
+    """, (now, thread_id, viewer_role, str(viewer_key)))
+
+    cursor.execute("""
     UPDATE messages
     SET read_at = ?
     WHERE thread_id = ?
@@ -9831,11 +9998,33 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
     params = []
 
     if viewer_role == "parent":
-        where_sql = "WHERE t.parent_id = ?"
-        params.append(int(viewer_key))
+        where_sql = """
+        WHERE (
+            t.parent_id = ?
+            OR EXISTS (
+                SELECT 1 FROM message_participants mp
+                WHERE mp.thread_id = t.id
+                AND mp.participant_role = 'parent'
+                AND mp.participant_key = ?
+                AND mp.active = 1
+            )
+        )
+        """
+        params.extend([int(viewer_key), str(viewer_key)])
     elif viewer_role == "teacher":
-        where_sql = "WHERE t.teacher_name = ?"
-        params.append(viewer_key)
+        where_sql = """
+        WHERE (
+            t.teacher_name = ?
+            OR EXISTS (
+                SELECT 1 FROM message_participants mp
+                WHERE mp.thread_id = t.id
+                AND mp.participant_role = 'teacher'
+                AND mp.participant_key = ?
+                AND mp.active = 1
+            )
+        )
+        """
+        params.extend([viewer_key, str(viewer_key)])
 
     cursor.execute(f"""
     SELECT
@@ -9847,6 +10036,7 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
         COALESCE(t.thread_type, 'general'),
         COALESCE(t.status, 'open'),
         COALESCE(t.updated_at, ''),
+        COALESCE(t.is_group, 0),
         COALESCE((
             SELECT body
             FROM messages lm
@@ -9857,9 +10047,20 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
         COALESCE((
             SELECT COUNT(*)
             FROM messages um
+            JOIN message_participants up
+                ON up.thread_id = um.thread_id
+                AND up.active = 1
             WHERE um.thread_id = t.id
-            AND um.recipient_role = ?
-            AND um.read_at IS NULL
+            AND up.participant_role = ?
+            AND up.participant_key = ?
+            AND (
+                up.last_read_at IS NULL
+                OR um.created_at > up.last_read_at
+            )
+            AND NOT (
+                um.sender_role = up.participant_role
+                AND um.sender_name = up.display_name
+            )
         ), 0),
         COALESCE((
             SELECT COUNT(*)
@@ -9873,7 +10074,7 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
         ON t.parent_id = p.id
     {where_sql}
     ORDER BY t.updated_at DESC, t.id DESC
-    """, [viewer_role] + params)
+    """, [viewer_role, str(viewer_key)] + params)
 
     rows = cursor.fetchall()
     conn.close()
@@ -9883,15 +10084,16 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
 def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None):
     rows = ""
     for t in rows_data:
-        unread_badge = f"<span class='status-badge unread'>{t[9]} unread</span>" if t[9] else "<span class='status-badge read'>Read</span>"
-        attachment_badge = f"<span class='badge'>{t[10]} files</span>" if t[10] else ""
-        latest = t[8] or ""
+        unread_badge = f"<span class='status-badge unread'>{t[10]} unread</span>" if t[10] else "<span class='status-badge read'>Read</span>"
+        attachment_badge = f"<span class='badge'>{t[11]} files</span>" if t[11] else ""
+        group_badge = "<span class='badge group'>Group</span>" if t[8] else "<span class='badge one'>1-on-1</span>"
+        latest = t[9] or ""
         if len(latest) > 120:
             latest = latest[:117] + "..."
 
         rows += f"""
-        <tr class="{'is-unread' if t[9] else ''}">
-            <td>{unread_badge} {attachment_badge}</td>
+        <tr class="{'is-unread' if t[10] else ''}">
+            <td>{unread_badge} {attachment_badge} {group_badge}</td>
             <td><a href="/message_thread/{t[0]}">{t[1]}</a><div class="subtle">#{t[0]}</div></td>
             <td>{t[2] or ''}</td>
             <td>{t[3] or ''}</td>
@@ -9937,6 +10139,8 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
             .status-badge.unread {{ background:#dc2626; color:white; }}
             .status-badge.read {{ background:#eef2ff; color:#111827; }}
             .badge.type {{ background:#e0f2fe; color:#075985; }}
+            .badge.group {{ background:#ccfbf1; color:#0f766e; }}
+            .badge.one {{ background:#ede9fe; color:#5b21b6; }}
             tr.is-unread td {{ background:#fff7ed; }}
             .parent-bottom-nav {{
                 position: fixed; left: 0; right: 0; bottom: 0;
@@ -9984,6 +10188,7 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
 
 
 def user_can_view_thread(thread_id):
+    ensure_v29_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -10000,6 +10205,24 @@ def user_can_view_thread(thread_id):
 
     if require_owner():
         return True
+
+    viewer_role, viewer_key = get_message_identity()
+    if viewer_role and viewer_key:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT 1
+        FROM message_participants
+        WHERE thread_id = ?
+        AND participant_role = ?
+        AND participant_key = ?
+        AND active = 1
+        LIMIT 1
+        """, (thread_id, viewer_role, str(viewer_key)))
+        can_view = cursor.fetchone() is not None
+        conn.close()
+        if can_view:
+            return True
 
     if require_parent() and session.get("parent_id") == thread[0]:
         return True
@@ -10391,7 +10614,10 @@ def new_parent_message():
 
     if request.method == "POST":
         student_name = request.form.get("student_name")
+        teacher_names = [t for t in request.form.getlist("teacher_names") if t]
         teacher_name = request.form.get("teacher_name")
+        if teacher_name and teacher_name not in teacher_names:
+            teacher_names.append(teacher_name)
         recipient_mode = request.form.get("recipient_mode", "teacher")
         body = request.form.get("body")
         files = request.files.getlist("attachments")
@@ -10409,35 +10635,54 @@ def new_parent_message():
                 teacher_name=None,
                 thread_type="parent_director",
                 related_type="parent_director",
-                related_id=None
+                related_id=None,
+                participants=[
+                    {"role": "parent", "key": str(parent_id), "display_name": session.get("parent_name", "Parent")},
+                    {"role": "owner", "key": "owner", "display_name": "Owner"}
+                ],
+                is_group=0,
+                owner_observer=0
             )
 
             message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "owner", body or "")
             save_message_attachments(message_id, files)
-            create_notification("owner", "owner", "New parent message to Director", body or "Parent sent a message.", f"/message_thread/{thread_id}")
+            notify_thread_participants(thread_id, "parent", str(parent_id), body or "Parent sent a message.")
 
             conn.close()
             return redirect(f"/message_thread/{thread_id}")
 
-        if not teacher_name:
-            conn.close()
-            return "<h1>Please choose a teacher or send only to Director.</h1>"
+        allowed_teachers = get_student_teacher_names(cursor, student_name)
+        teacher_names = [t for t in teacher_names if t in allowed_teachers]
 
-        subject = f"Parent / Teacher Message - {student_name}"
+        if not teacher_names:
+            conn.close()
+            return "<h1>Please choose one or more of this student's teachers, or send only to Director.</h1>"
+
+        is_group = len(teacher_names) > 1
+        subject = f"{'Group' if is_group else 'Parent / Teacher'} Message - {student_name}"
+        participants = [
+            {"role": "parent", "key": str(parent_id), "display_name": session.get("parent_name", "Parent")},
+            {"role": "owner", "key": "owner", "display_name": "Owner", "is_observer": 1}
+        ] + [
+            {"role": "teacher", "key": teacher, "display_name": teacher}
+            for teacher in teacher_names
+        ]
         thread_id = get_or_create_message_thread(
             subject,
             student_name=student_name,
             parent_id=parent_id,
-            teacher_name=teacher_name,
-            thread_type="parent_teacher",
+            teacher_name=teacher_names[0],
+            thread_type="parent_teacher_group" if is_group else "parent_teacher",
             related_type="parent_teacher",
-            related_id=None
+            related_id=None,
+            participants=participants,
+            is_group=1 if is_group else 0,
+            owner_observer=1
         )
 
-        message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "teacher", body or "")
+        message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "participants", body or "")
         save_message_attachments(message_id, files)
-        create_notification("teacher", teacher_name, "New parent message", body or "Parent sent a message.", f"/message_thread/{thread_id}")
-        create_notification("owner", "owner", "Parent messaged teacher", f"{session.get('parent_name', 'Parent')} messaged {teacher_name} about {student_name}.", f"/message_thread/{thread_id}")
+        notify_thread_participants(thread_id, "parent", str(parent_id), body or "Parent sent a message.")
 
         conn.close()
         return redirect(f"/message_thread/{thread_id}")
@@ -10453,12 +10698,22 @@ def new_parent_message():
     """, (parent_id,))
     linked_students = cursor.fetchall()
 
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
-    teachers = cursor.fetchall()
+    teacher_pairs = []
+    for student_name, _primary_teacher in linked_students:
+        for teacher in get_student_teacher_names(cursor, student_name):
+            teacher_pairs.append((student_name, teacher))
     conn.close()
 
     student_options = "".join([f'<option value="{s[0]}">{s[0]} | Primary Teacher: {s[1] or ""}</option>' for s in linked_students])
-    teacher_options = "".join([f'<option value="{t[0]}">{t[0]}</option>' for t in teachers])
+    teacher_checks = "".join([
+        f"""
+        <label class="teacher-choice" data-student="{escape(student)}">
+            <input type="checkbox" name="teacher_names" value="{escape(teacher)}">
+            {escape(teacher)}
+        </label>
+        """
+        for student, teacher in teacher_pairs
+    ]) or "<p class='hint'>No teachers linked to this student yet.</p>"
 
     return f"""
     <html>
@@ -10479,6 +10734,10 @@ def new_parent_message():
             .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
             .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
             .recipient-options input {{ width:auto; min-height:auto; margin:0 6px 0 0; }}
+            .teacher-grid {{ display:grid; grid-template-columns:1fr; gap:8px; margin:8px 0 18px; }}
+            .teacher-choice {{ display:flex; align-items:center; gap:8px; border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .teacher-choice input {{ width:auto; min-height:auto; margin:0; }}
+            .hint {{ color:#6b7280; font-size:14px; line-height:1.5; }}
             @media (max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} .form-actions button, .form-actions a {{ text-align:center; }} }}
             @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
@@ -10487,14 +10746,24 @@ def new_parent_message():
                 const selected = document.querySelector("input[name='recipient_mode']:checked");
                 const mode = selected ? selected.value : "teacher";
                 const teacherBlock = document.getElementById("teacher-recipient-block");
-                const teacherSelect = document.getElementById("teacher-select");
                 if (mode === "director") {{
                     teacherBlock.style.display = "none";
-                    teacherSelect.removeAttribute("required");
                 }} else {{
                     teacherBlock.style.display = "block";
-                    teacherSelect.setAttribute("required", "required");
                 }}
+                filterTeachersForStudent();
+            }}
+            function filterTeachersForStudent() {{
+                const studentSelect = document.getElementById("student-select");
+                const student = studentSelect ? studentSelect.value : "";
+                document.querySelectorAll(".teacher-choice").forEach(choice => {{
+                    const show = choice.dataset.student === student;
+                    choice.style.display = show ? "flex" : "none";
+                    if (!show) {{
+                        const input = choice.querySelector("input");
+                        if (input) input.checked = false;
+                    }}
+                }});
             }}
         </script>
     </head>
@@ -10503,7 +10772,7 @@ def new_parent_message():
             <h1>New Message</h1>
             <form method="POST" enctype="multipart/form-data">
                 Student:<br>
-                <select name="student_name" required>{student_options}</select>
+                <select id="student-select" name="student_name" required onchange="filterTeachersForStudent()">{student_options}</select>
 
                 Send To:<br>
                 <div class="recipient-options">
@@ -10512,8 +10781,11 @@ def new_parent_message():
                 </div>
 
                 <div id="teacher-recipient-block">
-                    Teacher:<br>
-                    <select id="teacher-select" name="teacher_name" required>{teacher_options}</select>
+                    Teachers:<br>
+                    <div class="teacher-grid">
+                        {teacher_checks}
+                    </div>
+                    <p class="hint">You can choose one teacher for 1-on-1, or multiple teachers for a group chat. Owner can see every chat and join anytime.</p>
                 </div>
 
                 Message:<br>
@@ -10704,6 +10976,15 @@ def message_thread(thread_id):
     WHERE id = ?
     """, (thread_id,))
     thread_for_reply = cursor.fetchone()
+    if thread_for_reply:
+        sync_thread_default_participants(
+            cursor,
+            thread_id,
+            thread_for_reply[6],
+            thread_for_reply[7],
+            owner_observer=1
+        )
+        conn.commit()
     conn.close()
 
     if request.method == "POST":
@@ -10714,36 +10995,22 @@ def message_thread(thread_id):
             if require_owner():
                 sender_role = "owner"
                 sender_name = "Owner"
-                if thread_for_reply and thread_for_reply[6]:
-                    recipient_role = "parent"
-                    notify_role = "parent"
-                    notify_key = str(thread_for_reply[6])
-                elif thread_for_reply and thread_for_reply[7]:
-                    recipient_role = "teacher"
-                    notify_role = "teacher"
-                    notify_key = thread_for_reply[7]
-                else:
-                    recipient_role = "owner"
-                    notify_role = None
-                    notify_key = None
+                sender_key = "owner"
+                recipient_role = "participants"
             elif require_parent():
                 sender_role = "parent"
                 sender_name = session.get("parent_name", "Parent")
-                recipient_role = "teacher" if thread_for_reply and thread_for_reply[7] else "owner"
-                notify_role = "teacher" if thread_for_reply and thread_for_reply[7] else "owner"
-                notify_key = thread_for_reply[7] if thread_for_reply and thread_for_reply[7] else "owner"
+                sender_key = str(session.get("parent_id"))
+                recipient_role = "participants"
             else:
                 sender_role = "teacher"
                 sender_name = session.get("teacher_name", "Teacher")
-                recipient_role = "parent" if thread_for_reply and thread_for_reply[6] else "owner"
-                notify_role = "parent" if thread_for_reply and thread_for_reply[6] else "owner"
-                notify_key = str(thread_for_reply[6]) if thread_for_reply and thread_for_reply[6] else "owner"
+                sender_key = session.get("teacher_name", "Teacher")
+                recipient_role = "participants"
 
             message_id = add_message(thread_id, sender_role, sender_name, recipient_role, body or "")
             save_message_attachments(message_id, files)
-
-            if notify_key:
-                create_notification(notify_role, notify_key, "New message", body or "New attachment", f"/message_thread/{thread_id}")
+            notify_thread_participants(thread_id, sender_role, sender_key, body or "New attachment")
 
         return redirect(f"/message_thread/{thread_id}")
 
@@ -10751,11 +11018,20 @@ def message_thread(thread_id):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, subject, student_name, thread_type, status, updated_at, parent_id
+    SELECT id, subject, student_name, thread_type, status, updated_at, parent_id, COALESCE(is_group, 0), COALESCE(owner_observer, 1)
     FROM message_threads
     WHERE id = ?
     """, (thread_id,))
     thread = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT participant_role, participant_key, display_name, COALESCE(is_observer, 0)
+    FROM message_participants
+    WHERE thread_id = ?
+    AND active = 1
+    ORDER BY is_observer, participant_role, display_name
+    """, (thread_id,))
+    participant_rows = cursor.fetchall()
 
     cursor.execute("""
     SELECT id, sender_role, sender_name, recipient_role, body, created_at
@@ -10806,6 +11082,44 @@ def message_thread(thread_id):
     if not messages_html:
         messages_html = "<p>No messages yet.</p>"
 
+    participant_names = []
+    owner_observer = False
+    for p in participant_rows:
+        if p[0] == "owner" and p[3]:
+            owner_observer = True
+            continue
+        participant_names.append(p[2] or p[1])
+    participant_line = " · ".join([escape(name) for name in participant_names]) or "Conversation"
+    mode_label = "Group" if thread and thread[7] else "1-on-1"
+    observer_banner = ""
+    if owner_observer and not require_owner():
+        observer_banner = """
+        <div class="observer-banner">Owner can see this chat and can join anytime.</div>
+        """
+
+    owner_manage_html = ""
+    if require_owner() and thread and thread[2]:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        available_teachers = get_student_teacher_names(cursor, thread[2])
+        conn.close()
+        existing_teacher_keys = {p[1] for p in participant_rows if p[0] == "teacher"}
+        add_teacher_options = "".join([
+            f'<option value="{escape(t)}">{escape(t)}</option>'
+            for t in available_teachers
+            if t not in existing_teacher_keys
+        ])
+        if add_teacher_options:
+            owner_manage_html = f"""
+            <div class="owner-manage">
+                <form method="POST" action="/message_thread/{thread_id}/add_teacher_participant">
+                    <strong>Add teacher to this chat</strong>
+                    <select name="teacher_name">{add_teacher_options}</select>
+                    <button type="submit">Add</button>
+                </form>
+            </div>
+            """
+
     if require_owner():
         back_link = "/messages"
     elif require_teacher():
@@ -10830,6 +11144,12 @@ def message_thread(thread_id):
             .message {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:12px 0; background:#fafafa; overflow:hidden; }}
             .meta {{ color:#6b7280; font-size:13px; margin-bottom:8px; }}
             .body {{ font-size:15px; white-space:pre-wrap; }}
+            .thread-meta {{ color:#6b7280; font-size:14px; line-height:1.45; margin:0 0 12px; }}
+            .mode-pill {{ display:inline-block; padding:3px 9px; border-radius:999px; background:#ede9fe; color:#5b21b6; font-weight:900; font-size:12px; margin-right:6px; }}
+            .observer-banner {{ background:#fff7ed; border:1px solid #fed7aa; color:#7c2d12; padding:10px 12px; border-radius:10px; font-weight:800; margin:12px 0; }}
+            .owner-manage {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin:12px 0; }}
+            .owner-manage form {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }}
+            .owner-manage select {{ min-height:42px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; }}
             textarea {{ width:100%; min-height:120px; padding:12px 14px; margin:12px 0; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
             input[type=file] {{ width:100%; margin:8px 0 18px; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; min-height:48px; }}
@@ -10843,8 +11163,10 @@ def message_thread(thread_id):
     <body>
         <div class="container">
             <h1>{thread[1]}</h1>
-            <p>Student: {thread[2] or ''} | Type: {thread[3]} | Status: {thread[4]}</p>
+            <p class="thread-meta"><span class="mode-pill">{mode_label}</span>{participant_line}<br>Student: {thread[2] or ''} | Type: {thread[3]} | Status: {thread[4]}</p>
+            {observer_banner}
             <a class="button" href="{back_link}">Back</a>
+            {owner_manage_html}
 
             {messages_html}
 
@@ -10860,6 +11182,54 @@ def message_thread(thread_id):
     </body>
     </html>
     """
+
+
+@app.route("/message_thread/<int:thread_id>/add_teacher_participant", methods=["POST"])
+def add_teacher_participant_to_thread(thread_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v29_schema()
+    teacher_name = (request.form.get("teacher_name") or "").strip()
+    if not teacher_name:
+        return redirect(f"/message_thread/{thread_id}")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name
+    FROM message_threads
+    WHERE id = ?
+    """, (thread_id,))
+    thread = cursor.fetchone()
+    if not thread:
+        conn.close()
+        return "<h1>Thread not found</h1>"
+
+    allowed_teachers = get_student_teacher_names(cursor, thread[0])
+    if teacher_name not in allowed_teachers:
+        conn.close()
+        return "<h1>This teacher is not linked to this student.</h1>"
+
+    ensure_message_participant(cursor, thread_id, "teacher", teacher_name, teacher_name)
+    cursor.execute("""
+    UPDATE message_threads
+    SET is_group = 1,
+        updated_at = ?
+    WHERE id = ?
+    """, (datetime.now().strftime("%Y-%m-%d %H:%M"), thread_id))
+    conn.commit()
+    conn.close()
+
+    add_message(thread_id, "owner", "Owner", "participants", f"Owner added {teacher_name} to this conversation.")
+    create_notification(
+        "teacher",
+        teacher_name,
+        "Added to message thread",
+        f"Owner added you to a conversation about {thread[0] or 'a student'}.",
+        f"/message_thread/{thread_id}"
+    )
+    return redirect(f"/message_thread/{thread_id}")
 
 
 
