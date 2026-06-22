@@ -4,6 +4,7 @@ import os
 import smtplib
 import calendar as calendar_lib
 import json
+import zipfile
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -20,6 +21,10 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("HMUSIC_SECRET_KEY", "hmusic_secret_key")
 HMUSIC_DB_PATH = os.environ.get("HMUSIC_DB_PATH", "hmusic.db")
 HMUSIC_UPLOAD_DIR = os.environ.get("HMUSIC_UPLOAD_DIR", "message_uploads")
+HMUSIC_BACKUP_DIR = os.environ.get(
+    "HMUSIC_BACKUP_DIR",
+    os.path.join(os.path.dirname(HMUSIC_DB_PATH) or ".", "backups")
+)
 DB_NAME = "hmusic.db"
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
@@ -15381,6 +15386,7 @@ def executive_dashboard():
                     <a class="button" href="/payroll?month={selected_month}">Payroll</a>
                     <a class="button" href="/invoices">Invoices</a>
                     <a class="button" href="/calendar">Calendar</a>
+                    <a class="button" href="/owner_backup">Backup</a>
                 </div>
             </div>
 
@@ -22921,9 +22927,231 @@ def ensure_production_schema():
     _production_schema_ready = True
 
 
+def ensure_backup_dir():
+    os.makedirs(HMUSIC_BACKUP_DIR, exist_ok=True)
+    return HMUSIC_BACKUP_DIR
+
+
+def backup_state_path():
+    return os.path.join(ensure_backup_dir(), "backup_state.json")
+
+
+def create_hmusic_backup(label="manual"):
+    ensure_backup_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_label = "".join(ch for ch in str(label or "manual") if ch.isalnum() or ch in ("-", "_")) or "manual"
+
+    db_backup_name = f"hmusic_{safe_label}_{timestamp}.db"
+    db_backup_path = os.path.join(HMUSIC_BACKUP_DIR, db_backup_name)
+
+    source_conn = _sqlite_connect(HMUSIC_DB_PATH)
+    backup_conn = _sqlite_connect(db_backup_path)
+    try:
+        source_conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+        source_conn.close()
+
+    uploads_zip_name = None
+    upload_file_count = 0
+    if HMUSIC_UPLOAD_DIR and os.path.isdir(HMUSIC_UPLOAD_DIR):
+        uploads_zip_name = f"hmusic_uploads_{safe_label}_{timestamp}.zip"
+        uploads_zip_path = os.path.join(HMUSIC_BACKUP_DIR, uploads_zip_name)
+        with zipfile.ZipFile(uploads_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(HMUSIC_UPLOAD_DIR):
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    arc_name = os.path.relpath(file_path, HMUSIC_UPLOAD_DIR)
+                    zf.write(file_path, arc_name)
+                    upload_file_count += 1
+
+    manifest = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "label": safe_label,
+        "database": db_backup_name,
+        "uploads_zip": uploads_zip_name,
+        "upload_file_count": upload_file_count,
+        "source_db_path": HMUSIC_DB_PATH,
+        "source_upload_dir": HMUSIC_UPLOAD_DIR,
+    }
+    manifest_name = f"hmusic_{safe_label}_{timestamp}_manifest.json"
+    with open(os.path.join(HMUSIC_BACKUP_DIR, manifest_name), "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    cleanup_old_backups()
+    return manifest
+
+
+def cleanup_old_backups(keep=30):
+    ensure_backup_dir()
+    for suffix in (".db", ".zip", "_manifest.json"):
+        files = []
+        for name in os.listdir(HMUSIC_BACKUP_DIR):
+            if name.startswith("hmusic_") and name.endswith(suffix):
+                path = os.path.join(HMUSIC_BACKUP_DIR, name)
+                files.append((os.path.getmtime(path), path))
+        files.sort(reverse=True)
+        for _, path in files[keep:]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def maybe_run_daily_backup():
+    if os.environ.get("HMUSIC_DISABLE_AUTO_BACKUP") == "1":
+        return
+
+    ensure_backup_dir()
+    today = date.today().isoformat()
+    state_file = backup_state_path()
+    state = {}
+    if os.path.exists(state_file):
+        try:
+            with open(state_file) as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+
+    if state.get("last_auto_backup_date") == today:
+        return
+
+    try:
+        manifest = create_hmusic_backup("auto")
+        state["last_auto_backup_date"] = today
+        state["last_auto_backup_at"] = manifest["created_at"]
+        state["last_auto_backup_db"] = manifest["database"]
+        with open(state_file, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as exc:
+        print(f"[backup] automatic backup failed: {exc}")
+
+
+def list_backup_files():
+    ensure_backup_dir()
+    rows = []
+    for name in os.listdir(HMUSIC_BACKUP_DIR):
+        path = os.path.join(HMUSIC_BACKUP_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        if not (name.endswith(".db") or name.endswith(".zip") or name.endswith("_manifest.json")):
+            continue
+        rows.append({
+            "name": name,
+            "size": os.path.getsize(path),
+            "modified": datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    return sorted(rows, key=lambda row: row["modified"], reverse=True)
+
+
+@app.route("/owner_backup", methods=["GET", "POST"])
+def owner_backup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    if request.method == "POST":
+        create_hmusic_backup("manual")
+        return redirect("/owner_backup?created=1")
+
+    backups = list_backup_files()
+    created_notice = ""
+    if request.args.get("created") == "1":
+        created_notice = "<div class='notice'>Backup created successfully.</div>"
+
+    rows = ""
+    for row in backups:
+        size_mb = row["size"] / (1024 * 1024)
+        rows += f"""
+        <tr>
+            <td>{escape(row["name"])}</td>
+            <td>{row["modified"]}</td>
+            <td>{size_mb:.2f} MB</td>
+            <td><a class="button small" href="/owner_backup/download/{escape(row["name"])}">Download</a></td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='4'>No backups yet.</td></tr>"
+
+    state = {}
+    state_file = backup_state_path()
+    if os.path.exists(state_file):
+        try:
+            with open(state_file) as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+
+    last_auto = state.get("last_auto_backup_at", "Not yet")
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Backup</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:32px; color:#111827; }}
+            .container {{ max-width:980px; background:white; padding:28px; border-radius:16px; box-shadow:0 8px 28px rgba(15,23,42,.08); }}
+            h1 {{ margin-top:0; }}
+            .notice {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:12px 14px; margin:16px 0; font-weight:800; }}
+            .warning {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin:16px 0; line-height:1.5; }}
+            .meta {{ color:#6b7280; line-height:1.55; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ text-align:left; padding:11px 10px; border-bottom:1px solid #e5e7eb; }}
+            th {{ background:#f3f4f6; }}
+            .button, button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:9px; padding:10px 14px; font-weight:900; text-decoration:none; cursor:pointer; }}
+            .button.small {{ padding:7px 10px; font-size:13px; }}
+            .links {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Owner Backup</h1>
+            <p class="meta">
+                Database source: <b>{escape(HMUSIC_DB_PATH)}</b><br>
+                Uploads source: <b>{escape(HMUSIC_UPLOAD_DIR)}</b><br>
+                Backup folder: <b>{escape(HMUSIC_BACKUP_DIR)}</b><br>
+                Last automatic backup: <b>{escape(str(last_auto))}</b>
+            </p>
+            {created_notice}
+            <div class="warning">
+                Automatic backup runs once per day on the first app request of the day.
+                Manual backup creates a fresh SQLite snapshot immediately.
+                Download and keep important backups outside Render as well.
+            </div>
+            <form method="POST">
+                <button type="submit">Create Backup Now</button>
+            </form>
+            <h2>Backup Files</h2>
+            <table>
+                <tr><th>File</th><th>Created</th><th>Size</th><th>Download</th></tr>
+                {rows}
+            </table>
+            <div class="links">
+                <a class="button" href="/executive_dashboard">Back to Executive Dashboard</a>
+                <a class="button" href="/">Home</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/owner_backup/download/<path:filename>")
+def owner_backup_download(filename):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    safe_name = os.path.basename(filename)
+    allowed = safe_name.endswith(".db") or safe_name.endswith(".zip") or safe_name.endswith("_manifest.json")
+    if not allowed:
+        return "File type not allowed", 403
+
+    return send_from_directory(HMUSIC_BACKUP_DIR, safe_name, as_attachment=True)
+
+
 @app.before_request
 def prepare_database_for_request():
     ensure_production_schema()
+    maybe_run_daily_backup()
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
