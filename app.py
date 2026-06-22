@@ -83,7 +83,13 @@ def hmusic_csrf_token():
 
 
 def hmusic_validate_csrf():
-    if request.path == "/stripe/webhook":
+    csrf_exempt_paths = {
+        "/owner_login",
+        "/teacher_login",
+        "/parent_login",
+        "/stripe/webhook",
+    }
+    if request.path in csrf_exempt_paths:
         return True
     expected = session.get("_csrf_token")
     submitted = (
