@@ -5,10 +5,12 @@ import smtplib
 import calendar as calendar_lib
 import json
 import zipfile
+import secrets
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
 from urllib.parse import urlencode
+from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
     import stripe
@@ -18,7 +20,18 @@ except ImportError:
 from openai import OpenAI
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("HMUSIC_SECRET_KEY", "hmusic_secret_key")
+HMUSIC_SECRET_KEY = os.environ.get("HMUSIC_SECRET_KEY")
+if not HMUSIC_SECRET_KEY:
+    if os.environ.get("RENDER") or os.environ.get("HMUSIC_REQUIRE_SECRET_KEY") == "1":
+        raise RuntimeError("HMUSIC_SECRET_KEY is required in production.")
+    HMUSIC_SECRET_KEY = "dev-only-hmusic-secret-key"
+app.secret_key = HMUSIC_SECRET_KEY
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("HMUSIC_COOKIE_SECURE", "1") != "0",
+    MAX_CONTENT_LENGTH=int(os.environ.get("HMUSIC_MAX_UPLOAD_MB", "10")) * 1024 * 1024,
+)
 HMUSIC_DB_PATH = os.environ.get("HMUSIC_DB_PATH", "hmusic.db")
 HMUSIC_UPLOAD_DIR = os.environ.get("HMUSIC_UPLOAD_DIR", "message_uploads")
 HMUSIC_BACKUP_DIR = os.environ.get(
@@ -40,6 +53,57 @@ def hmusic_sqlite_connect(database, *args, **kwargs):
 sqlite3.connect = hmusic_sqlite_connect
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "1234"
+
+
+def hmusic_password_hash(password):
+    return generate_password_hash(password or "")
+
+
+def hmusic_check_password(password, password_hash=None, legacy_password=None):
+    if password_hash:
+        try:
+            if check_password_hash(password_hash, password or ""):
+                return True
+        except ValueError:
+            pass
+    return legacy_password is not None and legacy_password != "" and legacy_password == (password or "")
+
+
+def hmusic_temp_password():
+    return "HMusic-" + secrets.token_urlsafe(6)
+
+
+def add_column_if_missing(cursor, table, column_name, column_sql):
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column_name not in columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
+
+
+def migrate_legacy_passwords(cursor, table):
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "password" not in columns or "password_hash" not in columns:
+        return
+    cursor.execute(f"""
+    SELECT id, password
+    FROM {table}
+    WHERE (password_hash IS NULL OR password_hash = '')
+    AND password IS NOT NULL
+    AND password != ''
+    """)
+    for record_id, legacy_password in cursor.fetchall():
+        cursor.execute(
+            f"UPDATE {table} SET password_hash = ?, password = '' WHERE id = ?",
+            (hmusic_password_hash(legacy_password), record_id)
+        )
+
+
+def set_password_columns(cursor, table, record_id, password, must_change=True):
+    cursor.execute(
+        f"UPDATE {table} SET password_hash = ?, password = '', must_change_password = ? WHERE id = ?",
+        (hmusic_password_hash(password), 1 if must_change else 0, record_id)
+    )
 
 
 def require_owner():
@@ -572,6 +636,8 @@ def ensure_teacher_management_schema():
     for column_name, column_sql in [
         ("username", "username TEXT"),
         ("password", "password TEXT"),
+        ("password_hash", "password_hash TEXT"),
+        ("must_change_password", "must_change_password INTEGER DEFAULT 0"),
         ("hourly_rate", "hourly_rate REAL DEFAULT 30"),
         ("email", "email TEXT"),
         ("phone", "phone TEXT"),
@@ -588,12 +654,17 @@ def ensure_teacher_management_schema():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE,
         password TEXT,
+        password_hash TEXT,
+        must_change_password INTEGER DEFAULT 0,
         role TEXT,
         display_name TEXT,
         linked_teacher_name TEXT,
         linked_student_name TEXT
     )
     """)
+
+    add_column_if_missing(cursor, "users", "password_hash", "password_hash TEXT")
+    add_column_if_missing(cursor, "users", "must_change_password", "must_change_password INTEGER DEFAULT 0")
 
     owner_username = os.environ.get("HMUSIC_OWNER_USERNAME", OWNER_USERNAME)
     owner_password = os.environ.get("HMUSIC_OWNER_PASSWORD", OWNER_PASSWORD)
@@ -612,10 +683,24 @@ def ensure_teacher_management_schema():
         VALUES (?, ?, ?, ?)
         """, (
             owner_username,
-            owner_password,
+            "",
             "owner",
             owner_display_name
         ))
+        cursor.execute("""
+        UPDATE users
+        SET password_hash = ?,
+            must_change_password = ?
+        WHERE username = ?
+        AND role = 'owner'
+        """, (
+            hmusic_password_hash(owner_password),
+            1 if owner_password == OWNER_PASSWORD else 0,
+            owner_username
+        ))
+
+    migrate_legacy_passwords(cursor, "teachers")
+    migrate_legacy_passwords(cursor, "users")
 
     conn.commit()
     conn.close()
@@ -1713,6 +1798,9 @@ def teachers():
             <td>{t[11]}</td>
             <td>
                 <a href="/edit_teacher/{t[0]}">Edit</a>
+                <form method="POST" action="/reset_teacher_password/{t[0]}" style="display:inline;">
+                    <button type="submit">Reset Password</button>
+                </form>
                 <form method="POST" action="/toggle_teacher/{t[0]}" style="display:inline;">
                     <button type="submit">{'Deactivate' if t[6] == 1 else 'Reactivate'}</button>
                 </form>
@@ -1785,7 +1873,8 @@ def add_teacher():
     if request.method == "POST":
         teacher_name = request.form.get("teacher_name")
         username = request.form.get("username") or teacher_login_username(teacher_name)
-        password = request.form.get("password") or "1234"
+        password = request.form.get("password") or hmusic_temp_password()
+        password_hash = hmusic_password_hash(password)
         email = request.form.get("email")
         phone = request.form.get("phone")
         hourly_rate = request.form.get("hourly_rate") or 30
@@ -1798,30 +1887,38 @@ def add_teacher():
 
         cursor.execute("""
         INSERT INTO teachers (
-            teacher_name, username, password, email, phone, hourly_rate, active, notes, created_at, updated_at
+            teacher_name, username, password, password_hash, must_change_password, email, phone, hourly_rate, active, notes, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (teacher_name, username, password, email, phone, hourly_rate, active, notes, now, now))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (teacher_name, username, "", password_hash, 1, email, phone, hourly_rate, active, notes, now, now))
 
         cursor.execute("""
         INSERT OR IGNORE INTO users (
-            username, password, role, display_name, linked_teacher_name
+            username, password, password_hash, must_change_password, role, display_name, linked_teacher_name
         )
-        VALUES (?, ?, ?, ?, ?)
-        """, (username, password, "teacher", teacher_name, teacher_name))
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (username, "", password_hash, 1, "teacher", teacher_name, teacher_name))
 
         cursor.execute("""
         UPDATE users
-        SET password = ?,
+        SET password = '',
+            password_hash = ?,
+            must_change_password = 1,
             role = 'teacher',
             display_name = ?,
             linked_teacher_name = ?
         WHERE username = ?
-        """, (password, teacher_name, teacher_name, username))
+        """, (password_hash, teacher_name, teacher_name, username))
 
         conn.commit()
         conn.close()
-        return redirect("/teachers")
+        return f"""
+        <h1>Teacher Created</h1>
+        <p>Username: <strong>{escape(username)}</strong></p>
+        <p>Temporary password: <strong>{escape(password)}</strong></p>
+        <p>Please send this to the teacher and ask them to change it after login.</p>
+        <p><a href="/teachers">Back to Teachers</a></p>
+        """
 
     return """
     <html>
@@ -1842,8 +1939,8 @@ def add_teacher():
                 <input name="teacher_name" required>
                 Login Username:<br>
                 <input name="username">
-                Login Password:<br>
-                <input name="password" value="1234">
+                Temporary Password:<br>
+                <input name="password" placeholder="Leave blank to auto-generate">
                 Email:<br>
                 <input type="email" name="email">
                 Phone:<br>
@@ -1892,7 +1989,7 @@ def edit_teacher(teacher_id):
     if request.method == "POST":
         teacher_name = request.form.get("teacher_name")
         username = request.form.get("username") or teacher_login_username(teacher_name)
-        password = request.form.get("password") or "1234"
+        password = request.form.get("password")
         email = request.form.get("email")
         phone = request.form.get("phone")
         hourly_rate = request.form.get("hourly_rate") or 30
@@ -1900,11 +1997,17 @@ def edit_teacher(teacher_id):
         notes = request.form.get("notes")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        cursor.execute("""
+        password_sql = ""
+        password_values = []
+        if password:
+            password_sql = "password = '', password_hash = ?, must_change_password = 1,"
+            password_values.append(hmusic_password_hash(password))
+
+        cursor.execute(f"""
         UPDATE teachers
         SET teacher_name = ?,
             username = ?,
-            password = ?,
+            {password_sql}
             email = ?,
             phone = ?,
             hourly_rate = ?,
@@ -1912,7 +2015,7 @@ def edit_teacher(teacher_id):
             notes = ?,
             updated_at = ?
         WHERE id = ?
-        """, (teacher_name, username, password, email, phone, hourly_rate, active, notes, now, teacher_id))
+        """, (teacher_name, username, *password_values, email, phone, hourly_rate, active, notes, now, teacher_id))
 
         for table, column in [
             ("students", "teacher"),
@@ -1928,17 +2031,23 @@ def edit_teacher(teacher_id):
             username, password, role, display_name, linked_teacher_name
         )
         VALUES (?, ?, ?, ?, ?)
-        """, (username, password, "teacher", teacher_name, teacher_name))
+        """, (username, "", "teacher", teacher_name, teacher_name))
 
-        cursor.execute("""
+        user_password_sql = ""
+        user_password_values = []
+        if password:
+            user_password_sql = "password = '', password_hash = ?, must_change_password = 1,"
+            user_password_values.append(hmusic_password_hash(password))
+
+        cursor.execute(f"""
         UPDATE users
         SET username = ?,
-            password = ?,
+            {user_password_sql}
             role = 'teacher',
             display_name = ?,
             linked_teacher_name = ?
         WHERE linked_teacher_name = ?
-        """, (username, password, teacher_name, teacher_name, old_name))
+        """, (username, *user_password_values, teacher_name, teacher_name, old_name))
 
         conn.commit()
         conn.close()
@@ -1968,8 +2077,8 @@ def edit_teacher(teacher_id):
                 <input name="teacher_name" value="{teacher[1] or ''}" required>
                 Login Username:<br>
                 <input name="username" value="{teacher[2] or ''}">
-                Login Password:<br>
-                <input name="password" value="{teacher[3] or '1234'}">
+                New Temporary Password:<br>
+                <input name="password" placeholder="Leave blank to keep current password">
                 Email:<br>
                 <input type="email" name="email" value="{teacher[4] or ''}">
                 Phone:<br>
@@ -5613,6 +5722,7 @@ def teacher_missing_homework():
 
 @app.route("/teacher_login", methods=["GET", "POST"])
 def teacher_login():
+    ensure_teacher_management_schema()
 
     if request.method == "POST":
 
@@ -5623,25 +5733,38 @@ def teacher_login():
         cursor = conn.cursor()
 
         cursor.execute("""
-        SELECT username, role, display_name, linked_teacher_name
+        SELECT id, username, role, display_name, linked_teacher_name, password_hash, password, COALESCE(must_change_password, 0)
         FROM users
         WHERE username = ?
-        AND password = ?
         AND role = 'teacher'
-        """, (username, password))
+        """, (username,))
 
         user = cursor.fetchone()
-        conn.close()
 
-        if user:
+        if user and hmusic_check_password(password, user[5], user[6]):
+            if not user[5] and user[6]:
+                set_password_columns(cursor, "users", user[0], password, must_change=False)
+                cursor.execute("""
+                UPDATE teachers
+                SET password_hash = ?,
+                    password = ''
+                WHERE username = ?
+                """, (hmusic_password_hash(password), user[1]))
+                conn.commit()
+            conn.close()
             session.clear()
-            session["user_role"] = user[1]
-            session["username"] = user[0]
-            session["display_name"] = user[2]
-            session["teacher_name"] = user[3]
+            session["user_role"] = user[2]
+            session["username"] = user[1]
+            session["display_name"] = user[3]
+            session["teacher_name"] = user[4]
+            session["must_change_password"] = bool(user[7])
+
+            if user[7]:
+                return redirect("/change_teacher_password")
 
             return redirect("/teacher_dashboard")
 
+        conn.close()
         return """
         <h2>Login Failed</h2>
         <p>Please check your username and password.</p>
@@ -6594,12 +6717,17 @@ def ensure_v27_schema():
         parent_name TEXT,
         email TEXT UNIQUE,
         phone TEXT,
-        password TEXT DEFAULT '1234',
+        password TEXT DEFAULT '',
+        password_hash TEXT,
+        must_change_password INTEGER DEFAULT 0,
         active INTEGER DEFAULT 1,
         created_at TEXT,
         updated_at TEXT
     )
     """)
+
+    add_column_if_missing(cursor, "parent_profiles", "password_hash", "password_hash TEXT")
+    add_column_if_missing(cursor, "parent_profiles", "must_change_password", "must_change_password INTEGER DEFAULT 0")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS parent_students (
@@ -6663,16 +6791,20 @@ def ensure_v27_schema():
             email,
             phone,
             password,
+            password_hash,
+            must_change_password,
             active,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             parent_name,
             parent_email,
             parent_phone,
-            "1234",
+            "",
+            hmusic_password_hash("1234"),
+            1,
             1,
             now,
             now
@@ -6717,6 +6849,8 @@ def ensure_v27_schema():
                 now
             ))
 
+    migrate_legacy_passwords(cursor, "parent_profiles")
+
     conn.commit()
     conn.close()
 
@@ -6735,16 +6869,20 @@ def sync_parent_profile_for_student(cursor, student_name, parent_name=None, pare
         email,
         phone,
         password,
+        password_hash,
+        must_change_password,
         active,
         created_at,
         updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         display_name,
         email_key,
         parent_phone,
-        "1234",
+        "",
+        hmusic_password_hash("1234"),
+        1,
         1,
         now,
         now
@@ -7087,7 +7225,7 @@ def add_parent():
         parent_name = request.form.get("parent_name")
         email = request.form.get("email")
         phone = request.form.get("phone")
-        password = request.form.get("password") or "1234"
+        password = request.form.get("password") or hmusic_temp_password()
         active = request.form.get("active") or "1"
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -7100,16 +7238,20 @@ def add_parent():
             email,
             phone,
             password,
+            password_hash,
+            must_change_password,
             active,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             parent_name,
             email,
             phone,
-            password,
+            "",
+            hmusic_password_hash(password),
+            1,
             int(active),
             now,
             now
@@ -7126,7 +7268,13 @@ def add_parent():
         conn.close()
 
         if parent:
-            return redirect(f"/parent_admin/{parent[0]}")
+            return f"""
+            <h1>Parent Created</h1>
+            <p>Email: <strong>{escape(email or '')}</strong></p>
+            <p>Temporary password: <strong>{escape(password)}</strong></p>
+            <p>Please send this to the parent and ask them to change it after login.</p>
+            <p><a href="/parent_admin/{parent[0]}">Open Parent Profile</a></p>
+            """
 
         return redirect("/parents")
 
@@ -7154,8 +7302,8 @@ def add_parent():
                 Phone:<br>
                 <input name="phone">
 
-                Password:<br>
-                <input name="password" value="1234">
+                Temporary Password:<br>
+                <input name="password" placeholder="Leave blank to auto-generate">
 
                 Active:<br>
                 <select name="active">
@@ -7352,6 +7500,9 @@ def parent_admin(parent_id):
             <a class="button" href="/parents">Back</a>
             <a class="button" href="/edit_parent_admin/{parent[0]}">Edit Parent</a>
             <a class="button" href="/parent_login">Parent Login</a>
+            <form method="POST" action="/reset_parent_password/{parent[0]}" style="display:inline;">
+                <button type="submit">Reset Password</button>
+            </form>
 
             <div class="cards">
                 <div class="card">
@@ -7364,7 +7515,7 @@ def parent_admin(parent_id):
                 </div>
                 <div class="card">
                     <div class="label">Password</div>
-                    <div class="value">{parent[4] or ''}</div>
+                    <div class="value">Hidden</div>
                 </div>
                 <div class="card">
                     <div class="label">Status</div>
@@ -7426,18 +7577,24 @@ def edit_parent_admin(parent_id):
         password = request.form.get("password")
         active = request.form.get("active") or "1"
 
-        cursor.execute("""
+        password_sql = ""
+        password_values = []
+        if password:
+            password_sql = "password = '', password_hash = ?, must_change_password = 1,"
+            password_values.append(hmusic_password_hash(password))
+
+        cursor.execute(f"""
         UPDATE parent_profiles
         SET parent_name = ?,
             phone = ?,
-            password = ?,
+            {password_sql}
             active = ?,
             updated_at = ?
         WHERE id = ?
         """, (
             parent_name,
             phone,
-            password,
+            *password_values,
             int(active),
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             parent_id
@@ -7486,8 +7643,8 @@ def edit_parent_admin(parent_id):
                 Phone:<br>
                 <input name="phone" value="{parent[3] or ''}">
 
-                Password:<br>
-                <input name="password" value="{parent[4] or ''}">
+                New Temporary Password:<br>
+                <input name="password" placeholder="Leave blank to keep current password">
 
                 Active:<br>
                 <select name="active">
@@ -8191,6 +8348,18 @@ def safe_upload_filename(filename):
     return safe or "attachment"
 
 
+ALLOWED_UPLOAD_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+    "text/plain",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
 def save_message_attachments(message_id, files):
     ensure_v29_schema()
 
@@ -8205,6 +8374,8 @@ def save_message_attachments(message_id, files):
 
     for file in files:
         if not file or not file.filename:
+            continue
+        if file.mimetype not in ALLOWED_UPLOAD_MIME_TYPES:
             continue
 
         original_filename = file.filename
@@ -12670,16 +12841,18 @@ def parent_login():
 
         if parent_email and password:
             cursor.execute("""
-            SELECT id, parent_name, email
+            SELECT id, parent_name, email, password_hash, password, COALESCE(must_change_password, 0)
             FROM parent_profiles
             WHERE lower(email) = lower(?)
-            AND password = ?
             AND active = 1
-            """, (parent_email, password))
+            """, (parent_email,))
 
             parent = cursor.fetchone()
 
-            if parent:
+            if parent and hmusic_check_password(password, parent[3], parent[4]):
+                if not parent[3] and parent[4]:
+                    set_password_columns(cursor, "parent_profiles", parent[0], password, must_change=False)
+                    conn.commit()
                 cursor.execute("""
                 SELECT student_name
                 FROM parent_students
@@ -12698,9 +12871,13 @@ def parent_login():
                 session["parent_id"] = parent[0]
                 session["parent_name"] = parent[1]
                 session["parent_email"] = parent[2]
+                session["must_change_password"] = bool(parent[5])
 
                 if linked_student:
                     session["parent_student_name"] = linked_student[0]
+
+                if parent[5]:
+                    return redirect("/change_parent_password")
 
                 return redirect("/parent_dashboard")
 
@@ -14828,17 +15005,23 @@ def parent_profile():
         phone = request.form.get("phone")
         password = request.form.get("password")
 
-        cursor.execute("""
+        password_sql = ""
+        password_values = []
+        if password:
+            password_sql = "password = '', password_hash = ?, must_change_password = 0,"
+            password_values.append(hmusic_password_hash(password))
+
+        cursor.execute(f"""
         UPDATE parent_profiles
         SET parent_name = ?,
             phone = ?,
-            password = ?,
+            {password_sql}
             updated_at = ?
         WHERE id = ?
         """, (
             parent_name,
             phone,
-            password,
+            *password_values,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             parent_id
         ))
@@ -15009,8 +15192,8 @@ def parent_profile():
                 Phone:<br>
                 <input name="phone" value="{profile[2] or ''}">
 
-                Password:<br>
-                <input name="password" value="{profile[3] or ''}">
+                New Password:<br>
+                <input type="password" name="password" placeholder="Leave blank to keep current password">
 
                 <div class="form-actions">
                     <button type="submit">Save Profile</button>
@@ -15546,6 +15729,8 @@ def owner_dashboard():
 
 @app.route("/owner_login", methods=["GET", "POST"])
 def owner_login():
+    ensure_teacher_management_schema()
+
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
@@ -15554,23 +15739,29 @@ def owner_login():
         cursor = conn.cursor()
 
         cursor.execute("""
-        SELECT username, role, display_name
+        SELECT id, username, role, display_name, password_hash, password, COALESCE(must_change_password, 0)
         FROM users
         WHERE username = ?
-        AND password = ?
         AND role = 'owner'
-        """, (username, password))
+        """, (username,))
 
         user = cursor.fetchone()
-        conn.close()
 
-        if user:
+        if user and hmusic_check_password(password, user[4], user[5]):
+            if not user[4] and user[5]:
+                set_password_columns(cursor, "users", user[0], password, must_change=False)
+                conn.commit()
+            conn.close()
             session.clear()
-            session["user_role"] = user[1]
-            session["username"] = user[0]
-            session["display_name"] = user[2]
+            session["user_role"] = user[2]
+            session["username"] = user[1]
+            session["display_name"] = user[3]
+            session["must_change_password"] = bool(user[6])
+            if user[6]:
+                return redirect("/change_owner_password")
             return redirect("/executive_dashboard")
 
+        conn.close()
         return """
         <h2>Login Failed</h2>
         <p>Please check your username and password.</p>
@@ -15596,6 +15787,204 @@ def owner_login():
 def owner_logout():
     session.clear()
     return redirect("/owner_login")
+
+
+def password_change_page(title, action, back_link, error=""):
+    error_html = f"<p style='color:#dc2626;font-weight:bold;'>{escape(error)}</p>" if error else ""
+    return f"""
+    <html>
+    <head>
+        <title>{escape(title)}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:520px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>{escape(title)}</h1>
+            {error_html}
+            <form method="POST" action="{action}">
+                New Password:<br>
+                <input type="password" name="new_password" required>
+                Confirm Password:<br>
+                <input type="password" name="confirm_password" required>
+                <button type="submit">Update Password</button>
+                <a class="button" href="{back_link}">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/change_teacher_password", methods=["GET", "POST"])
+def change_teacher_password():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    if request.method == "POST":
+        new_password = request.form.get("new_password") or ""
+        confirm_password = request.form.get("confirm_password") or ""
+        if len(new_password) < 8:
+            return password_change_page("Change Teacher Password", "/change_teacher_password", "/teacher_dashboard", "Password must be at least 8 characters.")
+        if new_password != confirm_password:
+            return password_change_page("Change Teacher Password", "/change_teacher_password", "/teacher_dashboard", "Passwords do not match.")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        password_hash = hmusic_password_hash(new_password)
+        cursor.execute("""
+        UPDATE users
+        SET password = '',
+            password_hash = ?,
+            must_change_password = 0
+        WHERE username = ?
+        AND role = 'teacher'
+        """, (password_hash, session.get("username")))
+        cursor.execute("""
+        UPDATE teachers
+        SET password = '',
+            password_hash = ?,
+            must_change_password = 0
+        WHERE teacher_name = ?
+        """, (password_hash, session.get("teacher_name")))
+        conn.commit()
+        conn.close()
+        session["must_change_password"] = False
+        return redirect("/teacher_dashboard")
+
+    return password_change_page("Change Teacher Password", "/change_teacher_password", "/teacher_dashboard")
+
+
+@app.route("/change_parent_password", methods=["GET", "POST"])
+def change_parent_password():
+    if not session.get("parent_id"):
+        return redirect("/parent_login")
+
+    if request.method == "POST":
+        new_password = request.form.get("new_password") or ""
+        confirm_password = request.form.get("confirm_password") or ""
+        if len(new_password) < 8:
+            return password_change_page("Change Parent Password", "/change_parent_password", "/parent_dashboard", "Password must be at least 8 characters.")
+        if new_password != confirm_password:
+            return password_change_page("Change Parent Password", "/change_parent_password", "/parent_dashboard", "Passwords do not match.")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        set_password_columns(cursor, "parent_profiles", session.get("parent_id"), new_password, must_change=False)
+        conn.commit()
+        conn.close()
+        session["must_change_password"] = False
+        return redirect("/parent_dashboard")
+
+    return password_change_page("Change Parent Password", "/change_parent_password", "/parent_dashboard")
+
+
+@app.route("/change_owner_password", methods=["GET", "POST"])
+def change_owner_password():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    if request.method == "POST":
+        new_password = request.form.get("new_password") or ""
+        confirm_password = request.form.get("confirm_password") or ""
+        if len(new_password) < 8:
+            return password_change_page("Change Owner Password", "/change_owner_password", "/executive_dashboard", "Password must be at least 8 characters.")
+        if new_password != confirm_password:
+            return password_change_page("Change Owner Password", "/change_owner_password", "/executive_dashboard", "Passwords do not match.")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        UPDATE users
+        SET password = '',
+            password_hash = ?,
+            must_change_password = 0
+        WHERE username = ?
+        AND role = 'owner'
+        """, (hmusic_password_hash(new_password), session.get("username")))
+        conn.commit()
+        conn.close()
+        session["must_change_password"] = False
+        return redirect("/executive_dashboard")
+
+    return password_change_page("Change Owner Password", "/change_owner_password", "/executive_dashboard")
+
+
+@app.route("/reset_teacher_password/<int:teacher_id>", methods=["POST"])
+def reset_teacher_password(teacher_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_management_schema()
+    temp_password = hmusic_temp_password()
+    password_hash = hmusic_password_hash(temp_password)
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_name, username FROM teachers WHERE id = ?", (teacher_id,))
+    teacher = cursor.fetchone()
+    if not teacher:
+        conn.close()
+        return "<h1>Teacher not found</h1>"
+
+    cursor.execute("""
+    UPDATE teachers
+    SET password = '',
+        password_hash = ?,
+        must_change_password = 1
+    WHERE id = ?
+    """, (password_hash, teacher_id))
+    cursor.execute("""
+    UPDATE users
+    SET password = '',
+        password_hash = ?,
+        must_change_password = 1
+    WHERE role = 'teacher'
+    AND (username = ? OR linked_teacher_name = ?)
+    """, (password_hash, teacher[1], teacher[0]))
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <h1>Teacher Password Reset</h1>
+    <p>Teacher: <strong>{escape(teacher[0] or '')}</strong></p>
+    <p>Username: <strong>{escape(teacher[1] or '')}</strong></p>
+    <p>Temporary password: <strong>{escape(temp_password)}</strong></p>
+    <p>The teacher will be asked to change this password after login.</p>
+    <p><a href="/teachers">Back to Teachers</a></p>
+    """
+
+
+@app.route("/reset_parent_password/<int:parent_id>", methods=["POST"])
+def reset_parent_password(parent_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    temp_password = hmusic_temp_password()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT parent_name, email FROM parent_profiles WHERE id = ?", (parent_id,))
+    parent = cursor.fetchone()
+    if not parent:
+        conn.close()
+        return "<h1>Parent not found</h1>"
+
+    set_password_columns(cursor, "parent_profiles", parent_id, temp_password, must_change=True)
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <h1>Parent Password Reset</h1>
+    <p>Parent: <strong>{escape(parent[0] or '')}</strong></p>
+    <p>Email: <strong>{escape(parent[1] or '')}</strong></p>
+    <p>Temporary password: <strong>{escape(temp_password)}</strong></p>
+    <p>The parent will be asked to change this password after login.</p>
+    <p><a href="/parent_admin/{parent_id}">Back to Parent Profile</a></p>
+    """
 
 def ensure_v145_schema():
     conn = sqlite3.connect("hmusic.db")
@@ -23152,6 +23541,31 @@ def owner_backup_download(filename):
 def prepare_database_for_request():
     ensure_production_schema()
     maybe_run_daily_backup()
+    public_paths = (
+        "/static/",
+        "/hmusic-icon",
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/owner_login",
+        "/teacher_login",
+        "/parent_login",
+        "/owner_logout",
+        "/teacher_logout",
+        "/parent_logout",
+        "/change_owner_password",
+        "/change_teacher_password",
+        "/change_parent_password",
+        "/app_install",
+    )
+    if request.path.startswith(public_paths):
+        return
+    if session.get("must_change_password"):
+        if session.get("user_role") == "owner":
+            return redirect("/change_owner_password")
+        if session.get("user_role") == "teacher" or session.get("teacher_name"):
+            return redirect("/change_teacher_password")
+        if session.get("parent_id"):
+            return redirect("/change_parent_password")
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
