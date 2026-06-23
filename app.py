@@ -40,6 +40,8 @@ HMUSIC_BACKUP_DIR = os.environ.get(
     os.path.join(os.path.dirname(HMUSIC_DB_PATH) or ".", "backups")
 )
 DB_NAME = "hmusic.db"
+_v27_schema_ready = False
+_v29_schema_ready = False
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
 _sqlite_connect = sqlite3._hmusic_original_connect
@@ -6779,6 +6781,10 @@ def parent_portal():
 # =========================
 
 def ensure_v27_schema():
+    global _v27_schema_ready
+    if _v27_schema_ready:
+        return
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -6924,6 +6930,7 @@ def ensure_v27_schema():
 
     conn.commit()
     conn.close()
+    _v27_schema_ready = True
 
 
 def sync_parent_profile_for_student(cursor, student_name, parent_name=None, parent_email=None, parent_phone=None):
@@ -7980,7 +7987,7 @@ def format_lesson_time_range(time_text, duration_minutes=None):
     except (TypeError, ValueError):
         duration = 30
     start_label = format_display_time(time_text)
-    end_label = format_display_time(time_text_from_minutes(start_minutes + duration))
+    end_label = format_display_time(time_text_from_minutes((start_minutes + duration) % (24 * 60)))
     return f"{start_label}-{end_label}"
 
 
@@ -8245,6 +8252,10 @@ def get_available_open_slots(teachers=None, include_inactive_manual=False):
 # =========================
 
 def ensure_v29_schema():
+    global _v29_schema_ready
+    if _v29_schema_ready:
+        return
+
     ensure_v282_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -8342,6 +8353,7 @@ def ensure_v29_schema():
 
     conn.commit()
     conn.close()
+    _v29_schema_ready = True
 
 
 def ensure_message_participant(cursor, thread_id, role, key, display_name=None, is_observer=0):
@@ -11034,6 +11046,7 @@ def new_parent_message():
             .teacher-choice {{ display:flex; align-items:center; gap:8px; border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
             .teacher-choice input {{ width:auto; min-height:auto; margin:0; }}
             .hint {{ color:#6b7280; font-size:14px; line-height:1.5; }}
+            .agent-cta {{ display:inline-block; background:#eef2ff; color:#4f46e5; border:1px solid #c7d2fe; padding:12px 16px; border-radius:10px; text-decoration:none; font-weight:900; margin:0 0 18px; }}
             @media (max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} .form-actions button, .form-actions a {{ text-align:center; }} }}
             @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
@@ -11066,6 +11079,7 @@ def new_parent_message():
     <body onload="toggleRecipientMode()">
         <div class="container">
             <h1>New Message</h1>
+            <a class="agent-cta" href="/parent_agent">My Agent</a>
             <form method="POST" enctype="multipart/form-data">
                 Student:<br>
                 <select id="student-select" name="student_name" required onchange="filterTeachersForStudent()">{student_options}</select>
@@ -14375,12 +14389,19 @@ def parent_dashboard():
             }}
             a.button {{
                 display: inline-block;
-                background: #4f46e5;
-                color: white;
+                background: #f8fafc;
+                color: #374151;
+                border: 1px solid #e5e7eb;
                 padding: 10px 16px;
                 border-radius: 8px;
                 text-decoration: none;
                 font-weight: bold;
+            }}
+            .actions a.assistant-button {{
+                background: #4f46e5;
+                color: white;
+                border-color: #4f46e5;
+                box-shadow: 0 8px 18px rgba(79, 70, 229, 0.22);
             }}
             button.install-button {{
                 background: #111827;
@@ -14763,7 +14784,7 @@ def parent_dashboard():
             </div>
 
             <div class="actions">
-                <a class="button" href="/parent_agent">Ask AI Agent</a>
+                <a class="button assistant-button" href="/parent_agent">My Assistant</a>
                 <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
                 <a class="button" href="/parent_messages">{message_label}</a>
                 <a class="button" href="/parent_cancel">Cancel Lesson</a>
@@ -14901,11 +14922,10 @@ def parent_agent():
         conn.close()
         if row:
             result_card = f"""
-            <div class="agent-result {row[4]}">
-                <div class="risk-pill">{row[4].upper()}</div>
+            <div class="agent-result">
                 <h2>{escape(row[5] or '')}</h2>
                 <p>{escape(row[6] or '')}</p>
-                <div class="result-meta">{escape(row[3] or '')} · {escape(row[7] or '')}</div>
+                <div class="result-meta">{escape(row[7] or '')}</div>
             </div>
             """
 
@@ -14920,7 +14940,7 @@ def parent_agent():
     return f"""
     <html>
     <head>
-        {parent_app_meta("Child OS Agent")}
+        {parent_app_meta("My Assistant")}
         <style>
             * {{ box-sizing:border-box; }}
             body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
@@ -14929,23 +14949,16 @@ def parent_agent():
             .agent-avatar {{ width:48px; height:48px; border-radius:16px; background:#ede9fe; color:#4c1d95; display:flex; align-items:center; justify-content:center; font-weight:900; }}
             h1 {{ margin:0; font-size:30px; }}
             .sub {{ color:#6b7280; margin-top:4px; line-height:1.45; }}
-            .risk-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:18px 0; }}
-            .risk {{ border-radius:14px; padding:12px; border:1px solid #e5e7eb; }}
-            .risk b {{ display:block; margin-bottom:5px; }}
-            .teal {{ background:#ecfdf5; color:#065f46; border-color:#99f6e4; }}
-            .amber {{ background:#fff7ed; color:#9a3412; border-color:#fed7aa; }}
-            .red {{ background:#fef2f2; color:#991b1b; border-color:#fecaca; }}
             select, textarea {{ width:100%; border:1px solid #d1d5db; border-radius:12px; padding:12px 14px; font-size:16px; margin:8px 0 14px; }}
             textarea {{ min-height:120px; }}
             button, a.button {{ display:inline-block; border:0; background:#4f46e5; color:white; border-radius:10px; padding:12px 16px; font-weight:900; text-decoration:none; }}
             .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 14px; }}
             .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; padding:9px 11px; font-weight:800; }}
-            .owner-note {{ margin:14px 0; padding:12px; background:#fff7ed; color:#7c2d12; border:1px solid #fed7aa; border-radius:12px; font-weight:800; }}
-            .agent-result {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; }}
-            .risk-pill {{ display:inline-block; padding:4px 9px; border-radius:999px; background:rgba(255,255,255,.65); font-size:12px; font-weight:900; margin-bottom:8px; }}
+            .assistant-note {{ margin:14px 0; padding:12px; background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:12px; font-weight:800; line-height:1.45; }}
+            .agent-result {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; background:#f8fafc; }}
             .result-meta {{ color:#6b7280; font-size:13px; margin-top:8px; }}
             .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
-            @media(max-width:760px) {{ .risk-grid {{ grid-template-columns:1fr; }} .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} }}
+            @media(max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} }}
         </style>
         <script>
             function fillAgent(text) {{
@@ -14959,18 +14972,12 @@ def parent_agent():
             <div class="agent-head">
                 <div class="agent-avatar">AI</div>
                 <div>
-                    <h1>Child OS Agent</h1>
-                    <div class="sub">Tell me what you need in English or Chinese. 你可以直接告诉我想做什么。</div>
+                    <h1>My Assistant</h1>
+                    <div class="sub">Tell me what you need. You can type in English or Chinese.</div>
                 </div>
             </div>
 
-            <div class="risk-grid">
-                <div class="risk teal"><b>Teal · Auto</b>Cancel one class, check balance, next lesson reminder.</div>
-                <div class="risk amber"><b>Amber · Confirm</b>Future schedule changes or renewal/payment requests.</div>
-                <div class="risk red"><b>Red · Owner</b>Change teacher or stop all lessons.</div>
-            </div>
-
-            <div class="owner-note">Owner can see every request in real time and can block, edit, or escalate.</div>
+            <div class="assistant-note">I can help with lesson changes, cancellations, lesson balance, reminders, billing questions, and messages. Some requests may be reviewed by H-Music before they are completed.</div>
             {result_card}
 
             <form method="POST">
@@ -14979,9 +14986,9 @@ def parent_agent():
                 What would you like help with?<br>
                 <textarea id="request_text" name="request_text" placeholder="Example: 帮我取消下一节课 / How many lessons are left? / Please renew package"></textarea>
                 <div class="quick">
-                    <button type="button" onclick="fillAgent('{quick_zh}')">课次余额</button>
+                    <button type="button" onclick="fillAgent('{quick_zh}')">Lesson balance</button>
                     <button type="button" onclick="fillAgent('{quick_en}')">Next lesson</button>
-                    <button type="button" onclick="fillAgent('帮我取消下一节课')">取消下一节课</button>
+                    <button type="button" onclick="fillAgent('帮我取消下一节课')">Cancel next lesson</button>
                     <button type="button" onclick="fillAgent('I want to renew package')">Renew package</button>
                 </div>
                 <div class="form-actions">
