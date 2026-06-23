@@ -9117,6 +9117,63 @@ def queue_sms_if_available(user_role, user_key, title, body, link_url, related_t
     )
 
 
+def queue_direct_delivery(channel, destination, title, body, link_url, related_type=None, related_id=None):
+    ensure_v33_schema()
+    destination = (destination or "").strip()
+    if not destination:
+        return None
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id
+    FROM notification_delivery_queue
+    WHERE channel = ?
+    AND destination = ?
+    AND related_type = ?
+    AND related_id = ?
+    AND title = ?
+    AND status IN ('pending', 'sent')
+    LIMIT 1
+    """, (channel, destination, related_type, related_id, title))
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return existing[0]
+
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    """, (
+        "trial_parent",
+        destination,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+    queue_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return queue_id
+
+
 def send_email_delivery(destination, title, body, link_url):
     smtp_host = os.environ.get("HMUSIC_SMTP_HOST")
     smtp_port = int(os.environ.get("HMUSIC_SMTP_PORT", "587"))
@@ -18069,6 +18126,133 @@ def v35_public_trial_thank_you(inquiry_id, data):
     """
 
 
+def v35_trial_duration_minutes(duration_text):
+    match = re.search(r"\d+", duration_text or "")
+    return int(match.group(0)) if match else 30
+
+
+def v35_trial_open_slot_options(selected_value=""):
+    today = date.today().strftime("%Y-%m-%d")
+    manual_slots = [
+        slot for slot in get_manual_open_slots(start_date=today, days_ahead=60)
+        if int(slot.get("active") or 0) == 1
+    ]
+    auto_slots = get_auto_open_slots(start_date=today, days_ahead=30)
+    combined = manual_slots + auto_slots
+    combined = sorted(combined, key=lambda item: (
+        item.get("slot_date") or "",
+        item.get("slot_time") or "",
+        item.get("teacher") or "",
+    ))[:120]
+
+    options = ['<option value="">Choose an open slot...</option>']
+    for slot in combined:
+        payload = {
+            "source": slot.get("source") or "manual",
+            "id": slot.get("id") or "",
+            "teacher": slot.get("teacher") or "",
+            "slot_date": slot.get("slot_date") or "",
+            "slot_time": slot.get("slot_time") or "",
+            "classroom": slot.get("classroom") or "Trial Room",
+        }
+        value = json.dumps(payload, separators=(",", ":"))
+        selected = "selected" if value == selected_value else ""
+        label = (
+            f"{payload['slot_date']} {payload['slot_time']} · "
+            f"{payload['teacher']} · {payload['classroom']} · {payload['source']}"
+        )
+        options.append(f'<option value="{escape(value)}" {selected}>{escape(label)}</option>')
+    return "".join(options)
+
+
+def v35_apply_open_slot_to_trial_data(data, open_slot_value):
+    if not open_slot_value:
+        return None
+    try:
+        slot = json.loads(open_slot_value)
+    except (TypeError, ValueError):
+        return None
+
+    data["trial_date"] = (slot.get("slot_date") or data.get("trial_date") or "").strip()
+    data["trial_time"] = (slot.get("slot_time") or data.get("trial_time") or "").strip()
+    data["trial_teacher"] = (slot.get("teacher") or data.get("trial_teacher") or "").strip()
+    data["trial_location"] = (slot.get("classroom") or data.get("trial_location") or "Trial Room").strip()
+    return slot
+
+
+def v35_mark_trial_open_slot_used(slot, inquiry_id):
+    if not slot or slot.get("source") != "manual" or not slot.get("id"):
+        return False
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    UPDATE teacher_open_slots
+    SET active = 0,
+        notes = COALESCE(notes, '') || ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (f" | used by trial lead #{inquiry_id}", now, slot.get("id")))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def v35_trial_confirmation_body(inquiry):
+    student = inquiry["student_name"] or "your student"
+    teacher = inquiry["trial_teacher"] or "your H-Music teacher"
+    trial_date = inquiry["trial_date"] or "TBD"
+    trial_time = inquiry["trial_time"] or "TBD"
+    location = inquiry["trial_location"] or "H-Music"
+    duration = inquiry["trial_duration"] or "Trial lesson"
+    fee = inquiry["trial_fee"] or "trial fee"
+    payment_method = inquiry["payment_method"] or "your selected payment method"
+    payment_line = "For PayPal or Zelle, please send payment to hmusicjustplay@gmail.com."
+    return (
+        f"Hi {inquiry['parent_name'] or 'there'},\n\n"
+        f"{student}'s trial lesson is confirmed.\n\n"
+        f"Date: {trial_date}\n"
+        f"Time: {trial_time}\n"
+        f"Teacher: {teacher}\n"
+        f"Location: {location}\n"
+        f"Trial: {duration} / {fee}\n"
+        f"Payment method: {payment_method}\n\n"
+        f"{payment_line}\n\n"
+        f"After the trial, H-Music will help you set up the parent app if you continue lessons.\n\n"
+        f"H-Music"
+    )
+
+
+def v35_queue_trial_confirmation(inquiry_id):
+    ensure_v17_schema()
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
+    inquiry = cursor.fetchone()
+    conn.close()
+    if not inquiry:
+        return 0
+
+    title = "H-Music Trial Lesson Confirmed"
+    body = v35_trial_confirmation_body(inquiry)
+    link = "/trial"
+    queued = 0
+    if inquiry["parent_email"]:
+        if queue_direct_delivery("email", inquiry["parent_email"], title, body, link, "trial_confirmation", inquiry_id):
+            queued += 1
+    if inquiry["phone"]:
+        sms_body = (
+            f"H-Music trial confirmed for {inquiry['student_name']}: "
+            f"{inquiry['trial_date']} {inquiry['trial_time']} with {inquiry['trial_teacher']} "
+            f"at {inquiry['trial_location']}. {inquiry['trial_duration']} / {inquiry['trial_fee']}. "
+            f"PayPal/Zelle: hmusicjustplay@gmail.com"
+        )
+        if queue_direct_delivery("sms", inquiry["phone"], title, sms_body, link, "trial_confirmation", inquiry_id):
+            queued += 1
+    return queued
+
+
 @app.route("/trial", methods=["GET", "POST"])
 def public_trial_request():
     ensure_v17_schema()
@@ -18397,6 +18581,7 @@ def inquiry_detail(inquiry_id):
     convert_button = ""
     if inquiry["status"] != "Active Student":
         convert_button = f"<form method='POST' action='/convert_inquiry_to_student/{inquiry_id}'><button class='success' type='submit'>Convert to Student</button></form>"
+    open_slot_options = v35_trial_open_slot_options()
 
     return f"""
     <html>
@@ -18455,6 +18640,8 @@ def inquiry_detail(inquiry_id):
         <div class="panel">
             <h2>Review / Schedule Trial / Follow Up</h2>
             <form method="POST" action="/update_inquiry/{inquiry_id}">
+                <label>Choose Open Slot to Confirm Trial</label>
+                <select name="open_slot">{open_slot_options}</select>
                 <div class="grid">
                     <div><label>Student Name</label><input name="student_name" value="{v35_safe(inquiry['student_name'])}"></div>
                     <div><label>Age</label><input name="age" value="{v35_safe(inquiry['age'])}"></div>
@@ -18483,7 +18670,8 @@ def inquiry_detail(inquiry_id):
                 <label>Lead Notes</label><textarea name="notes">{v35_safe(inquiry['notes'])}</textarea>
                 <label>Follow-up Notes</label><textarea name="follow_up_notes">{v35_safe(inquiry['follow_up_notes'])}</textarea>
                 <label class="inline-check"><input type="checkbox" name="owner_verified" value="1" {verified_checked}> Owner verified trial plan and schedule</label>
-                <button type="submit">Save Lead / Trial Plan</button>
+                <button type="submit" name="action" value="save">Save Lead / Trial Plan</button>
+                <button class="success" type="submit" name="action" value="confirm_trial">Confirm Trial + Notify Parent</button>
             </form>
             {convert_button}
         </div>
@@ -18498,6 +18686,7 @@ def update_inquiry(inquiry_id):
     ensure_owner()
     ensure_v17_schema()
 
+    action = request.form.get("action", "save")
     data = {
         "student_name": request.form.get("student_name", "").strip(),
         "parent_name": request.form.get("parent_name", "").strip(),
@@ -18524,8 +18713,9 @@ def update_inquiry(inquiry_id):
         "follow_up_status": request.form.get("follow_up_status", "New"),
         "notes": request.form.get("notes", "").strip(),
         "follow_up_notes": request.form.get("follow_up_notes", "").strip(),
-        "owner_verified": 1 if request.form.get("owner_verified") == "1" else 0,
+        "owner_verified": 1 if request.form.get("owner_verified") == "1" or action == "confirm_trial" else 0,
     }
+    selected_slot = v35_apply_open_slot_to_trial_data(data, request.form.get("open_slot", ""))
     summary, recommendation, follow_up = build_v35_trial_plan(data)
     trial_status = "Needs Review"
     status = data["status"]
@@ -18568,24 +18758,37 @@ def update_inquiry(inquiry_id):
         """, (data["student_name"], data["trial_date"], data["trial_time"]))
         if not cursor.fetchone():
             cursor.execute("""
-            INSERT INTO schedule (student_name, teacher, lesson_date, lesson_time, classroom, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO schedule (student_name, teacher, lesson_date, lesson_time, classroom, status, duration, schedule_type, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["student_name"], data["trial_teacher"], data["trial_date"], data["trial_time"],
-                data["trial_location"] or "Trial Room", "scheduled"
+                data["trial_location"] or "Trial Room", "scheduled",
+                v35_trial_duration_minutes(data["trial_duration"]),
+                "trial",
+                f"Trial lead #{inquiry_id} · {data['trial_duration']} / {data['trial_fee']} / {data['payment_method']}"
             ))
             scheduled = True
 
     conn.commit()
     conn.close()
 
-    if scheduled:
+    if selected_slot and data["owner_verified"] and data["trial_date"] and data["trial_time"] and data["trial_teacher"]:
+        v35_mark_trial_open_slot_used(selected_slot, inquiry_id)
+
+    if scheduled or action == "confirm_trial":
         try:
             create_notification(
                 "owner", "owner", "Trial Scheduled",
                 f"Trial scheduled for {data['student_name']} with {data['trial_teacher']} on {data['trial_date']} {data['trial_time']}.",
                 f"/inquiry/{inquiry_id}", "trial_lead", inquiry_id
             )
+            queued = v35_queue_trial_confirmation(inquiry_id)
+            if queued:
+                create_notification(
+                    "owner", "owner", "Trial confirmation queued",
+                    f"{queued} email/SMS confirmation item(s) queued for {data['student_name']}.",
+                    "/notification_queue", "trial_lead", inquiry_id
+                )
         except Exception:
             pass
 
@@ -18610,14 +18813,51 @@ def convert_inquiry_to_student(inquiry_id):
     student_name = inquiry["student_name"] or "New Student"
     teacher = inquiry["trial_teacher"] or "Unassigned"
     parent_email = inquiry["parent_email"] or ""
+    parent_name = inquiry["parent_name"] or "Parent"
+    parent_phone = inquiry["phone"] or ""
 
     cursor.execute("SELECT id FROM students WHERE name=?", (student_name,))
     existing = cursor.fetchone()
     if not existing:
         cursor.execute("""
-        INSERT INTO students (name, teacher, parent_email, lessons_left)
-        VALUES (?, ?, ?, ?)
-        """, (student_name, teacher, parent_email, 0))
+        INSERT INTO students (name, teacher, parent_name, parent_email, parent_phone, lessons_left)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (student_name, teacher, parent_name, parent_email, parent_phone, 0))
+    else:
+        cursor.execute("""
+        UPDATE students
+        SET teacher = COALESCE(NULLIF(teacher, ''), ?),
+            parent_name = COALESCE(NULLIF(parent_name, ''), ?),
+            parent_email = COALESCE(NULLIF(parent_email, ''), ?),
+            parent_phone = COALESCE(NULLIF(parent_phone, ''), ?)
+        WHERE name = ?
+        """, (teacher, parent_name, parent_email, parent_phone, student_name))
+
+    email_key = parent_email or (f"phone-{parent_phone}@hmusic.local" if parent_phone else "")
+    existing_parent_id = None
+    if email_key:
+        cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (email_key,))
+        existing_parent = cursor.fetchone()
+        existing_parent_id = existing_parent[0] if existing_parent else None
+
+    sync_parent_profile_for_student(cursor, student_name, parent_name, parent_email, parent_phone)
+
+    parent_id = existing_parent_id
+    temp_password = ""
+    if email_key:
+        cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (email_key,))
+        parent_row = cursor.fetchone()
+        parent_id = parent_row[0] if parent_row else None
+        if parent_id and not existing_parent_id:
+            temp_password = hmusic_temp_password()
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET password = '',
+                password_hash = ?,
+                must_change_password = 1,
+                updated_at = ?
+            WHERE id = ?
+            """, (hmusic_password_hash(temp_password), v35_now(), parent_id))
 
     cursor.execute("""
     UPDATE inquiries
@@ -18629,6 +18869,37 @@ def convert_inquiry_to_student(inquiry_id):
 
     try:
         create_notification("owner", "owner", "Lead Converted", f"{student_name} was converted into a student record.", f"/student/{student_name}", "trial_lead", inquiry_id)
+        if parent_id:
+            create_notification(
+                "parent",
+                str(parent_id),
+                "Welcome to H-Music Parent App",
+                f"{student_name} is now connected to your parent app account. Future lesson updates will be sent inside the app.",
+                "/parent_dashboard",
+                "trial_conversion",
+                inquiry_id
+            )
+        if temp_password and parent_email:
+            login_body = (
+                f"Hi {parent_name},\n\n"
+                f"Your H-Music parent app account has been created for {student_name}.\n\n"
+                f"Login: https://hmusic-crm.onrender.com/parent_login\n"
+                f"Email: {parent_email}\n"
+                f"Temporary password: {temp_password}\n\n"
+                f"Please change your password after logging in. Future lesson updates will move to in-app messages.\n\n"
+                f"H-Music"
+            )
+            queue_direct_delivery("email", parent_email, "H-Music Parent App Login", login_body, "/parent_login", "trial_conversion", inquiry_id)
+            if parent_phone:
+                queue_direct_delivery(
+                    "sms",
+                    parent_phone,
+                    "H-Music Parent App Login",
+                    f"H-Music parent app created for {student_name}. Login: hmusic-crm.onrender.com/parent_login Email: {parent_email} Temp password: {temp_password}",
+                    "/parent_login",
+                    "trial_conversion",
+                    inquiry_id
+                )
     except Exception:
         pass
 
