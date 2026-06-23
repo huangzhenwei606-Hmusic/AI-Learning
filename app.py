@@ -17745,6 +17745,9 @@ def ensure_v17_schema():
         ("follow_up_notes", "follow_up_notes TEXT"),
         ("owner_verified", "owner_verified INTEGER DEFAULT 0"),
         ("converted_enrollment_id", "converted_enrollment_id INTEGER"),
+        ("trial_duration", "trial_duration TEXT"),
+        ("trial_fee", "trial_fee TEXT"),
+        ("payment_method", "payment_method TEXT"),
     ]
     for column_name, column_sql in upgrades:
         v35_add_column_if_missing(cursor, "inquiries", column_name, column_sql)
@@ -17770,6 +17773,9 @@ def build_v35_trial_plan(data):
     program = (data.get("program_interest") or instrument or "Trial Lesson").strip()
     preferred_days = (data.get("preferred_days") or "").strip()
     preferred_times = (data.get("preferred_times") or "").strip()
+    trial_duration = (data.get("trial_duration") or "").strip()
+    trial_fee = (data.get("trial_fee") or "").strip()
+    payment_method = (data.get("payment_method") or "").strip()
     source = (data.get("source") or "Unknown source").strip()
     previous_experience = (data.get("previous_experience") or "").strip()
     experience_duration = (data.get("experience_duration") or "").strip()
@@ -17796,6 +17802,8 @@ def build_v35_trial_plan(data):
         f"{student} is a {temp.lower()} trial lead for {program}. "
         f"Parent: {parent}. Age: {age}. Source/referrer: {source}. Preferred time: {preferred}. {experience}."
     )
+    if trial_duration or trial_fee or payment_method:
+        summary += f" Trial choice: {trial_duration or 'duration TBD'} / {trial_fee or 'fee TBD'} / payment: {payment_method or 'TBD'}."
     if notes:
         summary += f" Notes: {notes[:220]}"
 
@@ -17820,6 +17828,7 @@ def v35_insert_trial_lead(data, public=False):
         "program_interest", "preferred_days", "preferred_times", "source",
         "previous_experience", "experience_duration",
         "lead_temperature", "trial_location", "notes",
+        "trial_duration", "trial_fee", "payment_method",
     ]
     clean = {key: (data.get(key, "") or "").strip() for key in fields}
     if not clean["source"]:
@@ -17841,8 +17850,8 @@ def v35_insert_trial_lead(data, public=False):
             previous_experience, experience_duration,
             trial_location, trial_status, lead_temperature, ai_summary, ai_recommendation,
             ai_follow_up_draft, next_follow_up_at, follow_up_status, follow_up_notes,
-            owner_verified, converted_enrollment_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            owner_verified, converted_enrollment_id, trial_duration, trial_fee, payment_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             clean["student_name"], clean["parent_name"], clean["parent_email"], clean["phone"],
@@ -17851,6 +17860,7 @@ def v35_insert_trial_lead(data, public=False):
             clean["preferred_times"], clean["previous_experience"], clean["experience_duration"],
             clean["trial_location"], "Needs Review", clean["lead_temperature"],
             summary, recommendation, follow_up, "", "New", "", 0, None,
+            clean["trial_duration"], clean["trial_fee"], clean["payment_method"],
         ),
     )
     inquiry_id = cursor.lastrowid
@@ -17903,12 +17913,37 @@ def v35_public_trial_form(error="", values=None):
             label {{ font-weight:800; font-size:15px; display:grid; gap:8px; }}
             input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d7dce5; border-radius:12px; padding:14px 15px; font-size:16px; font-family:inherit; }}
             .slot-title {{ margin:4px 0 -8px; font-weight:900; color:#374151; }}
+            .fee-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }}
+            .fee-card {{ display:block; border:1px solid #d7dce5; border-radius:14px; padding:16px; cursor:pointer; background:#fff; }}
+            .fee-card input {{ width:auto; margin:0 8px 0 0; }}
+            .fee-card strong {{ display:block; font-size:22px; margin-top:8px; color:#111827; }}
+            .fee-card span {{ display:block; color:#667085; font-size:14px; line-height:1.4; margin-top:4px; }}
+            .fee-card:has(input:checked) {{ border-color:#4f46e5; background:#eef2ff; box-shadow:0 8px 20px rgba(79,70,229,.12); }}
+            .payment-box {{ background:#f8fafc; border:1px solid #d7dce5; border-radius:14px; padding:16px; display:grid; gap:10px; }}
+            .payment-options {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
+            .payment-options label {{ display:flex; align-items:center; gap:8px; border:1px solid #d7dce5; border-radius:12px; padding:12px; background:white; }}
+            .payment-options input {{ width:auto; margin:0; }}
+            .pay-email {{ color:#4f46e5; font-weight:900; }}
             textarea {{ min-height:120px; resize:vertical; }}
             button {{ border:0; border-radius:13px; background:#4f46e5; color:white; padding:16px 20px; font-size:17px; font-weight:900; cursor:pointer; }}
             .hint {{ background:#fff8db; border:1px solid #ffe08a; border-radius:14px; padding:14px 16px; color:#684b00; }}
             .error {{ background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:13px 15px; font-weight:800; }}
-            @media (max-width:720px) {{ .card {{ padding:26px 20px; }} .grid {{ grid-template-columns:1fr; }} h1 {{ font-size:31px; }} }}
+            @media (max-width:720px) {{ .card {{ padding:26px 20px; }} .grid, .fee-grid, .payment-options {{ grid-template-columns:1fr; }} h1 {{ font-size:31px; }} }}
         </style>
+        <script>
+            function selectTrialFee(value, fee) {{
+                document.getElementById("trial_fee").value = fee;
+                const hint = document.getElementById("age-fee-hint");
+                const age = parseFloat(document.querySelector("input[name='age']").value || "0");
+                if (value === "15 mins" && age && age > 5) {{
+                    hint.textContent = "15 mins / $15 is only for children age 5 and under. Please choose 30 or 45 mins if your child is older than 5.";
+                    hint.style.display = "block";
+                }} else {{
+                    hint.textContent = "";
+                    hint.style.display = "none";
+                }}
+            }}
+        </script>
     </head>
     <body>
         <div class="wrap">
@@ -17930,6 +17965,40 @@ def v35_public_trial_form(error="", values=None):
                         <label>Program Interest<select name="program_interest">{''.join(program_options)}</select></label>
                     </div>
                     <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
+                    <div>
+                        <div class="slot-title">Trial Class Fee *</div>
+                        <div class="fee-grid">
+                            <label class="fee-card">
+                                <input type="radio" name="trial_duration" value="15 mins" required {'checked' if values.get('trial_duration') == '15 mins' else ''} onclick="selectTrialFee('15 mins', '$15')">
+                                15 mins
+                                <strong>$15</strong>
+                                <span>Only for children age 5 and under.</span>
+                            </label>
+                            <label class="fee-card">
+                                <input type="radio" name="trial_duration" value="30 mins" required {'checked' if values.get('trial_duration') == '30 mins' else ''} onclick="selectTrialFee('30 mins', '$30')">
+                                30 mins
+                                <strong>$30</strong>
+                                <span>Standard short trial lesson.</span>
+                            </label>
+                            <label class="fee-card">
+                                <input type="radio" name="trial_duration" value="45 mins" required {'checked' if values.get('trial_duration') == '45 mins' else ''} onclick="selectTrialFee('45 mins', '$45')">
+                                45 mins
+                                <strong>$45</strong>
+                                <span>Best for older students or deeper placement.</span>
+                            </label>
+                        </div>
+                        <input type="hidden" id="trial_fee" name="trial_fee" value="{val('trial_fee')}">
+                        <div id="age-fee-hint" class="error" style="display:none;margin-top:10px;"></div>
+                    </div>
+                    <div class="payment-box">
+                        <b>Payment Method *</b>
+                        <div class="payment-options">
+                            <label><input type="radio" name="payment_method" value="ACH" required {'checked' if values.get('payment_method') == 'ACH' else ''}>ACH</label>
+                            <label><input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>PayPal</label>
+                            <label><input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>Zelle</label>
+                        </div>
+                        <div>PayPal or Zelle: <span class="pay-email">hmusicjustplay@gmail.com</span></div>
+                    </div>
                     <div class="slot-title">Preferred Date / Time 1 *</div>
                     <div class="grid">
                         <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
@@ -17961,6 +18030,14 @@ def v35_public_trial_form(error="", values=None):
 
 
 def v35_public_trial_thank_you(inquiry_id, data):
+    trial_payment = " · ".join([
+        x for x in [
+            v35_safe(data.get("trial_duration", "")),
+            v35_safe(data.get("trial_fee", "")),
+            v35_safe(data.get("payment_method", "")),
+        ] if x
+    ])
+    payment_html = f"<p><b>Trial selection:</b> {trial_payment}</p>" if trial_payment else ""
     return f"""
     <html>
     <head>
@@ -17982,6 +18059,8 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <div class="logo">H</div>
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
+            {payment_html}
+            <p>If you selected PayPal or Zelle, please send payment to <b>hmusicjustplay@gmail.com</b>.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/">Back to H-Music</a></p>
         </div></div>
@@ -18015,15 +18094,35 @@ def public_trial_request():
             "trial_location": request.form.get("trial_location", "").strip(),
             "previous_experience": request.form.get("previous_experience", "").strip(),
             "experience_duration": request.form.get("experience_duration", "").strip(),
+            "trial_duration": request.form.get("trial_duration", "").strip(),
+            "trial_fee": request.form.get("trial_fee", "").strip(),
+            "payment_method": request.form.get("payment_method", "").strip(),
             "notes": request.form.get("notes", "").strip(),
             "source": request.form.get("source", "").strip() or "Public Trial Form",
             "lead_temperature": "Warm",
         }
+        fee_by_duration = {
+            "15 mins": "$15",
+            "30 mins": "$30",
+            "45 mins": "$45",
+        }
+        if data["trial_duration"] in fee_by_duration:
+            data["trial_fee"] = fee_by_duration[data["trial_duration"]]
         form_values = {**request.form, **data}
         if not data["student_name"] or not data["parent_name"]:
             return v35_public_trial_form("Please enter student and parent names.", form_values)
         if not data["parent_email"] and not data["phone"]:
             return v35_public_trial_form("Please enter either email or phone.", form_values)
+        if data["trial_duration"] not in fee_by_duration:
+            return v35_public_trial_form("Please select a trial class length.", form_values)
+        if not data["payment_method"]:
+            return v35_public_trial_form("Please select a payment method.", form_values)
+        try:
+            age_number = float(data["age"]) if data["age"] else None
+        except ValueError:
+            age_number = None
+        if data["trial_duration"] == "15 mins" and age_number is not None and age_number > 5:
+            return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30 or 45 mins.", form_values)
         if not data["preferred_days"] or not data["preferred_times"]:
             return v35_public_trial_form("Please enter at least one preferred date and time.", form_values)
         inquiry_id = v35_insert_trial_lead(data, public=True)
@@ -18093,13 +18192,19 @@ def inquiries():
         trial_bits = [v35_safe(r["trial_date"]), v35_safe(r["trial_time"]), v35_safe(r["trial_teacher"]), v35_safe(r["trial_location"])]
         trial = "<br>".join([x for x in trial_bits if x]) or v35_safe(r["trial_status"], "Needs Review")
         program = v35_safe(r["program_interest"] or r["instrument"], "-")
+        fee_bits = [
+            v35_safe(r["trial_duration"]),
+            v35_safe(r["trial_fee"]),
+            v35_safe(r["payment_method"]),
+        ]
+        fee_line = " / ".join([x for x in fee_bits if x]) or "-"
         preferred = "<br>".join([x for x in [v35_safe(r["preferred_days"]), v35_safe(r["preferred_times"])] if x]) or "-"
         latest = v35_safe(r["ai_summary"] or r["notes"], "-")
         body += f"""
         <tr>
             <td><a href="/inquiry/{r['id']}"><b>{v35_safe(r['student_name'], 'Unnamed')}</b></a><br><small>#{r['id']} {v35_safe(r['lead_temperature'], 'Warm')}</small></td>
             <td>{v35_safe(r['parent_name'], '-')}<br><small>{contact}</small></td>
-            <td>{program}</td>
+            <td>{program}<br><small>{fee_line}</small></td>
             <td>{preferred}</td>
             <td><span class="pill {verify_class}">{verified}</span><br><small>{latest}</small></td>
             <td>{trial}</td>
@@ -18282,6 +18387,13 @@ def inquiry_detail(inquiry_id):
         teacher_options += f"<option {'selected' if name == inquiry['trial_teacher'] else ''}>{v35_safe(name)}</option>"
 
     verified_checked = "checked" if inquiry["owner_verified"] else ""
+    trial_fee_line = " / ".join([
+        x for x in [
+            v35_safe(inquiry["trial_duration"]),
+            v35_safe(inquiry["trial_fee"]),
+            v35_safe(inquiry["payment_method"]),
+        ] if x
+    ]) or "-"
     convert_button = ""
     if inquiry["status"] != "Active Student":
         convert_button = f"<form method='POST' action='/convert_inquiry_to_student/{inquiry_id}'><button class='success' type='submit'>Convert to Student</button></form>"
@@ -18329,6 +18441,7 @@ def inquiry_detail(inquiry_id):
                 <div class="card"><span>Email</span><b>{v35_safe(inquiry['parent_email'], '-')}</b></div>
                 <div class="card"><span>Phone</span><b>{v35_safe(inquiry['phone'], '-')}</b></div>
                 <div class="card"><span>Status</span><b>{v35_safe(inquiry['status'], '-')}</b></div>
+                <div class="card"><span>Trial Fee</span><b>{trial_fee_line}</b></div>
             </div>
         </div>
 
@@ -18351,6 +18464,9 @@ def inquiry_detail(inquiry_id):
                     <div><label>Source</label><input name="source" value="{v35_safe(inquiry['source'])}"></div>
                     <div><label>Instrument</label><input name="instrument" value="{v35_safe(inquiry['instrument'])}"></div>
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
+                    <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
+                    <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45'], inquiry['trial_fee'] or '$30')}</select></div>
+                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH', 'PayPal', 'Zelle'], inquiry['payment_method'] or 'ACH')}</select></div>
                     <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
                     <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
@@ -18390,6 +18506,9 @@ def update_inquiry(inquiry_id):
         "age": request.form.get("age", "").strip(),
         "instrument": request.form.get("instrument", "").strip(),
         "program_interest": request.form.get("program_interest", "").strip(),
+        "trial_duration": request.form.get("trial_duration", "").strip(),
+        "trial_fee": request.form.get("trial_fee", "").strip(),
+        "payment_method": request.form.get("payment_method", "").strip(),
         "preferred_days": request.form.get("preferred_days", "").strip(),
         "preferred_times": request.form.get("preferred_times", "").strip(),
         "source": request.form.get("source", "").strip(),
@@ -18427,7 +18546,8 @@ def update_inquiry(inquiry_id):
         student_name=?, parent_name=?, parent_email=?, phone=?, age=?, instrument=?, source=?, status=?,
         trial_date=?, trial_time=?, trial_teacher=?, notes=?, updated_at=?, program_interest=?, preferred_days=?,
         preferred_times=?, previous_experience=?, experience_duration=?, trial_location=?, trial_status=?, lead_temperature=?, ai_summary=?, ai_recommendation=?,
-        ai_follow_up_draft=?, next_follow_up_at=?, follow_up_status=?, follow_up_notes=?, owner_verified=?
+        ai_follow_up_draft=?, next_follow_up_at=?, follow_up_status=?, follow_up_notes=?, owner_verified=?,
+        trial_duration=?, trial_fee=?, payment_method=?
     WHERE id=?
     """, (
         data["student_name"], data["parent_name"], data["parent_email"], data["phone"], data["age"],
@@ -18436,7 +18556,7 @@ def update_inquiry(inquiry_id):
         data["preferred_times"], data["previous_experience"], data["experience_duration"],
         data["trial_location"], trial_status, data["lead_temperature"], summary,
         recommendation, follow_up, data["next_follow_up_at"], data["follow_up_status"], data["follow_up_notes"],
-        data["owner_verified"], inquiry_id
+        data["owner_verified"], data["trial_duration"], data["trial_fee"], data["payment_method"], inquiry_id
     ))
 
     scheduled = False
