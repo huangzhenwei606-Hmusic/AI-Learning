@@ -8630,23 +8630,24 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
     next_lesson = child_os_next_lesson(cursor, student_name)
     conn.close()
 
+    response_lang = "en"
     status = "logged"
-    outcome = child_os_copy(lang, "fallback")
+    outcome = child_os_copy(response_lang, "fallback")
     related_schedule_id = None
     action_href = "/parent_dashboard"
-    action_label = "Dashboard" if lang == "en" else "回首页"
+    action_label = "Dashboard"
 
     if intent == "balance_query":
         key = "low_balance" if float(lessons_left or 0) <= 2 else "balance"
-        outcome = child_os_copy(lang, key, student=student_name, lessons_left=lessons_left)
+        outcome = child_os_copy(response_lang, key, student=student_name, lessons_left=lessons_left)
         status = "executed"
         action_href = "/parent_billing" if float(lessons_left or 0) <= 2 else "/parent_dashboard"
-        action_label = "Renew / Billing" if lang == "en" else "续费 / 账单"
+        action_label = "Renew / Billing"
     elif intent == "lesson_reminder":
         if next_lesson:
             related_schedule_id = next_lesson[0]
             outcome = child_os_copy(
-                lang,
+                response_lang,
                 "reminder",
                 date=next_lesson[1],
                 time=format_lesson_time_range(next_lesson[2], next_lesson[5]),
@@ -8654,7 +8655,7 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
                 room=next_lesson[4] or ""
             )
         else:
-            outcome = child_os_copy(lang, "no_lesson")
+            outcome = child_os_copy(response_lang, "no_lesson")
         status = "executed"
     elif intent == "cancel_once":
         if next_lesson:
@@ -8670,7 +8671,7 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
             if result["ok"]:
                 status = "executed"
                 outcome = child_os_copy(
-                    lang,
+                    response_lang,
                     "cancel_done",
                     student=student_name,
                     date=next_lesson[1],
@@ -8685,25 +8686,25 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
                 outcome = result["error"]
         else:
             status = "executed"
-            outcome = child_os_copy(lang, "no_lesson")
+            outcome = child_os_copy(response_lang, "no_lesson")
     elif intent == "reschedule_once":
         status = "guided"
-        outcome = child_os_copy(lang, "reschedule_once")
+        outcome = child_os_copy(response_lang, "reschedule_once")
         action_href = "/parent_reschedule"
-        action_label = "Choose new time" if lang == "en" else "选择新时间"
+        action_label = "Choose new time"
     elif intent == "receipt":
         status = "guided"
-        outcome = child_os_copy(lang, "receipt")
+        outcome = child_os_copy(response_lang, "receipt")
         action_href = "/parent_billing"
-        action_label = "Billing / Receipts" if lang == "en" else "账单 / 收据"
+        action_label = "Billing / Receipts"
     elif risk_level == "amber":
         status = "needs_confirmation"
-        outcome = child_os_copy(lang, "amber")
+        outcome = child_os_copy(response_lang, "amber")
         action_href = "/parent_billing" if intent == "renewal_or_money" else "/parent_reschedule"
-        action_label = "Open form" if lang == "en" else "打开表单"
+        action_label = "Open form"
     elif risk_level == "red":
         status = "owner_only"
-        outcome = child_os_copy(lang, "red")
+        outcome = child_os_copy(response_lang, "red")
 
     request_id = create_child_os_request(
         parent_id,
@@ -15191,7 +15192,7 @@ def parent_agent():
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
         cursor.execute("""
-        SELECT id, request_text, language, intent, risk_level, status, outcome, created_at
+        SELECT id, request_text, language, intent, risk_level, status, outcome, created_at, route_to
         FROM child_os_requests
         WHERE id = ?
         AND parent_id = ?
@@ -15199,11 +15200,24 @@ def parent_agent():
         row = cursor.fetchone()
         conn.close()
         if row:
+            risk = row[4] or "teal"
+            risk_label = {
+                "teal": "Auto handled",
+                "amber": "Needs confirmation",
+                "red": "Owner handling",
+            }.get(risk, "Logged")
+            risk_detail = {
+                "teal": "This is low risk and can be handled by the system.",
+                "amber": "This request needs human confirmation before action.",
+                "red": "This request has been sent to the owner for manual handling.",
+            }.get(risk, "Owner can see this request.")
             result_card = f"""
-            <div class="agent-result">
+            <div class="agent-result risk-{escape(risk)}">
+                <div class="risk-pill">{escape(risk_label)}</div>
                 <h2>{escape(row[5] or '')}</h2>
                 <p>{escape(row[6] or '')}</p>
-                <div class="result-meta">{escape(row[7] or '')}</div>
+                <div class="risk-detail">{escape(risk_detail)}</div>
+                <div class="result-meta">Route: {escape(row[8] or '')} · Intent: {escape(row[3] or '')} · {escape(row[7] or '')}</div>
             </div>
             """
 
@@ -15234,6 +15248,16 @@ def parent_agent():
             .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; padding:9px 11px; font-weight:800; }}
             .assistant-note {{ margin:14px 0; padding:12px; background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:12px; font-weight:800; line-height:1.45; }}
             .agent-result {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; background:#f8fafc; }}
+            .agent-result h2 {{ margin:8px 0 8px; font-size:20px; }}
+            .agent-result p {{ margin:0; line-height:1.45; }}
+            .risk-teal {{ background:#ecfdf5; border-color:#99f6e4; }}
+            .risk-amber {{ background:#fffbeb; border-color:#fcd34d; }}
+            .risk-red {{ background:#fff1f2; border-color:#fda4af; }}
+            .risk-pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:13px; font-weight:900; background:white; color:#111827; }}
+            .risk-teal .risk-pill {{ color:#047857; }}
+            .risk-amber .risk-pill {{ color:#92400e; }}
+            .risk-red .risk-pill {{ color:#991b1b; }}
+            .risk-detail {{ margin-top:10px; font-weight:800; color:#374151; }}
             .result-meta {{ color:#6b7280; font-size:13px; margin-top:8px; }}
             .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
             @media(max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} }}
@@ -15251,11 +15275,11 @@ def parent_agent():
                 <div class="agent-avatar">AI</div>
                 <div>
                     <h1>My Assistant</h1>
-                    <div class="sub">Tell me what you need. You can type in English or Chinese.</div>
+                    <div class="sub">Tell me what you need. You can type in English or Chinese. I will reply in English.</div>
                 </div>
             </div>
 
-            <div class="assistant-note">I can help with lesson changes, cancellations, lesson balance, reminders, billing questions, and messages. Some requests may be reviewed by H-Music before they are completed.</div>
+            <div class="assistant-note">I can help with lesson changes, cancellations, lesson balance, reminders, billing questions, and messages. Results are color-coded: auto handled, needs confirmation, or owner handling.</div>
             {result_card}
 
             <form method="POST">
