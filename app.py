@@ -15360,7 +15360,24 @@ def parent_agent():
         return redirect(f"/parent_agent?request_id={result['id']}")
 
     selected_request_id = request.args.get("request_id")
-    clarification_card = ""
+
+    student_options = "".join([
+        f'<option value="{escape(s[0])}" {"selected" if s[0] == current_student else ""}>{escape(s[0])}</option>'
+        for s in linked_students
+    ])
+    current_student_value = escape(current_student or "")
+
+    chat_rows = """
+            <div class="day-divider">Today</div>
+            <div class="message-row ai">
+                <div class="chat-avatar">AI</div>
+                <div class="bubble ai-bubble">
+                    <p>Hi! I can help with lesson changes, cancellations, balance checks, billing, and messages.</p>
+                    <p>What do you need today?</p>
+                </div>
+            </div>
+    """
+
     clarify_kind = request.args.get("clarify")
     pending_clarification = session.get("child_os_clarification") or {}
     if clarify_kind and pending_clarification.get("kind") == clarify_kind:
@@ -15371,27 +15388,31 @@ def parent_agent():
             option_forms = ""
             for value, label, description in config["options"]:
                 option_forms += f"""
-                <form method="POST" class="clarify-option">
-                    <input type="hidden" name="student_name" value="{escape(pending_student)}">
-                    <input type="hidden" name="original_text" value="{escape(pending_text)}">
-                    <input type="hidden" name="confirmed_intent" value="{escape(value)}">
-                    <button type="submit">
-                        <span>{escape(label)}</span>
-                        <small>{escape(description)}</small>
-                    </button>
-                </form>
+                    <form method="POST" class="clarify-option">
+                        <input type="hidden" name="student_name" value="{escape(pending_student)}">
+                        <input type="hidden" name="original_text" value="{escape(pending_text)}">
+                        <input type="hidden" name="confirmed_intent" value="{escape(value)}">
+                        <button type="submit">
+                            <span>{escape(label)}</span>
+                            <small>{escape(description)}</small>
+                        </button>
+                    </form>
                 """
-            clarification_card = f"""
-            <div class="clarify-card">
-                <div class="risk-pill">Need clarification</div>
-                <h2>{escape(config["title"])}</h2>
-                <p>{escape(config["prompt"])}</p>
-                <div class="quoted-request">"{escape(pending_text)}"</div>
-                <div class="clarify-options">{option_forms}</div>
+            chat_rows += f"""
+            <div class="message-row parent">
+                <div class="bubble parent-bubble">{escape(pending_text)}</div>
+                <div class="parent-avatar">P</div>
+            </div>
+            <div class="message-row ai">
+                <div class="chat-avatar">AI</div>
+                <div class="bubble ai-bubble">
+                    <p>{escape(config["title"])}</p>
+                    <p>{escape(config["prompt"])}</p>
+                    <div class="clarify-options">{option_forms}</div>
+                </div>
             </div>
             """
 
-    result_card = ""
     if selected_request_id:
         ensure_child_os_schema()
         conn = sqlite3.connect("hmusic.db")
@@ -15410,7 +15431,7 @@ def parent_agent():
                 "teal": "Auto handled",
                 "amber": "Needs confirmation",
                 "red": "Owner handling",
-            }.get(risk, "Logged")
+            }.get(risk, "Received")
             risk_detail = {
                 "teal": "Done automatically. The studio can still see this request.",
                 "amber": "Submitted for confirmation. We will update you after it is approved.",
@@ -15423,19 +15444,23 @@ def parent_agent():
                 "owner_only": "Owner notified",
                 "logged": "Received",
             }.get(row[5] or "", row[5] or "Received")
-            result_card = f"""
-            <div class="agent-result risk-{escape(risk)}">
-                <div class="risk-pill">{escape(risk_label)}</div>
-                <h2>{escape(status_title)}</h2>
-                <p>{escape(row[6] or '')}</p>
-                <div class="risk-detail">{escape(risk_detail)}</div>
+            chat_rows += f"""
+            <div class="message-row parent">
+                <div class="bubble parent-bubble">{escape(row[1] or '')}</div>
+                <div class="parent-avatar">P</div>
+            </div>
+            <div class="message-row ai">
+                <div class="chat-avatar">AI</div>
+                <div class="bubble ai-bubble">
+                    <div class="agent-result risk-{escape(risk)}">
+                        <div class="risk-pill">{escape(risk_label)}</div>
+                        <h2>{escape(status_title)}</h2>
+                        <p>{escape(row[6] or '')}</p>
+                        <div class="risk-detail">{escape(risk_detail)}</div>
+                    </div>
+                </div>
             </div>
             """
-
-    student_options = "".join([
-        f'<option value="{escape(s[0])}" {"selected" if s[0] == current_student else ""}>{escape(s[0])}</option>'
-        for s in linked_students
-    ])
 
     quick_zh = "帮我看一下还剩几节课"
     quick_en = "When is my next lesson?"
@@ -15446,76 +15471,111 @@ def parent_agent():
         {parent_app_meta("My Assistant")}
         <style>
             * {{ box-sizing:border-box; }}
-            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-            .container {{ max-width:760px; margin:0 auto; min-height:100vh; background:white; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
-            .agent-head {{ display:flex; align-items:center; gap:12px; margin-bottom:18px; }}
-            .agent-avatar {{ width:48px; height:48px; border-radius:16px; background:#ede9fe; color:#4c1d95; display:flex; align-items:center; justify-content:center; font-weight:900; }}
-            h1 {{ margin:0; font-size:30px; }}
-            .sub {{ color:#6b7280; margin-top:4px; line-height:1.45; }}
-            select, textarea {{ width:100%; border:1px solid #d1d5db; border-radius:12px; padding:12px 14px; font-size:16px; margin:8px 0 14px; }}
-            textarea {{ min-height:120px; }}
-            button, a.button {{ display:inline-block; border:0; background:#4f46e5; color:white; border-radius:10px; padding:12px 16px; font-weight:900; text-decoration:none; }}
-            .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 14px; }}
-            .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; padding:9px 11px; font-weight:800; }}
-            .assistant-note {{ margin:14px 0; padding:12px; background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:12px; font-weight:800; line-height:1.45; }}
-            .agent-result, .clarify-card {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; background:#f8fafc; }}
-            .agent-result h2, .clarify-card h2 {{ margin:8px 0 8px; font-size:20px; }}
-            .agent-result p, .clarify-card p {{ margin:0; line-height:1.45; }}
-            .clarify-card {{ background:#fffbeb; border-color:#fcd34d; }}
-            .quoted-request {{ margin:12px 0; color:#6b7280; font-weight:800; }}
-            .clarify-options {{ display:grid; gap:10px; margin-top:12px; }}
+            body {{ margin:0; background:#0f1115; color:#f9fafb; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            .chat-shell {{ max-width:760px; min-height:100vh; margin:0 auto; background:#171716; display:flex; flex-direction:column; padding-bottom:calc(170px + env(safe-area-inset-bottom)); }}
+            .chat-header {{ position:sticky; top:0; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:max(16px, env(safe-area-inset-top)) 18px 16px; background:#2f2f2d; border-bottom:1px solid #4a4a48; }}
+            .head-left {{ display:flex; align-items:center; gap:12px; min-width:0; }}
+            .agent-avatar {{ width:44px; height:44px; border-radius:14px; background:#24466f; color:#bfdbfe; display:flex; align-items:center; justify-content:center; font-weight:900; flex:0 0 auto; }}
+            h1 {{ margin:0; font-size:22px; line-height:1.1; }}
+            .sub {{ color:#d1d5db; margin-top:4px; font-size:14px; line-height:1.25; }}
+            .student-pill {{ flex:0 0 auto; display:flex; align-items:center; gap:8px; border:1px solid #5b5b58; color:#f9fafb; background:#252522; border-radius:999px; padding:7px 12px; }}
+            .student-pill span {{ color:#b7b7b0; font-size:13px; }}
+            .student-pill select {{ appearance:none; -webkit-appearance:none; border:0; background:transparent; color:#fff; font-size:15px; font-weight:850; max-width:150px; outline:none; }}
+            .student-pill option {{ color:#111827; }}
+            .chat-log {{ padding:26px 18px 22px; display:flex; flex-direction:column; gap:16px; }}
+            .day-divider {{ text-align:center; color:#aaa69e; font-weight:850; font-size:13px; margin:4px 0 8px; }}
+            .message-row {{ display:flex; align-items:flex-end; gap:10px; width:100%; }}
+            .message-row.parent {{ justify-content:flex-end; }}
+            .chat-avatar, .parent-avatar {{ width:36px; height:36px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900; flex:0 0 auto; }}
+            .chat-avatar {{ background:#24466f; color:#bfdbfe; }}
+            .parent-avatar {{ background:#22520f; color:#b9f7a0; }}
+            .bubble {{ max-width:min(82%, 520px); border-radius:17px; padding:14px 16px; font-size:17px; line-height:1.45; }}
+            .bubble p {{ margin:0 0 12px; }}
+            .bubble p:last-child {{ margin-bottom:0; }}
+            .ai-bubble {{ background:#30302e; color:#f7f7f4; border:1px solid #555552; border-bottom-left-radius:6px; }}
+            .parent-bubble {{ background:#82afe2; color:#fff; border-bottom-right-radius:6px; font-weight:850; }}
+            .clarify-options {{ display:grid; gap:8px; margin-top:12px; }}
             .clarify-option {{ margin:0; }}
-            .clarify-option button {{ width:100%; text-align:left; background:white; color:#111827; border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; }}
-            .clarify-option span {{ display:block; font-size:16px; font-weight:900; }}
-            .clarify-option small {{ display:block; margin-top:4px; color:#6b7280; font-size:13px; line-height:1.35; }}
+            .clarify-option button {{ width:100%; text-align:left; background:#262624; color:#f9fafb; border:1px solid #52524f; border-radius:10px; padding:10px 12px; cursor:pointer; }}
+            .clarify-option span {{ display:block; font-size:15px; font-weight:900; }}
+            .clarify-option small {{ display:block; margin-top:3px; color:#c9c7c1; font-size:12px; line-height:1.35; }}
+            .agent-result {{ border-radius:14px; padding:13px; border:1px solid #e5e7eb; background:#f8fafc; color:#111827; }}
+            .agent-result h2 {{ margin:8px 0 8px; font-size:18px; }}
+            .agent-result p {{ margin:0; line-height:1.4; }}
             .risk-teal {{ background:#ecfdf5; border-color:#99f6e4; }}
             .risk-amber {{ background:#fffbeb; border-color:#fcd34d; }}
             .risk-red {{ background:#fff1f2; border-color:#fda4af; }}
-            .risk-pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:13px; font-weight:900; background:white; color:#111827; }}
+            .risk-pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:900; background:white; color:#111827; }}
             .risk-teal .risk-pill {{ color:#047857; }}
             .risk-amber .risk-pill {{ color:#92400e; }}
             .risk-red .risk-pill {{ color:#991b1b; }}
             .risk-detail {{ margin-top:10px; font-weight:800; color:#374151; }}
-            .result-meta {{ color:#6b7280; font-size:13px; margin-top:8px; }}
-            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
-            @media(max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} }}
+            .composer-wrap {{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(70px + env(safe-area-inset-bottom)); width:min(760px, 100%); z-index:16; background:#2f2f2d; border-top:1px solid #4a4a48; padding:10px 18px 12px; }}
+            .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }}
+            .quick button {{ background:#252522; color:#d7d4ce; border:1px solid #555552; border-radius:999px; padding:7px 11px; font-size:13px; font-weight:850; }}
+            .composer {{ display:flex; align-items:flex-end; gap:10px; }}
+            .composer textarea {{ flex:1; min-height:48px; max-height:110px; resize:vertical; border:1px solid #555552; border-radius:14px; background:#2a2a28; color:#fff; padding:12px 14px; font-size:16px; outline:none; }}
+            .composer textarea::placeholder {{ color:#aaa69e; }}
+            .send-button {{ min-width:64px; height:52px; border-radius:14px; border:1px solid #6a6a66; background:#383835; color:#fff; font-size:14px; font-weight:900; }}
+            @media(max-width:760px) {{
+                .chat-shell {{ padding-bottom:calc(158px + env(safe-area-inset-bottom)); }}
+                .chat-header {{ padding-left:14px; padding-right:14px; }}
+                .student-pill select {{ max-width:96px; }}
+                .bubble {{ max-width:86%; font-size:16px; }}
+                .chat-log {{ padding-left:12px; padding-right:12px; }}
+                .composer-wrap {{ padding-left:12px; padding-right:12px; }}
+            }}
         </style>
         <script>
             function fillAgent(text) {{
-                document.getElementById("request_text").value = text;
-                document.getElementById("request_text").focus();
+                const box = document.getElementById("request_text");
+                box.value = text;
+                box.focus();
             }}
+            function syncStudent() {{
+                const selector = document.getElementById("student_selector");
+                const hidden = document.getElementById("student_name_hidden");
+                if (selector && hidden) hidden.value = selector.value;
+            }}
+            window.addEventListener("load", function() {{
+                const log = document.querySelector(".chat-log");
+                if (log) window.scrollTo(0, document.body.scrollHeight);
+                syncStudent();
+            }});
         </script>
     </head>
     <body>
-        <div class="container">
-            <div class="agent-head">
-                <div class="agent-avatar">AI</div>
-                <div>
-                    <h1>My Assistant</h1>
-                    <div class="sub">Tell me what you need in English or Chinese. I'll reply in English and ask a follow-up question when I need more details.</div>
+        <div class="chat-shell">
+            <div class="chat-header">
+                <div class="head-left">
+                    <div class="agent-avatar">AI</div>
+                    <div>
+                        <h1>My Assistant</h1>
+                        <div class="sub">English or Chinese · replies in English</div>
+                    </div>
                 </div>
+                <label class="student-pill">
+                    <span>For</span>
+                    <select id="student_selector" onchange="syncStudent()">{student_options}</select>
+                </label>
             </div>
 
-            <div class="assistant-note">I can help with lesson balance, next lessons, cancellations, schedule changes, billing, and messages. If a request affects billing or long-term lessons, the studio will confirm it first.</div>
-            {clarification_card}
-            {result_card}
+            <main class="chat-log">
+                {chat_rows}
+            </main>
+        </div>
 
-            <form method="POST">
-                Student / Child:<br>
-                <select name="student_name">{student_options}</select>
-                What would you like help with?<br>
-                <textarea id="request_text" name="request_text" placeholder="Example: 帮我取消下一节课 / How many lessons are left? / Please renew package"></textarea>
-                <div class="quick">
-                    <button type="button" onclick="fillAgent('{quick_zh}')">Lesson balance</button>
-                    <button type="button" onclick="fillAgent('{quick_en}')">Next lesson</button>
-                    <button type="button" onclick="fillAgent('帮我取消下一节课')">Cancel next lesson</button>
-                    <button type="button" onclick="fillAgent('I want to renew package')">Renew package</button>
-                </div>
-                <div class="form-actions">
-                    <button type="submit">Send to Agent</button>
-                    <a class="button" href="/parent_dashboard">Back</a>
-                </div>
+        <div class="composer-wrap">
+            <div class="quick">
+                <button type="button" onclick="fillAgent('{quick_zh}')">Lesson balance</button>
+                <button type="button" onclick="fillAgent('{quick_en}')">Next lesson</button>
+                <button type="button" onclick="fillAgent('帮我取消下一节课')">Cancel next lesson</button>
+                <button type="button" onclick="fillAgent('I want to renew package')">Renew package</button>
+            </div>
+            <form class="composer" method="POST">
+                <input type="hidden" id="student_name_hidden" name="student_name" value="{current_student_value}">
+                <textarea id="request_text" name="request_text" placeholder="Type in English or Chinese..."></textarea>
+                <button class="send-button" type="submit">Send</button>
             </form>
         </div>
         {parent_bottom_nav("home")}
