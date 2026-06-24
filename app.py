@@ -18199,37 +18199,37 @@ def v35_public_trial_form(error="", values=None):
                 background:var(--bg);
                 color:var(--text);
             }}
-            .wrap {{ max-width:980px; margin:0 auto; padding:0 28px 64px; }}
-            .hero {{ padding:34px 0 20px; }}
-            .brand {{ display:flex; align-items:center; gap:15px; margin-bottom:28px; }}
+            .wrap {{ max-width:920px; margin:0 auto; padding:0 24px 52px; }}
+            .hero {{ padding:26px 0 16px; }}
+            .brand {{ display:flex; align-items:center; gap:12px; margin-bottom:20px; }}
             .logo {{
-                width:54px; height:54px; border-radius:15px; background:#030303;
+                width:46px; height:46px; border-radius:13px; background:#030303;
                 display:grid; place-items:center; color:var(--gold);
-                font-family:Georgia,serif; font-size:31px; font-weight:700;
+                font-family:Georgia,serif; font-size:26px; font-weight:700;
                 box-shadow:0 10px 22px rgba(17,24,39,.12);
             }}
             .brand-name {{ font-weight:900; letter-spacing:.04em; color:#171717; }}
-            h1 {{ font-size:44px; line-height:1.05; margin:0 0 12px; letter-spacing:0; }}
-            p {{ color:var(--muted); font-size:19px; line-height:1.55; margin:0; }}
-            form {{ display:grid; gap:28px; padding:34px; margin-top:26px; background:#ffffff; border:1px solid #e7e3da; border-radius:22px; box-shadow:0 18px 44px rgba(15,23,42,.07); }}
-            section {{ border-bottom:1px solid var(--line); padding-bottom:30px; }}
+            h1 {{ font-size:36px; line-height:1.08; margin:0 0 8px; letter-spacing:0; }}
+            p {{ color:var(--muted); font-size:16px; line-height:1.5; margin:0; }}
+            form {{ display:grid; gap:22px; padding:28px; margin-top:22px; background:#ffffff; border:1px solid #e7e3da; border-radius:22px; box-shadow:0 18px 44px rgba(15,23,42,.07); }}
+            section {{ border-bottom:1px solid var(--line); padding-bottom:24px; }}
             section:last-of-type {{ border-bottom:0; }}
-            .section-title {{ color:var(--muted); font-weight:900; letter-spacing:.08em; font-size:15px; margin:0 0 20px; text-transform:uppercase; }}
-            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
-            label {{ font-weight:800; font-size:16px; display:grid; gap:9px; color:#2f2f2b; }}
+            .section-title {{ color:var(--muted); font-weight:900; letter-spacing:.08em; font-size:13px; margin:0 0 14px; text-transform:uppercase; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+            label {{ font-weight:800; font-size:14px; display:grid; gap:7px; color:#2f2f2b; }}
             input, select, textarea {{
                 width:100%; border:1px solid var(--line); border-radius:13px;
                 background:var(--panel-2); color:var(--text);
-                padding:17px 18px; font-size:19px; font-family:inherit;
+                padding:13px 14px; font-size:16px; font-family:inherit;
                 outline:none;
             }}
             input::placeholder, textarea::placeholder {{ color:#9b968d; }}
             input:focus, select:focus, textarea:focus {{ border-color:var(--blue); box-shadow:0 0 0 3px rgba(85,168,255,.16); }}
-            textarea {{ min-height:126px; resize:vertical; }}
-            .instrument-chips {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }}
+            textarea {{ min-height:108px; resize:vertical; }}
+            .instrument-chips {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }}
             .chip {{
-                border:1px solid var(--line); border-radius:999px; padding:12px 18px;
-                background:#ffffff; color:#2f2f2b; font-size:17px; font-weight:800;
+                border:1px solid var(--line); border-radius:999px; padding:9px 14px;
+                background:#ffffff; color:#2f2f2b; font-size:14px; font-weight:800;
                 cursor:pointer;
             }}
             .chip.other {{ background:var(--blue-soft); color:#145ea2; border-color:var(--blue); }}
@@ -18245,29 +18245,29 @@ def v35_public_trial_form(error="", values=None):
             .fee-card span {{ display:block; color:var(--muted); font-size:12px; }}
             .fee-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; color:#111827; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
             .fee-card:has(input:checked) strong, .fee-card:has(input:checked) b, .fee-card:has(input:checked) span {{ color:#111827; }}
-            .time-option {{ border:1px solid var(--line); border-radius:15px; padding:16px; margin-bottom:14px; background:var(--panel); }}
-            .time-title {{ color:var(--muted); font-weight:900; margin-bottom:12px; }}
-            .payment-options {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+            .time-option {{ border:1px solid var(--line); border-radius:13px; padding:13px; margin-bottom:10px; background:var(--panel); }}
+            .time-title {{ color:var(--muted); font-weight:900; margin-bottom:9px; font-size:14px; }}
+            .payment-options {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
             .pay-card {{
-                border:1px solid var(--line); border-radius:15px; padding:18px;
+                border:1px solid var(--line); border-radius:13px; padding:14px;
                 background:var(--panel); display:grid; gap:8px; cursor:pointer;
             }}
             .pay-card input {{ width:auto; margin:0; }}
-            .pay-card .pay-title {{ display:flex; align-items:center; gap:10px; font-size:20px; font-weight:900; color:#111827; }}
-            .pay-card p {{ font-size:16px; }}
+            .pay-card .pay-title {{ display:flex; align-items:center; gap:8px; font-size:17px; font-weight:900; color:#111827; }}
+            .pay-card p {{ font-size:14px; }}
             .pay-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
             .pay-card:has(input:checked) .pay-title, .pay-card:has(input:checked) p, .pay-card:has(input:checked) .payment-note {{ color:#111827; }}
-            .payment-note {{ background:#f4f1ea; color:#2f2f2b; border-radius:12px; padding:14px 16px; line-height:1.5; font-weight:800; }}
+            .payment-note {{ background:#f4f1ea; color:#2f2f2b; border-radius:10px; padding:11px 12px; line-height:1.45; font-weight:800; font-size:14px; }}
             .pay-card:has(input:checked) .payment-note {{ background:#ffffff; color:#111827; }}
             .pay-email {{ color:#8a5d0a; font-weight:900; }}
-            .hint {{ background:#fff8e6; border:1px solid #f0d99a; border-radius:14px; padding:14px 16px; color:#6f4e08; line-height:1.45; }}
-            .error {{ background:#fff1f2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:13px 15px; font-weight:900; }}
-            .submit {{ border:0; border-radius:14px; background:#4f46e5; color:white; padding:18px 22px; font-size:19px; font-weight:900; cursor:pointer; }}
+            .hint {{ background:#fff8e6; border:1px solid #f0d99a; border-radius:12px; padding:12px 14px; color:#6f4e08; line-height:1.45; font-size:14px; }}
+            .error {{ background:#fff1f2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:11px 13px; font-weight:900; font-size:14px; }}
+            .submit {{ border:0; border-radius:12px; background:#4f46e5; color:white; padding:14px 18px; font-size:16px; font-weight:900; cursor:pointer; }}
             .required {{ color:#ffb4b4; }}
             @media (max-width:760px) {{
                 .wrap {{ padding:0 18px 48px; }}
-                h1 {{ font-size:36px; }}
-                p {{ font-size:17px; }}
+                h1 {{ font-size:31px; }}
+                p {{ font-size:15px; }}
                 .grid, .fee-grid, .payment-options {{ grid-template-columns:1fr; }}
             }}
         </style>
