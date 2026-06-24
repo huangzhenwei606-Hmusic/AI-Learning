@@ -10,7 +10,7 @@ import re
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
@@ -8538,11 +8538,14 @@ def child_os_ambiguity_kind(text):
     stop_renewal_words = ["stop renew", "stop renewal", "stop auto renew", "stop auto-renew", "cancel renewal", "cancel auto renew", "cancel auto-renew", "do not renew", "don't renew", "not renew", "停止续费", "取消续费"]
     cancel_words = ["cancel", "取消", "请假", "缺席"]
     change_words = ["change", "reschedule", "move", "switch", "改", "换", "调课"]
+    trial_words = ["trial", "try lesson", "try a class", "book a trial", "schedule a trial", "试课", "体验课", "试听"]
     one_time_words = ["next lesson", "下一节", "this lesson", "one lesson", "single lesson", "today", "tomorrow"]
     future_words = ["all future", "以后都", "所有后续", "every week", "recurring"]
 
     if any(w in lower or w in raw for w in stop_renewal_words):
         return None
+    if any(w in lower or w in raw for w in trial_words):
+        return "trial"
     if any(w in lower or w in raw for w in withdraw_words):
         return "withdraw"
     if any(w in lower or w in raw for w in cancel_words):
@@ -8584,6 +8587,14 @@ def child_os_clarification_config(kind):
                 ("change_program", "Change program or instrument", "The studio owner will review the request."),
             ],
         },
+        "trial": {
+            "title": "I can help start a trial request.",
+            "prompt": "Is this for another child or another instrument for an existing child?",
+            "options": [
+                ("trial_another_child", "Another child", "Open a trial request linked to your family account."),
+                ("trial_another_instrument", "Another instrument", "Use an existing child and request a new instrument trial."),
+            ],
+        },
         "general": {
             "title": "I want to make sure I understand.",
             "prompt": "What is your request about?",
@@ -8623,6 +8634,8 @@ def handle_child_os_confirmed_intent(parent_id, parent_name, student_name, reque
         "general_billing": ("billing_question", "amber", "owner", "needs_confirmation", "Thanks. Your billing question has been sent to the studio for review."),
         "general_teacher": ("teacher_program_question", "red", "owner", "owner_only", "Thanks. I sent this teacher/program question to the studio owner for follow-up."),
         "general_owner": ("owner_question", "red", "owner", "owner_only", "I sent your message to the studio owner. They will follow up within 24 hours."),
+        "trial_another_child": ("trial_request_another_child", "teal", "auto", "guided", "Sure. Please complete this trial request form, and it will be linked to your H-Music family account."),
+        "trial_another_instrument": ("trial_request_another_instrument", "teal", "auto", "guided", "Sure. Please complete this trial request form for another instrument. It will be linked to your H-Music family account."),
     }
 
     intent, risk_level, route_to, status, outcome = mapped.get(
@@ -8682,6 +8695,7 @@ def child_os_classify(text):
     ]
     reminder_words = ["提醒", "下一节", "下节课", "什么时候上课", "reminder", "next lesson", "when is"]
     receipt_words = ["收据", "receipt"]
+    trial_words = ["trial", "try lesson", "try a class", "book a trial", "schedule a trial", "试课", "体验课", "试听"]
 
     def is_balance_question():
         if any(w in lower or w in raw for w in balance_words):
@@ -8690,6 +8704,8 @@ def child_os_classify(text):
         mentions_lesson = any(w in lower for w in ["lesson", "lessons", "class", "classes", "package"])
         return asks_count and mentions_lesson
 
+    if any(w in lower or w in raw for w in trial_words):
+        return lang, "trial_request", "teal", "auto"
     if any(w in lower or w in raw for w in red_words):
         return lang, "owner_only", "red", "owner"
     if any(w in lower or w in raw for w in stop_renewal_words):
@@ -8848,6 +8864,11 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
         outcome = child_os_copy(response_lang, "receipt")
         action_href = "/parent_billing"
         action_label = "Billing / Receipts"
+    elif intent == "trial_request":
+        status = "guided"
+        outcome = "Sure. I can help you request a trial for another child or another instrument. Please open the trial request form and I will link it to your family account."
+        action_href = "/trial?from_parent_app=1"
+        action_label = "Open trial request form"
     elif intent == "stop_renewal":
         status = "needs_confirmation"
         outcome = "I sent your request to stop the next package renewal to the studio. We will confirm before making any billing changes."
@@ -15224,6 +15245,7 @@ def parent_dashboard():
                 <a class="button" href="/parent_messages">{message_label}</a>
                 <a class="button" href="/parent_cancel">Cancel Lesson</a>
                 <a class="button" href="/parent_billing">Billing / AutoPay</a>
+                <a class="button" href="/trial?from_parent_app=1">Request Trial for Another Child or Instrument</a>
             </div>
 
             <h2>Upcoming Lessons</h2>
@@ -15444,6 +15466,10 @@ def parent_agent():
                 "owner_only": "Owner notified",
                 "logged": "Received",
             }.get(row[5] or "", row[5] or "Received")
+            action_html = ""
+            if row[3] in ("trial_request", "trial_request_another_child", "trial_request_another_instrument"):
+                request_type = "Another instrument" if row[3] == "trial_request_another_instrument" else "Another child"
+                action_html = f'<a class="agent-action" href="/trial?from_parent_app=1&request_type={quote(request_type)}">Open trial request form</a>'
             chat_rows += f"""
             <div class="message-row parent">
                 <div class="bubble parent-bubble">{escape(row[1] or '')}</div>
@@ -15456,6 +15482,7 @@ def parent_agent():
                         <div class="risk-pill">{escape(risk_label)}</div>
                         <h2>{escape(status_title)}</h2>
                         <p>{escape(row[6] or '')}</p>
+                        {action_html}
                         <div class="risk-detail">{escape(risk_detail)}</div>
                     </div>
                 </div>
@@ -15503,6 +15530,7 @@ def parent_agent():
             .agent-result {{ border-radius:14px; padding:13px; border:1px solid #e5e7eb; background:#f8fafc; color:#111827; }}
             .agent-result h2 {{ margin:8px 0 8px; font-size:18px; }}
             .agent-result p {{ margin:0; line-height:1.4; }}
+            .agent-action {{ display:inline-flex; margin-top:12px; background:#4f46e5; color:white; text-decoration:none; border-radius:10px; padding:9px 12px; font-size:13px; font-weight:900; }}
             .risk-teal {{ background:#ecfdf5; border-color:#99f6e4; }}
             .risk-amber {{ background:#fffbeb; border-color:#fcd34d; }}
             .risk-red {{ background:#fff1f2; border-color:#fda4af; }}
@@ -15584,6 +15612,7 @@ def parent_agent():
                 <button type="button" onclick="fillAgent('{quick_en}')">Next lesson</button>
                 <button type="button" onclick="fillAgent('帮我取消下一节课')">Cancel next lesson</button>
                 <button type="button" onclick="fillAgent('I want to renew package')">Renew package</button>
+                <button type="button" onclick="fillAgent('I want to book a trial lesson')">Request trial</button>
             </div>
             <form class="composer" method="POST">
                 <input type="hidden" id="student_name_hidden" name="student_name" value="{current_student_value}">
@@ -18425,6 +18454,10 @@ def ensure_v17_schema():
         ("trial_duration", "trial_duration TEXT"),
         ("trial_fee", "trial_fee TEXT"),
         ("payment_method", "payment_method TEXT"),
+        ("parent_profile_id", "parent_profile_id INTEGER"),
+        ("existing_family", "existing_family INTEGER DEFAULT 0"),
+        ("request_type", "request_type TEXT"),
+        ("existing_student_name", "existing_student_name TEXT"),
     ]
     for column_name, column_sql in upgrades:
         v35_add_column_if_missing(cursor, "inquiries", column_name, column_sql)
@@ -18458,6 +18491,9 @@ def build_v35_trial_plan(data):
     experience_duration = (data.get("experience_duration") or "").strip()
     temp = (data.get("lead_temperature") or "Warm").strip()
     notes = (data.get("notes") or "").strip()
+    existing_family = str(data.get("existing_family") or "").strip() in ("1", "true", "True", "yes")
+    request_type = (data.get("request_type") or "").strip()
+    existing_student_name = (data.get("existing_student_name") or "").strip()
 
     missing = []
     for label, key in [
@@ -18481,6 +18517,13 @@ def build_v35_trial_plan(data):
     )
     if trial_duration or trial_fee or payment_method:
         summary += f" Trial choice: {trial_duration or 'duration TBD'} / {trial_fee or 'fee TBD'} / payment: {payment_method or 'TBD'}."
+    if existing_family:
+        family_bits = ["Existing H-Music family"]
+        if request_type:
+            family_bits.append(f"Request type: {request_type}")
+        if existing_student_name:
+            family_bits.append(f"Existing student: {existing_student_name}")
+        summary += " " + ". ".join(family_bits) + "."
     if notes:
         summary += f" Notes: {notes[:220]}"
 
@@ -18506,10 +18549,12 @@ def v35_insert_trial_lead(data, public=False):
         "previous_experience", "experience_duration",
         "lead_temperature", "trial_location", "notes",
         "trial_duration", "trial_fee", "payment_method",
+        "request_type", "existing_student_name", "parent_profile_id", "existing_family",
     ]
     clean = {key: (data.get(key, "") or "").strip() for key in fields}
+    clean["existing_family"] = "1" if str(data.get("existing_family") or "").strip() in ("1", "true", "True", "yes") else "0"
     if not clean["source"]:
-        clean["source"] = "Public Trial Form" if public else "Owner Entry"
+        clean["source"] = "Existing H-Music Family" if clean["existing_family"] == "1" else ("Public Trial Form" if public else "Owner Entry")
     if not clean["lead_temperature"]:
         clean["lead_temperature"] = "Warm"
 
@@ -18527,8 +18572,9 @@ def v35_insert_trial_lead(data, public=False):
             previous_experience, experience_duration,
             trial_location, trial_status, lead_temperature, ai_summary, ai_recommendation,
             ai_follow_up_draft, next_follow_up_at, follow_up_status, follow_up_notes,
-            owner_verified, converted_enrollment_id, trial_duration, trial_fee, payment_method
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            owner_verified, converted_enrollment_id, trial_duration, trial_fee, payment_method,
+            parent_profile_id, existing_family, request_type, existing_student_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             clean["student_name"], clean["parent_name"], clean["parent_email"], clean["phone"],
@@ -18538,6 +18584,8 @@ def v35_insert_trial_lead(data, public=False):
             clean["trial_location"], "Needs Review", clean["lead_temperature"],
             summary, recommendation, follow_up, "", "New", "", 0, None,
             clean["trial_duration"], clean["trial_fee"], clean["payment_method"],
+            clean["parent_profile_id"] or None, int(clean["existing_family"] or 0),
+            clean["request_type"], clean["existing_student_name"],
         ),
     )
     inquiry_id = cursor.lastrowid
@@ -18561,8 +18609,9 @@ def v35_insert_trial_lead(data, public=False):
     return inquiry_id
 
 
-def v35_public_trial_form(error="", values=None):
+def v35_public_trial_form(error="", values=None, family_context=None):
     values = values or {}
+    family_context = family_context or {}
 
     def val(name):
         return v35_safe(values.get(name, ""))
@@ -18575,6 +18624,33 @@ def v35_public_trial_form(error="", values=None):
             selected = "selected" if current == day else ""
             options.append(f'<option value="{day}" {selected}>{day}</option>')
         return "".join(options)
+
+    request_type_options = []
+    for option, label in [
+        ("Another child", "Another child"),
+        ("Another instrument", "Another instrument for an existing child"),
+    ]:
+        selected = "selected" if values.get("request_type") == option else ""
+        request_type_options.append(f'<option value="{option}" {selected}>{label}</option>')
+
+    existing_student_options = ['<option value="">Select existing child...</option>']
+    for student_name in family_context.get("students", []):
+        selected = "selected" if values.get("existing_student_name") == student_name else ""
+        existing_student_options.append(f'<option value="{v35_safe(student_name)}" {selected}>{v35_safe(student_name)}</option>')
+
+    family_section = ""
+    if family_context.get("is_existing_family"):
+        family_section = f"""
+                <section>
+                    <div class="section-title">Family Request</div>
+                    <div class="hint">This request will be linked to your H-Music family account.</div>
+                    <div class="grid" style="margin-top:12px;">
+                        <label>What is this trial for?<select name="request_type">{''.join(request_type_options)}</select></label>
+                        <label>Existing child, if this is for another instrument<select name="existing_student_name">{''.join(existing_student_options)}</select></label>
+                    </div>
+                    <input type="hidden" name="existing_family" value="1">
+                </section>
+        """
 
     program_options = []
     for option in ["Group Class", "Private Class"]:
@@ -18716,6 +18792,7 @@ def v35_public_trial_form(error="", values=None):
             </div>
             {error_html}
             <form method="post">
+                {family_section}
                 <section>
                     <div class="section-title">Student</div>
                     <div class="grid">
@@ -19031,6 +19108,35 @@ def v35_queue_trial_confirmation(inquiry_id):
 @app.route("/trial", methods=["GET", "POST"])
 def public_trial_request():
     ensure_v17_schema()
+
+    from_parent_app = request.args.get("from_parent_app") == "1" or request.form.get("existing_family") == "1"
+    parent_id = session.get("parent_id") if from_parent_app else None
+    family_context = {"is_existing_family": False, "students": []}
+    prefill_values = {}
+    if parent_id:
+        ensure_v27_schema()
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT parent_name, email, COALESCE(phone, '') FROM parent_profiles WHERE id = ?", (parent_id,))
+        parent_row = cursor.fetchone()
+        linked = get_parent_students(parent_id)
+        conn.close()
+        family_context = {
+            "is_existing_family": True,
+            "students": [s[0] for s in linked],
+        }
+        if parent_row:
+            prefill_values.update({
+                "parent_name": parent_row[0] or "",
+                "parent_email": parent_row[1] or "",
+                "phone": parent_row[2] or "",
+                "source": "Existing H-Music Family",
+                "request_type": request.args.get("request_type") or "Another child",
+                "existing_family": "1",
+            })
+            if family_context["students"]:
+                prefill_values["existing_student_name"] = family_context["students"][0]
+
     if request.method == "POST":
         preferred_dates = []
         preferred_times = []
@@ -19057,8 +19163,12 @@ def public_trial_request():
             "trial_fee": request.form.get("trial_fee", "").strip(),
             "payment_method": request.form.get("payment_method", "").strip(),
             "notes": request.form.get("notes", "").strip(),
-            "source": request.form.get("source", "").strip() or "Public Trial Form",
+            "source": request.form.get("source", "").strip() or ("Existing H-Music Family" if parent_id else "Public Trial Form"),
             "lead_temperature": "Warm",
+            "parent_profile_id": str(parent_id or ""),
+            "existing_family": "1" if parent_id else request.form.get("existing_family", "").strip(),
+            "request_type": request.form.get("request_type", "").strip(),
+            "existing_student_name": request.form.get("existing_student_name", "").strip(),
         }
         fee_by_duration = {
             "15 mins": "$15",
@@ -19068,26 +19178,26 @@ def public_trial_request():
         }
         if data["trial_duration"] in fee_by_duration:
             data["trial_fee"] = fee_by_duration[data["trial_duration"]]
-        form_values = {**request.form, **data}
+        form_values = {**prefill_values, **request.form, **data}
         if not data["student_name"] or not data["parent_name"]:
-            return v35_public_trial_form("Please enter student and parent names.", form_values)
+            return v35_public_trial_form("Please enter student and parent names.", form_values, family_context)
         if not data["parent_email"] and not data["phone"]:
-            return v35_public_trial_form("Please enter either email or phone.", form_values)
+            return v35_public_trial_form("Please enter either email or phone.", form_values, family_context)
         if data["trial_duration"] not in fee_by_duration:
-            return v35_public_trial_form("Please select a trial class length.", form_values)
+            return v35_public_trial_form("Please select a trial class length.", form_values, family_context)
         if not data["payment_method"]:
-            return v35_public_trial_form("Please select a payment method.", form_values)
+            return v35_public_trial_form("Please select a payment method.", form_values, family_context)
         try:
             age_number = float(data["age"]) if data["age"] else None
         except ValueError:
             age_number = None
         if data["trial_duration"] == "15 mins" and age_number is not None and age_number > 5:
-            return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30, 45, or 60 mins.", form_values)
+            return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30, 45, or 60 mins.", form_values, family_context)
         if not data["preferred_days"] or not data["preferred_times"]:
-            return v35_public_trial_form("Please enter at least one preferred day and time.", form_values)
+            return v35_public_trial_form("Please enter at least one preferred day and time.", form_values, family_context)
         inquiry_id = v35_insert_trial_lead(data, public=True)
         return v35_public_trial_thank_you(inquiry_id, data)
-    return v35_public_trial_form()
+    return v35_public_trial_form(values=prefill_values, family_context=family_context)
 
 
 @app.route("/trial_form")
@@ -19160,9 +19270,12 @@ def inquiries():
         fee_line = " / ".join([x for x in fee_bits if x]) or "-"
         preferred = "<br>".join([x for x in [v35_safe(r["preferred_days"]), v35_safe(r["preferred_times"])] if x]) or "-"
         latest = v35_safe(r["ai_summary"] or r["notes"], "-")
+        family_line = ""
+        if "existing_family" in r.keys() and r["existing_family"]:
+            family_line = f"<br><small>Existing family · {v35_safe(r['request_type'] or '')} {v35_safe(r['existing_student_name'] or '')}</small>"
         body += f"""
         <tr>
-            <td><a href="/inquiry/{r['id']}"><b>{v35_safe(r['student_name'], 'Unnamed')}</b></a><br><small>#{r['id']} {v35_safe(r['lead_temperature'], 'Warm')}</small></td>
+            <td><a href="/inquiry/{r['id']}"><b>{v35_safe(r['student_name'], 'Unnamed')}</b></a><br><small>#{r['id']} {v35_safe(r['lead_temperature'], 'Warm')}</small>{family_line}</td>
             <td>{v35_safe(r['parent_name'], '-')}<br><small>{contact}</small></td>
             <td>{program}<br><small>{fee_line}</small></td>
             <td>{preferred}</td>
@@ -19425,6 +19538,8 @@ def inquiry_detail(inquiry_id):
                     <div><label>Parent Email</label><input name="parent_email" value="{v35_safe(inquiry['parent_email'])}"></div>
                     <div><label>Phone</label><input name="phone" value="{v35_safe(inquiry['phone'])}"></div>
                     <div><label>Source</label><input name="source" value="{v35_safe(inquiry['source'])}"></div>
+                    <div><label>Request Type</label><input name="request_type" value="{v35_safe(inquiry['request_type'] if 'request_type' in inquiry.keys() else '')}"></div>
+                    <div><label>Existing Student</label><input name="existing_student_name" value="{v35_safe(inquiry['existing_student_name'] if 'existing_student_name' in inquiry.keys() else '')}"></div>
                     <div><label>Instrument</label><input name="instrument" value="{v35_safe(inquiry['instrument'])}"></div>
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
                     <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins', '60 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
