@@ -9684,100 +9684,147 @@ def notification_queue():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response
+    SELECT id, channel, user_role, user_key, destination, title, status, created_at, link_url,
+           provider_response, related_type, related_id
     FROM notification_delivery_queue
     ORDER BY id DESC
-    LIMIT 100
+    LIMIT 120
     """)
     rows_data = cursor.fetchall()
+
+    trial_ids = sorted({
+        int(r[11]) for r in rows_data
+        if r[10] in ("trial_confirmation", "trial_lead") and r[11]
+    })
+    trial_map = {}
+    if trial_ids:
+        placeholders = ",".join("?" for _ in trial_ids)
+        cursor.execute(f"""
+        SELECT id, student_name, parent_name, parent_email, phone, program_interest,
+               trial_date, trial_time, trial_teacher, trial_duration, trial_fee, payment_method
+        FROM inquiries
+        WHERE id IN ({placeholders})
+        """, trial_ids)
+        for row in cursor.fetchall():
+            trial_map[row[0]] = row
     conn.close()
 
     smtp_ready, smtp_missing = smtp_config_status()
     smtp_status = "Ready - email can send" if smtp_ready else "Needs setup: " + ", ".join(smtp_missing)
     smtp_class = "ok" if smtp_ready else "warn"
 
-    pending_count = sum(1 for r in rows_data if r[6] == "pending")
-    failed_count = sum(1 for r in rows_data if r[6] == "failed")
-    sent_count = sum(1 for r in rows_data if r[6] == "sent")
-    email_count = sum(1 for r in rows_data if r[1] == "email")
-    sms_count = sum(1 for r in rows_data if r[1] == "sms")
-    push_count = sum(1 for r in rows_data if r[1] == "push")
+    external_rows = [r for r in rows_data if r[1] in ("email", "sms")]
+    owner_rows = [r for r in rows_data if r[1] == "push" and r[6] == "pending"]
 
-    def channel_label(channel):
-        labels = {
-            "email": "Email to parent",
-            "sms": "SMS text message",
-            "push": "Owner / app reminder",
-        }
-        return labels.get(channel, channel or "Unknown")
+    external_sent = sum(1 for r in external_rows if r[6] == "sent")
+    external_failed = sum(1 for r in external_rows if r[6] == "failed")
+    external_queued = sum(1 for r in external_rows if r[6] not in ("sent", "failed"))
+    owner_todo_count = len(owner_rows)
 
-    def status_badge(status):
-        labels = {
-            "pending": "Waiting",
-            "sent": "Sent",
-            "failed": "Needs attention",
-        }
-        css = {
-            "pending": "pending",
-            "sent": "sent",
-            "failed": "failed",
-        }.get(status, "pending")
-        return f'<span class="badge {css}">{labels.get(status, status or "Unknown")}</span>'
+    def trial_context(related_type, related_id):
+        if related_type not in ("trial_confirmation", "trial_lead") or not related_id:
+            return None
+        return trial_map.get(int(related_id))
 
-    def destination_label(channel, destination, user_role, user_key):
-        if channel == "push" and destination == "owner:owner":
-            return "Owner dashboard only"
+    def format_trial_context(trial):
+        if not trial:
+            return "General notification", ""
+        (
+            inquiry_id, student_name, parent_name, parent_email, phone, program_interest,
+            trial_date, trial_time, trial_teacher, trial_duration, trial_fee, payment_method
+        ) = trial
+        title = f"{student_name or 'Trial student'} - Trial Class"
+        details = []
+        if parent_name:
+            details.append(f"Parent: {parent_name}")
+        if trial_date or trial_time:
+            details.append(f"{trial_date or 'Date TBD'} {trial_time or ''}".strip())
+        if trial_teacher:
+            details.append(f"Teacher: {trial_teacher}")
+        if trial_duration or trial_fee:
+            details.append(f"{trial_duration or ''} {trial_fee or ''}".strip())
+        if payment_method:
+            details.append(f"Pay: {payment_method}")
+        return title, " · ".join(details)
+
+    def external_status(status, channel):
+        if status == "sent":
+            return '<span class="pill sent">Sent</span>'
+        if status == "failed":
+            return '<span class="pill failed">Failed</span>'
         if channel == "sms":
-            return escape(destination or "No phone")
-        if channel == "email":
-            return escape(destination or "No email")
-        return escape(destination or f"{user_role}:{user_key}")
+            return '<span class="pill queued">Queued - waiting for SMS</span>'
+        return '<span class="pill queued">Queued</span>'
 
-    rows = ""
-    for r in rows_data:
-        queue_id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response = r
-        provider_text = escape(provider_response or "")
-        if not provider_text:
-            if channel == "push":
-                provider_text = "Internal reminder only. This does not email the parent."
-            elif channel == "sms":
-                provider_text = "Queued until SMS provider is connected."
-            elif channel == "email" and status == "pending":
-                provider_text = "Ready to send."
+    def owner_task_text(title, provider_response, related_type, related_id):
+        trial = trial_context(related_type, related_id)
+        context_title, context_detail = format_trial_context(trial)
+        task_title = title or "Owner task"
+        if trial:
+            task_title = f"{task_title}: {context_title}"
+        task_detail = context_detail
+        if provider_response:
+            task_detail = f"{task_detail} · {provider_response}" if task_detail else provider_response
+        return task_title, task_detail
 
-        actions = f'<a class="link" href="{escape(link_url or "/")}">Open related page</a>'
-        if status == "pending":
-            if channel == "email":
-                send_label = "Send email now"
-            elif channel == "push":
-                send_label = "Mark internal reminder sent"
-            elif channel == "sms":
-                send_label = "Try SMS send"
-            else:
-                send_label = "Send"
-            actions += f"""
-            <form method="POST" action="/notification_queue/{queue_id}/send" style="display:inline;">
-                <button type="submit">{send_label}</button>
-            </form>
-            <form method="POST" action="/notification_queue/{queue_id}/mark_sent" style="display:inline;">
-                <button class="secondary" type="submit">Mark done</button>
+    external_html = ""
+    for r in external_rows:
+        queue_id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response, related_type, related_id = r
+        trial = trial_context(related_type, related_id)
+        context_title, context_detail = format_trial_context(trial)
+        recipient_label = "Parent email" if channel == "email" else "Parent phone"
+        result_text = provider_response or ("Queued until SMS provider is connected." if channel == "sms" else "Queued for delivery.")
+        action = ""
+        if status == "failed":
+            action = f"""
+            <form method="POST" action="/notification_queue/{queue_id}/send">
+                <button type="submit">Retry</button>
             </form>
             """
-
-        rows += f"""
-        <tr>
-            <td class="small">#{queue_id}</td>
-            <td><strong>{escape(channel_label(channel))}</strong><div class="muted">{escape(channel)}</div></td>
-            <td>{destination_label(channel, destination, user_role, user_key)}</td>
-            <td><strong>{escape(title or "")}</strong><div class="muted">{escape(created_at or "")}</div></td>
-            <td>{status_badge(status)}</td>
-            <td class="response">{provider_text}</td>
-            <td class="actions">{actions}</td>
-        </tr>
+        external_html += f"""
+        <div class="delivery-row">
+            <div>
+                <div class="row-title">{escape(context_title)}</div>
+                <div class="muted">{escape(context_detail)}</div>
+                <div class="muted">{escape(title or "")} · #{queue_id} · {escape(created_at or "")}</div>
+            </div>
+            <div>
+                <div class="label">{escape(recipient_label)}</div>
+                <div>{escape(destination or "")}</div>
+            </div>
+            <div>{external_status(status, channel)}</div>
+            <div class="response">{escape(result_text)}</div>
+            <div class="row-actions">
+                <a class="link" href="{escape(link_url or "/")}">Open lead</a>
+                {action}
+            </div>
+        </div>
         """
 
-    if not rows:
-        rows = "<tr><td colspan='7'>No queued notifications yet.</td></tr>"
+    if not external_html:
+        external_html = '<div class="empty">No parent email or SMS rows yet.</div>'
+
+    owner_html = ""
+    for r in owner_rows:
+        queue_id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response, related_type, related_id = r
+        task_title, task_detail = owner_task_text(title, provider_response, related_type, related_id)
+        owner_html += f"""
+        <div class="todo-row">
+            <div class="todo-check"></div>
+            <div class="todo-main">
+                <div class="row-title">{escape(task_title)}</div>
+                <div class="muted">{escape(task_detail)}</div>
+                <div class="muted">Created {escape(created_at or "")} · #{queue_id}</div>
+            </div>
+            <a class="link" href="{escape(link_url or "/")}">Open</a>
+            <form method="POST" action="/notification_queue/{queue_id}/mark_sent">
+                <button type="submit">Complete</button>
+            </form>
+        </div>
+        """
+
+    if not owner_html:
+        owner_html = '<div class="empty">No owner to-do items right now.</div>'
 
     return f"""
     <html>
@@ -9786,45 +9833,46 @@ def notification_queue():
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
-            h1 {{ margin-bottom:8px; }}
+            h1 {{ margin:0 0 8px; }}
+            h2 {{ margin:26px 0 8px; }}
             .hint {{ color:#6b7280; max-width:980px; line-height:1.45; }}
             .top-grid {{ display:grid; grid-template-columns:1.2fr .8fr; gap:14px; margin:18px 0; }}
-            .status-box, .guide-box {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
-            .guide-box ul {{ margin:8px 0 0 18px; color:#374151; line-height:1.55; }}
+            .status-box, .summary-box {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
             .ok {{ color:#047857; font-weight:900; }}
             .warn {{ color:#b45309; font-weight:900; }}
-            .cards {{ display:grid; grid-template-columns:repeat(6, minmax(110px,1fr)); gap:10px; margin:16px 0; }}
+            .cards {{ display:grid; grid-template-columns:repeat(4, minmax(130px,1fr)); gap:10px; margin:16px 0; }}
             .card {{ border:1px solid #e5e7eb; background:#fff; border-radius:10px; padding:12px; }}
             .label {{ color:#6b7280; font-size:13px; }}
             .value {{ font-size:24px; font-weight:900; margin-top:2px; }}
             .test-form {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }}
             .test-form input {{ min-width:280px; padding:9px 10px; border:1px solid #d1d5db; border-radius:8px; }}
             a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin:4px 8px 4px 0; }}
-            a.link {{ color:#4f46e5; font-weight:800; display:inline-block; margin-right:6px; }}
-            button {{ background:#111827; color:white; border:none; border-radius:7px; padding:7px 10px; font-weight:800; margin:2px; cursor:pointer; }}
-            button.secondary {{ background:#6b7280; }}
-            table {{ width:100%; border-collapse:collapse; margin-top:18px; table-layout:fixed; }}
-            th, td {{ padding:12px 10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; overflow-wrap:anywhere; }}
-            th {{ background:#eeeeff; }}
-            .small {{ color:#6b7280; width:58px; }}
+            a.link {{ color:#4f46e5; font-weight:800; display:inline-block; }}
+            button {{ background:#111827; color:white; border:none; border-radius:7px; padding:8px 12px; font-weight:800; margin:2px; cursor:pointer; }}
+            .section {{ border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; margin-top:12px; }}
+            .delivery-row {{ display:grid; grid-template-columns:1.5fr .9fr .8fr 1.1fr .6fr; gap:14px; align-items:start; padding:14px; border-bottom:1px solid #eef2f7; }}
+            .todo-row {{ display:grid; grid-template-columns:26px 1fr 80px 110px; gap:12px; align-items:center; padding:14px; border-bottom:1px solid #eef2f7; }}
+            .delivery-row:last-child, .todo-row:last-child {{ border-bottom:none; }}
+            .row-title {{ font-weight:900; font-size:16px; }}
             .muted {{ color:#6b7280; font-size:13px; margin-top:3px; }}
             .response {{ color:#374151; font-size:14px; }}
-            .actions {{ min-width:180px; }}
-            .badge {{ display:inline-block; padding:5px 9px; border-radius:999px; font-weight:900; font-size:13px; }}
-            .badge.pending {{ background:#fef3c7; color:#92400e; }}
-            .badge.sent {{ background:#dcfce7; color:#166534; }}
-            .badge.failed {{ background:#fee2e2; color:#991b1b; }}
+            .row-actions form {{ margin-top:6px; }}
+            .pill {{ display:inline-block; padding:6px 10px; border-radius:999px; font-weight:900; font-size:13px; white-space:nowrap; }}
+            .pill.sent {{ background:#dcfce7; color:#166534; }}
+            .pill.failed {{ background:#fee2e2; color:#991b1b; }}
+            .pill.queued {{ background:#fef3c7; color:#92400e; }}
+            .todo-check {{ width:18px; height:18px; border:2px solid #9ca3af; border-radius:5px; }}
+            .empty {{ padding:18px; color:#6b7280; background:#f9fafb; }}
             @media(max-width:900px) {{
                 body {{ padding:14px; }}
-                .top-grid, .cards {{ grid-template-columns:1fr; }}
-                table {{ display:block; overflow-x:auto; }}
+                .top-grid, .cards, .delivery-row, .todo-row {{ grid-template-columns:1fr; }}
             }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>Owner Notifications</h1>
-            <p class="hint">Use this page to check whether parent emails, SMS reminders, and owner app reminders were created and sent. The important rows for trial parents are <strong>Email to parent</strong>; <strong>Owner / app reminder</strong> is only an internal notice for you.</p>
+            <p class="hint">This page is split into parent-facing delivery and your own owner to-do list. For trial lessons, each row now shows the student and trial class context.</p>
 
             <div class="top-grid">
                 <div class="status-box">
@@ -9834,25 +9882,19 @@ def notification_queue():
                         <input name="test_email" type="email" placeholder="Send test email to..." required>
                         <button type="submit">Send Test Email</button>
                     </form>
-                    <p class="hint">If test email fails, read the row's Result / Notes. Gmail requires an App Password.</p>
+                    <p class="hint">Email is automatic. Only failed rows need attention.</p>
                 </div>
-                <div class="guide-box">
-                    <h3>How to Read This</h3>
-                    <ul>
-                        <li><strong>Email to parent</strong> means an actual email to the family.</li>
-                        <li><strong>SMS text message</strong> is queued until Twilio is connected.</li>
-                        <li><strong>Owner / app reminder</strong> is an internal reminder only.</li>
-                    </ul>
+                <div class="summary-box">
+                    <h3>What needs action?</h3>
+                    <p class="hint">External notifications: only <strong>Failed</strong> needs owner attention. Owner to-do: click <strong>Complete</strong> when done.</p>
                 </div>
             </div>
 
             <div class="cards">
-                <div class="card"><div class="label">Waiting</div><div class="value">{pending_count}</div></div>
-                <div class="card"><div class="label">Sent</div><div class="value">{sent_count}</div></div>
-                <div class="card"><div class="label">Needs attention</div><div class="value">{failed_count}</div></div>
-                <div class="card"><div class="label">Email rows</div><div class="value">{email_count}</div></div>
-                <div class="card"><div class="label">SMS rows</div><div class="value">{sms_count}</div></div>
-                <div class="card"><div class="label">Owner reminders</div><div class="value">{push_count}</div></div>
+                <div class="card"><div class="label">External sent</div><div class="value">{external_sent}</div></div>
+                <div class="card"><div class="label">External failed</div><div class="value">{external_failed}</div></div>
+                <div class="card"><div class="label">External queued</div><div class="value">{external_queued}</div></div>
+                <div class="card"><div class="label">Owner to-do</div><div class="value">{owner_todo_count}</div></div>
             </div>
 
             <a class="button" href="/">Home</a>
@@ -9860,18 +9902,13 @@ def notification_queue():
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
 
-            <table>
-                <tr>
-                    <th style="width:58px;">ID</th>
-                    <th>Type</th>
-                    <th>Recipient</th>
-                    <th>Message</th>
-                    <th>Status</th>
-                    <th>Result / Notes</th>
-                    <th>Next Step</th>
-                </tr>
-                {rows}
-            </table>
+            <h2>External Notifications - to Parents</h2>
+            <p class="hint">Email and SMS only. These are handled by the system. Failed rows are the ones to check.</p>
+            <div class="section">{external_html}</div>
+
+            <h2>Owner To-Do</h2>
+            <p class="hint">Internal tasks for you. Complete removes the task from this list.</p>
+            <div class="section">{owner_html}</div>
         </div>
     </body>
     </html>
