@@ -16131,6 +16131,27 @@ def stripe_webhook():
     return Response("ok", status=200)
 
 
+def hmusic_money(value):
+    try:
+        return f"{float(value or 0):.2f}"
+    except Exception:
+        return "0.00"
+
+
+def hmusic_card_gross_up(base_amount):
+    try:
+        base = float(base_amount or 0)
+    except Exception:
+        base = 0.0
+    total = (base + 0.30) / (1 - 0.029)
+    total = round(total + 0.000001, 2)
+    return {
+        "base": base,
+        "total": total,
+        "fee": round(total - base, 2),
+    }
+
+
 @app.route("/stripe/invoice/<int:invoice_id>/checkout")
 def stripe_invoice_checkout(invoice_id):
     if not require_parent():
@@ -16141,6 +16162,9 @@ def stripe_invoice_checkout(invoice_id):
 
     ensure_billing_schema()
     parent_id = session.get("parent_id")
+    payment_method = (request.args.get("method") or "ach").strip().lower()
+    if payment_method not in ("ach", "card"):
+        payment_method = "ach"
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -16159,27 +16183,50 @@ def stripe_invoice_checkout(invoice_id):
         conn.close()
         return "<h1>Permission denied</h1>"
 
+    fee_calc = hmusic_card_gross_up(invoice[2])
+    charge_amount = fee_calc["total"] if payment_method == "card" else float(invoice[2] or 0)
+    processing_fee = fee_calc["fee"] if payment_method == "card" else 0.0
+    payment_method_types = ["card"] if payment_method == "card" else ["us_bank_account"]
+    method_label = "Credit / Debit Card" if payment_method == "card" else "ACH Bank Payment"
+
     try:
         customer_id = get_or_create_stripe_customer(cursor, parent_id)
         checkout_session = stripe.checkout.Session.create(
             mode="payment",
             customer=customer_id,
-            payment_method_types=["card", "us_bank_account"],
+            payment_method_types=payment_method_types,
             line_items=[{
                 "price_data": {
                     "currency": "usd",
                     "product_data": {
                         "name": f"H-Music Tuition - {invoice[1]}",
+                        "description": f"{method_label}. Package ${hmusic_money(invoice[2])}; processing fee ${hmusic_money(processing_fee)}.",
                     },
-                    "unit_amount": int(round((invoice[2] or 0) * 100)),
+                    "unit_amount": int(round(charge_amount * 100)),
                 },
                 "quantity": 1,
             }],
             success_url=public_url_for("/stripe/invoice/success") + f"?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=public_url_for(f"/parent_invoice/{invoice_id}?cancelled=1"),
-            metadata={"invoice_id": str(invoice_id), "parent_id": str(parent_id)},
+            metadata={
+                "invoice_id": str(invoice_id),
+                "parent_id": str(parent_id),
+                "payment_method": payment_method,
+                "base_amount": hmusic_money(invoice[2]),
+                "processing_fee": hmusic_money(processing_fee),
+                "total_charged": hmusic_money(charge_amount),
+                "processing_fee_paid_by": "parent" if payment_method == "card" else "hmusic",
+            },
             payment_intent_data={
-                "metadata": {"invoice_id": str(invoice_id), "parent_id": str(parent_id)}
+                "metadata": {
+                    "invoice_id": str(invoice_id),
+                    "parent_id": str(parent_id),
+                    "payment_method": payment_method,
+                    "base_amount": hmusic_money(invoice[2]),
+                    "processing_fee": hmusic_money(processing_fee),
+                    "total_charged": hmusic_money(charge_amount),
+                    "processing_fee_paid_by": "parent" if payment_method == "card" else "hmusic",
+                }
             }
         )
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -16353,6 +16400,7 @@ def parent_invoice(invoice_id):
     auto_lessons = invoice[11] or invoice[2] or 10
     stripe_payment_html = ""
     stripe_status_alert = ""
+    card_fee = hmusic_card_gross_up(invoice[3])
     if request.args.get("stripe_missing") == "1":
         stripe_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
     elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
@@ -16365,11 +16413,34 @@ def parent_invoice(invoice_id):
     if invoice[4] not in ("paid", "stripe_processing"):
         if stripe_is_configured():
             stripe_payment_html = f"""
-            <p><a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout">Pay with Stripe Test Mode</a></p>
+            <div class="payment-choice-grid">
+                <div class="payment-choice recommended">
+                    <div class="choice-kicker">Recommended</div>
+                    <h3>Bank Payment / ACH</h3>
+                    <p>No processing fee for families. H-Music covers the ACH bank transfer fee.</p>
+                    <div class="pay-summary">
+                        <span>Package</span><b>${hmusic_money(invoice[3])}</b>
+                        <span>Family fee</span><b>$0.00</b>
+                        <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
+                    </div>
+                    <a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
+                </div>
+                <div class="payment-choice">
+                    <div class="choice-kicker">Card option</div>
+                    <h3>Credit / Debit Card</h3>
+                    <p>Card processing fee is added so H-Music receives the full lesson package amount.</p>
+                    <div class="pay-summary">
+                        <span>Package</span><b>${hmusic_money(invoice[3])}</b>
+                        <span>Card fee</span><b>${hmusic_money(card_fee["fee"])}</b>
+                        <span>Total today</span><b>${hmusic_money(card_fee["total"])}</b>
+                    </div>
+                    <a class="button card-button" href="/stripe/invoice/{invoice_id}/checkout?method=card">Pay by Card</a>
+                </div>
+            </div>
             """
         else:
             stripe_payment_html = """
-            <p class="hint">Stripe test payment is not enabled yet. Please use the current studio payment method below.</p>
+            <p class="hint">Online payment is not enabled yet. Please use the current studio payment method below.</p>
             """
 
     return f"""
@@ -16391,7 +16462,18 @@ def parent_invoice(invoice_id):
             textarea {{ min-height:100px; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
             .secondary {{ background:#111827 !important; }}
-            .stripe-button {{ background:#635bff !important; }}
+            .stripe-button {{ background:#4f46e5 !important; }}
+            .card-button {{ background:#111827 !important; }}
+            .payment-choice-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:14px 0; }}
+            .payment-choice {{ border:1px solid #e5e7eb; border-radius:14px; padding:14px; background:#fff; }}
+            .payment-choice.recommended {{ border-color:#a7f3d0; background:#f0fdf4; }}
+            .payment-choice h3 {{ margin:4px 0 8px; }}
+            .payment-choice p {{ color:#6b7280; line-height:1.45; }}
+            .choice-kicker {{ color:#047857; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f8fafc; border-radius:10px; padding:10px; margin:10px 0 12px; }}
+            .pay-summary span {{ color:#6b7280; }}
+            .pay-summary b {{ text-align:right; }}
+            @media(max-width:760px) {{ .payment-choice-grid {{ grid-template-columns:1fr; }} }}
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
@@ -16417,7 +16499,8 @@ def parent_invoice(invoice_id):
 
             <h2>Payment</h2>
             {stripe_payment_html}
-            <p>Please pay with the studio's current tuition method. After sending payment, tap the button below so the owner can confirm and mark it paid.</p>
+            <p class="hint">Bank/ACH payments have no family processing fee. If you choose credit/debit card, the card processing fee is included in the total before checkout.</p>
+            <p>Please use the manual confirmation below only if you paid outside the online payment flow.</p>
             <form method="POST">
                 <input type="hidden" name="action" value="notify_paid">
                 Payment note (optional):<br>
@@ -18572,7 +18655,7 @@ def v35_public_trial_form(error="", values=None):
             .fee-card:has(input:checked) strong, .fee-card:has(input:checked) b, .fee-card:has(input:checked) span {{ color:#111827; }}
             .time-option {{ border:1px solid var(--line); border-radius:13px; padding:13px; margin-bottom:10px; background:var(--panel); }}
             .time-title {{ color:var(--muted); font-weight:900; margin-bottom:9px; font-size:14px; }}
-            .payment-options {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            .payment-options {{ display:grid; grid-template-columns:1fr; gap:12px; }}
             .pay-card {{
                 border:1px solid var(--line); border-radius:13px; padding:14px;
                 background:var(--panel); display:grid; gap:8px; cursor:pointer;
@@ -18720,16 +18803,10 @@ def v35_public_trial_form(error="", values=None):
                     <div class="section-title">Payment Method <span class="required">*</span></div>
                     <div class="payment-options">
                         <label class="pay-card">
-                            <input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>
-                            <div class="pay-title">PayPal</div>
-                            <p>Pay online via PayPal</p>
-                            <div class="payment-note">Send payment to: <span class="pay-email">hmusicjustplay@gmail.com</span><br>Please include student name in the note.</div>
-                        </label>
-                        <label class="pay-card">
-                            <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
-                            <div class="pay-title">Zelle</div>
-                            <p>Send directly from your bank app</p>
-                            <div class="payment-note">Send payment to: <span class="pay-email">hmusicjustplay@gmail.com</span><br>Please include student name in the note.</div>
+                            <input type="radio" name="payment_method" value="ACH" required {'checked' if values.get('payment_method') in ('ACH', '') else ''}>
+                            <div class="pay-title">ACH Bank Payment</div>
+                            <p>No credit card for trial lessons. H-Music covers the ACH processing fee.</p>
+                            <div class="payment-note">We will confirm the trial slot by email and send secure ACH payment instructions. Please include the student name with payment.</div>
                         </label>
                     </div>
                 </section>
@@ -18778,7 +18855,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
             {payment_html}
-            <p>If you selected PayPal or Zelle, please send payment to <b>hmusicjustplay@gmail.com</b>.</p>
+            <p>Trial lessons use ACH bank payment only. H-Music covers the ACH processing fee, and we will send secure payment instructions after confirming the trial slot.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/">Back to H-Music</a></p>
         </div></div>
@@ -18868,7 +18945,7 @@ def v35_trial_confirmation_body(inquiry):
     duration = inquiry["trial_duration"] or "Trial lesson"
     fee = inquiry["trial_fee"] or "trial fee"
     payment_method = inquiry["payment_method"] or "your selected payment method"
-    payment_line = "For PayPal or Zelle, please send payment to hmusicjustplay@gmail.com."
+    payment_line = "Trial lessons use ACH bank payment only. H-Music covers the ACH processing fee. We will send secure payment instructions after confirming the trial slot."
     return (
         f"Hi {inquiry['parent_name'] or 'there'},\n\n"
         f"{student}'s trial lesson is confirmed.\n\n"
@@ -19323,7 +19400,7 @@ def inquiry_detail(inquiry_id):
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
                     <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins', '60 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
                     <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45', '$60'], inquiry['trial_fee'] or '$30')}</select></div>
-                    <div><label>Payment Method</label><select name="payment_method">{opts(['PayPal', 'Zelle'], inquiry['payment_method'] or 'PayPal')}</select></div>
+                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH'], inquiry['payment_method'] or 'ACH')}</select></div>
                     <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
                     <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
