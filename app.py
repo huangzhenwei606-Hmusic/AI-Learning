@@ -9713,7 +9713,7 @@ def notification_queue():
     smtp_status = "Ready - email can send" if smtp_ready else "Needs setup: " + ", ".join(smtp_missing)
     smtp_class = "ok" if smtp_ready else "warn"
 
-    external_rows = [r for r in rows_data if r[1] in ("email", "sms")]
+    external_rows = [r for r in rows_data if r[1] == "email"]
     owner_rows = [r for r in rows_data if r[1] == "push" and r[6] == "pending"]
 
     external_sent = sum(1 for r in external_rows if r[6] == "sent")
@@ -9872,7 +9872,7 @@ def notification_queue():
     <body>
         <div class="container">
             <h1>Owner Notifications</h1>
-            <p class="hint">This page is split into parent-facing delivery and your own owner to-do list. For trial lessons, each row now shows the student and trial class context.</p>
+            <p class="hint">This page is split into parent-facing email delivery and your own owner to-do list. SMS is paused for now. For trial lessons, each row shows the student and trial class context.</p>
 
             <div class="top-grid">
                 <div class="status-box">
@@ -9902,8 +9902,8 @@ def notification_queue():
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
 
-            <h2>External Notifications - to Parents</h2>
-            <p class="hint">Email and SMS only. These are handled by the system. Failed rows are the ones to check.</p>
+            <h2>External Email Notifications - to Parents</h2>
+            <p class="hint">Email only for now. SMS is paused until a text provider is connected. Failed email rows are the ones to check.</p>
             <div class="section">{external_html}</div>
 
             <h2>Owner To-Do</h2>
@@ -18472,23 +18472,12 @@ def v35_queue_trial_confirmation(inquiry_id):
     else:
         result["errors"].append("Parent email is missing.")
 
-    if inquiry["phone"]:
-        sms_body = (
-            f"H-Music trial confirmed for {inquiry['student_name']}: "
-            f"{inquiry['trial_date']} {inquiry['trial_time']} with {inquiry['trial_teacher']} "
-            f"at {inquiry['trial_location']}. {inquiry['trial_duration']} / {inquiry['trial_fee']}. "
-            f"PayPal/Zelle: hmusicjustplay@gmail.com"
-        )
-        sms_queue_id = queue_direct_delivery("sms", inquiry["phone"], title, sms_body, link, "trial_confirmation", inquiry_id)
-        if sms_queue_id:
-            result["queued"] += 1
-            result["sms"] = {
-                "queue_id": sms_queue_id,
-                "status": "pending",
-                "response": "SMS queued. Provider not configured yet.",
-            }
-    else:
-        result["errors"].append("Parent phone is missing.")
+    # SMS delivery is paused until a text provider such as Twilio is connected.
+    result["sms"] = {
+        "queue_id": None,
+        "status": "disabled",
+        "response": "SMS channel paused. Email is the active parent notification channel.",
+    }
 
     return result
 
@@ -19033,7 +19022,7 @@ def update_inquiry(inquiry_id):
                     email_detail = "Email not queued."
 
                 sms_info = delivery.get("sms")
-                sms_detail = "SMS queued." if sms_info else "SMS not queued."
+                sms_detail = "SMS paused."
 
                 errors = "; ".join(delivery.get("errors") or [])
                 detail = f"{queued} email/SMS item(s) queued for {data['student_name']}. {email_detail} {sms_detail}"
