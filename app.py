@@ -8527,6 +8527,139 @@ def child_os_copy(lang, key, **kwargs):
     return text.format(**kwargs)
 
 
+
+def child_os_ambiguity_kind(text):
+    raw = (text or "").strip()
+    lower = raw.lower()
+    if not raw:
+        return None
+
+    withdraw_words = ["withdraw", "退学", "退课", "退出"]
+    cancel_words = ["cancel", "取消", "请假", "缺席"]
+    change_words = ["change", "reschedule", "move", "switch", "改", "换", "调课"]
+    one_time_words = ["next lesson", "下一节", "this lesson", "one lesson", "single lesson", "today", "tomorrow"]
+    future_words = ["all future", "以后都", "所有后续", "every week", "recurring"]
+
+    if any(w in lower or w in raw for w in withdraw_words):
+        return "withdraw"
+    if any(w in lower or w in raw for w in cancel_words):
+        if not any(w in lower or w in raw for w in one_time_words + future_words):
+            return "cancel"
+    if any(w in lower or w in raw for w in change_words):
+        if not any(w in lower or w in raw for w in one_time_words + future_words):
+            return "change"
+    return None
+
+
+def child_os_clarification_config(kind):
+    configs = {
+        "withdraw": {
+            "title": "I want to make sure I help you correctly.",
+            "prompt": "When you say withdraw, which one do you mean?",
+            "options": [
+                ("withdraw_enrollment", "Withdraw from enrollment", "Stop lessons entirely. The studio owner will follow up within 24 hours."),
+                ("refund_request", "Request a refund", "Ask about unused lessons or payment credit. The studio owner will review it."),
+                ("withdraw_previous_request", "Withdraw a previous request", "Take back a request you already submitted."),
+            ],
+        },
+        "cancel": {
+            "title": "Please choose what you want to cancel.",
+            "prompt": "This helps me avoid cancelling the wrong thing.",
+            "options": [
+                ("cancel_one_lesson", "Cancel one lesson", "Cancel or mark absence for one upcoming lesson."),
+                ("cancel_all_future", "Cancel all future lessons", "Stop the ongoing schedule. The studio owner will follow up."),
+                ("cancel_previous_request", "Cancel a previous request", "Take back a request you already submitted."),
+            ],
+        },
+        "change": {
+            "title": "Please choose what you want to change.",
+            "prompt": "Some changes can be handled quickly, while others need approval.",
+            "options": [
+                ("change_one_lesson", "Change one lesson time", "Reschedule a single lesson."),
+                ("change_future_schedule", "Change all future lessons", "Update the recurring schedule. Teacher confirmation is needed."),
+                ("change_teacher", "Change teacher", "The studio owner must handle this."),
+                ("change_program", "Change program or instrument", "The studio owner will review the request."),
+            ],
+        },
+        "general": {
+            "title": "I want to make sure I understand.",
+            "prompt": "What is your request about?",
+            "options": [
+                ("general_schedule", "Lesson schedule", "Questions about time, rescheduling, or attendance."),
+                ("general_billing", "Billing or package", "Questions about balance, renewal, receipt, refund, or payment."),
+                ("general_teacher", "Teacher or program", "Questions about teacher, program, or class type."),
+                ("general_owner", "Ask the studio owner", "Send this to the studio owner for manual follow-up."),
+            ],
+        },
+    }
+    return configs.get(kind)
+
+
+def handle_child_os_confirmed_intent(parent_id, parent_name, student_name, request_text, confirmed_intent):
+    response_lang = "en"
+    language = child_os_detect_language(request_text)
+    related_schedule_id = None
+
+    direct_delegate = {
+        "cancel_one_lesson": "Please cancel my next lesson.",
+        "change_one_lesson": "Please reschedule one lesson.",
+    }
+    if confirmed_intent in direct_delegate:
+        return handle_child_os_request(parent_id, parent_name, student_name, direct_delegate[confirmed_intent] + " Original request: " + request_text)
+
+    mapped = {
+        "withdraw_enrollment": ("withdraw_enrollment", "red", "owner", "owner_only", "I've notified the studio owner. They will follow up with you within 24 hours."),
+        "refund_request": ("refund_request", "red", "owner", "owner_only", "Your refund request has been sent to the studio owner. They will review it and reply within 24 hours."),
+        "withdraw_previous_request": ("withdraw_previous_request", "teal", "auto", "executed", "Done. I withdrew your previous request and updated the record."),
+        "cancel_all_future": ("cancel_all_future", "red", "owner", "owner_only", "I've notified the studio owner that you want to cancel all future lessons. They will follow up within 24 hours."),
+        "cancel_previous_request": ("cancel_previous_request", "teal", "auto", "executed", "Done. I cancelled your previous request and updated the record."),
+        "change_future_schedule": ("reschedule_future", "amber", "teacher", "needs_confirmation", "This recurring schedule change needs teacher confirmation. We will update you after it is approved."),
+        "change_teacher": ("change_teacher", "red", "owner", "owner_only", "Changing teacher requires studio owner help. I've sent this to the owner for follow-up within 24 hours."),
+        "change_program": ("change_program", "red", "owner", "owner_only", "Changing program or instrument requires studio review. I've sent this to the owner for follow-up."),
+        "general_schedule": ("schedule_question", "amber", "teacher", "needs_confirmation", "Thanks. Please add the lesson date/time or use Reschedule so we can help accurately."),
+        "general_billing": ("billing_question", "amber", "owner", "needs_confirmation", "Thanks. Your billing question has been sent to the studio for review."),
+        "general_teacher": ("teacher_program_question", "red", "owner", "owner_only", "Thanks. I sent this teacher/program question to the studio owner for follow-up."),
+        "general_owner": ("owner_question", "red", "owner", "owner_only", "I sent your message to the studio owner. They will follow up within 24 hours."),
+    }
+
+    intent, risk_level, route_to, status, outcome = mapped.get(
+        confirmed_intent,
+        ("owner_question", "red", "owner", "owner_only", "I sent this to the studio owner for follow-up.")
+    )
+    request_id = create_child_os_request(
+        parent_id,
+        parent_name,
+        student_name,
+        request_text,
+        language,
+        intent,
+        risk_level,
+        route_to,
+        status,
+        outcome,
+        related_schedule_id
+    )
+    create_notification(
+        "owner",
+        "owner",
+        "Child OS request",
+        f"{risk_level.upper()} · {intent} · {student_name}: {request_text}",
+        "/owner_child_os"
+    )
+    return {
+        "id": request_id,
+        "language": language,
+        "intent": intent,
+        "risk_level": risk_level,
+        "route_to": route_to,
+        "status": status,
+        "outcome": outcome,
+        "action_href": "/parent_dashboard",
+        "action_label": "Dashboard",
+    }
+
+
+
 def child_os_classify(text):
     raw = (text or "").strip()
     lower = raw.lower()
@@ -15190,14 +15323,63 @@ def parent_agent():
     if request.method == "POST":
         student_name = request.form.get("student_name") or current_student
         request_text = (request.form.get("request_text") or "").strip()
+        confirmed_intent = (request.form.get("confirmed_intent") or "").strip()
+        original_text = (request.form.get("original_text") or request_text).strip()
         if not student_name or not parent_can_access_student(parent_id, student_name):
             return "<h1>Permission denied</h1>"
+        if confirmed_intent:
+            if not original_text:
+                return redirect("/parent_agent")
+            result = handle_child_os_confirmed_intent(parent_id, parent_name, student_name, original_text, confirmed_intent)
+            session.pop("child_os_clarification", None)
+            return redirect(f"/parent_agent?request_id={result['id']}")
         if not request_text:
             return redirect("/parent_agent")
+        ambiguity_kind = child_os_ambiguity_kind(request_text)
+        lang, intent, risk_level, route_to = child_os_classify(request_text)
+        if ambiguity_kind or intent == "general":
+            clarify_kind = ambiguity_kind or "general"
+            session["child_os_clarification"] = {
+                "kind": clarify_kind,
+                "student_name": student_name,
+                "request_text": request_text,
+            }
+            return redirect(f"/parent_agent?clarify={clarify_kind}")
         result = handle_child_os_request(parent_id, parent_name, student_name, request_text)
         return redirect(f"/parent_agent?request_id={result['id']}")
 
     selected_request_id = request.args.get("request_id")
+    clarification_card = ""
+    clarify_kind = request.args.get("clarify")
+    pending_clarification = session.get("child_os_clarification") or {}
+    if clarify_kind and pending_clarification.get("kind") == clarify_kind:
+        config = child_os_clarification_config(clarify_kind)
+        pending_student = pending_clarification.get("student_name") or current_student or ""
+        pending_text = pending_clarification.get("request_text") or ""
+        if config and pending_student and parent_can_access_student(parent_id, pending_student):
+            option_forms = ""
+            for value, label, description in config["options"]:
+                option_forms += f"""
+                <form method="POST" class="clarify-option">
+                    <input type="hidden" name="student_name" value="{escape(pending_student)}">
+                    <input type="hidden" name="original_text" value="{escape(pending_text)}">
+                    <input type="hidden" name="confirmed_intent" value="{escape(value)}">
+                    <button type="submit">
+                        <span>{escape(label)}</span>
+                        <small>{escape(description)}</small>
+                    </button>
+                </form>
+                """
+            clarification_card = f"""
+            <div class="clarify-card">
+                <div class="risk-pill">Need clarification</div>
+                <h2>{escape(config["title"])}</h2>
+                <p>{escape(config["prompt"])}</p>
+                <div class="quoted-request">"{escape(pending_text)}"</div>
+                <div class="clarify-options">{option_forms}</div>
+            </div>
+            """
+
     result_card = ""
     if selected_request_id:
         ensure_child_os_schema()
@@ -15223,10 +15405,17 @@ def parent_agent():
                 "amber": "Submitted for confirmation. We will update you after it is approved.",
                 "red": "Sent to the studio owner for manual help.",
             }.get(risk, "The studio can see this request.")
+            status_title = {
+                "executed": "Done",
+                "guided": "Next step",
+                "needs_confirmation": "Needs confirmation",
+                "owner_only": "Owner notified",
+                "logged": "Received",
+            }.get(row[5] or "", row[5] or "Received")
             result_card = f"""
             <div class="agent-result risk-{escape(risk)}">
                 <div class="risk-pill">{escape(risk_label)}</div>
-                <h2>{escape(row[5] or '')}</h2>
+                <h2>{escape(status_title)}</h2>
                 <p>{escape(row[6] or '')}</p>
                 <div class="risk-detail">{escape(risk_detail)}</div>
             </div>
@@ -15258,9 +15447,16 @@ def parent_agent():
             .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 14px; }}
             .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; padding:9px 11px; font-weight:800; }}
             .assistant-note {{ margin:14px 0; padding:12px; background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:12px; font-weight:800; line-height:1.45; }}
-            .agent-result {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; background:#f8fafc; }}
-            .agent-result h2 {{ margin:8px 0 8px; font-size:20px; }}
-            .agent-result p {{ margin:0; line-height:1.45; }}
+            .agent-result, .clarify-card {{ border-radius:16px; padding:16px; margin:18px 0; border:1px solid #e5e7eb; background:#f8fafc; }}
+            .agent-result h2, .clarify-card h2 {{ margin:8px 0 8px; font-size:20px; }}
+            .agent-result p, .clarify-card p {{ margin:0; line-height:1.45; }}
+            .clarify-card {{ background:#fffbeb; border-color:#fcd34d; }}
+            .quoted-request {{ margin:12px 0; color:#6b7280; font-weight:800; }}
+            .clarify-options {{ display:grid; gap:10px; margin-top:12px; }}
+            .clarify-option {{ margin:0; }}
+            .clarify-option button {{ width:100%; text-align:left; background:white; color:#111827; border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; }}
+            .clarify-option span {{ display:block; font-size:16px; font-weight:900; }}
+            .clarify-option small {{ display:block; margin-top:4px; color:#6b7280; font-size:13px; line-height:1.35; }}
             .risk-teal {{ background:#ecfdf5; border-color:#99f6e4; }}
             .risk-amber {{ background:#fffbeb; border-color:#fcd34d; }}
             .risk-red {{ background:#fff1f2; border-color:#fda4af; }}
@@ -15291,6 +15487,7 @@ def parent_agent():
             </div>
 
             <div class="assistant-note">I can help with lesson changes, cancellations, lesson balance, reminders, billing questions, and messages. Results are color-coded: auto handled, needs confirmation, or owner handling.</div>
+            {clarification_card}
             {result_card}
 
             <form method="POST">
