@@ -9693,84 +9693,182 @@ def notification_queue():
     conn.close()
 
     smtp_ready, smtp_missing = smtp_config_status()
-    smtp_status = "Configured" if smtp_ready else "Missing: " + ", ".join(smtp_missing)
+    smtp_status = "Ready - email can send" if smtp_ready else "Needs setup: " + ", ".join(smtp_missing)
     smtp_class = "ok" if smtp_ready else "warn"
+
+    pending_count = sum(1 for r in rows_data if r[6] == "pending")
+    failed_count = sum(1 for r in rows_data if r[6] == "failed")
+    sent_count = sum(1 for r in rows_data if r[6] == "sent")
+    email_count = sum(1 for r in rows_data if r[1] == "email")
+    sms_count = sum(1 for r in rows_data if r[1] == "sms")
+    push_count = sum(1 for r in rows_data if r[1] == "push")
+
+    def channel_label(channel):
+        labels = {
+            "email": "Email to parent",
+            "sms": "SMS text message",
+            "push": "Owner / app reminder",
+        }
+        return labels.get(channel, channel or "Unknown")
+
+    def status_badge(status):
+        labels = {
+            "pending": "Waiting",
+            "sent": "Sent",
+            "failed": "Needs attention",
+        }
+        css = {
+            "pending": "pending",
+            "sent": "sent",
+            "failed": "failed",
+        }.get(status, "pending")
+        return f'<span class="badge {css}">{labels.get(status, status or "Unknown")}</span>'
+
+    def destination_label(channel, destination, user_role, user_key):
+        if channel == "push" and destination == "owner:owner":
+            return "Owner dashboard only"
+        if channel == "sms":
+            return escape(destination or "No phone")
+        if channel == "email":
+            return escape(destination or "No email")
+        return escape(destination or f"{user_role}:{user_key}")
 
     rows = ""
     for r in rows_data:
-        actions = f'<a href="{r[8]}">Open</a>'
-        if r[6] == "pending":
+        queue_id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response = r
+        provider_text = escape(provider_response or "")
+        if not provider_text:
+            if channel == "push":
+                provider_text = "Internal reminder only. This does not email the parent."
+            elif channel == "sms":
+                provider_text = "Queued until SMS provider is connected."
+            elif channel == "email" and status == "pending":
+                provider_text = "Ready to send."
+
+        actions = f'<a class="link" href="{escape(link_url or "/")}">Open related page</a>'
+        if status == "pending":
+            if channel == "email":
+                send_label = "Send email now"
+            elif channel == "push":
+                send_label = "Mark internal reminder sent"
+            elif channel == "sms":
+                send_label = "Try SMS send"
+            else:
+                send_label = "Send"
             actions += f"""
-            <form method="POST" action="/notification_queue/{r[0]}/send" style="display:inline;">
-                <button type="submit">Send</button>
+            <form method="POST" action="/notification_queue/{queue_id}/send" style="display:inline;">
+                <button type="submit">{send_label}</button>
             </form>
-            <form method="POST" action="/notification_queue/{r[0]}/mark_sent" style="display:inline;">
-                <button type="submit">Mark Sent</button>
+            <form method="POST" action="/notification_queue/{queue_id}/mark_sent" style="display:inline;">
+                <button class="secondary" type="submit">Mark done</button>
             </form>
             """
+
         rows += f"""
         <tr>
-            <td>{r[0]}</td>
-            <td>{r[1]}</td>
-            <td>{r[2]}:{r[3]}</td>
-            <td>{r[4]}</td>
-            <td>{r[5]}</td>
-            <td>{r[6]}</td>
-            <td>{r[7]}</td>
-            <td>{r[9] or ''}</td>
-            <td>{actions}</td>
+            <td class="small">#{queue_id}</td>
+            <td><strong>{escape(channel_label(channel))}</strong><div class="muted">{escape(channel)}</div></td>
+            <td>{destination_label(channel, destination, user_role, user_key)}</td>
+            <td><strong>{escape(title or "")}</strong><div class="muted">{escape(created_at or "")}</div></td>
+            <td>{status_badge(status)}</td>
+            <td class="response">{provider_text}</td>
+            <td class="actions">{actions}</td>
         </tr>
         """
 
     if not rows:
-        rows = "<tr><td colspan='9'>No queued notifications yet.</td></tr>"
+        rows = "<tr><td colspan='7'>No queued notifications yet.</td></tr>"
 
     return f"""
     <html>
     <head>
-        <title>Notification Queue</title>
+        <title>Owner Notifications</title>
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
-            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
-            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
-            th {{ background:#eeeeff; }}
-            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
-            button {{ background:#111827; color:white; border:none; border-radius:7px; padding:7px 10px; font-weight:800; margin:2px; }}
-            .hint {{ color:#6b7280; max-width:900px; line-height:1.45; }}
-            .status-box {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:16px 0; }}
+            h1 {{ margin-bottom:8px; }}
+            .hint {{ color:#6b7280; max-width:980px; line-height:1.45; }}
+            .top-grid {{ display:grid; grid-template-columns:1.2fr .8fr; gap:14px; margin:18px 0; }}
+            .status-box, .guide-box {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
+            .guide-box ul {{ margin:8px 0 0 18px; color:#374151; line-height:1.55; }}
             .ok {{ color:#047857; font-weight:900; }}
             .warn {{ color:#b45309; font-weight:900; }}
+            .cards {{ display:grid; grid-template-columns:repeat(6, minmax(110px,1fr)); gap:10px; margin:16px 0; }}
+            .card {{ border:1px solid #e5e7eb; background:#fff; border-radius:10px; padding:12px; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:24px; font-weight:900; margin-top:2px; }}
             .test-form {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }}
             .test-form input {{ min-width:280px; padding:9px 10px; border:1px solid #d1d5db; border-radius:8px; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin:4px 8px 4px 0; }}
+            a.link {{ color:#4f46e5; font-weight:800; display:inline-block; margin-right:6px; }}
+            button {{ background:#111827; color:white; border:none; border-radius:7px; padding:7px 10px; font-weight:800; margin:2px; cursor:pointer; }}
+            button.secondary {{ background:#6b7280; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; table-layout:fixed; }}
+            th, td {{ padding:12px 10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; overflow-wrap:anywhere; }}
+            th {{ background:#eeeeff; }}
+            .small {{ color:#6b7280; width:58px; }}
+            .muted {{ color:#6b7280; font-size:13px; margin-top:3px; }}
+            .response {{ color:#374151; font-size:14px; }}
+            .actions {{ min-width:180px; }}
+            .badge {{ display:inline-block; padding:5px 9px; border-radius:999px; font-weight:900; font-size:13px; }}
+            .badge.pending {{ background:#fef3c7; color:#92400e; }}
+            .badge.sent {{ background:#dcfce7; color:#166534; }}
+            .badge.failed {{ background:#fee2e2; color:#991b1b; }}
+            @media(max-width:900px) {{
+                body {{ padding:14px; }}
+                .top-grid, .cards {{ grid-template-columns:1fr; }}
+                table {{ display:block; overflow-x:auto; }}
+            }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Notification Queue</h1>
-            <p class="hint">App notifications are visible inside the parent app badge. Email can send now if SMTP environment variables are configured. SMS rows are queued for the next provider step, such as Twilio.</p>
-            <div class="status-box">
-                <div>SMTP Email Status: <span class="{smtp_class}">{smtp_status}</span></div>
-                <form class="test-form" method="POST" action="/notification_queue/test_email">
-                    <input name="test_email" type="email" placeholder="Send test email to..." required>
-                    <button type="submit">Send Test Email</button>
-                </form>
-                <p class="hint">If this test row becomes failed, read Provider Response below. For Gmail, use an App Password, not your normal Gmail password.</p>
+            <h1>Owner Notifications</h1>
+            <p class="hint">Use this page to check whether parent emails, SMS reminders, and owner app reminders were created and sent. The important rows for trial parents are <strong>Email to parent</strong>; <strong>Owner / app reminder</strong> is only an internal notice for you.</p>
+
+            <div class="top-grid">
+                <div class="status-box">
+                    <h3>Email Sending</h3>
+                    <div>SMTP Status: <span class="{smtp_class}">{smtp_status}</span></div>
+                    <form class="test-form" method="POST" action="/notification_queue/test_email">
+                        <input name="test_email" type="email" placeholder="Send test email to..." required>
+                        <button type="submit">Send Test Email</button>
+                    </form>
+                    <p class="hint">If test email fails, read the row's Result / Notes. Gmail requires an App Password.</p>
+                </div>
+                <div class="guide-box">
+                    <h3>How to Read This</h3>
+                    <ul>
+                        <li><strong>Email to parent</strong> means an actual email to the family.</li>
+                        <li><strong>SMS text message</strong> is queued until Twilio is connected.</li>
+                        <li><strong>Owner / app reminder</strong> is an internal reminder only.</li>
+                    </ul>
+                </div>
             </div>
+
+            <div class="cards">
+                <div class="card"><div class="label">Waiting</div><div class="value">{pending_count}</div></div>
+                <div class="card"><div class="label">Sent</div><div class="value">{sent_count}</div></div>
+                <div class="card"><div class="label">Needs attention</div><div class="value">{failed_count}</div></div>
+                <div class="card"><div class="label">Email rows</div><div class="value">{email_count}</div></div>
+                <div class="card"><div class="label">SMS rows</div><div class="value">{sms_count}</div></div>
+                <div class="card"><div class="label">Owner reminders</div><div class="value">{push_count}</div></div>
+            </div>
+
             <a class="button" href="/">Home</a>
+            <a class="button" href="/trial_leads">Trial Leads</a>
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
+
             <table>
                 <tr>
-                    <th>ID</th>
-                    <th>Channel</th>
-                    <th>User</th>
-                    <th>Destination</th>
-                    <th>Title</th>
+                    <th style="width:58px;">ID</th>
+                    <th>Type</th>
+                    <th>Recipient</th>
+                    <th>Message</th>
                     <th>Status</th>
-                    <th>Created</th>
-                    <th>Provider Response</th>
-                    <th>Action</th>
+                    <th>Result / Notes</th>
+                    <th>Next Step</th>
                 </tr>
                 {rows}
             </table>
