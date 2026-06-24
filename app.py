@@ -15471,18 +15471,19 @@ def parent_agent():
         {parent_app_meta("My Assistant")}
         <style>
             * {{ box-sizing:border-box; }}
+            html, body {{ height:100%; overflow:hidden; }}
             body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-            .chat-shell {{ max-width:760px; min-height:100vh; margin:0 auto; background:white; display:flex; flex-direction:column; padding-bottom:calc(170px + env(safe-area-inset-bottom)); }}
-            .chat-header {{ position:sticky; top:0; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:max(16px, env(safe-area-inset-top)) 18px 16px; background:white; border-bottom:1px solid #e5e7eb; box-shadow:0 1px 8px rgba(15,23,42,.04); }}
+            .chat-shell {{ max-width:760px; height:100dvh; margin:0 auto; background:white; display:flex; flex-direction:column; padding-bottom:calc(202px + env(safe-area-inset-bottom)); overflow:hidden; }}
+            .chat-header {{ flex:0 0 auto; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:max(42px, calc(14px + env(safe-area-inset-top))) 18px 14px; background:white; border-bottom:1px solid #e5e7eb; box-shadow:0 1px 8px rgba(15,23,42,.04); }}
             .head-left {{ display:flex; align-items:center; gap:12px; min-width:0; }}
             .agent-avatar {{ width:44px; height:44px; border-radius:14px; background:#eef2ff; color:#4f46e5; display:flex; align-items:center; justify-content:center; font-weight:900; flex:0 0 auto; }}
-            h1 {{ margin:0; font-size:22px; line-height:1.1; }}
-            .sub {{ color:#6b7280; margin-top:4px; font-size:14px; line-height:1.25; }}
-            .student-pill {{ flex:0 0 auto; display:flex; align-items:center; gap:8px; border:1px solid #d1d5db; color:#111827; background:#f9fafb; border-radius:999px; padding:7px 12px; }}
+            h1 {{ margin:0; font-size:20px; line-height:1.1; white-space:nowrap; }}
+            .sub {{ color:#6b7280; margin-top:4px; font-size:13px; line-height:1.25; }}
+            .student-pill {{ flex:0 0 auto; display:flex; align-items:center; gap:7px; border:1px solid #d1d5db; color:#111827; background:#f9fafb; border-radius:999px; padding:7px 10px; }}
             .student-pill span {{ color:#6b7280; font-size:13px; }}
             .student-pill select {{ appearance:none; -webkit-appearance:none; border:0; background:transparent; color:#111827; font-size:15px; font-weight:850; max-width:150px; outline:none; }}
             .student-pill option {{ color:#111827; }}
-            .chat-log {{ padding:26px 18px 22px; display:flex; flex-direction:column; gap:16px; }}
+            .chat-log {{ flex:1 1 auto; min-height:0; overflow-y:auto; padding:26px 18px 22px; display:flex; flex-direction:column; gap:16px; -webkit-overflow-scrolling:touch; }}
             .day-divider {{ text-align:center; color:#9ca3af; font-weight:850; font-size:13px; margin:4px 0 8px; }}
             .message-row {{ display:flex; align-items:flex-end; gap:10px; width:100%; }}
             .message-row.parent {{ justify-content:flex-end; }}
@@ -15510,20 +15511,32 @@ def parent_agent():
             .risk-amber .risk-pill {{ color:#92400e; }}
             .risk-red .risk-pill {{ color:#991b1b; }}
             .risk-detail {{ margin-top:10px; font-weight:800; color:#374151; }}
-            .composer-wrap {{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(70px + env(safe-area-inset-bottom)); width:min(760px, 100%); z-index:16; background:white; border-top:1px solid #e5e7eb; padding:10px 18px 12px; box-shadow:0 -4px 18px rgba(15,23,42,.06); }}
+            .composer-wrap {{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(68px + env(safe-area-inset-bottom)); width:min(760px, 100%); z-index:16; background:white; border-top:1px solid #e5e7eb; padding:10px 18px 12px; box-shadow:0 -4px 18px rgba(15,23,42,.06); }}
             .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }}
             .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:999px; padding:7px 11px; font-size:13px; font-weight:850; }}
             .composer {{ display:flex; align-items:flex-end; gap:10px; }}
             .composer textarea {{ flex:1; min-height:48px; max-height:110px; resize:vertical; border:1px solid #d1d5db; border-radius:14px; background:#f9fafb; color:#111827; padding:12px 14px; font-size:16px; outline:none; }}
             .composer textarea::placeholder {{ color:#9ca3af; }}
             .send-button {{ min-width:64px; height:52px; border-radius:14px; border:1px solid #4f46e5; background:#4f46e5; color:#fff; font-size:14px; font-weight:900; }}
+            .parent-bottom-nav {{ position:fixed; left:50%; transform:translateX(-50%); bottom:0; width:min(760px, 100%); display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.98); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(15,23,42,.08); z-index:30; }}
+            .parent-bottom-nav a {{ position:relative; text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:850; padding:9px 4px; border-radius:10px; line-height:1.1; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            .parent-bottom-nav .badge {{ position:absolute; top:2px; right:calc(50% - 24px); min-width:18px; height:18px; border-radius:999px; background:#ef4444; color:white; display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:900; padding:0 5px; }}
             @media(max-width:760px) {{
-                .chat-shell {{ padding-bottom:calc(158px + env(safe-area-inset-bottom)); }}
+                .chat-shell {{ padding-bottom:calc(198px + env(safe-area-inset-bottom)); }}
                 .chat-header {{ padding-left:14px; padding-right:14px; }}
-                .student-pill select {{ max-width:96px; }}
+                .head-left {{ gap:10px; }}
+                .agent-avatar {{ width:40px; height:40px; border-radius:13px; }}
+                .student-pill select {{ max-width:118px; }}
+                .student-pill span {{ font-size:12px; }}
                 .bubble {{ max-width:86%; font-size:16px; }}
                 .chat-log {{ padding-left:12px; padding-right:12px; }}
                 .composer-wrap {{ padding-left:12px; padding-right:12px; }}
+            }}
+            @media(max-width:420px) {{
+                h1 {{ font-size:18px; }}
+                .sub {{ font-size:12px; }}
+                .student-pill select {{ max-width:92px; font-size:14px; }}
             }}
         </style>
         <script>
@@ -15539,7 +15552,7 @@ def parent_agent():
             }}
             window.addEventListener("load", function() {{
                 const log = document.querySelector(".chat-log");
-                if (log) window.scrollTo(0, document.body.scrollHeight);
+                if (log) log.scrollTop = log.scrollHeight;
                 syncStudent();
             }});
         </script>
