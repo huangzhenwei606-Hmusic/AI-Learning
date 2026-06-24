@@ -18214,7 +18214,7 @@ def v35_public_trial_form(error="", values=None):
                 const hint = document.getElementById("age-fee-hint");
                 const age = parseFloat(document.querySelector("input[name='age']").value || "0");
                 if (value === "15 mins" && age && age > 5) {{
-                    hint.textContent = "15 mins / $15 is only for children age 5 and under. Please choose 30 or 45 mins if your child is older than 5.";
+                    hint.textContent = "15 mins / $15 is only for children age 5 and under. Please choose 30, 45, or 60 mins if your child is older than 5.";
                     hint.style.display = "block";
                 }} else {{
                     hint.textContent = "";
@@ -18263,6 +18263,12 @@ def v35_public_trial_form(error="", values=None):
                                 45 mins
                                 <strong>$45</strong>
                                 <span>Best for older students or deeper placement.</span>
+                            </label>
+                            <label class="fee-card">
+                                <input type="radio" name="trial_duration" value="60 mins" required {'checked' if values.get('trial_duration') == '60 mins' else ''} onclick="selectTrialFee('60 mins', '$60')">
+                                60 mins
+                                <strong>$60</strong>
+                                <span>Full trial lesson for advanced placement.</span>
                             </label>
                         </div>
                         <input type="hidden" id="trial_fee" name="trial_fee" value="{val('trial_fee')}">
@@ -18518,6 +18524,7 @@ def public_trial_request():
             "15 mins": "$15",
             "30 mins": "$30",
             "45 mins": "$45",
+            "60 mins": "$60",
         }
         if data["trial_duration"] in fee_by_duration:
             data["trial_fee"] = fee_by_duration[data["trial_duration"]]
@@ -18535,7 +18542,7 @@ def public_trial_request():
         except ValueError:
             age_number = None
         if data["trial_duration"] == "15 mins" and age_number is not None and age_number > 5:
-            return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30 or 45 mins.", form_values)
+            return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30, 45, or 60 mins.", form_values)
         if not data["preferred_days"] or not data["preferred_times"]:
             return v35_public_trial_form("Please enter at least one preferred date and time.", form_values)
         inquiry_id = v35_insert_trial_lead(data, public=True)
@@ -18880,8 +18887,8 @@ def inquiry_detail(inquiry_id):
                     <div><label>Source</label><input name="source" value="{v35_safe(inquiry['source'])}"></div>
                     <div><label>Instrument</label><input name="instrument" value="{v35_safe(inquiry['instrument'])}"></div>
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
-                    <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
-                    <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45'], inquiry['trial_fee'] or '$30')}</select></div>
+                    <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins', '60 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
+                    <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45', '$60'], inquiry['trial_fee'] or '$30')}</select></div>
                     <div><label>Payment Method</label><select name="payment_method">{opts(['ACH', 'PayPal', 'Zelle'], inquiry['payment_method'] or 'ACH')}</select></div>
                     <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
                     <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
