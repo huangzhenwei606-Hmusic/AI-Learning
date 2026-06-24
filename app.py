@@ -18644,17 +18644,17 @@ def v35_public_trial_form(error="", values=None):
             .fee-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }}
             .fee-card {{
                 display:block; border:1px solid var(--line); border-radius:12px;
-                padding:12px 10px; cursor:pointer; background:var(--panel);
-                text-align:center; min-height:92px;
+                padding:10px 8px; cursor:pointer; background:var(--panel);
+                text-align:center; min-height:78px;
             }}
             .fee-card input {{ width:auto; margin:0; opacity:0; position:absolute; }}
-            .fee-card b {{ display:block; color:var(--muted); font-size:14px; }}
-            .fee-card strong {{ display:block; font-size:24px; color:#111827; margin:4px 0; }}
-            .fee-card span {{ display:block; color:var(--muted); font-size:12px; }}
+            .fee-card b {{ display:block; color:var(--muted); font-size:13px; }}
+            .fee-card strong {{ display:block; font-size:22px; color:#111827; margin:3px 0; }}
+            .fee-card span {{ display:block; color:var(--muted); font-size:11px; }}
             .fee-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; color:#111827; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
             .fee-card:has(input:checked) strong, .fee-card:has(input:checked) b, .fee-card:has(input:checked) span {{ color:#111827; }}
-            .time-option {{ border:1px solid var(--line); border-radius:13px; padding:13px; margin-bottom:10px; background:var(--panel); }}
-            .time-title {{ color:var(--muted); font-weight:900; margin-bottom:9px; font-size:14px; }}
+            .time-option {{ border:1px solid var(--line); border-radius:13px; padding:11px; margin-bottom:9px; background:var(--panel); }}
+            .time-title {{ color:var(--muted); font-weight:900; margin-bottom:7px; font-size:13px; }}
             .payment-options {{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; }}
             .pay-card {{
                 border:1px solid var(--line); border-radius:12px; padding:10px 11px;
@@ -18675,9 +18675,16 @@ def v35_public_trial_form(error="", values=None):
             .required {{ color:#ffb4b4; }}
             @media (max-width:760px) {{
                 .wrap {{ padding:0 18px 48px; }}
-                h1 {{ font-size:31px; }}
-                p {{ font-size:15px; }}
-                .grid, .fee-grid, .payment-options {{ grid-template-columns:1fr; }}
+                h1 {{ font-size:29px; }}
+                p {{ font-size:14px; }}
+                .grid {{ grid-template-columns:1fr; gap:10px; }}
+                .fee-grid {{ grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }}
+                .payment-options {{ grid-template-columns:1fr; gap:8px; }}
+                .fee-card {{ min-height:72px; padding:8px 6px; }}
+                .fee-card b {{ font-size:12px; }}
+                .fee-card strong {{ font-size:20px; }}
+                .fee-card span {{ font-size:10px; }}
+                .time-option input, .time-option select {{ padding:11px 12px; font-size:15px; }}
             }}
         </style>
         <script>
