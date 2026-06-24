@@ -8537,9 +8537,21 @@ def child_os_classify(text):
     amber_schedule = ["以后都", "所有后续", "future", "recurring", "every week", "all future"]
     cancel_words = ["取消", "请假", "缺席", "cancel", "absence", "absent", "miss class"]
     reschedule_words = ["改课", "调课", "换时间", "reschedule", "move lesson", "change time"]
-    balance_words = ["还剩", "几节", "课次", "余额", "balance", "lessons left", "how many lessons"]
+    balance_words = [
+        "还剩", "几节", "课次", "余额",
+        "balance", "lessons left", "lesson left", "classes left", "class left",
+        "how many lessons", "how many lesson", "how many classes", "how many class",
+        "remaining lessons", "remaining lesson", "lessons remaining", "lesson remaining",
+    ]
     reminder_words = ["提醒", "下一节", "下节课", "什么时候上课", "reminder", "next lesson", "when is"]
     receipt_words = ["收据", "receipt"]
+
+    def is_balance_question():
+        if any(w in lower or w in raw for w in balance_words):
+            return True
+        asks_count = any(w in lower for w in ["how many", "how much", "number of", "left", "remaining"])
+        mentions_lesson = any(w in lower for w in ["lesson", "lessons", "class", "classes", "package"])
+        return asks_count and mentions_lesson
 
     if any(w in lower or w in raw for w in red_words):
         return lang, "owner_only", "red", "owner"
@@ -8551,7 +8563,7 @@ def child_os_classify(text):
         return lang, "cancel_once", "teal", "auto"
     if any(w in lower or w in raw for w in reschedule_words):
         return lang, "reschedule_once", "teal", "auto"
-    if any(w in lower or w in raw for w in balance_words):
+    if is_balance_question():
         return lang, "balance_query", "teal", "auto"
     if any(w in lower or w in raw for w in reminder_words):
         return lang, "lesson_reminder", "teal", "auto"
