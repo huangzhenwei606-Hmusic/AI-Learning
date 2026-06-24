@@ -9221,6 +9221,37 @@ def mark_delivery_status(queue_id, status, provider_response=None):
     conn.close()
 
 
+def send_queued_email_now(queue_id):
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT channel, destination, title, body, link_url, status
+    FROM notification_delivery_queue
+    WHERE id = ?
+    """, (queue_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return False, "Queue item not found."
+
+    channel, destination, title, body, link_url, status = row
+    if channel != "email":
+        return False, "Queue item is not an email."
+    if status != "pending":
+        return False, f"Queue item already {status}."
+
+    try:
+        sent, response = send_email_delivery(destination, title, body, link_url)
+    except Exception as exc:
+        sent = False
+        response = f"Email send failed: {exc}"
+
+    mark_delivery_status(queue_id, "sent" if sent else "failed", response)
+    return sent, response
+
+
 def create_lesson_reminders_for_date(target_date):
     ensure_v33_schema()
 
@@ -18232,15 +18263,25 @@ def v35_queue_trial_confirmation(inquiry_id):
     inquiry = cursor.fetchone()
     conn.close()
     if not inquiry:
-        return 0
+        return {"queued": 0, "email": None, "sms": None, "errors": ["Inquiry not found."]}
 
     title = "H-Music Trial Lesson Confirmed"
     body = v35_trial_confirmation_body(inquiry)
     link = "/trial"
-    queued = 0
+    result = {"queued": 0, "email": None, "sms": None, "errors": []}
     if inquiry["parent_email"]:
-        if queue_direct_delivery("email", inquiry["parent_email"], title, body, link, "trial_confirmation", inquiry_id):
-            queued += 1
+        email_queue_id = queue_direct_delivery("email", inquiry["parent_email"], title, body, link, "trial_confirmation", inquiry_id)
+        if email_queue_id:
+            result["queued"] += 1
+            sent, response = send_queued_email_now(email_queue_id)
+            result["email"] = {
+                "queue_id": email_queue_id,
+                "sent": sent,
+                "response": response,
+            }
+    else:
+        result["errors"].append("Parent email is missing.")
+
     if inquiry["phone"]:
         sms_body = (
             f"H-Music trial confirmed for {inquiry['student_name']}: "
@@ -18248,9 +18289,18 @@ def v35_queue_trial_confirmation(inquiry_id):
             f"at {inquiry['trial_location']}. {inquiry['trial_duration']} / {inquiry['trial_fee']}. "
             f"PayPal/Zelle: hmusicjustplay@gmail.com"
         )
-        if queue_direct_delivery("sms", inquiry["phone"], title, sms_body, link, "trial_confirmation", inquiry_id):
-            queued += 1
-    return queued
+        sms_queue_id = queue_direct_delivery("sms", inquiry["phone"], title, sms_body, link, "trial_confirmation", inquiry_id)
+        if sms_queue_id:
+            result["queued"] += 1
+            result["sms"] = {
+                "queue_id": sms_queue_id,
+                "status": "pending",
+                "response": "SMS queued. Provider not configured yet.",
+            }
+    else:
+        result["errors"].append("Parent phone is missing.")
+
+    return result
 
 
 @app.route("/trial", methods=["GET", "POST"])
@@ -18782,15 +18832,41 @@ def update_inquiry(inquiry_id):
                 f"Trial scheduled for {data['student_name']} with {data['trial_teacher']} on {data['trial_date']} {data['trial_time']}.",
                 f"/inquiry/{inquiry_id}", "trial_lead", inquiry_id
             )
-            queued = v35_queue_trial_confirmation(inquiry_id)
+            delivery = v35_queue_trial_confirmation(inquiry_id)
+            queued = delivery.get("queued", 0)
             if queued:
+                email_info = delivery.get("email")
+                if email_info:
+                    email_status = "sent" if email_info.get("sent") else "failed"
+                    email_detail = f"Email {email_status}: {email_info.get('response')}"
+                else:
+                    email_detail = "Email not queued."
+
+                sms_info = delivery.get("sms")
+                sms_detail = "SMS queued." if sms_info else "SMS not queued."
+
+                errors = "; ".join(delivery.get("errors") or [])
+                detail = f"{queued} email/SMS item(s) queued for {data['student_name']}. {email_detail} {sms_detail}"
+                if errors:
+                    detail += f" Notes: {errors}"
+
                 create_notification(
-                    "owner", "owner", "Trial confirmation queued",
-                    f"{queued} email/SMS confirmation item(s) queued for {data['student_name']}.",
+                    "owner", "owner", "Trial confirmation delivery",
+                    detail,
                     "/notification_queue", "trial_lead", inquiry_id
                 )
-        except Exception:
-            pass
+            else:
+                create_notification(
+                    "owner", "owner", "Trial confirmation not queued",
+                    f"No parent email/SMS confirmation was queued for {data['student_name']}.",
+                    "/notification_queue", "trial_lead", inquiry_id
+                )
+        except Exception as exc:
+            create_notification(
+                "owner", "owner", "Trial confirmation failed",
+                f"Could not queue or send confirmation for {data['student_name']}: {exc}",
+                "/notification_queue", "trial_lead", inquiry_id
+            )
 
     return redirect(f"/inquiry/{inquiry_id}")
 
