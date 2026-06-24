@@ -15382,6 +15382,8 @@ def parent_agent():
         return redirect(f"/parent_agent?request_id={result['id']}")
 
     selected_request_id = request.args.get("request_id")
+    back_href = "/parent_agent" if (selected_request_id or request.args.get("clarify")) else "/parent_dashboard"
+    back_label = "Back" if (selected_request_id or request.args.get("clarify")) else "Home"
 
     student_options = "".join([
         f'<option value="{escape(s[0])}" {"selected" if s[0] == current_student else ""}>{escape(s[0])}</option>'
@@ -15394,8 +15396,8 @@ def parent_agent():
             <div class="message-row ai">
                 <div class="chat-avatar">AI</div>
                 <div class="bubble ai-bubble">
-                    <p>Hi! I can help with lesson changes, cancellations, balance checks, billing, trial requests, and messages.</p>
-                    <p>You can type in English or Chinese. If I’m not sure, I’ll ask a quick follow-up or check with the studio before replying.</p>
+                    <p>Hi! I can help with lessons, billing, trial requests, and messages.</p>
+                    <p>Type in English or Chinese. If I’m not sure, I’ll ask a quick follow-up or check with the studio first.</p>
                 </div>
             </div>
     """
@@ -15451,21 +15453,14 @@ def parent_agent():
             risk = row[4] or "teal"
             risk_label = {
                 "teal": "Handled",
-                "amber": "I’ll check first",
-                "red": "Owner will follow up",
+                "amber": "Checking with studio",
+                "red": "Owner follow-up",
             }.get(risk, "Received")
             risk_detail = {
-                "teal": "I handled this, and the studio can still see the update.",
-                "amber": "I’ll confirm this with the right person before anything changes.",
+                "teal": "The studio can see this update.",
+                "amber": "I’ll reply after the right person confirms.",
                 "red": "The studio owner will review this and follow up with you.",
             }.get(risk, "The studio can see this request.")
-            status_title = {
-                "executed": "Done",
-                "guided": "Next step",
-                "needs_confirmation": "Needs confirmation",
-                "owner_only": "Owner notified",
-                "logged": "I’ll check on this",
-            }.get(row[5] or "", row[5] or "Received")
             action_html = ""
             if row[3] in ("trial_request", "trial_request_another_child", "trial_request_another_instrument"):
                 request_type = "Another instrument" if row[3] == "trial_request_another_instrument" else "Another child"
@@ -15478,13 +15473,10 @@ def parent_agent():
             <div class="message-row ai">
                 <div class="chat-avatar">AI</div>
                 <div class="bubble ai-bubble">
-                    <div class="agent-result risk-{escape(risk)}">
-                        <div class="risk-pill">{escape(risk_label)}</div>
-                        <h2>{escape(status_title)}</h2>
-                        <p>{escape(row[6] or '')}</p>
-                        {action_html}
-                        <div class="risk-detail">{escape(risk_detail)}</div>
-                    </div>
+                    <span class="reply-pill risk-{escape(risk)}">{escape(risk_label)}</span>
+                    <p>{escape(row[6] or '')}</p>
+                    {action_html}
+                    <p class="reply-note">{escape(risk_detail)}</p>
                 </div>
             </div>
             """
@@ -15502,7 +15494,8 @@ def parent_agent():
             body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
             .chat-shell {{ max-width:760px; height:100dvh; margin:0 auto; background:white; display:flex; flex-direction:column; padding-bottom:calc(202px + env(safe-area-inset-bottom)); overflow:hidden; }}
             .chat-header {{ flex:0 0 auto; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:max(42px, calc(14px + env(safe-area-inset-top))) 18px 14px; background:white; border-bottom:1px solid #e5e7eb; box-shadow:0 1px 8px rgba(15,23,42,.04); }}
-            .head-left {{ display:flex; align-items:center; gap:12px; min-width:0; }}
+            .head-left {{ display:flex; align-items:center; gap:10px; min-width:0; }}
+            .chat-back {{ flex:0 0 auto; text-decoration:none; color:#4f46e5; border:1px solid #e0e7ff; background:#eef2ff; border-radius:999px; padding:7px 10px; font-size:13px; font-weight:900; }}
             .agent-avatar {{ width:44px; height:44px; border-radius:14px; background:#eef2ff; color:#4f46e5; display:flex; align-items:center; justify-content:center; font-weight:900; flex:0 0 auto; }}
             h1 {{ margin:0; font-size:20px; line-height:1.1; white-space:nowrap; }}
             .sub {{ color:#6b7280; margin-top:4px; font-size:13px; line-height:1.25; }}
@@ -15527,18 +15520,12 @@ def parent_agent():
             .clarify-option button {{ width:100%; text-align:left; background:white; color:#111827; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; cursor:pointer; }}
             .clarify-option span {{ display:block; font-size:15px; font-weight:900; }}
             .clarify-option small {{ display:block; margin-top:3px; color:#6b7280; font-size:12px; line-height:1.35; }}
-            .agent-result {{ border-radius:14px; padding:13px; border:1px solid #e5e7eb; background:#f8fafc; color:#111827; }}
-            .agent-result h2 {{ margin:8px 0 8px; font-size:18px; }}
-            .agent-result p {{ margin:0; line-height:1.4; }}
-            .agent-action {{ display:inline-flex; margin-top:12px; background:#4f46e5; color:white; text-decoration:none; border-radius:10px; padding:9px 12px; font-size:13px; font-weight:900; }}
-            .risk-teal {{ background:#ecfdf5; border-color:#99f6e4; }}
-            .risk-amber {{ background:#fffbeb; border-color:#fcd34d; }}
-            .risk-red {{ background:#fff1f2; border-color:#fda4af; }}
-            .risk-pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:900; background:white; color:#111827; }}
-            .risk-teal .risk-pill {{ color:#047857; }}
-            .risk-amber .risk-pill {{ color:#92400e; }}
-            .risk-red .risk-pill {{ color:#991b1b; }}
-            .risk-detail {{ margin-top:10px; font-weight:800; color:#374151; }}
+            .reply-pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 9px; font-size:12px; font-weight:900; background:white; margin-bottom:10px; }}
+            .reply-pill.risk-teal {{ color:#047857; background:#ecfdf5; }}
+            .reply-pill.risk-amber {{ color:#92400e; background:#fffbeb; }}
+            .reply-pill.risk-red {{ color:#991b1b; background:#fff1f2; }}
+            .reply-note {{ color:#6b7280; font-size:13px; font-weight:750; margin-top:10px !important; }}
+            .agent-action {{ display:inline-flex; margin-top:10px; background:#4f46e5; color:white; text-decoration:none; border-radius:10px; padding:9px 12px; font-size:13px; font-weight:900; }}
             .composer-wrap {{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(68px + env(safe-area-inset-bottom)); width:min(760px, 100%); z-index:16; background:white; border-top:1px solid #e5e7eb; padding:10px 18px 12px; box-shadow:0 -4px 18px rgba(15,23,42,.06); }}
             .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }}
             .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:999px; padding:7px 11px; font-size:13px; font-weight:850; }}
@@ -15589,6 +15576,7 @@ def parent_agent():
         <div class="chat-shell">
             <div class="chat-header">
                 <div class="head-left">
+                    <a class="chat-back" href="{back_href}">{back_label}</a>
                     <div class="agent-avatar">AI</div>
                     <div>
                         <h1>Family Assistant</h1>
@@ -18658,6 +18646,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
         program_options.append(f'<option value="{option}" {selected}>{option}</option>')
 
     error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
+    trial_back_html = '<a class="trial-back" href="/parent_agent">Back to Family Assistant</a>' if family_context.get("is_existing_family") else ""
     return f"""
     <html>
     <head>
@@ -18693,6 +18682,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                 box-shadow:0 10px 22px rgba(17,24,39,.12);
             }}
             .brand-name {{ font-weight:900; letter-spacing:.04em; color:#171717; }}
+            .trial-back {{ display:inline-flex; align-items:center; margin-bottom:14px; text-decoration:none; color:#4f46e5; background:#eef2ff; border:1px solid #e0e7ff; border-radius:999px; padding:8px 12px; font-size:13px; font-weight:900; }}
             h1 {{ font-size:36px; line-height:1.08; margin:0 0 8px; letter-spacing:0; }}
             p {{ color:var(--muted); font-size:16px; line-height:1.5; margin:0; }}
             form {{ display:grid; gap:22px; padding:28px; margin-top:22px; background:#ffffff; border:1px solid #e7e3da; border-radius:22px; box-shadow:0 18px 44px rgba(15,23,42,.07); }}
@@ -18786,6 +18776,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
     <body>
         <div class="wrap">
             <div class="hero">
+                {trial_back_html}
                 <div class="brand"><div class="logo">H</div><div class="brand-name">H-MUSIC</div></div>
                 <h1>Book a trial lesson</h1>
                 <p>Fill in the details below. We’ll confirm your slot by email within 24 hours.</p>
