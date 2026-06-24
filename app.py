@@ -15471,34 +15471,34 @@ def parent_agent():
         {parent_app_meta("My Assistant")}
         <style>
             * {{ box-sizing:border-box; }}
-            body {{ margin:0; background:#0f1115; color:#f9fafb; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-            .chat-shell {{ max-width:760px; min-height:100vh; margin:0 auto; background:#171716; display:flex; flex-direction:column; padding-bottom:calc(170px + env(safe-area-inset-bottom)); }}
-            .chat-header {{ position:sticky; top:0; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:max(16px, env(safe-area-inset-top)) 18px 16px; background:#2f2f2d; border-bottom:1px solid #4a4a48; }}
+            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            .chat-shell {{ max-width:760px; min-height:100vh; margin:0 auto; background:white; display:flex; flex-direction:column; padding-bottom:calc(170px + env(safe-area-inset-bottom)); }}
+            .chat-header {{ position:sticky; top:0; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:max(16px, env(safe-area-inset-top)) 18px 16px; background:white; border-bottom:1px solid #e5e7eb; box-shadow:0 1px 8px rgba(15,23,42,.04); }}
             .head-left {{ display:flex; align-items:center; gap:12px; min-width:0; }}
-            .agent-avatar {{ width:44px; height:44px; border-radius:14px; background:#24466f; color:#bfdbfe; display:flex; align-items:center; justify-content:center; font-weight:900; flex:0 0 auto; }}
+            .agent-avatar {{ width:44px; height:44px; border-radius:14px; background:#eef2ff; color:#4f46e5; display:flex; align-items:center; justify-content:center; font-weight:900; flex:0 0 auto; }}
             h1 {{ margin:0; font-size:22px; line-height:1.1; }}
-            .sub {{ color:#d1d5db; margin-top:4px; font-size:14px; line-height:1.25; }}
-            .student-pill {{ flex:0 0 auto; display:flex; align-items:center; gap:8px; border:1px solid #5b5b58; color:#f9fafb; background:#252522; border-radius:999px; padding:7px 12px; }}
-            .student-pill span {{ color:#b7b7b0; font-size:13px; }}
-            .student-pill select {{ appearance:none; -webkit-appearance:none; border:0; background:transparent; color:#fff; font-size:15px; font-weight:850; max-width:150px; outline:none; }}
+            .sub {{ color:#6b7280; margin-top:4px; font-size:14px; line-height:1.25; }}
+            .student-pill {{ flex:0 0 auto; display:flex; align-items:center; gap:8px; border:1px solid #d1d5db; color:#111827; background:#f9fafb; border-radius:999px; padding:7px 12px; }}
+            .student-pill span {{ color:#6b7280; font-size:13px; }}
+            .student-pill select {{ appearance:none; -webkit-appearance:none; border:0; background:transparent; color:#111827; font-size:15px; font-weight:850; max-width:150px; outline:none; }}
             .student-pill option {{ color:#111827; }}
             .chat-log {{ padding:26px 18px 22px; display:flex; flex-direction:column; gap:16px; }}
-            .day-divider {{ text-align:center; color:#aaa69e; font-weight:850; font-size:13px; margin:4px 0 8px; }}
+            .day-divider {{ text-align:center; color:#9ca3af; font-weight:850; font-size:13px; margin:4px 0 8px; }}
             .message-row {{ display:flex; align-items:flex-end; gap:10px; width:100%; }}
             .message-row.parent {{ justify-content:flex-end; }}
             .chat-avatar, .parent-avatar {{ width:36px; height:36px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900; flex:0 0 auto; }}
-            .chat-avatar {{ background:#24466f; color:#bfdbfe; }}
-            .parent-avatar {{ background:#22520f; color:#b9f7a0; }}
+            .chat-avatar {{ background:#eef2ff; color:#4f46e5; }}
+            .parent-avatar {{ background:#e7f7df; color:#2f7a17; }}
             .bubble {{ max-width:min(82%, 520px); border-radius:17px; padding:14px 16px; font-size:17px; line-height:1.45; }}
             .bubble p {{ margin:0 0 12px; }}
             .bubble p:last-child {{ margin-bottom:0; }}
-            .ai-bubble {{ background:#30302e; color:#f7f7f4; border:1px solid #555552; border-bottom-left-radius:6px; }}
-            .parent-bubble {{ background:#82afe2; color:#fff; border-bottom-right-radius:6px; font-weight:850; }}
+            .ai-bubble {{ background:#f8fafc; color:#111827; border:1px solid #e5e7eb; border-bottom-left-radius:6px; }}
+            .parent-bubble {{ background:#dbeafe; color:#0f3b72; border:1px solid #bfdbfe; border-bottom-right-radius:6px; font-weight:850; }}
             .clarify-options {{ display:grid; gap:8px; margin-top:12px; }}
             .clarify-option {{ margin:0; }}
-            .clarify-option button {{ width:100%; text-align:left; background:#262624; color:#f9fafb; border:1px solid #52524f; border-radius:10px; padding:10px 12px; cursor:pointer; }}
+            .clarify-option button {{ width:100%; text-align:left; background:white; color:#111827; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; cursor:pointer; }}
             .clarify-option span {{ display:block; font-size:15px; font-weight:900; }}
-            .clarify-option small {{ display:block; margin-top:3px; color:#c9c7c1; font-size:12px; line-height:1.35; }}
+            .clarify-option small {{ display:block; margin-top:3px; color:#6b7280; font-size:12px; line-height:1.35; }}
             .agent-result {{ border-radius:14px; padding:13px; border:1px solid #e5e7eb; background:#f8fafc; color:#111827; }}
             .agent-result h2 {{ margin:8px 0 8px; font-size:18px; }}
             .agent-result p {{ margin:0; line-height:1.4; }}
@@ -15510,13 +15510,13 @@ def parent_agent():
             .risk-amber .risk-pill {{ color:#92400e; }}
             .risk-red .risk-pill {{ color:#991b1b; }}
             .risk-detail {{ margin-top:10px; font-weight:800; color:#374151; }}
-            .composer-wrap {{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(70px + env(safe-area-inset-bottom)); width:min(760px, 100%); z-index:16; background:#2f2f2d; border-top:1px solid #4a4a48; padding:10px 18px 12px; }}
+            .composer-wrap {{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(70px + env(safe-area-inset-bottom)); width:min(760px, 100%); z-index:16; background:white; border-top:1px solid #e5e7eb; padding:10px 18px 12px; box-shadow:0 -4px 18px rgba(15,23,42,.06); }}
             .quick {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }}
-            .quick button {{ background:#252522; color:#d7d4ce; border:1px solid #555552; border-radius:999px; padding:7px 11px; font-size:13px; font-weight:850; }}
+            .quick button {{ background:#f8fafc; color:#374151; border:1px solid #e5e7eb; border-radius:999px; padding:7px 11px; font-size:13px; font-weight:850; }}
             .composer {{ display:flex; align-items:flex-end; gap:10px; }}
-            .composer textarea {{ flex:1; min-height:48px; max-height:110px; resize:vertical; border:1px solid #555552; border-radius:14px; background:#2a2a28; color:#fff; padding:12px 14px; font-size:16px; outline:none; }}
-            .composer textarea::placeholder {{ color:#aaa69e; }}
-            .send-button {{ min-width:64px; height:52px; border-radius:14px; border:1px solid #6a6a66; background:#383835; color:#fff; font-size:14px; font-weight:900; }}
+            .composer textarea {{ flex:1; min-height:48px; max-height:110px; resize:vertical; border:1px solid #d1d5db; border-radius:14px; background:#f9fafb; color:#111827; padding:12px 14px; font-size:16px; outline:none; }}
+            .composer textarea::placeholder {{ color:#9ca3af; }}
+            .send-button {{ min-width:64px; height:52px; border-radius:14px; border:1px solid #4f46e5; background:#4f46e5; color:#fff; font-size:14px; font-weight:900; }}
             @media(max-width:760px) {{
                 .chat-shell {{ padding-bottom:calc(158px + env(safe-area-inset-bottom)); }}
                 .chat-header {{ padding-left:14px; padding-right:14px; }}
