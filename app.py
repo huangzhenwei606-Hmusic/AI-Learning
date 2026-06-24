@@ -18168,6 +18168,15 @@ def v35_public_trial_form(error="", values=None):
     def val(name):
         return v35_safe(values.get(name, ""))
 
+    def weekday_options(name):
+        current = values.get(name, "")
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        options = ['<option value="">Select day...</option>']
+        for day in days:
+            selected = "selected" if current == day else ""
+            options.append(f'<option value="{day}" {selected}>{day}</option>')
+        return "".join(options)
+
     program_options = []
     for option in ["Group Class", "Private Class"]:
         selected = "selected" if values.get("program_interest") == option else ""
@@ -18362,21 +18371,21 @@ def v35_public_trial_form(error="", values=None):
                     <div class="time-option">
                         <div class="time-title">Option 1</div>
                         <div class="grid">
-                            <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
+                            <label>Day<select name="preferred_date_1" required>{weekday_options('preferred_date_1')}</select></label>
                             <label>Time<input type="time" name="preferred_time_1" value="{val('preferred_time_1')}" required></label>
                         </div>
                     </div>
                     <div class="time-option">
                         <div class="time-title">Option 2</div>
                         <div class="grid">
-                            <label>Date<input type="date" name="preferred_date_2" value="{val('preferred_date_2')}"></label>
+                            <label>Day<select name="preferred_date_2">{weekday_options('preferred_date_2')}</select></label>
                             <label>Time<input type="time" name="preferred_time_2" value="{val('preferred_time_2')}"></label>
                         </div>
                     </div>
                     <div class="time-option">
                         <div class="time-title">Option 3</div>
                         <div class="grid">
-                            <label>Date<input type="date" name="preferred_date_3" value="{val('preferred_date_3')}"></label>
+                            <label>Day<select name="preferred_date_3">{weekday_options('preferred_date_3')}</select></label>
                             <label>Time<input type="time" name="preferred_time_3" value="{val('preferred_time_3')}"></label>
                         </div>
                     </div>
@@ -18607,7 +18616,7 @@ def public_trial_request():
             date_value = request.form.get(f"preferred_date_{idx}", "").strip()
             time_value = request.form.get(f"preferred_time_{idx}", "").strip()
             if date_value or time_value:
-                preferred_dates.append(f"{idx}. {date_value or 'Date TBD'}")
+                preferred_dates.append(f"{idx}. {date_value or 'Day TBD'}")
                 preferred_times.append(f"{idx}. {time_value or 'Time TBD'}")
         data = {
             "student_name": request.form.get("student_name", "").strip(),
@@ -18653,7 +18662,7 @@ def public_trial_request():
         if data["trial_duration"] == "15 mins" and age_number is not None and age_number > 5:
             return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30, 45, or 60 mins.", form_values)
         if not data["preferred_days"] or not data["preferred_times"]:
-            return v35_public_trial_form("Please enter at least one preferred date and time.", form_values)
+            return v35_public_trial_form("Please enter at least one preferred day and time.", form_values)
         inquiry_id = v35_insert_trial_lead(data, public=True)
         return v35_public_trial_thank_you(inquiry_id, data)
     return v35_public_trial_form()
