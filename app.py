@@ -8512,16 +8512,16 @@ def child_os_copy(lang, key, **kwargs):
             "zh": "我可以帮你处理收据。请打开账单页面查看或发送收据。"
         },
         "amber": {
-            "en": "This request needs confirmation before execution. I logged it for review.",
-            "zh": "这个请求需要确认后才能执行。我已经记录并发送审核。"
+            "en": "I sent this request to the studio for review. We will update you before any change is made.",
+            "zh": "这个请求已发送给机构审核。确认前不会进行更改。"
         },
         "red": {
-            "en": "This request requires owner handling. I sent it to the owner inbox.",
-            "zh": "这个请求必须由 Owner 人工处理。我已经发送到 Owner 收件箱。"
+            "en": "I sent this to the studio owner. They will follow up with you within 24 hours.",
+            "zh": "这个请求已发送给 Owner。Owner 会在 24 小时内跟进。"
         },
         "fallback": {
-            "en": "I logged your request. Owner can see it and will follow up if needed.",
-            "zh": "我已经记录你的请求。Owner 可以看到，如需要会跟进。"
+            "en": "I need one more detail before I can help with this request.",
+            "zh": "我需要再确认一个细节，才能继续处理这个请求。"
         },
     }[key][lang]
     return text.format(**kwargs)
@@ -8535,11 +8535,14 @@ def child_os_ambiguity_kind(text):
         return None
 
     withdraw_words = ["withdraw", "退学", "退课", "退出"]
+    stop_renewal_words = ["stop renew", "stop renewal", "stop auto renew", "stop auto-renew", "cancel renewal", "cancel auto renew", "cancel auto-renew", "do not renew", "don't renew", "not renew", "停止续费", "取消续费"]
     cancel_words = ["cancel", "取消", "请假", "缺席"]
     change_words = ["change", "reschedule", "move", "switch", "改", "换", "调课"]
     one_time_words = ["next lesson", "下一节", "this lesson", "one lesson", "single lesson", "today", "tomorrow"]
     future_words = ["all future", "以后都", "所有后续", "every week", "recurring"]
 
+    if any(w in lower or w in raw for w in stop_renewal_words):
+        return None
     if any(w in lower or w in raw for w in withdraw_words):
         return "withdraw"
     if any(w in lower or w in raw for w in cancel_words):
@@ -8667,6 +8670,7 @@ def child_os_classify(text):
 
     red_words = ["换老师", "更换老师", "停课", "停止所有", "stop all", "stop lessons", "change teacher", "switch teacher"]
     amber_money = ["续费", "renew", "package", "付款", "refund", "退课", "退费", "invoice"]
+    stop_renewal_words = ["stop renew", "stop renewal", "stop auto renew", "stop auto-renew", "cancel renewal", "cancel auto renew", "cancel auto-renew", "do not renew", "don't renew", "not renew", "停止续费", "取消续费"]
     amber_schedule = ["以后都", "所有后续", "future", "recurring", "every week", "all future"]
     cancel_words = ["取消", "请假", "缺席", "cancel", "absence", "absent", "miss class"]
     reschedule_words = ["改课", "调课", "换时间", "reschedule", "move lesson", "change time"]
@@ -8688,6 +8692,8 @@ def child_os_classify(text):
 
     if any(w in lower or w in raw for w in red_words):
         return lang, "owner_only", "red", "owner"
+    if any(w in lower or w in raw for w in stop_renewal_words):
+        return lang, "stop_renewal", "amber", "owner"
     if any(w in lower or w in raw for w in amber_money):
         return lang, "renewal_or_money", "amber", "owner"
     if any(w in lower or w in raw for w in amber_schedule):
@@ -8842,6 +8848,11 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
         outcome = child_os_copy(response_lang, "receipt")
         action_href = "/parent_billing"
         action_label = "Billing / Receipts"
+    elif intent == "stop_renewal":
+        status = "needs_confirmation"
+        outcome = "I sent your request to stop the next package renewal to the studio. We will confirm before making any billing changes."
+        action_href = "/parent_billing"
+        action_label = "Billing"
     elif risk_level == "amber":
         status = "needs_confirmation"
         outcome = child_os_copy(response_lang, "amber")
@@ -15482,11 +15493,11 @@ def parent_agent():
                 <div class="agent-avatar">AI</div>
                 <div>
                     <h1>My Assistant</h1>
-                    <div class="sub">Tell me what you need. You can type in English or Chinese. I will reply in English.</div>
+                    <div class="sub">Tell me what you need in English or Chinese. I'll reply in English and ask a follow-up question when I need more details.</div>
                 </div>
             </div>
 
-            <div class="assistant-note">I can help with lesson changes, cancellations, lesson balance, reminders, billing questions, and messages. Results are color-coded: auto handled, needs confirmation, or owner handling.</div>
+            <div class="assistant-note">I can help with lesson balance, next lessons, cancellations, schedule changes, billing, and messages. If a request affects billing or long-term lessons, the studio will confirm it first.</div>
             {clarification_card}
             {result_card}
 
