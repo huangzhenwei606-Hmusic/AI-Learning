@@ -15219,17 +15219,16 @@ def parent_agent():
                 "red": "Owner handling",
             }.get(risk, "Logged")
             risk_detail = {
-                "teal": "This is low risk and can be handled by the system.",
-                "amber": "This request needs human confirmation before action.",
-                "red": "This request has been sent to the owner for manual handling.",
-            }.get(risk, "Owner can see this request.")
+                "teal": "Done automatically. The studio can still see this request.",
+                "amber": "Submitted for confirmation. We will update you after it is approved.",
+                "red": "Sent to the studio owner for manual help.",
+            }.get(risk, "The studio can see this request.")
             result_card = f"""
             <div class="agent-result risk-{escape(risk)}">
                 <div class="risk-pill">{escape(risk_label)}</div>
                 <h2>{escape(row[5] or '')}</h2>
                 <p>{escape(row[6] or '')}</p>
                 <div class="risk-detail">{escape(risk_detail)}</div>
-                <div class="result-meta">Route: {escape(row[8] or '')} · Intent: {escape(row[3] or '')} · {escape(row[7] or '')}</div>
             </div>
             """
 
