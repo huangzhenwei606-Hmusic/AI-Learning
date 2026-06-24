@@ -15481,8 +15481,9 @@ def parent_agent():
             </div>
             """
 
-    quick_zh = "帮我看一下还剩几节课"
-    quick_en = "When is my next lesson?"
+    quick_balance = "How many lessons do I have left?"
+    quick_next = "When is my next lesson?"
+    quick_cancel = "I want to cancel my next lesson"
 
     return f"""
     <html>
@@ -15596,9 +15597,9 @@ def parent_agent():
 
         <div class="composer-wrap">
             <div class="quick">
-                <button type="button" onclick="fillAgent('{quick_zh}')">Lesson balance</button>
-                <button type="button" onclick="fillAgent('{quick_en}')">Next lesson</button>
-                <button type="button" onclick="fillAgent('帮我取消下一节课')">Cancel next lesson</button>
+                <button type="button" onclick="fillAgent('{quick_balance}')">Lesson balance</button>
+                <button type="button" onclick="fillAgent('{quick_next}')">Next lesson</button>
+                <button type="button" onclick="fillAgent('{quick_cancel}')">Cancel next lesson</button>
                 <button type="button" onclick="fillAgent('I want to renew package')">Renew package</button>
                 <button type="button" onclick="fillAgent('I want to book a trial lesson')">Request trial</button>
             </div>
