@@ -9200,6 +9200,17 @@ def send_email_delivery(destination, title, body, link_url):
     return True, "Email sent via SMTP."
 
 
+def smtp_config_status():
+    required = [
+        "HMUSIC_SMTP_HOST",
+        "HMUSIC_SMTP_USER",
+        "HMUSIC_SMTP_PASSWORD",
+        "HMUSIC_FROM_EMAIL",
+    ]
+    missing = [name for name in required if not os.environ.get(name)]
+    return len(missing) == 0, missing
+
+
 def mark_delivery_status(queue_id, status, provider_response=None):
     ensure_v33_schema()
     conn = sqlite3.connect("hmusic.db")
@@ -9681,6 +9692,10 @@ def notification_queue():
     rows_data = cursor.fetchall()
     conn.close()
 
+    smtp_ready, smtp_missing = smtp_config_status()
+    smtp_status = "Configured" if smtp_ready else "Missing: " + ", ".join(smtp_missing)
+    smtp_class = "ok" if smtp_ready else "warn"
+
     rows = ""
     for r in rows_data:
         actions = f'<a href="{r[8]}">Open</a>'
@@ -9723,12 +9738,25 @@ def notification_queue():
             a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
             button {{ background:#111827; color:white; border:none; border-radius:7px; padding:7px 10px; font-weight:800; margin:2px; }}
             .hint {{ color:#6b7280; max-width:900px; line-height:1.45; }}
+            .status-box {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:16px 0; }}
+            .ok {{ color:#047857; font-weight:900; }}
+            .warn {{ color:#b45309; font-weight:900; }}
+            .test-form {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }}
+            .test-form input {{ min-width:280px; padding:9px 10px; border:1px solid #d1d5db; border-radius:8px; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>Notification Queue</h1>
             <p class="hint">App notifications are visible inside the parent app badge. Email can send now if SMTP environment variables are configured. SMS rows are queued for the next provider step, such as Twilio.</p>
+            <div class="status-box">
+                <div>SMTP Email Status: <span class="{smtp_class}">{smtp_status}</span></div>
+                <form class="test-form" method="POST" action="/notification_queue/test_email">
+                    <input name="test_email" type="email" placeholder="Send test email to..." required>
+                    <button type="submit">Send Test Email</button>
+                </form>
+                <p class="hint">If this test row becomes failed, read Provider Response below. For Gmail, use an App Password, not your normal Gmail password.</p>
+            </div>
             <a class="button" href="/">Home</a>
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
@@ -9750,6 +9778,33 @@ def notification_queue():
     </body>
     </html>
     """
+
+
+@app.route("/notification_queue/test_email", methods=["POST"])
+def notification_queue_test_email():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    destination = request.form.get("test_email", "").strip()
+    if destination:
+        title = "H-Music SMTP Test"
+        body = (
+            "This is a test email from H-Music CRM. "
+            "If you received this, SMTP email delivery is working."
+        )
+        queue_id = queue_direct_delivery(
+            "email",
+            destination,
+            title,
+            body,
+            "/notification_queue",
+            "smtp_test",
+            None,
+        )
+        if queue_id:
+            send_queued_email_now(queue_id)
+
+    return redirect("/notification_queue")
 
 
 @app.route("/notification_queue/<int:queue_id>/mark_sent", methods=["POST"])
