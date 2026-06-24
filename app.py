@@ -18808,6 +18808,18 @@ def v35_public_trial_form(error="", values=None):
                             <p>No credit card for trial lessons. H-Music covers the ACH processing fee.</p>
                             <div class="payment-note">We will confirm the trial slot by email and send secure ACH payment instructions. Please include the student name with payment.</div>
                         </label>
+                        <label class="pay-card">
+                            <input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>
+                            <div class="pay-title">PayPal</div>
+                            <p>Send trial payment online through PayPal.</p>
+                            <div class="payment-note">Send payment to <b>hmusicjustplay@gmail.com</b>. Please include the student name in the note.</div>
+                        </label>
+                        <label class="pay-card">
+                            <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
+                            <div class="pay-title">Zelle</div>
+                            <p>Send directly from your bank app.</p>
+                            <div class="payment-note">Send payment to <b>hmusicjustplay@gmail.com</b>. Please include the student name in the note.</div>
+                        </label>
                     </div>
                 </section>
 
@@ -18855,7 +18867,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
             {payment_html}
-            <p>Trial lessons use ACH bank payment only. H-Music covers the ACH processing fee, and we will send secure payment instructions after confirming the trial slot.</p>
+            <p>Trial payment can be made by ACH, PayPal, or Zelle. Credit cards are not accepted for trial lessons. PayPal/Zelle: hmusicjustplay@gmail.com.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/">Back to H-Music</a></p>
         </div></div>
@@ -18945,7 +18957,16 @@ def v35_trial_confirmation_body(inquiry):
     duration = inquiry["trial_duration"] or "Trial lesson"
     fee = inquiry["trial_fee"] or "trial fee"
     payment_method = inquiry["payment_method"] or "your selected payment method"
-    payment_line = "Trial lessons use ACH bank payment only. H-Music covers the ACH processing fee. We will send secure payment instructions after confirming the trial slot."
+    if payment_method.lower() in ("paypal", "zelle"):
+        payment_line = (
+            f"Please send the trial payment by {payment_method} to hmusicjustplay@gmail.com. "
+            "Please include the student name in the payment note."
+        )
+    else:
+        payment_line = (
+            "Trial lessons can be paid by ACH bank payment. H-Music covers the ACH processing fee. "
+            "We will send secure payment instructions after confirming the trial slot."
+        )
     return (
         f"Hi {inquiry['parent_name'] or 'there'},\n\n"
         f"{student}'s trial lesson is confirmed.\n\n"
@@ -19400,7 +19421,7 @@ def inquiry_detail(inquiry_id):
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
                     <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins', '60 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
                     <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45', '$60'], inquiry['trial_fee'] or '$30')}</select></div>
-                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH'], inquiry['payment_method'] or 'ACH')}</select></div>
+                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH', 'PayPal', 'Zelle'], inquiry['payment_method'] or 'ACH')}</select></div>
                     <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
                     <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
