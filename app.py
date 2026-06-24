@@ -18655,18 +18655,19 @@ def v35_public_trial_form(error="", values=None):
             .fee-card:has(input:checked) strong, .fee-card:has(input:checked) b, .fee-card:has(input:checked) span {{ color:#111827; }}
             .time-option {{ border:1px solid var(--line); border-radius:13px; padding:13px; margin-bottom:10px; background:var(--panel); }}
             .time-title {{ color:var(--muted); font-weight:900; margin-bottom:9px; font-size:14px; }}
-            .payment-options {{ display:grid; grid-template-columns:1fr; gap:12px; }}
+            .payment-options {{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; }}
             .pay-card {{
-                border:1px solid var(--line); border-radius:13px; padding:14px;
-                background:var(--panel); display:grid; gap:8px; cursor:pointer;
+                border:1px solid var(--line); border-radius:12px; padding:10px 11px;
+                background:var(--panel); display:grid; gap:4px; cursor:pointer;
+                min-height:96px; position:relative;
             }}
-            .pay-card input {{ width:auto; margin:0; }}
-            .pay-card .pay-title {{ display:flex; align-items:center; gap:8px; font-size:17px; font-weight:900; color:#111827; }}
-            .pay-card p {{ font-size:14px; }}
-            .pay-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
+            .pay-card input {{ width:auto; margin:0; position:absolute; top:10px; right:10px; }}
+            .pay-card .pay-title {{ display:flex; align-items:center; gap:8px; font-size:15px; font-weight:900; color:#111827; padding-right:22px; }}
+            .pay-card p {{ font-size:12px; line-height:1.25; margin:0; color:var(--muted); }}
+            .pay-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; box-shadow:0 0 0 2px rgba(85,168,255,.25); }}
             .pay-card:has(input:checked) .pay-title, .pay-card:has(input:checked) p, .pay-card:has(input:checked) .payment-note {{ color:#111827; }}
-            .payment-note {{ background:#f4f1ea; color:#2f2f2b; border-radius:10px; padding:11px 12px; line-height:1.45; font-weight:800; font-size:14px; }}
-            .pay-card:has(input:checked) .payment-note {{ background:#ffffff; color:#111827; }}
+            .payment-note {{ color:#6f4e08; line-height:1.25; font-weight:800; font-size:11px; }}
+            .pay-card:has(input:checked) .payment-note {{ color:#111827; }}
             .pay-email {{ color:#8a5d0a; font-weight:900; }}
             .hint {{ background:#fff8e6; border:1px solid #f0d99a; border-radius:12px; padding:12px 14px; color:#6f4e08; line-height:1.45; font-size:14px; }}
             .error {{ background:#fff1f2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:11px 13px; font-weight:900; font-size:14px; }}
@@ -18804,21 +18805,21 @@ def v35_public_trial_form(error="", values=None):
                     <div class="payment-options">
                         <label class="pay-card">
                             <input type="radio" name="payment_method" value="ACH" required {'checked' if values.get('payment_method') in ('ACH', '') else ''}>
-                            <div class="pay-title">ACH Bank Payment</div>
-                            <p>No credit card for trial lessons. H-Music covers the ACH processing fee.</p>
-                            <div class="payment-note">We will confirm the trial slot by email and send secure ACH payment instructions. Please include the student name with payment.</div>
+                            <div class="pay-title">ACH Bank</div>
+                            <p>No card. H-Music covers ACH fee.</p>
+                            <div class="payment-note">Instructions sent after slot confirmation.</div>
                         </label>
                         <label class="pay-card">
                             <input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>
                             <div class="pay-title">PayPal</div>
-                            <p>Send trial payment online through PayPal.</p>
-                            <div class="payment-note">Send payment to <b>hmusicjustplay@gmail.com</b>. Please include the student name in the note.</div>
+                            <p>Send online after confirmation.</p>
+                            <div class="payment-note">hmusicjustplay@gmail.com</div>
                         </label>
                         <label class="pay-card">
                             <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
                             <div class="pay-title">Zelle</div>
-                            <p>Send directly from your bank app.</p>
-                            <div class="payment-note">Send payment to <b>hmusicjustplay@gmail.com</b>. Please include the student name in the note.</div>
+                            <p>Send from your bank app.</p>
+                            <div class="payment-note">hmusicjustplay@gmail.com</div>
                         </label>
                     </div>
                 </section>
