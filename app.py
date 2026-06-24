@@ -8500,27 +8500,27 @@ def child_os_copy(lang, key, **kwargs):
             "zh": "我没有找到接下来已排好的课程。"
         },
         "cancel_done": {
-            "en": "Done. I cancelled {student}'s lesson on {date} {time}. Status: {status}. Owner can see this action.",
+            "en": "Done — I cancelled {student}'s lesson on {date} {time}. Status: {status}. The studio can see this update.",
             "zh": "已完成。我取消了 {student} 在 {date} {time} 的课程。状态：{status}。Owner 已同步可见。"
         },
         "reschedule_once": {
-            "en": "I can help reschedule one lesson. Please open the reschedule form to choose the new time.",
+            "en": "Yes — I can help with a one-time reschedule. Please choose the new time in the reschedule form.",
             "zh": "我可以帮你改一次课。请打开改课表单选择新的时间。"
         },
         "receipt": {
-            "en": "I can help with receipts. Please open Billing to review or send the receipt.",
+            "en": "Yes — please open Billing to review payment details or request a receipt.",
             "zh": "我可以帮你处理收据。请打开账单页面查看或发送收据。"
         },
         "amber": {
-            "en": "I sent this request to the studio for review. We will update you before any change is made.",
+            "en": "I’ll check this with the studio first. We’ll reply before making any changes.",
             "zh": "这个请求已发送给机构审核。确认前不会进行更改。"
         },
         "red": {
-            "en": "I sent this to the studio owner. They will follow up with you within 24 hours.",
+            "en": "I’ll ask the studio owner to review this. They will follow up with you within 24 hours.",
             "zh": "这个请求已发送给 Owner。Owner 会在 24 小时内跟进。"
         },
         "fallback": {
-            "en": "I need one more detail before I can help with this request.",
+            "en": "I’m not fully sure what you mean yet. Please choose one option, or I’ll ask the studio to confirm and reply to you.",
             "zh": "我需要再确认一个细节，才能继续处理这个请求。"
         },
     }[key][lang]
@@ -8630,12 +8630,12 @@ def handle_child_os_confirmed_intent(parent_id, parent_name, student_name, reque
         "change_future_schedule": ("reschedule_future", "amber", "teacher", "needs_confirmation", "This recurring schedule change needs teacher confirmation. We will update you after it is approved."),
         "change_teacher": ("change_teacher", "red", "owner", "owner_only", "Changing teacher requires studio owner help. I've sent this to the owner for follow-up within 24 hours."),
         "change_program": ("change_program", "red", "owner", "owner_only", "Changing program or instrument requires studio review. I've sent this to the owner for follow-up."),
-        "general_schedule": ("schedule_question", "amber", "teacher", "needs_confirmation", "Thanks. Please add the lesson date/time or use Reschedule so we can help accurately."),
-        "general_billing": ("billing_question", "amber", "owner", "needs_confirmation", "Thanks. Your billing question has been sent to the studio for review."),
-        "general_teacher": ("teacher_program_question", "red", "owner", "owner_only", "Thanks. I sent this teacher/program question to the studio owner for follow-up."),
-        "general_owner": ("owner_question", "red", "owner", "owner_only", "I sent your message to the studio owner. They will follow up within 24 hours."),
-        "trial_another_child": ("trial_request_another_child", "teal", "auto", "guided", "Sure. Please complete this trial request form, and it will be linked to your H-Music family account."),
-        "trial_another_instrument": ("trial_request_another_instrument", "teal", "auto", "guided", "Sure. Please complete this trial request form for another instrument. It will be linked to your H-Music family account."),
+        "general_schedule": ("schedule_question", "amber", "teacher", "needs_confirmation", "I can help with that. Please share the lesson date/time, or use Reschedule so we can make sure the change is accurate."),
+        "general_billing": ("billing_question", "amber", "owner", "needs_confirmation", "I’ll check this with the studio/admin team and reply after they confirm."),
+        "general_teacher": ("teacher_program_question", "red", "owner", "owner_only", "I’ll ask the studio owner to review this teacher/program question and follow up with you."),
+        "general_owner": ("owner_question", "red", "owner", "owner_only", "I’ll pass this to the studio owner. They will follow up with you within 24 hours."),
+        "trial_another_child": ("trial_request_another_child", "teal", "auto", "guided", "Sure — please complete this short trial request form. I’ll link it to your H-Music family account."),
+        "trial_another_instrument": ("trial_request_another_instrument", "teal", "auto", "guided", "Sure — please complete this trial request form for the new instrument. I’ll link it to your H-Music family account."),
     }
 
     intent, risk_level, route_to, status, outcome = mapped.get(
@@ -8866,12 +8866,12 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
         action_label = "Billing / Receipts"
     elif intent == "trial_request":
         status = "guided"
-        outcome = "Sure. I can help you request a trial for another child or another instrument. Please open the trial request form and I will link it to your family account."
+        outcome = "Sure — I can help you request a trial for another child or another instrument. Please open the trial request form, and I’ll link it to your family account."
         action_href = "/trial?from_parent_app=1"
         action_label = "Open trial request form"
     elif intent == "stop_renewal":
         status = "needs_confirmation"
-        outcome = "I sent your request to stop the next package renewal to the studio. We will confirm before making any billing changes."
+        outcome = "Got it. I’ll check this with the studio/admin team before making any billing changes. We’ll reply after it is confirmed."
         action_href = "/parent_billing"
         action_label = "Billing"
     elif risk_level == "amber":
@@ -11535,7 +11535,7 @@ def new_parent_message():
     <body onload="toggleRecipientMode()">
         <div class="container">
             <h1>New Message</h1>
-            <a class="agent-cta" href="/parent_agent">My Agent</a>
+            <a class="agent-cta" href="/parent_agent">Family Assistant</a>
             <form method="POST" enctype="multipart/form-data">
                 Student:<br>
                 <select id="student-select" name="student_name" required onchange="filterTeachersForStudent()">{student_options}</select>
@@ -15240,7 +15240,7 @@ def parent_dashboard():
             </div>
 
             <div class="actions">
-                <a class="button assistant-button" href="/parent_agent">My Assistant</a>
+                <a class="button assistant-button" href="/parent_agent">Family Assistant</a>
                 <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
                 <a class="button" href="/parent_messages">{message_label}</a>
                 <a class="button" href="/parent_cancel">Cancel Lesson</a>
@@ -15394,8 +15394,8 @@ def parent_agent():
             <div class="message-row ai">
                 <div class="chat-avatar">AI</div>
                 <div class="bubble ai-bubble">
-                    <p>Hi! I can help with lesson changes, cancellations, balance checks, billing, and messages.</p>
-                    <p>What do you need today?</p>
+                    <p>Hi! I can help with lesson changes, cancellations, balance checks, billing, trial requests, and messages.</p>
+                    <p>You can type in English or Chinese. If I’m not sure, I’ll ask a quick follow-up or check with the studio before replying.</p>
                 </div>
             </div>
     """
@@ -15450,21 +15450,21 @@ def parent_agent():
         if row:
             risk = row[4] or "teal"
             risk_label = {
-                "teal": "Auto handled",
-                "amber": "Needs confirmation",
-                "red": "Owner handling",
+                "teal": "Handled",
+                "amber": "I’ll check first",
+                "red": "Owner will follow up",
             }.get(risk, "Received")
             risk_detail = {
-                "teal": "Done automatically. The studio can still see this request.",
-                "amber": "Submitted for confirmation. We will update you after it is approved.",
-                "red": "Sent to the studio owner for manual help.",
+                "teal": "I handled this, and the studio can still see the update.",
+                "amber": "I’ll confirm this with the right person before anything changes.",
+                "red": "The studio owner will review this and follow up with you.",
             }.get(risk, "The studio can see this request.")
             status_title = {
                 "executed": "Done",
                 "guided": "Next step",
                 "needs_confirmation": "Needs confirmation",
                 "owner_only": "Owner notified",
-                "logged": "Received",
+                "logged": "I’ll check on this",
             }.get(row[5] or "", row[5] or "Received")
             action_html = ""
             if row[3] in ("trial_request", "trial_request_another_child", "trial_request_another_instrument"):
@@ -15495,7 +15495,7 @@ def parent_agent():
     return f"""
     <html>
     <head>
-        {parent_app_meta("My Assistant")}
+        {parent_app_meta("Family Assistant")}
         <style>
             * {{ box-sizing:border-box; }}
             html, body {{ height:100%; overflow:hidden; }}
@@ -15591,7 +15591,7 @@ def parent_agent():
                 <div class="head-left">
                     <div class="agent-avatar">AI</div>
                     <div>
-                        <h1>My Assistant</h1>
+                        <h1>Family Assistant</h1>
                         <div class="sub">English or Chinese · replies in English</div>
                     </div>
                 </div>
