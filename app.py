@@ -18172,6 +18172,7 @@ def v35_public_trial_form(error="", values=None):
     for option in ["Group Class", "Private Class"]:
         selected = "selected" if values.get("program_interest") == option else ""
         program_options.append(f'<option value="{option}" {selected}>{option}</option>')
+
     error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
     return f"""
     <html>
@@ -18179,34 +18180,96 @@ def v35_public_trial_form(error="", values=None):
         <title>H-Music Trial Request</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f6f7fb; color:#111827; }}
-            .wrap {{ max-width:860px; margin:0 auto; padding:34px 18px 56px; }}
-            .card {{ background:white; border-radius:18px; padding:34px; box-shadow:0 18px 44px rgba(15,23,42,.08); }}
-            .brand {{ display:flex; align-items:center; gap:14px; margin-bottom:22px; }}
-            .logo {{ width:58px; height:58px; border-radius:16px; background:#050505; display:grid; place-items:center; color:#d7a943; font-size:25px; font-weight:800; }}
-            h1 {{ font-size:38px; line-height:1.05; margin:0; }}
-            p {{ color:#667085; font-size:17px; line-height:1.5; }}
-            form {{ margin-top:24px; display:grid; gap:18px; }}
+            :root {{
+                --bg:#292925;
+                --panel:#242421;
+                --panel-2:#2f2f2b;
+                --line:#484842;
+                --text:#f7f3ea;
+                --muted:#aaa69c;
+                --gold:#d5a94e;
+                --blue:#55a8ff;
+                --blue-soft:#e4f2ff;
+                --danger:#fecaca;
+            }}
+            * {{ box-sizing:border-box; }}
+            body {{
+                margin:0;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                background:var(--bg);
+                color:var(--text);
+            }}
+            .wrap {{ max-width:980px; margin:0 auto; padding:0 28px 64px; }}
+            .hero {{ padding:34px 0 38px; border-bottom:1px solid var(--line); }}
+            .brand {{ display:flex; align-items:center; gap:15px; margin-bottom:28px; }}
+            .logo {{
+                width:54px; height:54px; border-radius:15px; background:#030303;
+                display:grid; place-items:center; color:var(--gold);
+                font-family:Georgia,serif; font-size:31px; font-weight:700;
+                box-shadow:0 10px 30px rgba(0,0,0,.35);
+            }}
+            .brand-name {{ font-weight:900; letter-spacing:.04em; color:#f8f2e5; }}
+            h1 {{ font-size:44px; line-height:1.05; margin:0 0 12px; letter-spacing:0; }}
+            p {{ color:var(--muted); font-size:19px; line-height:1.55; margin:0; }}
+            form {{ display:grid; gap:28px; padding-top:34px; }}
+            section {{ border-bottom:1px solid var(--line); padding-bottom:30px; }}
+            section:last-of-type {{ border-bottom:0; }}
+            .section-title {{ color:var(--muted); font-weight:900; letter-spacing:.08em; font-size:15px; margin:0 0 20px; text-transform:uppercase; }}
             .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
-            label {{ font-weight:800; font-size:15px; display:grid; gap:8px; }}
-            input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d7dce5; border-radius:12px; padding:14px 15px; font-size:16px; font-family:inherit; }}
-            .slot-title {{ margin:4px 0 -8px; font-weight:900; color:#374151; }}
-            .fee-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }}
-            .fee-card {{ display:block; border:1px solid #d7dce5; border-radius:14px; padding:16px; cursor:pointer; background:#fff; }}
-            .fee-card input {{ width:auto; margin:0 8px 0 0; }}
-            .fee-card strong {{ display:block; font-size:22px; margin-top:8px; color:#111827; }}
-            .fee-card span {{ display:block; color:#667085; font-size:14px; line-height:1.4; margin-top:4px; }}
-            .fee-card:has(input:checked) {{ border-color:#4f46e5; background:#eef2ff; box-shadow:0 8px 20px rgba(79,70,229,.12); }}
-            .payment-box {{ background:#f8fafc; border:1px solid #d7dce5; border-radius:14px; padding:16px; display:grid; gap:10px; }}
-            .payment-options {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
-            .payment-options label {{ display:flex; align-items:center; gap:8px; border:1px solid #d7dce5; border-radius:12px; padding:12px; background:white; }}
-            .payment-options input {{ width:auto; margin:0; }}
-            .pay-email {{ color:#4f46e5; font-weight:900; }}
-            textarea {{ min-height:120px; resize:vertical; }}
-            button {{ border:0; border-radius:13px; background:#4f46e5; color:white; padding:16px 20px; font-size:17px; font-weight:900; cursor:pointer; }}
-            .hint {{ background:#fff8db; border:1px solid #ffe08a; border-radius:14px; padding:14px 16px; color:#684b00; }}
-            .error {{ background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:13px 15px; font-weight:800; }}
-            @media (max-width:720px) {{ .card {{ padding:26px 20px; }} .grid, .fee-grid, .payment-options {{ grid-template-columns:1fr; }} h1 {{ font-size:31px; }} }}
+            label {{ font-weight:800; font-size:16px; display:grid; gap:9px; color:#d8d4cb; }}
+            input, select, textarea {{
+                width:100%; border:1px solid var(--line); border-radius:13px;
+                background:var(--panel-2); color:var(--text);
+                padding:17px 18px; font-size:19px; font-family:inherit;
+                outline:none;
+            }}
+            input::placeholder, textarea::placeholder {{ color:#8f8b83; }}
+            input:focus, select:focus, textarea:focus {{ border-color:var(--blue); box-shadow:0 0 0 3px rgba(85,168,255,.16); }}
+            textarea {{ min-height:126px; resize:vertical; }}
+            .instrument-chips {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }}
+            .chip {{
+                border:1px solid var(--line); border-radius:999px; padding:12px 18px;
+                background:var(--panel); color:#ddd8cf; font-size:17px; font-weight:800;
+                cursor:pointer;
+            }}
+            .chip.other {{ background:var(--blue-soft); color:#145ea2; border-color:var(--blue); }}
+            .fee-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }}
+            .fee-card {{
+                display:block; border:1px solid var(--line); border-radius:14px;
+                padding:18px 14px; cursor:pointer; background:var(--panel);
+                text-align:center; min-height:128px;
+            }}
+            .fee-card input {{ width:auto; margin:0; opacity:0; position:absolute; }}
+            .fee-card b {{ display:block; color:var(--muted); font-size:16px; }}
+            .fee-card strong {{ display:block; font-size:30px; color:#fff; margin:7px 0; }}
+            .fee-card span {{ display:block; color:var(--muted); font-size:14px; }}
+            .fee-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; color:#111827; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
+            .fee-card:has(input:checked) strong, .fee-card:has(input:checked) b, .fee-card:has(input:checked) span {{ color:#111827; }}
+            .time-option {{ border:1px solid var(--line); border-radius:15px; padding:16px; margin-bottom:14px; background:var(--panel); }}
+            .time-title {{ color:var(--muted); font-weight:900; margin-bottom:12px; }}
+            .payment-options {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+            .pay-card {{
+                border:1px solid var(--line); border-radius:15px; padding:18px;
+                background:var(--panel); display:grid; gap:8px; cursor:pointer;
+            }}
+            .pay-card input {{ width:auto; margin:0; }}
+            .pay-card .pay-title {{ display:flex; align-items:center; gap:10px; font-size:20px; font-weight:900; color:#fff; }}
+            .pay-card p {{ font-size:16px; }}
+            .pay-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
+            .pay-card:has(input:checked) .pay-title, .pay-card:has(input:checked) p, .pay-card:has(input:checked) .payment-note {{ color:#111827; }}
+            .payment-note {{ background:#2f2f2b; color:#efece5; border-radius:12px; padding:14px 16px; line-height:1.5; font-weight:800; }}
+            .pay-card:has(input:checked) .payment-note {{ background:#2f2f2b; color:#fff; }}
+            .pay-email {{ color:#fff; font-weight:900; }}
+            .hint {{ background:#3a3220; border:1px solid #7a5c22; border-radius:14px; padding:14px 16px; color:#f6dda1; line-height:1.45; }}
+            .error {{ background:#3a2020; color:var(--danger); border:1px solid #7f1d1d; border-radius:12px; padding:13px 15px; font-weight:900; }}
+            .submit {{ border:0; border-radius:14px; background:#4f46e5; color:white; padding:18px 22px; font-size:19px; font-weight:900; cursor:pointer; }}
+            .required {{ color:#ffb4b4; }}
+            @media (max-width:760px) {{
+                .wrap {{ padding:0 18px 48px; }}
+                h1 {{ font-size:36px; }}
+                p {{ font-size:17px; }}
+                .grid, .fee-grid, .payment-options {{ grid-template-columns:1fr; }}
+            }}
         </style>
         <script>
             function selectTrialFee(value, fee) {{
@@ -18221,92 +18284,138 @@ def v35_public_trial_form(error="", values=None):
                     hint.style.display = "none";
                 }}
             }}
+            function setInstrument(value) {{
+                const input = document.querySelector("input[name='instrument']");
+                input.value = value;
+                input.focus();
+            }}
         </script>
     </head>
     <body>
         <div class="wrap">
-            <div class="card">
-                <div class="brand"><div class="logo">H</div><div><h1>Trial Lesson Request</h1><p>H-Music will review your request and contact you with next steps.</p></div></div>
-                <div class="hint">Please share 1-3 preferred dates and times. We will match you with the best available teacher after owner review.</div>
-                {error_html}
-                <form method="post">
-                    <div class="grid">
-                        <label>Student Name *<input name="student_name" value="{val('student_name')}" required></label>
-                        <label>Student Age<input name="age" value="{val('age')}"></label>
-                    </div>
-                    <div class="grid">
-                        <label>Parent Name *<input name="parent_name" value="{val('parent_name')}" required></label>
-                        <label>Parent Email<input type="email" name="parent_email" value="{val('parent_email')}"></label>
-                    </div>
-                    <div class="grid">
-                        <label>Phone<input name="phone" value="{val('phone')}"></label>
-                        <label>Program Interest<select name="program_interest">{''.join(program_options)}</select></label>
-                    </div>
-                    <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
-                    <div>
-                        <div class="slot-title">Trial Class Fee *</div>
-                        <div class="fee-grid">
-                            <label class="fee-card">
-                                <input type="radio" name="trial_duration" value="15 mins" required {'checked' if values.get('trial_duration') == '15 mins' else ''} onclick="selectTrialFee('15 mins', '$15')">
-                                15 mins
-                                <strong>$15</strong>
-                                <span>Only for children age 5 and under.</span>
-                            </label>
-                            <label class="fee-card">
-                                <input type="radio" name="trial_duration" value="30 mins" required {'checked' if values.get('trial_duration') == '30 mins' else ''} onclick="selectTrialFee('30 mins', '$30')">
-                                30 mins
-                                <strong>$30</strong>
-                                <span>Standard short trial lesson.</span>
-                            </label>
-                            <label class="fee-card">
-                                <input type="radio" name="trial_duration" value="45 mins" required {'checked' if values.get('trial_duration') == '45 mins' else ''} onclick="selectTrialFee('45 mins', '$45')">
-                                45 mins
-                                <strong>$45</strong>
-                                <span>Best for older students or deeper placement.</span>
-                            </label>
-                            <label class="fee-card">
-                                <input type="radio" name="trial_duration" value="60 mins" required {'checked' if values.get('trial_duration') == '60 mins' else ''} onclick="selectTrialFee('60 mins', '$60')">
-                                60 mins
-                                <strong>$60</strong>
-                                <span>Full trial lesson for advanced placement.</span>
-                            </label>
-                        </div>
-                        <input type="hidden" id="trial_fee" name="trial_fee" value="{val('trial_fee')}">
-                        <div id="age-fee-hint" class="error" style="display:none;margin-top:10px;"></div>
-                    </div>
-                    <div class="payment-box">
-                        <b>Payment Method *</b>
-                        <div class="payment-options">
-                            <label><input type="radio" name="payment_method" value="ACH" required {'checked' if values.get('payment_method') == 'ACH' else ''}>ACH</label>
-                            <label><input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>PayPal</label>
-                            <label><input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>Zelle</label>
-                        </div>
-                        <div>PayPal or Zelle: <span class="pay-email">hmusicjustplay@gmail.com</span></div>
-                    </div>
-                    <div class="slot-title">Preferred Date / Time 1 *</div>
-                    <div class="grid">
-                        <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
-                        <label>Time<input type="time" name="preferred_time_1" value="{val('preferred_time_1')}" required></label>
-                    </div>
-                    <div class="slot-title">Preferred Date / Time 2</div>
-                    <div class="grid">
-                        <label>Date<input type="date" name="preferred_date_2" value="{val('preferred_date_2')}"></label>
-                        <label>Time<input type="time" name="preferred_time_2" value="{val('preferred_time_2')}"></label>
-                    </div>
-                    <div class="slot-title">Preferred Date / Time 3</div>
-                    <div class="grid">
-                        <label>Date<input type="date" name="preferred_date_3" value="{val('preferred_date_3')}"></label>
-                        <label>Time<input type="time" name="preferred_time_3" value="{val('preferred_time_3')}"></label>
-                    </div>
-                    <div class="grid">
-                        <label>Has the student learned before?<select name="previous_experience"><option value="No" {'selected' if values.get('previous_experience') == 'No' else ''}>No</option><option value="Yes" {'selected' if values.get('previous_experience') == 'Yes' else ''}>Yes</option></select></label>
-                        <label>If yes, how long?<input name="experience_duration" placeholder="Example: 6 months / 2 years" value="{val('experience_duration')}"></label>
-                    </div>
-                    <label>How did you hear about us? / Who referred you?<input name="source" placeholder="Google, Instagram, friend name, current family..." value="{val('source')}"></label>
-                    <label>Anything we should know?<textarea name="notes" placeholder="Goals, level, scheduling notes...">{val('notes')}</textarea></label>
-                    <button type="submit">Submit Trial Request</button>
-                </form>
+            <div class="hero">
+                <div class="brand"><div class="logo">H</div><div class="brand-name">H-MUSIC</div></div>
+                <h1>Book a trial lesson</h1>
+                <p>Fill in the details below. We’ll confirm your slot by email within 24 hours.</p>
             </div>
+            {error_html}
+            <form method="post">
+                <section>
+                    <div class="section-title">Student</div>
+                    <div class="grid">
+                        <label>Full name <span class="required">*</span><input name="student_name" placeholder="First and last name" value="{val('student_name')}" required></label>
+                        <label>Age <span class="required">*</span><input name="age" placeholder="e.g. 8" value="{val('age')}" required></label>
+                    </div>
+                </section>
+
+                <section>
+                    <div class="section-title">Parent / Guardian</div>
+                    <div class="grid">
+                        <label>Your name <span class="required">*</span><input name="parent_name" value="{val('parent_name')}" required></label>
+                        <label>Phone<input name="phone" placeholder="SMS confirmation later" value="{val('phone')}"></label>
+                    </div>
+                    <label style="margin-top:18px;">Email <span class="required">*</span><input type="email" name="parent_email" placeholder="your@email.com" value="{val('parent_email')}" required></label>
+                </section>
+
+                <section>
+                    <div class="section-title">Instrument <span class="required">*</span></div>
+                    <div class="instrument-chips">
+                        <button class="chip" type="button" onclick="setInstrument('Piano')">Piano</button>
+                        <button class="chip" type="button" onclick="setInstrument('Violin')">Violin</button>
+                        <button class="chip" type="button" onclick="setInstrument('Guitar')">Guitar</button>
+                        <button class="chip" type="button" onclick="setInstrument('Voice')">Voice</button>
+                        <button class="chip" type="button" onclick="setInstrument('Cello')">Cello</button>
+                        <button class="chip" type="button" onclick="setInstrument('Flute')">Flute</button>
+                        <button class="chip" type="button" onclick="setInstrument('Drums')">Drums</button>
+                        <button class="chip other" type="button" onclick="setInstrument('Other')">Other</button>
+                    </div>
+                    <input name="instrument" placeholder="Please describe the instrument..." value="{val('instrument')}" required>
+                    <label style="margin-top:18px;">Program interest<select name="program_interest">{''.join(program_options)}</select></label>
+                </section>
+
+                <section>
+                    <div class="section-title">Lesson Length & Trial Fee <span class="required">*</span></div>
+                    <div class="fee-grid">
+                        <label class="fee-card">
+                            <input type="radio" name="trial_duration" value="15 mins" required {'checked' if values.get('trial_duration') == '15 mins' else ''} onclick="selectTrialFee('15 mins', '$15')">
+                            <b>15 min</b><strong>$15</strong><span>Age 5 & under</span>
+                        </label>
+                        <label class="fee-card">
+                            <input type="radio" name="trial_duration" value="30 mins" required {'checked' if values.get('trial_duration') == '30 mins' else ''} onclick="selectTrialFee('30 mins', '$30')">
+                            <b>30 min</b><strong>$30</strong><span>Standard</span>
+                        </label>
+                        <label class="fee-card">
+                            <input type="radio" name="trial_duration" value="45 mins" required {'checked' if values.get('trial_duration') == '45 mins' else ''} onclick="selectTrialFee('45 mins', '$45')">
+                            <b>45 min</b><strong>$45</strong><span>Older student</span>
+                        </label>
+                        <label class="fee-card">
+                            <input type="radio" name="trial_duration" value="60 mins" required {'checked' if values.get('trial_duration') == '60 mins' else ''} onclick="selectTrialFee('60 mins', '$60')">
+                            <b>60 min</b><strong>$60</strong><span>Advanced</span>
+                        </label>
+                    </div>
+                    <input type="hidden" id="trial_fee" name="trial_fee" value="{val('trial_fee')}">
+                    <div id="age-fee-hint" class="error" style="display:none;margin-top:12px;"></div>
+                </section>
+
+                <section>
+                    <div class="section-title">Preferred Times <span class="required">*</span></div>
+                    <div class="time-option">
+                        <div class="time-title">Option 1</div>
+                        <div class="grid">
+                            <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
+                            <label>Time<input type="time" name="preferred_time_1" value="{val('preferred_time_1')}" required></label>
+                        </div>
+                    </div>
+                    <div class="time-option">
+                        <div class="time-title">Option 2</div>
+                        <div class="grid">
+                            <label>Date<input type="date" name="preferred_date_2" value="{val('preferred_date_2')}"></label>
+                            <label>Time<input type="time" name="preferred_time_2" value="{val('preferred_time_2')}"></label>
+                        </div>
+                    </div>
+                    <div class="time-option">
+                        <div class="time-title">Option 3</div>
+                        <div class="grid">
+                            <label>Date<input type="date" name="preferred_date_3" value="{val('preferred_date_3')}"></label>
+                            <label>Time<input type="time" name="preferred_time_3" value="{val('preferred_time_3')}"></label>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <div class="section-title">Background</div>
+                    <div class="grid">
+                        <label>Has the student learned before?<select name="previous_experience"><option value="No" {'selected' if values.get('previous_experience') == 'No' else ''}>No</option><option value="Yes" {'selected' if values.get('previous_experience') == 'Yes' else ''}>Yes — some experience</option></select></label>
+                        <label>How did you hear about us?<input name="source" placeholder="Google, Instagram, friend name..." value="{val('source')}"></label>
+                    </div>
+                    <label style="margin-top:18px;">How long? <input name="experience_duration" placeholder="e.g. 6 months, 2 years" value="{val('experience_duration')}"></label>
+                </section>
+
+                <section>
+                    <div class="section-title">Payment Method <span class="required">*</span></div>
+                    <div class="payment-options">
+                        <label class="pay-card">
+                            <input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>
+                            <div class="pay-title">PayPal</div>
+                            <p>Pay online via PayPal</p>
+                            <div class="payment-note">Send payment to: <span class="pay-email">hmusicjustplay@gmail.com</span><br>Please include student name in the note.</div>
+                        </label>
+                        <label class="pay-card">
+                            <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
+                            <div class="pay-title">Zelle</div>
+                            <p>Send directly from your bank app</p>
+                            <div class="payment-note">Send payment to: <span class="pay-email">hmusicjustplay@gmail.com</span><br>Please include student name in the note.</div>
+                        </label>
+                    </div>
+                </section>
+
+                <section>
+                    <div class="section-title">Message</div>
+                    <label>Anything else you’d like us to know?<textarea name="notes" placeholder="Tell us about goals, schedule needs, teacher preference, or anything helpful...">{val('notes')}</textarea></label>
+                </section>
+
+                <button class="submit" type="submit">Submit trial request</button>
+            </form>
         </div>
     </body>
     </html>
@@ -18889,7 +18998,7 @@ def inquiry_detail(inquiry_id):
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
                     <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins', '60 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
                     <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45', '$60'], inquiry['trial_fee'] or '$30')}</select></div>
-                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH', 'PayPal', 'Zelle'], inquiry['payment_method'] or 'ACH')}</select></div>
+                    <div><label>Payment Method</label><select name="payment_method">{opts(['PayPal', 'Zelle'], inquiry['payment_method'] or 'PayPal')}</select></div>
                     <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
                     <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
