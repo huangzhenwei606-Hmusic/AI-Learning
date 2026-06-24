@@ -18233,16 +18233,16 @@ def v35_public_trial_form(error="", values=None):
                 cursor:pointer;
             }}
             .chip.other {{ background:var(--blue-soft); color:#145ea2; border-color:var(--blue); }}
-            .fee-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }}
+            .fee-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }}
             .fee-card {{
-                display:block; border:1px solid var(--line); border-radius:14px;
-                padding:18px 14px; cursor:pointer; background:var(--panel);
-                text-align:center; min-height:128px;
+                display:block; border:1px solid var(--line); border-radius:12px;
+                padding:12px 10px; cursor:pointer; background:var(--panel);
+                text-align:center; min-height:92px;
             }}
             .fee-card input {{ width:auto; margin:0; opacity:0; position:absolute; }}
-            .fee-card b {{ display:block; color:var(--muted); font-size:16px; }}
-            .fee-card strong {{ display:block; font-size:30px; color:#111827; margin:7px 0; }}
-            .fee-card span {{ display:block; color:var(--muted); font-size:14px; }}
+            .fee-card b {{ display:block; color:var(--muted); font-size:14px; }}
+            .fee-card strong {{ display:block; font-size:24px; color:#111827; margin:4px 0; }}
+            .fee-card span {{ display:block; color:var(--muted); font-size:12px; }}
             .fee-card:has(input:checked) {{ border-color:var(--blue); background:#e4f2ff; color:#111827; box-shadow:0 0 0 2px rgba(85,168,255,.35); }}
             .fee-card:has(input:checked) strong, .fee-card:has(input:checked) b, .fee-card:has(input:checked) span {{ color:#111827; }}
             .time-option {{ border:1px solid var(--line); border-radius:15px; padding:16px; margin-bottom:14px; background:var(--panel); }}
