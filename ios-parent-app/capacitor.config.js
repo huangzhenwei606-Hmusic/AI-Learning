@@ -1,7 +1,7 @@
 /** @type {import('@capacitor/cli').CapacitorConfig} */
 const config = {
   appId: "com.hmusicandarts.parent",
-  appName: "H-Music",
+  appName: "H-Music Parent AI",
   webDir: "www",
   appendUserAgent: "HMusicParentIOS",
   server: {

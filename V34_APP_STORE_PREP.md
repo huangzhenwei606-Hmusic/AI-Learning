@@ -1,8 +1,8 @@
-# V34 Parent iOS App Store Prep
+# H-Music Parent AI — iOS App Store Prep
 
 ## App Identity
 
-- App Store Connect app name: H-Music
+- App Store Connect app name: H-Music Parent AI
 - Bundle ID: `com.hmusicandarts.parent`
 - SKU suggestion: `hmusic-parent-ios`
 - Primary category: Education
@@ -19,23 +19,23 @@
 
 ## App Store Description Draft
 
-H-Music helps enrolled families manage their music lesson experience in one simple parent app.
+H-Music Parent AI is an AI-native parent portal for enrolled H-Music & Arts families.
 
-Parents can view upcoming lessons, check tuition invoices, send messages, request reschedules, review lesson notes and homework, and keep track of account history. The app is designed for current H-Music & Arts students and families.
+Parents can view upcoming lessons, check lesson balance, message the studio, request reschedules, review lesson notes and homework, and use Family Assistant for common lesson and billing questions. The assistant supports English or Chinese input and is designed to route family requests to the right studio workflow.
 
-Payments are for real-world music lessons and studio services. Tuition checkout and bank/card setup are processed securely through Stripe.
+Payments are for real-world music lessons and studio services. Tuition checkout and bank/card setup are processed securely through Stripe or studio-approved payment methods.
 
 ## Subtitle Draft
 
-Parent lesson portal
+AI-native parent lesson portal
 
 ## Keywords Draft
 
-music lessons,piano,parent portal,lesson schedule,tuition,H-Music
+music lessons,piano,parent portal,AI assistant,lesson schedule,tuition,H-Music
 
 ## App Review Notes Draft
 
-This app is for H-Music & Arts parent accounts only. Owner and teacher dashboards are intentionally not included in the iOS app; those are managed through the web admin system.
+This app is for H-Music & Arts parent accounts only. It includes an AI-native Family Assistant for routing parent lesson, billing, trial, and messaging requests. Owner and teacher dashboards are intentionally not included in the iOS app; those are managed through the web admin system.
 
 Payments are for real-world music lessons and tuition, not digital content. Stripe is used for external tuition billing and bank/card setup. H-Music does not store full card or bank account numbers.
 
