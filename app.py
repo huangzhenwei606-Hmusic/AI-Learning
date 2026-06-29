@@ -736,8 +736,16 @@ def ensure_teacher_management_schema():
     )
     """)
 
-    add_column_if_missing(cursor, "users", "password_hash", "password_hash TEXT")
-    add_column_if_missing(cursor, "users", "must_change_password", "must_change_password INTEGER DEFAULT 0")
+    for column_name, column_sql in [
+        ("password", "password TEXT"),
+        ("password_hash", "password_hash TEXT"),
+        ("must_change_password", "must_change_password INTEGER DEFAULT 0"),
+        ("role", "role TEXT"),
+        ("display_name", "display_name TEXT"),
+        ("linked_teacher_name", "linked_teacher_name TEXT"),
+        ("linked_student_name", "linked_student_name TEXT")
+    ]:
+        add_column_if_missing(cursor, "users", column_name, column_sql)
 
     owner_username = os.environ.get("HMUSIC_OWNER_USERNAME", OWNER_USERNAME)
     owner_password = os.environ.get("HMUSIC_OWNER_PASSWORD", OWNER_PASSWORD)
@@ -1943,97 +1951,172 @@ def add_teacher():
 
     ensure_teacher_management_schema()
 
+    def render_add_teacher_form(error="", values=None):
+        values = values or {}
+
+        def field_value(name, default=""):
+            return escape(str(values.get(name) or default))
+
+        active_value = str(values.get("active") or "1")
+        active_selected = {
+            "1": "selected" if active_value == "1" else "",
+            "0": "selected" if active_value == "0" else ""
+        }
+        error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+
+        return f"""
+        <html>
+        <head>
+            <title>Add Teacher</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; padding: 40px; background: #f7f8fc; color: #111827; }}
+                .card {{ max-width: 900px; background: white; padding: 32px; border-radius: 14px; box-shadow: 0 8px 30px rgba(15,23,42,.08); }}
+                h1 {{ margin: 0 0 22px; }}
+                label {{ font-weight: 700; display: block; margin-top: 18px; }}
+                input, select, textarea {{ width: 100%; padding: 13px; font-size: 16px; margin-top: 6px; box-sizing: border-box; }}
+                .button, button {{ display: inline-block; padding: 14px 22px; margin-top: 22px; background: #5548f7; color: white; border-radius: 7px; border: none; text-decoration: none; font-weight: 700; font-size: 16px; cursor: pointer; }}
+                button:disabled {{ opacity: .65; cursor: wait; }}
+                .button.secondary {{ background: #111827; margin-left: 8px; }}
+                .error {{ background: #fff1f2; color: #991b1b; border: 1px solid #fecdd3; padding: 14px 16px; border-radius: 10px; margin: 0 0 18px; font-weight: 700; }}
+                .hint {{ color: #6b7280; font-size: 14px; margin-top: 6px; }}
+            </style>
+        </head>
+        <body>
+        <div class="card">
+            <h1>Add Teacher</h1>
+            {error_html}
+            <form method="POST">
+                <label>Teacher Name</label>
+                <input name="teacher_name" required value="{field_value('teacher_name')}">
+
+                <label>Login Username</label>
+                <input name="username" value="{field_value('username')}">
+                <div class="hint">Leave blank to auto-generate from teacher name.</div>
+
+                <label>Temporary Password</label>
+                <input name="password" value="{field_value('password', '1234')}" placeholder="Leave blank to auto-generate">
+
+                <label>Email</label>
+                <input name="email" type="email" value="{field_value('email')}">
+
+                <label>Phone</label>
+                <input name="phone" value="{field_value('phone')}">
+
+                <label>Default Hourly Rate</label>
+                <input name="hourly_rate" type="number" step="0.01" value="{field_value('hourly_rate', '30')}">
+
+                <label>Status</label>
+                <select name="active">
+                    <option value="1" {active_selected['1']}>Active</option>
+                    <option value="0" {active_selected['0']}>Inactive</option>
+                </select>
+
+                <label>Notes</label>
+                <textarea name="notes" rows="4">{field_value('notes')}</textarea>
+
+                <button type="submit">Create Teacher</button>
+                <a class="button secondary" href="/teachers">Back</a>
+            </form>
+        </div>
+        </body>
+        </html>
+        """
+
     if request.method == "POST":
-        teacher_name = request.form.get("teacher_name")
-        username = request.form.get("username") or teacher_login_username(teacher_name)
-        password = request.form.get("password") or hmusic_temp_password()
+        teacher_name = (request.form.get("teacher_name") or "").strip()
+        username = (request.form.get("username") or "").strip() or teacher_login_username(teacher_name)
+        password = (request.form.get("password") or "").strip() or hmusic_temp_password()
         password_hash = hmusic_password_hash(password)
-        email = request.form.get("email")
-        phone = request.form.get("phone")
-        hourly_rate = request.form.get("hourly_rate") or 30
-        active = int(request.form.get("active") or 1)
-        notes = request.form.get("notes")
+        email = (request.form.get("email") or "").strip()
+        phone = (request.form.get("phone") or "").strip()
+        hourly_rate_raw = (request.form.get("hourly_rate") or "30").strip()
+        notes = (request.form.get("notes") or "").strip()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if not teacher_name:
+            return render_add_teacher_form("Teacher name is required.", request.form)
+
+        try:
+            hourly_rate = float(hourly_rate_raw)
+        except ValueError:
+            return render_add_teacher_form("Default hourly rate must be a number.", request.form)
+
+        try:
+            active = int(request.form.get("active") or 1)
+        except ValueError:
+            active = 1
 
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT 1 FROM teachers WHERE teacher_name = ?", (teacher_name,))
+            if cursor.fetchone():
+                conn.close()
+                return render_add_teacher_form("A teacher with this name already exists. Please edit the existing teacher or use a different name.", request.form)
 
-        cursor.execute("""
-        INSERT INTO teachers (
-            teacher_name, username, password, password_hash, must_change_password, email, phone, hourly_rate, active, notes, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (teacher_name, username, "", password_hash, 1, email, phone, hourly_rate, active, notes, now, now))
+            cursor.execute("SELECT 1 FROM teachers WHERE username = ?", (username,))
+            if cursor.fetchone():
+                conn.close()
+                return render_add_teacher_form("This login username is already used by another teacher.", request.form)
 
-        cursor.execute("""
-        INSERT OR IGNORE INTO users (
-            username, password, password_hash, must_change_password, role, display_name, linked_teacher_name
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (username, "", password_hash, 1, "teacher", teacher_name, teacher_name))
+            cursor.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+            if cursor.fetchone():
+                conn.close()
+                return render_add_teacher_form("This login username already exists. Please choose a different login username.", request.form)
 
-        cursor.execute("""
-        UPDATE users
-        SET password = '',
-            password_hash = ?,
-            must_change_password = 1,
-            role = 'teacher',
-            display_name = ?,
-            linked_teacher_name = ?
-        WHERE username = ?
-        """, (password_hash, teacher_name, teacher_name, username))
+            cursor.execute("""
+            INSERT INTO teachers (
+                teacher_name, username, password, password_hash, must_change_password, email, phone, hourly_rate, active, notes, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (teacher_name, username, "", password_hash, 1, email, phone, hourly_rate, active, notes, now, now))
 
-        conn.commit()
+            cursor.execute("""
+            INSERT INTO users (
+                username, password, password_hash, must_change_password, role, display_name, linked_teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (username, "", password_hash, 1, "teacher", teacher_name, teacher_name))
+
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            conn.close()
+            return render_add_teacher_form("This teacher name or login username already exists. Please check the existing teacher list.", request.form)
+        except sqlite3.OperationalError:
+            conn.rollback()
+            conn.close()
+            ensure_teacher_management_schema()
+            return render_add_teacher_form("The teacher database was just updated. Please click Create Teacher again.", request.form)
+
         conn.close()
         return f"""
-        <h1>Teacher Created</h1>
-        <p>Username: <strong>{escape(username)}</strong></p>
-        <p>Temporary password: <strong>{escape(password)}</strong></p>
-        <p>Please send this to the teacher and ask them to change it after login.</p>
-        <p><a href="/teachers">Back to Teachers</a></p>
+        <html>
+        <head>
+            <title>Teacher Created</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; padding: 40px; background: #f7f8fc; }}
+                .card {{ background: white; max-width: 760px; padding: 32px; border-radius: 14px; box-shadow: 0 8px 30px rgba(15,23,42,.08); }}
+                .credential {{ background: #f3f4ff; border: 1px solid #c7d2fe; padding: 16px; border-radius: 10px; margin: 16px 0; }}
+                a {{ color: #5548f7; font-weight: 700; }}
+            </style>
+        </head>
+        <body>
+        <div class="card">
+            <h1>Teacher Created</h1>
+            <p>{escape(teacher_name)} can now log in at <strong>/teacher_login</strong>.</p>
+            <div class="credential">
+                <p><strong>Username:</strong> {escape(username)}</p>
+                <p><strong>Temporary password:</strong> {escape(password)}</p>
+                <p>The teacher will be asked to change this password after login.</p>
+            </div>
+            <p><a href="/teachers">Back to Teachers</a></p>
+        </div>
+        </body>
+        </html>
         """
 
-    return """
-    <html>
-    <head>
-        <title>Add Teacher</title>
-        <style>
-            body { font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }
-            .container { background:white; padding:30px; border-radius:12px; max-width:720px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }
-            input, select, textarea { width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }
-            button, a.button { display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Add Teacher</h1>
-            <form method="POST">
-                Teacher Name:<br>
-                <input name="teacher_name" required>
-                Login Username:<br>
-                <input name="username">
-                Temporary Password:<br>
-                <input name="password" placeholder="Leave blank to auto-generate">
-                Email:<br>
-                <input type="email" name="email">
-                Phone:<br>
-                <input name="phone">
-                Default Hourly Rate:<br>
-                <input type="number" step="0.01" name="hourly_rate" value="30">
-                Status:<br>
-                <select name="active">
-                    <option value="1">Active</option>
-                    <option value="0">Inactive</option>
-                </select>
-                Notes:<br>
-                <textarea name="notes" rows="3"></textarea>
-                <button type="submit">Create Teacher</button>
-                <a class="button" href="/teachers">Back</a>
-            </form>
-        </div>
-    </body>
-    </html>
-    """
+    return render_add_teacher_form()
 
 
 @app.route("/edit_teacher/<int:teacher_id>", methods=["GET", "POST"])
@@ -2139,19 +2222,37 @@ def edit_teacher(teacher_id):
             body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
             .container {{ background:white; padding:30px; border-radius:12px; max-width:720px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
             input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
-            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; cursor:pointer; }}
+            button:disabled {{ opacity:0.65; cursor:not-allowed; }}
+            .actions {{ display:flex; gap:8px; align-items:center; margin-top:8px; }}
         </style>
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {{
+                const form = document.getElementById("edit-teacher-form");
+                const saveButton = document.getElementById("save-teacher-button");
+                if (!form || !saveButton) {{
+                    return;
+                }}
+                form.addEventListener("submit", function () {{
+                    if (!form.checkValidity()) {{
+                        return;
+                    }}
+                    saveButton.disabled = true;
+                    saveButton.textContent = "Saving...";
+                }});
+            }});
+        </script>
     </head>
     <body>
         <div class="container">
             <h1>Edit Teacher</h1>
-            <form method="POST">
+            <form id="edit-teacher-form" method="POST" action="/edit_teacher/{teacher_id}">
                 Teacher Name:<br>
                 <input name="teacher_name" value="{teacher[1] or ''}" required>
                 Login Username:<br>
                 <input name="username" value="{teacher[2] or ''}">
                 New Temporary Password:<br>
-                <input name="password" placeholder="Leave blank to keep current password">
+                <input name="password" value="" placeholder="Leave blank to keep current password" autocomplete="new-password">
                 Email:<br>
                 <input type="email" name="email" value="{teacher[4] or ''}">
                 Phone:<br>
@@ -2165,8 +2266,10 @@ def edit_teacher(teacher_id):
                 </select>
                 Notes:<br>
                 <textarea name="notes" rows="3">{teacher[8] or ''}</textarea>
-                <button type="submit">Update Teacher</button>
-                <a class="button" href="/teachers">Back</a>
+                <div class="actions">
+                    <button id="save-teacher-button" type="submit">Update Teacher</button>
+                    <a class="button" href="/teachers">Back</a>
+                </div>
             </form>
         </div>
     </body>
