@@ -4,6 +4,8 @@ import os
 import smtplib
 import calendar as calendar_lib
 import json
+import csv
+import io
 import zipfile
 import secrets
 import re
@@ -1724,6 +1726,262 @@ def home():
     """
 
 
+
+def _csv_import_clean(value):
+    return (value or "").strip()
+
+
+def _csv_import_normalize_email(value):
+    value = _csv_import_clean(value).lower()
+    return value if "@" in value else ""
+
+
+def _csv_import_phone_digits(value):
+    return re.sub(r"\D+", "", _csv_import_clean(value))
+
+
+def _csv_import_join_name(first, last):
+    return " ".join(part for part in [_csv_import_clean(first), _csv_import_clean(last)] if part).strip()
+
+
+def _csv_import_parent_candidates(row):
+    candidates = []
+    for prefix in ("Parent Contact 1", "Parent Contact 2"):
+        first = row.get(f"{prefix} First Name") or row.get(f"{prefix} First")
+        last = row.get(f"{prefix} Last Name") or row.get(f"{prefix} Last")
+        name = _csv_import_join_name(first, last) or _csv_import_clean(row.get(prefix))
+        email = _csv_import_normalize_email(row.get(f"{prefix} Email"))
+        phone = _csv_import_clean(row.get(f"{prefix} Mobile Phone") or row.get(f"{prefix} Phone"))
+        if name or email or phone:
+            candidates.append({"name": name, "email": email, "phone": phone})
+
+    fallback_name = _csv_import_clean(row.get("Parent Name") or row.get("Parent"))
+    fallback_email = _csv_import_normalize_email(row.get("Parent Email") or row.get("Email"))
+    fallback_phone = _csv_import_clean(row.get("Parent Phone") or row.get("Mobile Phone") or row.get("Phone"))
+    if fallback_name or fallback_email or fallback_phone:
+        candidates.append({"name": fallback_name, "email": fallback_email, "phone": fallback_phone})
+
+    seen = set()
+    deduped = []
+    for candidate in candidates:
+        key = (candidate["email"], _csv_import_phone_digits(candidate["phone"]), candidate["name"].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _csv_import_parent_username(email, phone_digits, name):
+    if email:
+        return email
+    if phone_digits:
+        return f"phone-{phone_digits}@hmusic.local"
+    slug = re.sub(r"[^a-z0-9]+", ".", (name or "parent").lower()).strip(".") or "parent"
+    return f"{slug}@hmusic.local"
+
+
+def _csv_import_ensure_parent(cursor, candidate):
+    email = _csv_import_normalize_email(candidate.get("email"))
+    phone = _csv_import_clean(candidate.get("phone"))
+    phone_digits = _csv_import_phone_digits(phone)
+    name = _csv_import_clean(candidate.get("name")) or email or phone or "Parent"
+    username = _csv_import_parent_username(email, phone_digits, name)
+
+    cursor.execute("SELECT id, parent_name, phone, password_hash FROM parent_profiles WHERE email=?", (username,))
+    existing = cursor.fetchone()
+    if existing:
+        parent_id, existing_name, existing_phone, existing_hash = existing
+        new_name = name if name and (not existing_name or existing_name == username) else existing_name
+        new_phone = phone if phone and not existing_phone else existing_phone
+        new_hash = existing_hash or hmusic_password_hash("1234")
+        cursor.execute(
+            """
+            UPDATE parent_profiles
+            SET parent_name=?, phone=?, password_hash=?, active=1
+            WHERE id=?
+            """,
+            (new_name, new_phone, new_hash, parent_id),
+        )
+        return parent_id, False
+
+    cursor.execute(
+        """
+        INSERT INTO parent_profiles (parent_name, email, phone, password_hash, must_change_password, active)
+        VALUES (?, ?, ?, ?, 1, 1)
+        """,
+        (name, username, phone, hmusic_password_hash("1234")),
+    )
+    return cursor.lastrowid, True
+
+
+def _csv_import_link_parent_student(cursor, parent_id, student_name):
+    cursor.execute(
+        "INSERT OR IGNORE INTO parent_students (parent_id, student_name, active) VALUES (?, ?, 1)",
+        (parent_id, student_name),
+    )
+    return cursor.rowcount > 0
+
+
+def _owner_import_students_from_csv_text(csv_text):
+    ensure_production_schema()
+    reader = csv.DictReader(io.StringIO(csv_text))
+    stats = {
+        "csv_rows": 0,
+        "active_rows": 0,
+        "students_created": 0,
+        "students_updated": 0,
+        "duplicate_student_rows_skipped": 0,
+        "parents_created": 0,
+        "parents_updated": 0,
+        "parent_links_created": 0,
+        "skipped_missing_name": 0,
+    }
+    duplicate_names = []
+    seen_student_names = set()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(students)")
+    student_columns = {row[1] for row in cursor.fetchall()}
+    has_parent_phone = "parent_phone" in student_columns
+
+    for row in reader:
+        stats["csv_rows"] += 1
+        status = _csv_import_clean(row.get("Status"))
+        if status and status.lower() != "active":
+            continue
+        stats["active_rows"] += 1
+
+        student_name = _csv_import_join_name(row.get("First Name"), row.get("Last Name")) or _csv_import_clean(row.get("Student Name") or row.get("Name"))
+        if not student_name:
+            stats["skipped_missing_name"] += 1
+            continue
+
+        teacher = _csv_import_clean(row.get("Teacher")) or "Unassigned"
+        parent_candidates = _csv_import_parent_candidates(row)
+        primary_parent = parent_candidates[0] if parent_candidates else {"name": "", "email": "", "phone": ""}
+        parent_name = _csv_import_clean(primary_parent.get("name"))
+        parent_email = _csv_import_parent_username(
+            _csv_import_normalize_email(primary_parent.get("email")),
+            _csv_import_phone_digits(primary_parent.get("phone")),
+            parent_name,
+        ) if (primary_parent.get("name") or primary_parent.get("email") or primary_parent.get("phone")) else ""
+        parent_phone = _csv_import_clean(primary_parent.get("phone"))
+
+        normalized_student = student_name.casefold()
+        duplicate_in_file = normalized_student in seen_student_names
+        if duplicate_in_file:
+            stats["duplicate_student_rows_skipped"] += 1
+            duplicate_names.append(student_name)
+        else:
+            seen_student_names.add(normalized_student)
+            cursor.execute("SELECT id FROM students WHERE lower(name)=lower(?)", (student_name,))
+            existing_student = cursor.fetchone()
+            if existing_student:
+                if has_parent_phone:
+                    cursor.execute(
+                        """
+                        UPDATE students
+                        SET teacher=?, parent_name=?, parent_email=?, parent_phone=?
+                        WHERE id=?
+                        """,
+                        (teacher, parent_name, parent_email, parent_phone, existing_student[0]),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE students
+                        SET teacher=?, parent_name=?, parent_email=?
+                        WHERE id=?
+                        """,
+                        (teacher, parent_name, parent_email, existing_student[0]),
+                    )
+                stats["students_updated"] += 1
+            else:
+                if has_parent_phone:
+                    cursor.execute(
+                        """
+                        INSERT INTO students (name, teacher, lessons_left, parent_name, parent_email, parent_phone)
+                        VALUES (?, ?, 0, ?, ?, ?)
+                        """,
+                        (student_name, teacher, parent_name, parent_email, parent_phone),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO students (name, teacher, lessons_left, parent_name, parent_email)
+                        VALUES (?, ?, 0, ?, ?)
+                        """,
+                        (student_name, teacher, parent_name, parent_email),
+                    )
+                stats["students_created"] += 1
+
+        for candidate in parent_candidates:
+            parent_id, created = _csv_import_ensure_parent(cursor, candidate)
+            if created:
+                stats["parents_created"] += 1
+            else:
+                stats["parents_updated"] += 1
+            if _csv_import_link_parent_student(cursor, parent_id, student_name):
+                stats["parent_links_created"] += 1
+
+    conn.commit()
+    conn.close()
+    stats["duplicate_names"] = duplicate_names[:20]
+    return stats
+
+
+@app.route("/owner_import_students_csv", methods=["GET", "POST"])
+def owner_import_students_csv():
+    if not require_owner():
+        return redirect("/")
+
+    if request.method == "POST":
+        uploaded = request.files.get("students_csv")
+        if not uploaded or not uploaded.filename:
+            return "<h1>Missing CSV file</h1><p><a href='/owner_import_students_csv'>Back</a></p>", 400
+        raw = uploaded.read()
+        if len(raw) > 5 * 1024 * 1024:
+            return "<h1>CSV is too large</h1><p>Please upload a file under 5 MB.</p>", 400
+        try:
+            csv_text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            csv_text = raw.decode("latin-1")
+
+        backup_manifest = create_hmusic_backup("before_student_import")
+        stats = _owner_import_students_from_csv_text(csv_text)
+        rows = "".join(
+            f"<tr><th>{escape(str(key))}</th><td>{escape(str(value))}</td></tr>"
+            for key, value in stats.items()
+            if key != "duplicate_names"
+        )
+        duplicate_html = ""
+        if stats.get("duplicate_names"):
+            duplicate_html = "<p><strong>Duplicate names skipped in file:</strong> " + escape(", ".join(stats["duplicate_names"])
+            ) + "</p>"
+        backup_path = escape(str(backup_manifest.get("backup_path") or ""))
+        return f"""
+        <h1>Student CSV Import Complete</h1>
+        <p><a href="/students">Back to Students</a> | <a href="/owner_dashboard">Owner Dashboard</a></p>
+        <p>Backup created before import: <code>{backup_path}</code></p>
+        <table border="1" cellpadding="8" cellspacing="0">{rows}</table>
+        {duplicate_html}
+        """
+
+    token = escape(hmusic_csrf_token())
+    return f"""
+    <h1>Import Students CSV</h1>
+    <p><a href="/students">Back to Students</a></p>
+    <p>This imports active rows into Students, creates/updates parent app accounts, and links parents to students. A database backup is created first.</p>
+    <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="_csrf_token" value="{token}">
+        <p><input type="file" name="students_csv" accept=".csv,text/csv" required></p>
+        <p><button type="submit">Import CSV</button></p>
+    </form>
+    """
+
+
 @app.route("/students")
 def students():
     conn = sqlite3.connect("hmusic.db")
@@ -1740,6 +1998,8 @@ def students():
 
     html = "<h1>Students</h1>"
     html += '<p><a href="/">Back to Dashboard</a></p>'
+    if require_owner():
+        html += '<p><a href="/owner_import_students_csv">Import students CSV</a></p>'
 
     for student in students:
         html += f"""
