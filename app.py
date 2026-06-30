@@ -1901,6 +1901,8 @@ def _csv_import_ensure_schema():
 def _owner_import_students_from_csv_text(csv_text):
     _csv_import_ensure_schema()
     reader = csv.DictReader(io.StringIO(csv_text))
+    if not reader.fieldnames:
+        raise ValueError("CSV file has no header row. Please export a contact list CSV with column names.")
     stats = {
         "csv_rows": 0,
         "active_rows": 0,
@@ -2048,7 +2050,13 @@ def owner_import_students_csv():
             except UnicodeDecodeError:
                 csv_text = raw.decode("latin-1")
 
-            backup_manifest = create_hmusic_backup("before_student_import")
+            backup_manifest = None
+            backup_warning = ""
+            try:
+                backup_manifest = create_hmusic_backup("before_student_import")
+            except Exception as backup_exc:
+                app.logger.exception("Student CSV import backup failed")
+                backup_warning = str(backup_exc)
             stats = _owner_import_students_from_csv_text(csv_text)
         except Exception as exc:
             app.logger.exception("Student CSV import failed")
@@ -2066,11 +2074,15 @@ def owner_import_students_csv():
                 + escape(", ".join(stats["duplicate_names"]))
                 + "</p>"
             )
-        backup_path = escape(str(backup_manifest.get("backup_path") or backup_manifest.get("database") or "created"))
+        if backup_manifest:
+            backup_path = escape(str(backup_manifest.get("backup_path") or backup_manifest.get("database") or "created"))
+            backup_html = f"<p>Backup created before import: <code>{backup_path}</code></p>"
+        else:
+            backup_html = "<p style=\"color:#92400e;\"><strong>Backup warning:</strong> Import completed, but the pre-import backup could not be created. " + escape(backup_warning) + "</p>"
         return f"""
         <h1>Student CSV Import Complete</h1>
         <p><a href="/students">Back to Students</a> | <a href="/owner_dashboard">Owner Dashboard</a></p>
-        <p>Backup created before import: <code>{backup_path}</code></p>
+        {backup_html}
         <table border="1" cellpadding="8" cellspacing="0">{rows}</table>
         {duplicate_html}
         """
