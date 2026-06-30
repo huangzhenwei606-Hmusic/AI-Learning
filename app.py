@@ -9,6 +9,7 @@ import io
 import zipfile
 import secrets
 import re
+import unicodedata
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -1728,7 +1729,9 @@ def home():
 
 
 def _csv_import_clean(value):
-    return (value or "").strip()
+    value = str(value or "")
+    value = "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+    return value.strip()
 
 
 def _csv_import_normalize_email(value):
@@ -1817,14 +1820,84 @@ def _csv_import_ensure_parent(cursor, candidate):
 
 def _csv_import_link_parent_student(cursor, parent_id, student_name):
     cursor.execute(
-        "INSERT OR IGNORE INTO parent_students (parent_id, student_name, active) VALUES (?, ?, 1)",
+        "SELECT id FROM parent_students WHERE parent_id=? AND lower(student_name)=lower(?) LIMIT 1",
         (parent_id, student_name),
     )
-    return cursor.rowcount > 0
+    if cursor.fetchone():
+        return False
+    cursor.execute(
+        "INSERT INTO parent_students (parent_id, student_name, active) VALUES (?, ?, 1)",
+        (parent_id, student_name),
+    )
+    return True
+
+
+def _csv_import_ensure_schema():
+    ensure_production_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_name TEXT,
+        email TEXT UNIQUE,
+        phone TEXT,
+        password TEXT DEFAULT '',
+        password_hash TEXT,
+        must_change_password INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("parent_name", "parent_name TEXT"),
+        ("email", "email TEXT"),
+        ("phone", "phone TEXT"),
+        ("password", "password TEXT DEFAULT ''"),
+        ("password_hash", "password_hash TEXT"),
+        ("must_change_password", "must_change_password INTEGER DEFAULT 0"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "parent_profiles", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        relationship TEXT DEFAULT 'Parent',
+        active INTEGER DEFAULT 1,
+        created_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("parent_id", "parent_id INTEGER"),
+        ("student_name", "student_name TEXT"),
+        ("relationship", "relationship TEXT DEFAULT 'Parent'"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("created_at", "created_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "parent_students", column_name, column_sql)
+
+    try:
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_parent_students_unique
+        ON parent_students(parent_id, student_name)
+        """)
+    except sqlite3.IntegrityError:
+        pass
+
+    add_column_if_missing(cursor, "students", "parent_phone", "parent_phone TEXT")
+    conn.commit()
+    conn.close()
 
 
 def _owner_import_students_from_csv_text(csv_text):
-    ensure_production_schema()
+    _csv_import_ensure_schema()
     reader = csv.DictReader(io.StringIO(csv_text))
     stats = {
         "csv_rows": 0,
@@ -1949,8 +2022,18 @@ def owner_import_students_csv():
         except UnicodeDecodeError:
             csv_text = raw.decode("latin-1")
 
-        backup_manifest = create_hmusic_backup("before_student_import")
-        stats = _owner_import_students_from_csv_text(csv_text)
+        try:
+            backup_manifest = create_hmusic_backup("before_student_import")
+            stats = _owner_import_students_from_csv_text(csv_text)
+        except Exception as exc:
+            app.logger.exception("Student CSV import failed")
+            return f"""
+            <h1>Student CSV Import Failed</h1>
+            <p>The CSV was not imported. Please fix the issue below or send this message to support.</p>
+            <pre>{escape(str(exc))}</pre>
+            <p><a href="/owner_import_students_csv">Back to CSV import</a> | <a href="/students">Students</a></p>
+            """, 500
+
         rows = "".join(
             f"<tr><th>{escape(str(key))}</th><td>{escape(str(value))}</td></tr>"
             for key, value in stats.items()
@@ -7166,8 +7249,18 @@ def ensure_v27_schema():
     )
     """)
 
-    add_column_if_missing(cursor, "parent_profiles", "password_hash", "password_hash TEXT")
-    add_column_if_missing(cursor, "parent_profiles", "must_change_password", "must_change_password INTEGER DEFAULT 0")
+    for column_name, column_sql in [
+        ("parent_name", "parent_name TEXT"),
+        ("email", "email TEXT"),
+        ("phone", "phone TEXT"),
+        ("password", "password TEXT DEFAULT ''"),
+        ("password_hash", "password_hash TEXT"),
+        ("must_change_password", "must_change_password INTEGER DEFAULT 0"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "parent_profiles", column_name, column_sql)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS parent_students (
@@ -7180,10 +7273,22 @@ def ensure_v27_schema():
     )
     """)
 
-    cursor.execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_parent_students_unique
-    ON parent_students(parent_id, student_name)
-    """)
+    for column_name, column_sql in [
+        ("parent_id", "parent_id INTEGER"),
+        ("student_name", "student_name TEXT"),
+        ("relationship", "relationship TEXT DEFAULT 'Parent'"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("created_at", "created_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "parent_students", column_name, column_sql)
+
+    try:
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_parent_students_unique
+        ON parent_students(parent_id, student_name)
+        """)
+    except sqlite3.IntegrityError:
+        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS parent_activity_logs (
