@@ -10,11 +10,13 @@ import zipfile
 import secrets
 import re
 import unicodedata
+import traceback
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
 from urllib.parse import urlencode, quote
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.exceptions import HTTPException
 
 try:
     import stripe
@@ -2005,34 +2007,52 @@ def _owner_import_students_from_csv_text(csv_text):
     return stats
 
 
+def owner_import_students_error_page(exc):
+    details = traceback.format_exc()
+    if not details or details == "NoneType: None\n":
+        details = str(exc)
+    return f"""
+    <h1>Student CSV Import Failed</h1>
+    <p>The CSV was not imported. Please send this error message to support.</p>
+    <pre style="white-space:pre-wrap;background:#fff3f3;border:1px solid #f3b4b4;padding:12px;border-radius:8px;">{escape(details)}</pre>
+    <p><a href="/owner_import_students_csv">Back to CSV import</a> | <a href="/students">Students</a></p>
+    """
+
+
+@app.errorhandler(Exception)
+def hmusic_handle_exception(exc):
+    if isinstance(exc, HTTPException):
+        return exc
+    if request.path == "/owner_import_students_csv":
+        app.logger.exception("Student CSV import request failed")
+        return owner_import_students_error_page(exc), 500
+    app.logger.exception("Unhandled request error")
+    return "Internal Server Error", 500
+
+
 @app.route("/owner_import_students_csv", methods=["GET", "POST"])
 def owner_import_students_csv():
     if not require_owner():
         return redirect("/")
 
     if request.method == "POST":
-        uploaded = request.files.get("students_csv")
-        if not uploaded or not uploaded.filename:
-            return "<h1>Missing CSV file</h1><p><a href='/owner_import_students_csv'>Back</a></p>", 400
-        raw = uploaded.read()
-        if len(raw) > 5 * 1024 * 1024:
-            return "<h1>CSV is too large</h1><p>Please upload a file under 5 MB.</p>", 400
         try:
-            csv_text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            csv_text = raw.decode("latin-1")
+            uploaded = request.files.get("students_csv")
+            if not uploaded or not uploaded.filename:
+                return "<h1>Missing CSV file</h1><p><a href='/owner_import_students_csv'>Back</a></p>", 400
+            raw = uploaded.read()
+            if len(raw) > 5 * 1024 * 1024:
+                return "<h1>CSV is too large</h1><p>Please upload a file under 5 MB.</p>", 400
+            try:
+                csv_text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                csv_text = raw.decode("latin-1")
 
-        try:
             backup_manifest = create_hmusic_backup("before_student_import")
             stats = _owner_import_students_from_csv_text(csv_text)
         except Exception as exc:
             app.logger.exception("Student CSV import failed")
-            return f"""
-            <h1>Student CSV Import Failed</h1>
-            <p>The CSV was not imported. Please fix the issue below or send this message to support.</p>
-            <pre>{escape(str(exc))}</pre>
-            <p><a href="/owner_import_students_csv">Back to CSV import</a> | <a href="/students">Students</a></p>
-            """, 500
+            return owner_import_students_error_page(exc), 500
 
         rows = "".join(
             f"<tr><th>{escape(str(key))}</th><td>{escape(str(value))}</td></tr>"
@@ -2041,9 +2061,12 @@ def owner_import_students_csv():
         )
         duplicate_html = ""
         if stats.get("duplicate_names"):
-            duplicate_html = "<p><strong>Duplicate names skipped in file:</strong> " + escape(", ".join(stats["duplicate_names"])
-            ) + "</p>"
-        backup_path = escape(str(backup_manifest.get("backup_path") or ""))
+            duplicate_html = (
+                "<p><strong>Duplicate names skipped in file:</strong> "
+                + escape(", ".join(stats["duplicate_names"]))
+                + "</p>"
+            )
+        backup_path = escape(str(backup_manifest.get("backup_path") or backup_manifest.get("database") or "created"))
         return f"""
         <h1>Student CSV Import Complete</h1>
         <p><a href="/students">Back to Students</a> | <a href="/owner_dashboard">Owner Dashboard</a></p>
@@ -2063,7 +2086,6 @@ def owner_import_students_csv():
         <p><button type="submit">Import CSV</button></p>
     </form>
     """
-
 
 @app.route("/students")
 def students():
