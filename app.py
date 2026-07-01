@@ -3812,6 +3812,7 @@ H-Music
 @app.route("/calendar")
 def calendar():
     ensure_v321_schema()
+    ensure_owner_calendar_detail_schema()
     if not require_owner():
         return redirect("/owner_login")
 
@@ -3892,7 +3893,12 @@ def calendar():
         COALESCE(s.course_type_name, ''),
         COALESCE(s.duration, 30),
         COALESCE(st.lessons_left, 0),
-        COALESCE(s.is_group, 0)
+        COALESCE(s.is_group, 0),
+        COALESCE(s.location, ''),
+        COALESCE(s.notes, ''),
+        COALESCE(s.parent_lesson_reminder_enabled, 0),
+        COALESCE(s.practice_reminder_enabled, 0),
+        COALESCE(s.low_balance_alert_enabled, 0)
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN students st    ON s.student_name    = st.name
@@ -4053,12 +4059,36 @@ def calendar():
                 warning = warning_pill(event[13])
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
+                detail = {
+                    "id": event[0],
+                    "date": event[1] or "",
+                    "time": event[2] or "",
+                    "student": event[3] or "",
+                    "teacher": event[4] or "",
+                    "classroom": event[5] or "",
+                    "weekday": event[6] or "",
+                    "schedule_type": event[7] or "",
+                    "package_type": event[8] or "",
+                    "status": event_status,
+                    "status_label": status_label,
+                    "course_name": course_name or "Lesson",
+                    "duration": event[12] or 30,
+                    "lessons_left": event[13] or 0,
+                    "is_group": event[14] or 0,
+                    "location": event[15] or "",
+                    "notes": event[16] or "",
+                    "parent_lesson_reminder_enabled": int(event[17] or 0),
+                    "practice_reminder_enabled": int(event[18] or 0),
+                    "low_balance_alert_enabled": int(event[19] or 0),
+                    "time_range": format_lesson_time_range(event[2], event[12]),
+                }
                 event_cards += f"""
-                <div class="ev" draggable="true" style="{course_style}"
+                <div class="ev" draggable="true" style="{course_style}" onclick="openLessonDrawer(this, event)"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
-                     data-teacher="{escape(str(event[4] or ''))}">
+                     data-teacher="{escape(str(event[4] or ''))}"
+                     data-detail='{escape(json.dumps(detail))}'>
                     <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span></span>
                     <span class="ev-name">{escape(str(event[3] or ""))}</span>
                     <span class="ev-time">{time_range}</span>
@@ -4330,6 +4360,71 @@ def calendar():
                                border-radius:8px;font-size:13px;cursor:pointer;
                                font-family:inherit}}
 
+            /* ---- lesson detail drawer ---- */
+            .drawer-scrim{{position:fixed;inset:0;background:rgba(0,0,0,.42);
+                           display:none;z-index:1100}}
+            .drawer-scrim.show{{display:block}}
+            .lesson-drawer{{position:fixed;top:0;right:0;bottom:0;width:min(520px,100vw);
+                            background:#222421;color:#f7f7f2;z-index:1101;
+                            transform:translateX(104%);transition:transform .18s ease;
+                            box-shadow:-18px 0 40px rgba(0,0,0,.24);
+                            display:flex;flex-direction:column}}
+            .lesson-drawer.show{{transform:translateX(0)}}
+            .drawer-scroll{{overflow:auto;padding-bottom:18px}}
+            .drawer-head{{padding:26px 28px 22px;border-bottom:1px solid rgba(255,255,255,.11);
+                          position:relative}}
+            .drawer-close{{position:absolute;right:22px;top:22px;width:42px;height:42px;
+                           border-radius:8px;border:1px solid rgba(255,255,255,.18);
+                           background:transparent;color:#fff;font-size:24px;cursor:pointer}}
+            .drawer-status{{display:inline-flex;border-radius:999px;padding:6px 12px;
+                            background:#0d3f78;color:#8fbeff;font-weight:800;font-size:14px;
+                            margin-bottom:12px}}
+            .drawer-head h2{{font-size:25px;line-height:1.1;margin:0 0 6px;font-weight:800}}
+            .drawer-meta{{font-size:17px;color:#c9c7c1;font-weight:700}}
+            .drawer-grid{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(255,255,255,.11)}}
+            .drawer-cell{{padding:18px 28px;border-right:1px solid rgba(255,255,255,.11);
+                          border-bottom:1px solid rgba(255,255,255,.11)}}
+            .drawer-cell:nth-child(2n){{border-right:0}}
+            .drawer-label{{display:block;color:#97958f;font-size:13px;font-weight:900;
+                           text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}}
+            .drawer-value{{font-size:21px;font-weight:800;color:#fff}}
+            .drawer-section{{padding:20px 28px;border-bottom:1px solid rgba(255,255,255,.11)}}
+            .drawer-section h3{{font-size:14px;text-transform:uppercase;letter-spacing:.04em;
+                                color:#97958f;margin:0 0 14px;font-weight:900}}
+            .drawer-field,.drawer-select{{width:100%;border:1px solid rgba(255,255,255,.15);
+                          background:#2b2d2a;color:#fff;border-radius:8px;
+                          padding:11px 12px;font:inherit;font-size:15px}}
+            textarea.drawer-field{{min-height:96px;resize:vertical;line-height:1.45}}
+            .drawer-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}}
+            .drawer-toggle{{display:flex;align-items:center;justify-content:space-between;
+                            gap:16px;padding:10px 0}}
+            .drawer-toggle strong{{display:block;font-size:16px;color:#fff}}
+            .drawer-toggle span{{display:block;color:#c9c7c1;font-size:13px;margin-top:2px}}
+            .drawer-toggle input{{width:42px;height:24px;accent-color:#185FA5}}
+            .drawer-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+            .drawer-action{{min-height:58px;border:1px solid rgba(255,255,255,.16);
+                            border-radius:8px;background:#292b28;color:#fff;
+                            display:flex;align-items:center;justify-content:center;gap:9px;
+                            font:inherit;font-weight:800;font-size:16px;cursor:pointer;
+                            text-align:center;padding:10px}}
+            .drawer-action:hover{{background:#32342f}}
+            .drawer-danger{{color:#ffd2d2;border-color:rgba(255,120,120,.32)}}
+            .drawer-footer{{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;
+                            padding:18px 28px;border-top:1px solid rgba(255,255,255,.11);
+                            background:#222421}}
+            .drawer-footer button{{height:48px;border-radius:8px;font:inherit;font-weight:900;
+                                  font-size:16px;cursor:pointer}}
+            .drawer-discard{{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.18)}}
+            .drawer-save{{background:#f7f7f2;color:#20211f;border:0}}
+            .delete-panel{{display:none;margin-top:14px;border:1px solid rgba(255,120,120,.28);
+                           border-radius:8px;padding:14px;background:rgba(130,35,35,.18)}}
+            .delete-panel.show{{display:block}}
+            .delete-options{{display:grid;gap:8px;margin-bottom:12px}}
+            .delete-options label{{display:flex;gap:8px;align-items:flex-start;color:#fff;font-weight:800}}
+            .date-range{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 12px}}
+            .delete-confirm{{width:100%;height:42px;border-radius:8px;border:0;background:#d92d20;
+                             color:#fff;font:inherit;font-weight:900;cursor:pointer}}
+
             /* ---- success strip ---- */
             .success-strip{{background:#EAF3DE;border-radius:8px;padding:8px 14px;
                             font-size:12px;color:#27500A;margin:0 18px 12px;
@@ -4473,6 +4568,90 @@ def calendar():
       </div>
     </div>
 
+    <!-- Lesson detail drawer -->
+    <div class="drawer-scrim" id="drawerScrim" onclick="closeLessonDrawer()"></div>
+    <aside class="lesson-drawer" id="lessonDrawer" aria-hidden="true">
+      <div class="drawer-scroll">
+        <div class="drawer-head">
+          <button class="drawer-close" type="button" onclick="closeLessonDrawer()"><i class="ti ti-x"></i></button>
+          <div class="drawer-status" id="drawerStatus">Scheduled</div>
+          <h2 id="drawerStudent">Student</h2>
+          <div class="drawer-meta" id="drawerCourse">Lesson</div>
+        </div>
+        <div class="drawer-grid">
+          <div class="drawer-cell"><span class="drawer-label">Date</span><div class="drawer-value" id="drawerDateLabel"></div></div>
+          <div class="drawer-cell"><span class="drawer-label">Time</span><div class="drawer-value" id="drawerTimeLabel"></div></div>
+          <div class="drawer-cell"><span class="drawer-label">Room</span><div class="drawer-value" id="drawerRoomLabel"></div></div>
+          <div class="drawer-cell"><span class="drawer-label">Type</span><div class="drawer-value" id="drawerTypeLabel"></div></div>
+        </div>
+        <div class="drawer-section">
+          <h3>Attendance</h3>
+          <select class="drawer-select" id="drawerAttendance">{owner_status_options("scheduled")}</select>
+        </div>
+        <div class="drawer-section">
+          <h3>Lesson Note</h3>
+          <textarea class="drawer-field" id="drawerNotes" placeholder="What did you cover? Progress, homework, notes for next lesson"></textarea>
+        </div>
+        <div class="drawer-section">
+          <h3>Reminders</h3>
+          <label class="drawer-toggle">
+            <span><strong>Remind parent before lesson</strong><span>Queue parent email + app reminder</span></span>
+            <input type="checkbox" id="drawerParentReminder">
+          </label>
+          <label class="drawer-toggle">
+            <span><strong>Send practice reminder after</strong><span>Includes homework / lesson note</span></span>
+            <input type="checkbox" id="drawerPracticeReminder">
+          </label>
+          <label class="drawer-toggle">
+            <span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span>
+            <input type="checkbox" id="drawerLowBalanceReminder">
+          </label>
+        </div>
+        <div class="drawer-section">
+          <h3>Reschedule</h3>
+          <div class="drawer-row">
+            <input class="drawer-field" type="date" id="drawerNewDate">
+            <input class="drawer-field" type="time" id="drawerNewTime">
+          </div>
+          <div class="drawer-row">
+            <input class="drawer-field" type="number" id="drawerDuration" min="5" step="5">
+            <input class="drawer-field" id="drawerRoom" placeholder="Room">
+          </div>
+          <select class="drawer-select" id="drawerRescheduleScope">
+            <option value="once">This lesson only</option>
+            <option value="forward">This and all following lessons</option>
+          </select>
+        </div>
+        <div class="drawer-section">
+          <h3>Actions</h3>
+          <div class="drawer-actions">
+            <button type="button" class="drawer-action" onclick="submitDrawerReschedule()"><i class="ti ti-calendar"></i>Reschedule</button>
+            <button type="button" class="drawer-action" onclick="messageParentFromDrawer()"><i class="ti ti-message"></i>Message parent</button>
+            <button type="button" class="drawer-action" onclick="viewStudentFromDrawer()"><i class="ti ti-user"></i>View student</button>
+            <button type="button" class="drawer-action" onclick="renewPackageFromDrawer()"><i class="ti ti-refresh"></i>Renew package</button>
+            <button type="button" class="drawer-action" onclick="duplicateLessonFromDrawer()"><i class="ti ti-copy"></i>Duplicate lesson</button>
+            <button type="button" class="drawer-action drawer-danger" onclick="toggleDeletePanel()"><i class="ti ti-trash"></i>Delete lesson</button>
+          </div>
+          <div class="delete-panel" id="deletePanel">
+            <div class="delete-options">
+              <label><input type="radio" name="deleteScope" value="current" checked> Delete this lesson only</label>
+              <label><input type="radio" name="deleteScope" value="following"> Delete this and following lessons</label>
+              <label><input type="radio" name="deleteScope" value="range"> Delete lessons in date range</label>
+            </div>
+            <div class="date-range">
+              <input class="drawer-field" type="date" id="deleteStartDate">
+              <input class="drawer-field" type="date" id="deleteEndDate">
+            </div>
+            <button type="button" class="delete-confirm" onclick="submitDrawerDelete()">Confirm delete</button>
+          </div>
+        </div>
+      </div>
+      <div class="drawer-footer">
+        <button type="button" class="drawer-discard" onclick="closeLessonDrawer()">Discard</button>
+        <button type="button" class="drawer-save" onclick="saveLessonDetails()">Save changes</button>
+      </div>
+    </aside>
+
     <script>
     // ---- instrument color helper ----
     function instrClass(courseName) {{
@@ -4491,6 +4670,137 @@ def calendar():
       if (st && st.startsWith('cancel')) return 'sd-cancelled';
       if (st === 'excused_24h' || st === 'excused') return 'sd-excused';
       return 'sd-scheduled';
+    }}
+
+    // ---- lesson detail drawer ----
+    let activeLesson = null;
+    function lessonDateLabel(dateStr) {{
+      if (!dateStr) return '';
+      const d = new Date(dateStr + 'T00:00:00');
+      return d.toLocaleDateString(undefined, {{ weekday:'short', month:'short', day:'numeric' }});
+    }}
+    function timeToInputValue(timeText) {{
+      if (!timeText) return '';
+      const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
+      if (!m) return timeText;
+      let h = parseInt(m[1], 10);
+      const min = m[2];
+      const ap = (m[3] || '').toUpperCase();
+      if (ap === 'PM' && h < 12) h += 12;
+      if (ap === 'AM' && h === 12) h = 0;
+      return String(h).padStart(2, '0') + ':' + min;
+    }}
+    function openLessonDrawer(el, eventObj) {{
+      if (eventObj && (eventObj.target.closest('.owner-status-form') || eventObj.defaultPrevented)) return;
+      activeLesson = JSON.parse(el.dataset.detail || '{{}}');
+      document.getElementById('drawerStatus').textContent = activeLesson.status_label || 'Scheduled';
+      document.getElementById('drawerStudent').textContent = activeLesson.student || 'Student';
+      document.getElementById('drawerCourse').textContent =
+        `${{activeLesson.course_name || 'Lesson'}} · ${{activeLesson.teacher || ''}}`;
+      document.getElementById('drawerDateLabel').textContent = lessonDateLabel(activeLesson.date);
+      document.getElementById('drawerTimeLabel').textContent = activeLesson.time_range || activeLesson.time || '';
+      document.getElementById('drawerRoomLabel').textContent = activeLesson.classroom || '-';
+      document.getElementById('drawerTypeLabel').textContent = activeLesson.schedule_type || activeLesson.package_type || 'Lesson';
+      document.getElementById('drawerAttendance').value = activeLesson.status || 'scheduled';
+      document.getElementById('drawerNotes').value = activeLesson.notes || '';
+      document.getElementById('drawerParentReminder').checked = !!activeLesson.parent_lesson_reminder_enabled;
+      document.getElementById('drawerPracticeReminder').checked = !!activeLesson.practice_reminder_enabled;
+      document.getElementById('drawerLowBalanceReminder').checked = !!activeLesson.low_balance_alert_enabled;
+      document.getElementById('drawerNewDate').value = activeLesson.date || '';
+      document.getElementById('drawerNewTime').value = timeToInputValue(activeLesson.time || '');
+      document.getElementById('drawerDuration').value = activeLesson.duration || 30;
+      document.getElementById('drawerRoom').value = activeLesson.classroom || '';
+      document.getElementById('deleteStartDate').value = activeLesson.date || '';
+      document.getElementById('deleteEndDate').value = activeLesson.date || '';
+      document.getElementById('deletePanel').classList.remove('show');
+      document.getElementById('drawerScrim').classList.add('show');
+      document.getElementById('lessonDrawer').classList.add('show');
+      document.getElementById('lessonDrawer').setAttribute('aria-hidden', 'false');
+    }}
+    function closeLessonDrawer() {{
+      document.getElementById('drawerScrim').classList.remove('show');
+      document.getElementById('lessonDrawer').classList.remove('show');
+      document.getElementById('lessonDrawer').setAttribute('aria-hidden', 'true');
+      activeLesson = null;
+    }}
+    function ownerLessonAction(payload) {{
+      return fetch('/owner_schedule_action', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
+        body: JSON.stringify(payload)
+      }}).then(async r => {{
+        const data = await r.json().catch(() => ({{ok:false,error:'Invalid server response'}}));
+        if (!r.ok || !data.ok) throw new Error(data.error || 'Action failed');
+        return data;
+      }});
+    }}
+    function saveLessonDetails() {{
+      if (!activeLesson) return;
+      ownerLessonAction({{
+        action: 'save_details',
+        schedule_id: activeLesson.id,
+        status: document.getElementById('drawerAttendance').value,
+        notes: document.getElementById('drawerNotes').value,
+        parent_lesson_reminder_enabled: document.getElementById('drawerParentReminder').checked ? 1 : 0,
+        practice_reminder_enabled: document.getElementById('drawerPracticeReminder').checked ? 1 : 0,
+        low_balance_alert_enabled: document.getElementById('drawerLowBalanceReminder').checked ? 1 : 0
+      }}).then(d => {{
+        showSuccess(d.message || 'Lesson saved.');
+        setTimeout(() => location.reload(), 900);
+      }}).catch(err => alert(err.message));
+    }}
+    function submitDrawerReschedule() {{
+      if (!activeLesson) return;
+      ownerLessonAction({{
+        action: 'reschedule',
+        schedule_id: activeLesson.id,
+        new_date: document.getElementById('drawerNewDate').value,
+        new_time: document.getElementById('drawerNewTime').value,
+        duration: document.getElementById('drawerDuration').value,
+        classroom: document.getElementById('drawerRoom').value,
+        scope: document.getElementById('drawerRescheduleScope').value
+      }}).then(d => {{
+        showSuccess(d.message || 'Lesson rescheduled.');
+        setTimeout(() => location.reload(), 1000);
+      }}).catch(err => alert(err.message));
+    }}
+    function toggleDeletePanel() {{
+      document.getElementById('deletePanel').classList.toggle('show');
+    }}
+    function submitDrawerDelete() {{
+      if (!activeLesson) return;
+      const scope = document.querySelector('[name=deleteScope]:checked').value;
+      const rangeText = scope === 'range'
+        ? `${{document.getElementById('deleteStartDate').value}} to ${{document.getElementById('deleteEndDate').value}}`
+        : scope;
+      if (!confirm(`Delete ${{activeLesson.student}} lesson(s): ${{rangeText}}?`)) return;
+      ownerLessonAction({{
+        action: 'delete',
+        schedule_id: activeLesson.id,
+        scope,
+        start_date: document.getElementById('deleteStartDate').value,
+        end_date: document.getElementById('deleteEndDate').value
+      }}).then(d => {{
+        showSuccess(d.message || 'Lesson deleted.');
+        closeLessonDrawer();
+        setTimeout(() => location.reload(), 1000);
+      }}).catch(err => alert(err.message));
+    }}
+    function messageParentFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/messages?student=${{encodeURIComponent(activeLesson.student || '')}}`;
+    }}
+    function viewStudentFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/students?student=${{encodeURIComponent(activeLesson.student || '')}}`;
+    }}
+    function renewPackageFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/invoices?student=${{encodeURIComponent(activeLesson.student || '')}}`;
+    }}
+    function duplicateLessonFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/add_schedule?prefill_date=${{activeLesson.date}}&prefill_teacher=${{encodeURIComponent(activeLesson.teacher || '')}}&prefill_student=${{encodeURIComponent(activeLesson.student || '')}}&prefill_room=${{encodeURIComponent(activeLesson.classroom || '')}}&prefill_start=${{encodeURIComponent(timeToInputValue(activeLesson.time || ''))}}`;
     }}
 
     // ---- drag-and-drop ----
@@ -6742,6 +7052,300 @@ def update_lesson_status():
         """
 
     return redirect(return_to)
+
+def ensure_owner_calendar_detail_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(schedule)")
+    columns = {row[1] for row in cursor.fetchall()}
+    additions = [
+        ("parent_lesson_reminder_enabled", "INTEGER DEFAULT 0"),
+        ("practice_reminder_enabled", "INTEGER DEFAULT 0"),
+        ("low_balance_alert_enabled", "INTEGER DEFAULT 0"),
+        ("owner_calendar_updated_at", "TEXT"),
+    ]
+    for column_name, column_sql in additions:
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE schedule ADD COLUMN {column_name} {column_sql}")
+    conn.commit()
+    conn.close()
+
+
+def get_parent_ids_for_student(cursor, student_name):
+    cursor.execute("""
+    SELECT parent_id
+    FROM parent_students
+    WHERE student_name = ?
+    AND active = 1
+    """, (student_name,))
+    return [row[0] for row in cursor.fetchall()]
+
+
+def notify_lesson_parents(student_name, title, body, related_type, related_id):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    parent_ids = get_parent_ids_for_student(cursor, student_name)
+    conn.close()
+    for parent_id in parent_ids:
+        create_notification(
+            "parent",
+            str(parent_id),
+            title,
+            body,
+            "/parent_dashboard",
+            related_type=related_type,
+            related_id=related_id
+        )
+    return len(parent_ids)
+
+
+def owner_calendar_matching_where(scope, lesson):
+    schedule_id, student_name, teacher, lesson_date, lesson_time, classroom, course_type_name = lesson
+    base = [
+        "student_name = ?",
+        "teacher = ?",
+        "lesson_time = ?",
+        "COALESCE(course_type_name, '') = ?",
+    ]
+    params = [student_name, teacher, lesson_time, course_type_name or ""]
+    if scope == "following":
+        base.append("lesson_date >= ?")
+        params.append(lesson_date)
+    return " AND ".join(base), params
+
+
+@app.route("/owner_schedule_action", methods=["POST"])
+def owner_schedule_action():
+    ensure_owner_calendar_detail_schema()
+    if not require_owner():
+        return {"ok": False, "error": "Owner login required"}, 401
+
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip()
+    schedule_id = data.get("schedule_id")
+    if not schedule_id:
+        return {"ok": False, "error": "schedule_id required"}, 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        teacher,
+        lesson_date,
+        lesson_time,
+        classroom,
+        COALESCE(course_type_name, ''),
+        COALESCE(status, 'scheduled'),
+        COALESCE(parent_lesson_reminder_enabled, 0),
+        COALESCE(practice_reminder_enabled, 0),
+        COALESCE(low_balance_alert_enabled, 0),
+        COALESCE(duration, 30)
+    FROM schedule
+    WHERE id = ?
+    """, (schedule_id,))
+    lesson = cursor.fetchone()
+
+    if not lesson:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found"}, 404
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if action == "save_details":
+        status = (data.get("status") or lesson[7] or "scheduled").strip()
+        notes = (data.get("notes") or "").strip()
+        parent_reminder = 1 if data.get("parent_lesson_reminder_enabled") else 0
+        practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
+        low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
+
+        cursor.execute("""
+        UPDATE schedule
+        SET notes = ?,
+            parent_lesson_reminder_enabled = ?,
+            practice_reminder_enabled = ?,
+            low_balance_alert_enabled = ?,
+            owner_calendar_updated_at = ?
+        WHERE id = ?
+        """, (
+            notes,
+            parent_reminder,
+            practice_reminder,
+            low_balance_alert,
+            now_text,
+            schedule_id
+        ))
+        conn.commit()
+        conn.close()
+
+        if status != lesson[7]:
+            status_result = apply_lesson_status(schedule_id, status, actor="owner")
+            if not status_result.get("ok"):
+                return {"ok": False, "error": status_result.get("error", "Attendance status was not updated")}, 400
+
+        queued = 0
+        if parent_reminder and not lesson[8]:
+            queued += notify_lesson_parents(
+                lesson[1],
+                "Lesson reminder",
+                f"{lesson[1]} has a lesson on {lesson[3]} at {lesson[4]} with {lesson[2]} in {lesson[5] or 'the studio'}.",
+                "owner_lesson_reminder",
+                int(schedule_id)
+            )
+        if practice_reminder and not lesson[9]:
+            queued += notify_lesson_parents(
+                lesson[1],
+                "Practice reminder",
+                f"Practice reminder for {lesson[1]}. {notes or 'Please review the latest lesson notes and homework.'}",
+                "owner_practice_reminder",
+                int(schedule_id)
+            )
+        if low_balance_alert and not lesson[10]:
+            queued += notify_lesson_parents(
+                lesson[1],
+                "Low lesson balance",
+                f"{lesson[1]}'s lesson package is running low. Please renew the package when convenient.",
+                "owner_low_balance_alert",
+                int(schedule_id)
+            )
+
+        suffix = f" {queued} parent reminder(s) queued." if queued else ""
+        return {"ok": True, "message": "Lesson saved." + suffix}
+
+    if action == "reschedule":
+        new_date = (data.get("new_date") or "").strip()
+        new_time = (data.get("new_time") or lesson[4] or "").strip()
+        classroom = (data.get("classroom") or lesson[5] or "").strip()
+        scope = (data.get("scope") or "once").strip()
+        try:
+            duration = int(float(data.get("duration") or lesson[11] or 30))
+        except (TypeError, ValueError):
+            duration = int(lesson[11] or 30)
+
+        try:
+            new_date_obj = datetime.strptime(new_date, "%Y-%m-%d").date()
+        except ValueError:
+            conn.close()
+            return {"ok": False, "error": "Invalid reschedule date"}, 400
+        if not parse_lesson_time_value(new_time):
+            conn.close()
+            return {"ok": False, "error": "Invalid reschedule time"}, 400
+
+        old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
+        day_delta = (new_date_obj - old_date_obj).days
+
+        if scope == "once":
+            cursor.execute("""
+            UPDATE schedule
+            SET lesson_date = ?,
+                weekday = ?,
+                lesson_time = ?,
+                classroom = ?,
+                duration = ?,
+                status = 'scheduled',
+                owner_calendar_updated_at = ?
+            WHERE id = ?
+            """, (
+                new_date,
+                new_date_obj.strftime("%A"),
+                new_time,
+                classroom,
+                duration,
+                now_text,
+                schedule_id
+            ))
+            moved = cursor.rowcount
+        elif scope == "forward":
+            where_sql, params = owner_calendar_matching_where("following", lesson[:7])
+            cursor.execute(f"""
+            SELECT id, lesson_date
+            FROM schedule
+            WHERE {where_sql}
+            ORDER BY lesson_date, lesson_time
+            """, params)
+            rows = cursor.fetchall()
+            moved = 0
+            for row_id, row_date in rows:
+                shifted = datetime.strptime(row_date, "%Y-%m-%d").date() + timedelta(days=day_delta)
+                cursor.execute("""
+                UPDATE schedule
+                SET lesson_date = ?,
+                    weekday = ?,
+                    lesson_time = ?,
+                    classroom = ?,
+                    duration = ?,
+                    status = 'scheduled',
+                    owner_calendar_updated_at = ?
+                WHERE id = ?
+                """, (
+                    shifted.strftime("%Y-%m-%d"),
+                    shifted.strftime("%A"),
+                    new_time,
+                    classroom,
+                    duration,
+                    now_text,
+                    row_id
+                ))
+                moved += cursor.rowcount
+        else:
+            conn.close()
+            return {"ok": False, "error": "Invalid reschedule scope"}, 400
+
+        conn.commit()
+        conn.close()
+        if lesson[2]:
+            create_notification(
+                "teacher",
+                lesson[2],
+                "Lesson rescheduled",
+                f"{lesson[1]}'s lesson moved to {new_date} at {new_time}.",
+                "/teacher_dashboard?view=schedule",
+                related_type="owner_reschedule",
+                related_id=int(schedule_id)
+            )
+        return {"ok": True, "message": f"Rescheduled {moved} lesson(s)."}
+
+    if action == "delete":
+        scope = (data.get("scope") or "current").strip()
+        deleted = 0
+        if scope == "current":
+            cursor.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
+            deleted = cursor.rowcount
+        elif scope == "following":
+            where_sql, params = owner_calendar_matching_where("following", lesson[:7])
+            cursor.execute(f"DELETE FROM schedule WHERE {where_sql}", params)
+            deleted = cursor.rowcount
+        elif scope == "range":
+            start_date = (data.get("start_date") or "").strip()
+            end_date = (data.get("end_date") or "").strip()
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+                datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                conn.close()
+                return {"ok": False, "error": "Invalid delete date range"}, 400
+            if start_date > end_date:
+                conn.close()
+                return {"ok": False, "error": "Start date must be before end date"}, 400
+            where_sql, params = owner_calendar_matching_where("current", lesson[:7])
+            params.extend([start_date, end_date])
+            cursor.execute(f"""
+            DELETE FROM schedule
+            WHERE {where_sql}
+            AND lesson_date BETWEEN ? AND ?
+            """, params)
+            deleted = cursor.rowcount
+        else:
+            conn.close()
+            return {"ok": False, "error": "Invalid delete scope"}, 400
+
+        conn.commit()
+        conn.close()
+        return {"ok": True, "message": f"Deleted {deleted} lesson(s)."}
+
+    conn.close()
+    return {"ok": False, "error": "Unknown action"}, 400
 
 @app.route("/invoices")
 def invoices():
