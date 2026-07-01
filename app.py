@@ -281,7 +281,7 @@ def get_parent_unread_notification_count():
 def parent_bottom_nav(active="home"):
     items = [
         ("home", "/parent_dashboard", "Home"),
-        ("reschedule", "/parent_reschedule", "Reschedule"),
+        ("schedule", "/parent_dashboard#calendar", "Schedule"),
         ("messages", "/parent_messages", "Messages"),
         ("profile", "/parent_profile", "Profile"),
     ]
@@ -16017,672 +16017,220 @@ def parent_dashboard():
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No parent activity yet.</td></tr>"
 
-    next_lesson_title = "No upcoming lessons"
-    next_lesson_meta = "Your next scheduled lesson will appear here."
+    cal_month_param = request.args.get("calendar_month") or date.today().strftime("%Y-%m")
+    try:
+        cal_year = int(cal_month_param[:4])
+        cal_month = int(cal_month_param[5:7])
+        cal_start = date(cal_year, cal_month, 1)
+    except Exception:
+        cal_start = date.today().replace(day=1)
+    if cal_start.month == 12:
+        cal_end = date(cal_start.year + 1, 1, 1) - timedelta(days=1)
+        next_cal = date(cal_start.year + 1, 1, 1)
+    else:
+        cal_end = date(cal_start.year, cal_start.month + 1, 1) - timedelta(days=1)
+        next_cal = date(cal_start.year, cal_start.month + 1, 1)
+    prev_cal = (cal_start - timedelta(days=1)).replace(day=1)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT lesson_date
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date BETWEEN ? AND ?
+    AND (status IS NULL OR status IN ('scheduled', 'present', 'late'))
+    ORDER BY lesson_date
+    """, (current_student, cal_start.strftime("%Y-%m-%d"), cal_end.strftime("%Y-%m-%d")))
+    lesson_dates = {row[0] for row in cursor.fetchall() if row[0]}
+    conn.close()
+
+    def parent_short_date(date_text):
+        try:
+            dt = datetime.strptime(str(date_text), "%Y-%m-%d").date()
+            return dt.strftime("%a %b %-d")
+        except Exception:
+            try:
+                return datetime.strptime(str(date_text), "%Y-%m-%d").date().strftime("%a %b %#d")
+            except Exception:
+                return escape(str(date_text or ""))
+
+    next_lesson_day = "No lesson scheduled"
+    next_lesson_time = ""
+    next_lesson_teacher = escape(str(student[1] or "Teacher TBD"))
+    next_lesson_room = "Room TBD"
+    next_lesson_course = "Lesson"
+    next_lesson_pill = ""
     if upcoming_lessons:
         next_lesson = upcoming_lessons[0]
         next_time_range = format_lesson_time_range(next_lesson[1], next_lesson[5])
-        next_location_room = " / ".join([part for part in [next_lesson[4], next_lesson[3]] if part])
-        next_lesson_title = f"{escape(str(next_lesson[0] or ''))} · {escape(str(next_time_range or ''))}"
-        next_lesson_meta = f"{escape(str(next_lesson[2] or ''))} · {escape(str(next_location_room or 'TBD'))}"
+        next_lesson_day = parent_short_date(next_lesson[0])
+        next_lesson_time = escape(str(next_time_range or ""))
+        next_lesson_teacher = escape(str(next_lesson[2] or "Teacher TBD"))
+        next_lesson_room = escape(str(next_lesson[3] or next_lesson[4] or "Room TBD"))
+        next_lesson_course = escape(str(next_lesson[8] or "Lesson"))
+        try:
+            lesson_date_obj = datetime.strptime(str(next_lesson[0]), "%Y-%m-%d").date()
+            delta = (lesson_date_obj - date.today()).days
+            next_lesson_pill = "Today" if delta == 0 else "Tomorrow" if delta == 1 else lesson_date_obj.strftime("%b %-d")
+        except Exception:
+            next_lesson_pill = "Next"
+
+    renewal_copy = "Renew soon" if (student[3] or 0) <= 2 else "Lessons available"
+    notes_preview = lesson_note_cards
+
+    weekday_header = "".join(f"<div>{d}</div>" for d in ["S", "M", "T", "W", "T", "F", "S"])
+    cal_cells = ""
+    calendar_grid = calendar_lib.Calendar(firstweekday=6).monthdatescalendar(cal_start.year, cal_start.month)
+    today_obj = date.today()
+    for week in calendar_grid:
+        for day_obj in week:
+            in_month = day_obj.month == cal_start.month
+            date_key = day_obj.strftime("%Y-%m-%d")
+            classes = ["mini-day"]
+            if not in_month:
+                classes.append("muted")
+            if day_obj == today_obj:
+                classes.append("today")
+            if date_key in lesson_dates:
+                classes.append("has-lesson")
+            label = day_obj.day if in_month else ""
+            cal_cells += f'<div class="{" ".join(classes)}"><span>{label}</span></div>'
+    mini_calendar = f"""
+        <section class="app-card mini-calendar" id="calendar">
+            <div class="section-head calendar-head">
+                <h2>{cal_start.strftime('%B %Y')}</h2>
+                <div class="calendar-nav">
+                    <a href="/parent_dashboard?calendar_month={prev_cal.strftime('%Y-%m')}">&lsaquo;</a>
+                    <a href="/parent_dashboard?calendar_month={next_cal.strftime('%Y-%m')}">&rsaquo;</a>
+                </div>
+            </div>
+            <div class="weekdays">{weekday_header}</div>
+            <div class="month-grid">{cal_cells}</div>
+        </section>
+    """
 
     return f"""
     <html>
     <head>
         {parent_app_meta("H-Music Parent App")}
         <style>
-            * {{
-                box-sizing: border-box;
-            }}
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #fbfbff;
-                margin: 0;
-                color: #111827;
-            }}
-            .container {{
-                background: white;
-                min-height: 100vh;
-                padding: max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
-                max-width: 880px;
-                margin: 0 auto;
-            }}
-            .top {{
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-start;
-                gap: 16px;
-                margin-bottom: 18px;
-            }}
-            .top h1 {{
-                font-size: 32px;
-                line-height: 1.05;
-                margin: 0 0 8px;
-            }}
-            .top p {{
-                margin: 0;
-                color: #6b7280;
-            }}
-            .top-links {{
-                display: flex;
-                gap: 10px;
-                align-items: center;
-            }}
-            .student-tabs {{
-                margin: 18px 0 10px;
-                white-space: nowrap;
-                overflow-x: auto;
-                padding-bottom: 4px;
-            }}
-            .student-tab {{
-                display: inline-block;
-                padding: 8px 12px;
-                border: 1px solid #ddd;
-                border-radius: 999px;
-                margin-right: 8px;
-                text-decoration: none;
-                color: #111827;
-                font-weight: bold;
-            }}
-            .student-tab.active {{
-                background: #4f46e5;
-                color: white;
-                border-color: #4f46e5;
-            }}
-            .cards {{
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 15px;
-                margin: 25px 0;
-            }}
-            .card {{
-                background: #f8f8ff;
-                padding: 18px;
-                border-radius: 16px;
-                border: 1px solid #e5e7eb;
-            }}
-            .tuition-alert {{
-                display: flex;
-                justify-content: space-between;
-                gap: 12px;
-                align-items: center;
-                background: #fff7ed;
-                border: 1px solid #fed7aa;
-                color: #9a3412;
-                border-radius: 10px;
-                padding: 14px 16px;
-                margin: 18px 0;
-            }}
-            .notice-alert {{
-                background: #ecfdf5;
-                border: 1px solid #bbf7d0;
-                color: #166534;
-                border-radius: 10px;
-                padding: 14px 16px;
-                margin: 18px 0;
-                font-weight: 800;
-            }}
-            .app-notification-alert {{
-                display: flex;
-                justify-content: space-between;
-                gap: 12px;
-                align-items: center;
-                background: #eef2ff;
-                border: 1px solid #c7d2fe;
-                color: #3730a3;
-                border-radius: 10px;
-                padding: 14px 16px;
-                margin: 18px 0;
-            }}
-            .tuition-alert a {{
-                background: #ea580c;
-                color: white;
-                padding: 10px 12px;
-                border-radius: 8px;
-                text-decoration: none;
-                white-space: nowrap;
-            }}
-            .mini-pay-button {{
-                display: inline-block;
-                background: #4f46e5;
-                color: white !important;
-                padding: 8px 10px;
-                border-radius: 8px;
-                text-decoration: none;
-                white-space: nowrap;
-                font-size: 14px;
-            }}
-            .app-notification-alert a {{
-                background: #4f46e5;
-                color: white;
-                padding: 10px 12px;
-                border-radius: 8px;
-                text-decoration: none;
-                white-space: nowrap;
-            }}
-            .label {{
-                color: #666;
-                font-size: 14px;
-            }}
-            .value {{
-                font-size: 24px;
-                font-weight: bold;
-                margin-top: 8px;
-                overflow-wrap: anywhere;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 15px 0 35px;
-            }}
-            th {{
-                background: #eeeeff;
-                padding: 10px;
-                border: 1px solid #ddd;
-            }}
-            td {{
-                padding: 10px;
-                border: 1px solid #ddd;
-            }}
-            .actions {{
-                display: flex;
-                flex-wrap: wrap;
-                gap: 10px;
-                margin: 20px 0 30px;
-            }}
-            a.button {{
-                display: inline-block;
-                background: #f8fafc;
-                color: #374151;
-                border: 1px solid #e5e7eb;
-                padding: 10px 16px;
-                border-radius: 8px;
-                text-decoration: none;
-                font-weight: bold;
-            }}
-            .actions a.assistant-button {{
-                background: #4f46e5;
-                color: white;
-                border-color: #4f46e5;
-                box-shadow: 0 8px 18px rgba(79, 70, 229, 0.22);
-            }}
-            button.install-button {{
-                background: #111827;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 10px 12px;
-                font-weight: 800;
-            }}
-            a {{
-                color: #4f46e5;
-                font-weight: bold;
-            }}
-            .app-hero {{
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-start;
-                gap: 14px;
-                margin-bottom: 18px;
-            }}
-            .brand-lockup {{
-                display: flex;
-                gap: 12px;
-                align-items: center;
-                margin-bottom: 22px;
-            }}
-            .brand-mark {{
-                width: 54px;
-                height: 54px;
-                border-radius: 16px;
-                background: #050505 url("/hmusic-icon.png") center / cover no-repeat;
-                flex: 0 0 auto;
-            }}
-            .brand-copy strong {{
-                display: block;
-                font-size: 22px;
-                line-height: 1;
-            }}
-            .brand-copy span {{
-                color: #6b7280;
-                font-size: 14px;
-                font-weight: 700;
-            }}
-            .hero-title h1 {{
-                font-size: 34px;
-                line-height: 1.02;
-                margin: 0 0 8px;
-            }}
-            .hero-title p {{
-                color: #6b7280;
-                margin: 0;
-                font-weight: 700;
-            }}
-            .hero-links {{
-                display: flex;
-                gap: 10px;
-                align-items: center;
-                flex-wrap: wrap;
-                justify-content: flex-end;
-            }}
-            .summary-card {{
-                background: #eef2ff;
-                border-color: #c7d2fe;
-            }}
-            .summary-card .value {{
-                font-size: 36px;
-            }}
-            .summary-card.wide {{
-                grid-column: span 2;
-            }}
-            .lesson-list {{
-                display: grid;
-                gap: 10px;
-                margin: 12px 0 26px;
-            }}
-            .lesson-card {{
-                display: flex;
-                justify-content: space-between;
-                gap: 14px;
-                align-items: center;
-                position: relative;
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 16px;
-                padding: 12px 12px 12px 22px;
-                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
-            }}
-            .lesson-card:before {{
-                content: "";
-                position: absolute;
-                left: 0;
-                top: 0;
-                bottom: 0;
-                width: 8px;
-                background: var(--course-color, #60a5fa);
-                border-radius: 16px 0 0 16px;
-            }}
-            .lesson-date {{
-                color: #6b7280;
-                font-size: 13px;
-                font-weight: 800;
-            }}
-            .lesson-main {{
-                font-size: 18px;
-                font-weight: 900;
-                margin-top: 2px;
-            }}
-            .lesson-meta {{
-                color: #6b7280;
-                font-size: 14px;
-                font-weight: 700;
-                margin-top: 2px;
-            }}
-            .status-chip {{
-                background: #eef2ff;
-                color: #3730a3;
-                border-radius: 999px;
-                padding: 6px 10px;
-                font-size: 12px;
-                font-weight: 900;
-                white-space: nowrap;
-            }}
-            .notes-grid {{
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 12px;
-                margin: 12px 0 28px;
-            }}
-            .note-card, .empty-card {{
-                background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 16px;
-                padding: 14px;
-                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
-            }}
-            .note-date {{
-                color: #6b7280;
-                font-size: 13px;
-                font-weight: 900;
-                margin-bottom: 8px;
-            }}
-            .note-performance {{
-                display: inline-block;
-                background: #ecfdf5;
-                color: #166534;
-                border-radius: 999px;
-                padding: 5px 9px;
-                font-size: 12px;
-                font-weight: 900;
-                margin-bottom: 10px;
-            }}
-            .note-section {{
-                margin-top: 8px;
-            }}
-            .note-section strong {{
-                display: block;
-                font-size: 13px;
-                color: #111827;
-                margin-bottom: 4px;
-            }}
-            .note-section p {{
-                margin: 0;
-                color: #4b5563;
-                line-height: 1.45;
-                font-size: 14px;
-            }}
-            .desktop-table {{
-                margin-top: 12px;
-            }}
-            .secondary-actions {{
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 10px;
-                margin: 10px 0 28px;
-            }}
-            .secondary-action {{
-                display: block;
-                background: #f8fafc;
-                border: 1px solid #e5e7eb;
-                border-radius: 16px;
-                padding: 14px;
-                text-decoration: none;
-                color: #111827;
-                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
-            }}
-            .secondary-action strong {{
-                display: block;
-                font-size: 16px;
-                margin-bottom: 4px;
-            }}
-            .secondary-action span {{
-                color: #6b7280;
-                font-size: 13px;
-                font-weight: 700;
-            }}
-            .records-panel {{
-                border: 1px solid #e5e7eb;
-                border-radius: 18px;
-                background: #ffffff;
-                margin: 6px 0 28px;
-                overflow: hidden;
-                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
-            }}
-            .records-panel summary {{
-                cursor: pointer;
-                list-style: none;
-                padding: 16px;
-                font-weight: 900;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }}
-            .records-panel summary::-webkit-details-marker {{
-                display: none;
-            }}
-            .records-panel summary::after {{
-                content: "+";
-                color: #4f46e5;
-                font-size: 24px;
-                line-height: 1;
-            }}
-            .records-panel[open] summary::after {{
-                content: "-";
-            }}
-            .records-content {{
-                border-top: 1px solid #e5e7eb;
-                padding: 16px;
-            }}
-            .records-content h2 {{
-                font-size: 22px;
-                margin-top: 24px;
-            }}
-            .records-content h2:first-child {{
-                margin-top: 0;
-            }}
-            .parent-bottom-nav {{
-                position: fixed;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 4px;
-                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-                background: rgba(255, 255, 255, 0.96);
-                border-top: 1px solid #e5e7eb;
-                box-shadow: 0 -4px 18px rgba(0,0,0,0.08);
-                z-index: 20;
-            }}
-            .parent-bottom-nav a {{
-                text-align: center;
-                text-decoration: none;
-                color: #6b7280;
-                font-size: 12px;
-                font-weight: 800;
-                padding: 9px 4px;
-                border-radius: 8px;
-            }}
-            .parent-bottom-nav a.active {{
-                color: #4f46e5;
-                background: #eef2ff;
-            }}
-            @media (max-width: 760px) {{
-                .top {{
-                    align-items: flex-start;
-                }}
-                .cards {{
-                    grid-template-columns: 1fr 1fr;
-                    gap: 10px;
-                    margin: 18px 0;
-                }}
-                .app-hero {{
-                    display: block;
-                }}
-                .hero-links {{
-                    justify-content: flex-start;
-                    margin-top: 12px;
-                }}
-                .card {{
-                    padding: 14px;
-                }}
-                .summary-card.wide,
-                .card:nth-child(4) {{
-                    grid-column: 1 / -1;
-                }}
-                .value {{
-                    font-size: 20px;
-                }}
-                table {{
-                    display: block;
-                    overflow-x: auto;
-                    font-size: 12px;
-                }}
-                .actions {{
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                }}
-                .secondary-actions {{
-                    grid-template-columns: 1fr;
-                }}
-                a.button {{
-                    text-align: center;
-                    margin: 0;
-                }}
-                .notes-grid {{
-                    grid-template-columns: 1fr;
-                }}
-                .desktop-table,
-                .records-content table {{
-                    display: none;
-                }}
-                .records-content {{
-                    padding: 0 16px 16px;
-                }}
-                .records-content h2 {{
-                    display: none;
-                }}
-            }}
-            @media (min-width: 900px) {{
-                body {{
-                    padding: 32px;
-                }}
-                .container {{
-                    min-height: auto;
-                    border-radius: 16px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-                    padding: 32px;
-                }}
-            }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f6f3; color:#151515; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12px; }}
+            a {{ color:inherit; text-decoration:none; }}
+            .container {{ min-height:100vh; max-width:640px; margin:0 auto; background:#f7f6f3; padding:max(24px, env(safe-area-inset-top)) 20px calc(92px + env(safe-area-inset-bottom)); }}
+            .app-top {{ display:flex; align-items:center; justify-content:space-between; gap:14px; margin:4px 0 14px; }}
+            .brand {{ display:flex; align-items:center; gap:12px; }}
+            .brand-mark {{ width:38px; height:38px; border-radius:11px; background:#1d65ad; color:#fff; display:grid; place-items:center; font-size:20px; font-weight:800; }}
+            .brand-name {{ font-size:13px; font-weight:800; letter-spacing:0; }}
+            .top-dot {{ width:10px; height:10px; border-radius:999px; background:#8c2e2b; }}
+            .welcome {{ margin:0 0 10px; font-size:13px; line-height:1.25; color:#333; }}
+            .welcome strong {{ color:#101010; font-weight:900; }}
+            .student-tabs {{ margin:0 0 22px; white-space:nowrap; overflow-x:auto; padding-bottom:2px; }}
+            .student-tab {{ display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; margin-right:6px; background:#e6e8ec; color:#3b4655; font-size:12px; font-weight:800; }}
+            .student-tab.active {{ background:#d8e7f9; color:#2164ad; }}
+            .student-tab.active:before {{ content:attr(data-initial); display:inline-grid; place-items:center; width:24px; height:24px; border-radius:999px; background:#1d65ad; color:white; font-size:13px; }}
+            .alerts {{ display:grid; gap:8px; margin-bottom:12px; }}
+            .tuition-alert,.notice-alert,.app-notification-alert {{ display:flex; justify-content:space-between; gap:10px; align-items:center; border-radius:10px; padding:10px 12px; font-size:12px; border:1px solid #ddd; background:#fff; }}
+            .tuition-alert {{ color:#9a3412; background:#fff7ed; border-color:#fed7aa; }} .notice-alert {{ color:#166534; background:#ecfdf5; border-color:#bbf7d0; font-weight:800; }} .app-notification-alert {{ color:#1d4ed8; background:#eff6ff; border-color:#bfdbfe; }}
+            .tuition-alert a,.app-notification-alert a {{ background:#1d65ad; color:#fff; border-radius:8px; padding:7px 9px; font-weight:800; white-space:nowrap; }}
+            .kpis {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }}
+            .app-card {{ background:#fff; border:1px solid #ddd9d2; border-radius:16px; padding:16px; box-shadow:0 1px 0 rgba(0,0,0,.02); }}
+            .kpi-label {{ color:#3f3f3f; font-size:12px; line-height:1.1; }}
+            .kpi-value {{ margin-top:8px; font-size:24px; line-height:1; font-weight:900; color:#6b5218; }}
+            .kpi-sub {{ margin-top:6px; color:#75716b; font-size:11px; font-weight:700; }}
+            .kpi-next .kpi-value {{ color:#111; font-size:17px; line-height:1.12; }}
+            .next-card {{ margin-bottom:14px; padding:0; overflow:hidden; }}
+            .next-strip {{ display:flex; justify-content:space-between; align-items:center; background:#d9e9fb; color:#2a65ad; padding:8px 16px; font-size:12px; font-weight:900; text-transform:uppercase; }}
+            .next-strip span:last-child {{ text-transform:none; background:#c5ddf8; border-radius:999px; padding:4px 10px; }}
+            .next-body {{ padding:14px 16px 16px; }}
+            .next-date {{ font-size:17px; font-weight:900; line-height:1.1; margin-bottom:3px; }}
+            .next-time {{ color:#5f5b55; font-size:17px; font-weight:800; margin-bottom:10px; }}
+            .next-meta {{ display:flex; flex-wrap:wrap; gap:8px 12px; color:#6f6b65; font-size:11px; font-weight:750; }}
+            .next-meta span {{ display:inline-flex; align-items:center; gap:4px; }}
+            .section-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
+            .section-head h2 {{ margin:0; font-size:13px; line-height:1; text-transform:uppercase; letter-spacing:0; color:#3e3e3e; }}
+            .section-head a {{ color:#2467b2; font-weight:800; font-size:12px; }}
+            .mini-calendar {{ margin-bottom:14px; }}
+            .calendar-head h2 {{ text-transform:none; font-size:16px; color:#111; }}
+            .calendar-nav {{ display:flex; gap:8px; }}
+            .calendar-nav a {{ display:grid; place-items:center; width:36px; height:36px; border:1px solid #d8d4cd; border-radius:12px; font-size:22px; color:#111; font-weight:500; }}
+            .weekdays,.month-grid {{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; }}
+            .weekdays {{ color:#77736d; font-size:11px; font-weight:800; margin-bottom:6px; }}
+            .weekdays div {{ padding:5px 0; }}
+            .mini-day {{ min-height:38px; display:grid; place-items:center; position:relative; color:#343434; font-size:15px; font-weight:500; }}
+            .mini-day span {{ display:grid; place-items:center; width:34px; height:34px; border-radius:10px; }}
+            .mini-day.muted span {{ color:transparent; }}
+            .mini-day.has-lesson span {{ background:#d8e7f9; color:#2a65ad; font-weight:800; }}
+            .mini-day.has-lesson:after {{ content:""; position:absolute; bottom:4px; left:50%; transform:translateX(-50%); width:5px; height:5px; border-radius:999px; background:#2a65ad; }}
+            .mini-day.today span {{ background:#1d65ad; color:#fff; font-weight:900; }}
+            .mini-day.today:after {{ background:#fff; }}
+            .notes-card {{ margin-bottom:14px; padding:0; overflow:hidden; }}
+            .notes-card .section-head {{ padding:14px 16px; margin:0; border-bottom:1px solid #ddd9d2; }}
+            .notes-list {{ display:grid; gap:0; }}
+            .note-card,.empty-card {{ padding:12px 16px; border-bottom:1px solid #eee9e2; background:#fff; }}
+            .note-card:last-child,.empty-card:last-child {{ border-bottom:0; }}
+            .note-date {{ color:#77736d; font-size:10px; font-weight:800; margin-bottom:5px; }}
+            .note-performance {{ display:inline-block; color:#1d65ad; background:#eef6ff; border-radius:999px; padding:3px 7px; font-size:10px; font-weight:800; margin-bottom:6px; }}
+            .note-section {{ margin-top:5px; }} .note-section strong {{ display:block; font-size:11px; margin-bottom:2px; }} .note-section p {{ margin:0; color:#555; font-size:11px; line-height:1.35; }}
+            .quick-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }}
+            .quick-action {{ min-height:74px; display:flex; align-items:center; justify-content:center; gap:10px; text-align:center; background:#fff; border:1px solid #ddd9d2; border-radius:14px; color:#111; font-size:17px; font-weight:900; padding:10px; }}
+            .quick-action.primary {{ color:#2a65ad; }} .quick-action.small {{ min-height:56px; font-size:15px; }}
+            .records-panel {{ border:1px solid #ddd9d2; border-radius:14px; background:#fff; margin-top:12px; overflow:hidden; }}
+            .records-panel summary {{ cursor:pointer; list-style:none; padding:13px 14px; font-size:12px; font-weight:900; display:flex; justify-content:space-between; }} .records-panel summary::-webkit-details-marker {{ display:none; }} .records-panel summary:after {{ content:"+"; color:#2467b2; font-size:18px; }} .records-panel[open] summary:after {{ content:"-"; }}
+            .records-content {{ border-top:1px solid #eee9e2; padding:12px; }} .records-content h2 {{ font-size:13px; margin:16px 0 8px; }}
+            table {{ width:100%; border-collapse:collapse; font-size:11px; }} th,td {{ padding:7px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }} th {{ color:#77736d; font-weight:800; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:7px 10px calc(7px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.97); border-top:1px solid #ddd9d2; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; color:#6f6b65; font-size:11px; font-weight:750; padding:8px 4px; border-radius:8px; }} .parent-bottom-nav a.active {{ color:#1d65ad; background:#eef6ff; }}
+            @media (min-width:700px) {{ body {{ padding:28px; }} .container {{ min-height:auto; border-radius:22px; box-shadow:0 2px 12px rgba(0,0,0,.08); }} }}
         </style>
     </head>
-
     <body>
         <div class="container">
-
-            <div class="brand-lockup">
-                <div class="brand-mark" aria-label="H-Music"></div>
-                <div class="brand-copy">
-                    <strong>H-Music</strong>
-                    <span>Parent App</span>
-                </div>
+            <div class="app-top">
+                <div class="brand"><div class="brand-mark">H</div><div class="brand-name">H-Music</div></div>
+                <div class="top-dot"></div>
             </div>
-
-            <div class="app-hero">
-                <div class="hero-title">
-                    <h1>{student[0]}</h1>
-                    <p>Welcome, {session.get("parent_name", "Parent")}</p>
-                </div>
-                <div class="hero-links">
-                    <button class="install-button" data-install-app hidden onclick="installParentApp()">Install App</button>
-                    <a href="/app_install">App Help</a>
-                    <a href="/parent_logout">Logout</a>
-                </div>
-            </div>
-
+            <p class="welcome">Welcome back, <strong>{escape(session.get('parent_name', 'Parent'))}</strong></p>
             <div class="student-tabs">
-                {student_tabs}
+                {student_tabs.replace('class="student-tab active"', f'class="student-tab active" data-initial="{escape((student[0] or "A")[:1].upper())}"')}
             </div>
-
-            {tuition_alert}
-            {notice_alert}
-            {app_notification_alert}
-
-            <div class="cards">
-                <div class="card summary-card">
-                    <div class="label">Lessons Left</div>
-                    <div class="value">{student[3]}</div>
+            <div class="alerts">{tuition_alert}{notice_alert}{app_notification_alert}</div>
+            <div class="kpis">
+                <section class="app-card"><div class="kpi-label">Lessons left</div><div class="kpi-value">{student[3]}</div><div class="kpi-sub">{renewal_copy}</div></section>
+                <section class="app-card kpi-next"><div class="kpi-label">Next lesson</div><div class="kpi-value">{next_lesson_day}</div><div class="kpi-sub">{next_lesson_time or next_lesson_teacher}</div></section>
+            </div>
+            <section class="app-card next-card">
+                <div class="next-strip"><span>Next Lesson</span><span>{escape(next_lesson_pill or 'Next')}</span></div>
+                <div class="next-body">
+                    <div class="next-date">{next_lesson_day}</div>
+                    <div class="next-time">{next_lesson_time}</div>
+                    <div class="next-meta"><span>Course: {next_lesson_course}</span><span>Teacher: {next_lesson_teacher}</span><span>Room: {next_lesson_room}</span></div>
                 </div>
-
-                <div class="card summary-card wide">
-                    <div class="label">Next Lesson</div>
-                    <div class="value" style="font-size:20px;">{next_lesson_title}</div>
-                    <div class="lesson-meta">{next_lesson_meta}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Teacher</div>
-                    <div class="value">{student[1]}</div>
-                </div>
+            </section>
+            {mini_calendar}
+            <section class="app-card notes-card">
+                <div class="section-head"><h2>Recent Notes</h2><a href="#records">See all</a></div>
+                <div class="notes-list">{notes_preview}</div>
+            </section>
+            <div class="quick-actions">
+                <a class="quick-action primary" href="/parent_agent">Family<br>Assistant</a>
+                <a class="quick-action" href="/parent_reschedule">Reschedule</a>
+                <a class="quick-action" href="/parent_messages">{message_label}</a>
+                <a class="quick-action" href="/parent_cancel">Cancel<br>lesson</a>
+                <a class="quick-action small" href="/parent_billing">Billing</a>
+                <a class="quick-action small" href="/trial?from_parent_app=1">+ Add trial</a>
             </div>
-
-            <div class="actions">
-                <a class="button assistant-button" href="/parent_agent">Family Assistant</a>
-                <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
-                <a class="button" href="/parent_messages">{message_label}</a>
-                <a class="button" href="/parent_cancel">Cancel Lesson</a>
-                <a class="button" href="/parent_billing">Billing / AutoPay</a>
-                <a class="button" href="/trial?from_parent_app=1">Request Trial for Another Child or Instrument</a>
-            </div>
-
-            <h2>Upcoming Lessons</h2>
-            <div class="lesson-list">
-                {upcoming_cards}
-            </div>
-
-            <h2>Lesson Notes / Homework</h2>
-            <div class="notes-grid">
-                {lesson_note_cards}
-            </div>
-
-            <h2>More</h2>
-            <div class="secondary-actions">
-                <a class="secondary-action" href="/parent_billing">
-                    <strong>Billing</strong>
-                    <span>Invoices, AutoPay, payment setup</span>
-                </a>
-                <a class="secondary-action" href="/student_ledger/{student[0]}">
-                    <strong>Full Ledger</strong>
-                    <span>Complete account history</span>
-                </a>
-                <a class="secondary-action" href="/parent_notifications">
-                    <strong>Updates</strong>
-                    <span>App notices and reminders</span>
-                </a>
-            </div>
-
-            <details class="records-panel">
+            <details class="records-panel" id="records">
                 <summary>Account Records</summary>
                 <div class="records-content">
-                    <h2 id="invoices">Invoices</h2>
-                    <table>
-                        <tr>
-                            <th>ID</th>
-                            <th>Amount</th>
-                            <th>Status</th>
-                            <th>Type</th>
-                            <th>Created</th>
-                            <th>Action</th>
-                        </tr>
-                        {invoice_rows}
-                    </table>
-
-                    <h2>Payments</h2>
-                    <table>
-                        <tr>
-                            <th>Date</th>
-                            <th>Amount</th>
-                            <th>Lessons Added</th>
-                            <th>Method</th>
-                        </tr>
-                        {payment_rows}
-                    </table>
-
-                    <h2>Recent Ledger</h2>
-                    <table>
-                        <tr>
-                            <th>Date</th>
-                            <th>Type</th>
-                            <th>Amount</th>
-                            <th>Description</th>
-                        </tr>
-                        {ledger_rows}
-                    </table>
-
-                    <h2>Parent Activity</h2>
-                    <table>
-                        <tr>
-                            <th>Date</th>
-                            <th>Student</th>
-                            <th>Action</th>
-                            <th>Description</th>
-                        </tr>
-                        {activity_rows}
-                    </table>
-
-                    <h2>Lesson History</h2>
-                    <table>
-                        <tr>
-                            <th>Date</th>
-                            <th>Lesson Content</th>
-                            <th>Performance</th>
-                            <th>Homework</th>
-                        </tr>
-                        {lesson_rows}
-                    </table>
+                    <h2>Upcoming Lessons</h2><table><tr><th>Date</th><th>Time</th><th>Teacher</th><th>Room</th><th>Status</th></tr>{upcoming_rows}</table>
+                    <h2>Invoices</h2><table><tr><th>ID</th><th>Amount</th><th>Status</th><th>Type</th><th>Created</th><th>Action</th></tr>{invoice_rows}</table>
+                    <h2>Payments</h2><table><tr><th>Date</th><th>Amount</th><th>Lessons</th><th>Method</th></tr>{payment_rows}</table>
+                    <h2>Recent Ledger</h2><table><tr><th>Date</th><th>Type</th><th>Amount</th><th>Description</th></tr>{ledger_rows}</table>
+                    <h2>Lesson History</h2><table><tr><th>Date</th><th>Lesson</th><th>Performance</th><th>Homework</th></tr>{lesson_rows}</table>
                 </div>
             </details>
-
         </div>
         {parent_bottom_nav("home")}
     </body>
