@@ -158,23 +158,31 @@ def add_column_if_missing(cursor, table, column_name, column_sql):
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
 
 
-def migrate_legacy_passwords(cursor, table):
+def migrate_legacy_passwords(cursor, table, limit=None):
+    if os.environ.get("HMUSIC_RUN_PASSWORD_MIGRATION") != "1":
+        return 0
     cursor.execute(f"PRAGMA table_info({table})")
     columns = [row[1] for row in cursor.fetchall()]
     if "password" not in columns or "password_hash" not in columns:
-        return
+        return 0
+    limit_clause = " LIMIT ?" if limit else ""
+    params = (int(limit),) if limit else ()
     cursor.execute(f"""
     SELECT id, password
     FROM {table}
     WHERE (password_hash IS NULL OR password_hash = '')
     AND password IS NOT NULL
     AND password != ''
-    """)
+    {limit_clause}
+    """, params)
+    migrated = 0
     for record_id, legacy_password in cursor.fetchall():
         cursor.execute(
             f"UPDATE {table} SET password_hash = ?, password = '' WHERE id = ?",
             (hmusic_password_hash(legacy_password), record_id)
         )
+        migrated += 1
+    return migrated
 
 
 def set_password_columns(cursor, table, record_id, password, must_change=True):
@@ -785,8 +793,8 @@ def ensure_teacher_management_schema():
             owner_username
         ))
 
-    migrate_legacy_passwords(cursor, "teachers")
-    migrate_legacy_passwords(cursor, "users")
+    migrate_legacy_passwords(cursor, "teachers", limit=5)
+    migrate_legacy_passwords(cursor, "users", limit=5)
 
     conn.commit()
     conn.close()
