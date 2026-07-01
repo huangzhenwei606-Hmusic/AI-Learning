@@ -3964,6 +3964,8 @@ def calendar():
         status = status or "scheduled"
         if status == "present":
             return "sd-present"
+        if status == "late":
+            return "sd-late"
         if status in ("no_show", "no-show"):
             return "sd-noshow"
         if status.startswith("cancel"):
@@ -3976,6 +3978,8 @@ def calendar():
         status = status or "scheduled"
         if status == "present":
             return "Present"
+        if status == "late":
+            return "Late"
         if status in ("no_show", "no-show"):
             return "No show"
         if status.startswith("cancel"):
@@ -4153,7 +4157,7 @@ def calendar():
                 --pink:#993556;--pink-bg:#FBEAF0;
                 --amber:#854F0B;--amber-bg:#FAEEDA;
                 --coral:#993C1D;--coral-bg:#FAECE7;
-                --s-present:#639922;--s-scheduled:#378ADD;
+                --s-present:#639922;--s-scheduled:#378ADD;--s-late:#D99019;
                 --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
                 --warn-bg:#FFF3E0;--warn-txt:#7D4E00;
                 --last-bg:#FFEBEB;--last-txt:#7D1F1F;
@@ -4273,6 +4277,7 @@ def calendar():
             /* status dot colors */
             .sd-present{{background:var(--s-present)}}
             .sd-scheduled{{background:var(--s-scheduled)}}
+            .sd-late{{background:var(--s-late)}}
             .sd-noshow{{background:var(--s-noshow)}}
             .sd-cancelled{{background:var(--s-cancelled)}}
             .sd-excused{{background:var(--s-excused)}}
@@ -4343,43 +4348,48 @@ def calendar():
 
 
             /* ---- owner lesson edit panel ---- */
-            .lesson-scrim{{position:fixed;inset:0;background:rgba(0,0,0,.38);display:none;z-index:1100}}
+            .lesson-scrim{{position:fixed;inset:0;background:rgba(17,24,39,.42);display:none;z-index:1100}}
             .lesson-scrim.show{{display:block}}
-            .lesson-panel{{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#242522;color:#f8f7f2;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-20px 0 50px rgba(0,0,0,.28);display:flex;flex-direction:column}}
+            .lesson-panel{{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#fff;color:var(--text);z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);display:flex;flex-direction:column;border-left:1px solid var(--line)}}
             .lesson-panel.show{{transform:translateX(0)}}
-            .lesson-panel-scroll{{overflow:auto;padding-bottom:16px}}
-            .lesson-panel-head{{padding:24px 28px 18px;border-bottom:1px solid rgba(255,255,255,.12);position:relative}}
-            .lesson-panel-close{{position:absolute;right:20px;top:18px;width:42px;height:42px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#fff;font-size:22px;cursor:pointer}}
+            .lesson-panel-scroll{{overflow:auto;padding-bottom:16px;background:#fff}}
+            .lesson-panel-head{{padding:24px 28px 18px;border-bottom:1px solid var(--line);position:relative;background:#fff}}
+            .lesson-panel-close{{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--muted);font-size:22px;cursor:pointer}}
+            .lesson-panel-close:hover{{background:#F3F6FA;color:var(--text)}}
             .panel-badges{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}}
-            .panel-status{{display:inline-flex;border-radius:999px;padding:6px 12px;background:#0d3f78;color:#8fbeff;font-weight:900;font-size:13px}}
-            .panel-status.present{{background:#214d16;color:#b9f397}} .panel-status.late{{background:#6b4b05;color:#ffe08a}} .panel-status.no_show{{background:#681d1d;color:#ffc4c4}} .panel-status.excused{{background:#604012;color:#ffd899}}
-            .panel-balance{{display:none;border-radius:999px;padding:5px 10px;background:#ffebeb;color:#9a1f1f;font-weight:900;font-size:12px}}
-            .lesson-panel h2{{font-size:27px;line-height:1.05;margin:0 0 6px;font-weight:900}}
-            .panel-sub{{font-size:16px;color:#cbc9c2;font-weight:700;line-height:1.35}}
-            .panel-grid{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(255,255,255,.12)}}
-            .panel-cell{{padding:16px 28px;border-right:1px solid rgba(255,255,255,.12);border-bottom:1px solid rgba(255,255,255,.12)}}
+            .panel-status{{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1}}
+            .panel-status.scheduled{{background:var(--s-scheduled)}} .panel-status.present{{background:var(--s-present)}} .panel-status.late{{background:#D99019}} .panel-status.no_show{{background:var(--s-noshow)}} .panel-status.excused{{background:var(--s-excused)}} .panel-status.cancelled{{background:var(--s-cancelled)}}
+            .panel-balance{{display:none;border-radius:999px;padding:5px 10px;background:#FFF4E5;color:#B54708;font-weight:900;font-size:12px;line-height:1}}
+            .lesson-panel h2{{font-size:27px;line-height:1.08;margin:0 0 6px;font-weight:900;color:var(--text)}}
+            .panel-sub{{font-size:15px;color:var(--muted);font-weight:700;line-height:1.35}}
+            .panel-grid{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line);background:#fff}}
+            .panel-cell{{padding:16px 28px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}}
             .panel-cell:nth-child(2n){{border-right:0}}
-            .panel-label{{display:block;color:#98968f;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px}}
-            .panel-value{{font-size:19px;font-weight:900;color:#fff}}
-            .panel-section{{padding:19px 28px;border-bottom:1px solid rgba(255,255,255,.12)}}
-            .panel-section h3{{font-size:13px;text-transform:uppercase;color:#98968f;margin:0 0 12px;font-weight:900}}
+            .panel-label{{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}}
+            .panel-value{{font-size:19px;font-weight:900;color:var(--text)}}
+            .panel-section{{padding:19px 28px;border-bottom:1px solid var(--line);background:#fff}}
+            .panel-section h3{{font-size:12px;text-transform:uppercase;color:var(--muted);margin:0 0 12px;font-weight:900;letter-spacing:0}}
             .att-row{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}
-            .att-btn{{border:1px solid rgba(255,255,255,.18);background:#2e302c;color:#fff;border-radius:8px;min-height:48px;font:inherit;font-weight:900;cursor:pointer}}
-            .att-btn.active{{background:#f7f7f2;color:#222421}}
-            .panel-field{{width:100%;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px}}
+            .att-btn{{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
+            .att-btn:hover{{background:#F7FAFD;border-color:#C8D3E2}}
+            .att-btn.active{{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}}
+            .att-btn[data-status="present"].active{{background:var(--s-present)}} .att-btn[data-status="late"].active{{background:#D99019}} .att-btn[data-status="no_show"].active{{background:var(--s-noshow)}} .att-btn[data-status="excused_24h"].active{{background:var(--s-excused)}}
+            .panel-field{{width:100%;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}}
+            .panel-field:focus{{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}}
+            .panel-field::placeholder{{color:#98A2B3}}
             textarea.panel-field{{min-height:94px;resize:vertical;line-height:1.45}}
             .panel-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}}
             .panel-toggle{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0}}
-            .panel-toggle strong{{display:block;color:#fff;font-size:15px}} .panel-toggle span{{display:block;color:#cbc9c2;font-size:12px;margin-top:2px}}
-            .panel-toggle input{{width:42px;height:24px;accent-color:#185FA5}}
+            .panel-toggle strong{{display:block;color:var(--text);font-size:15px}} .panel-toggle span{{display:block;color:var(--muted);font-size:12px;margin-top:2px}}
+            .panel-toggle input{{width:42px;height:24px;accent-color:var(--blue)}}
             .panel-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
-            .panel-action{{min-height:56px;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px}}
-            .panel-action:hover{{background:#373933}}
-            .panel-action.danger:hover{{background:#b42318;border-color:#b42318;color:#fff}}
-            .panel-footer{{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid rgba(255,255,255,.12);background:#242522}}
+            .panel-action{{min-height:54px;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
+            .panel-action:hover{{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}}
+            .panel-action.danger:hover{{background:#FEE4E2;border-color:#FDA29B;color:#B42318}}
+            .panel-footer{{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid var(--line);background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}}
             .panel-footer button{{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}}
-            .panel-discard{{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.18)}} .panel-save{{background:#f7f7f2;color:#20211f;border:0}}
-            .panel-toast{{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#214d16;color:#dfffd3;font-weight:800}}
+            .panel-discard{{background:#fff;color:var(--text);border:1px solid var(--line)}} .panel-discard:hover{{background:#F3F6FA}} .panel-save{{background:var(--blue);color:#fff;border:0}} .panel-save:hover{{background:#0C447C}}
+            .panel-toast{{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}}
             .panel-toast.show{{display:block}}
 
             /* ---- success strip ---- */
@@ -4437,6 +4447,7 @@ def calendar():
         <span class="filter-label">Status:</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-present)"></span>Present</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-scheduled)"></span>Scheduled</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-late)"></span>Late</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-noshow)"></span>No show</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-cancelled)"></span>Cancelled</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-excused)"></span>Excused</span>
@@ -4585,6 +4596,7 @@ def calendar():
     }}
     function statusDotClass(st) {{
       if (st === 'present')   return 'sd-present';
+      if (st === 'late') return 'sd-late';
       if (st === 'no_show' || st === 'no-show') return 'sd-noshow';
       if (st && st.startsWith('cancel')) return 'sd-cancelled';
       if (st === 'excused_24h' || st === 'excused') return 'sd-excused';
@@ -4597,7 +4609,7 @@ def calendar():
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
     function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
-    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : ''; }}
+    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
       if (!timeText) return '';
       const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
@@ -6016,6 +6028,7 @@ def teacher_dashboard():
         options = [
             ("scheduled", "Scheduled"),
             ("present", "Present"),
+            ("late", "Late"),
             ("no_show", "No Show"),
             ("cancel_3h", "Cancel < 3h"),
             ("cancel_12h", "Cancel < 12h"),
@@ -6061,6 +6074,7 @@ def teacher_dashboard():
 
     def _t_status_dot(st):
         if st == "present":   return "sd-present"
+        if st == "late":      return "sd-late"
         if st in ("no_show","no-show"): return "sd-noshow"
         if st and st.startswith("cancel"): return "sd-cancelled"
         if st in ("excused_24h","excused"): return "sd-excused"
@@ -6069,6 +6083,8 @@ def teacher_dashboard():
     def _t_status_label(st):
         if st == "present":
             return "Present"
+        if st == "late":
+            return "Late"
         if st in ("no_show", "no-show"):
             return "No show"
         if st and st.startswith("cancel"):
@@ -6086,7 +6102,7 @@ def teacher_dashboard():
         --pink:#993556;--pink-bg:#FBEAF0;
         --amber:#854F0B;--amber-bg:#FAEEDA;
         --coral:#993C1D;--coral-bg:#FAECE7;
-        --s-present:#639922;--s-scheduled:#378ADD;
+        --s-present:#639922;--s-scheduled:#378ADD;--s-late:#D99019;
         --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
     }
     .t-status-badge{display:inline-flex;align-items:center;gap:4px;
@@ -6097,6 +6113,7 @@ def teacher_dashboard():
                            background:currentColor;filter:brightness(0) invert(1)}
     .sd-present  {background:var(--s-present)}
     .sd-scheduled{background:var(--s-scheduled)}
+    .sd-late     {background:var(--s-late)}
     .sd-noshow   {background:var(--s-noshow)}
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
@@ -6116,12 +6133,12 @@ def teacher_dashboard():
     .teacher-rs-buttons{display:flex;gap:8px;margin-top:14px}
     .teacher-rs-buttons button{flex:1;border:1px solid #D9DEE8;border-radius:10px;padding:9px 10px;font-weight:700;cursor:pointer}
     .teacher-rs-ok{background:var(--blue);border-color:var(--blue)!important;color:white}
-    .lesson-scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:1100}.lesson-scrim.show{display:block}
-    .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#222421;color:#f8f7f2;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-20px 0 50px rgba(0,0,0,.28);display:flex;flex-direction:column}.lesson-panel.show{transform:translateX(0)}
-    .lesson-panel-scroll{overflow:auto;padding-bottom:16px}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid rgba(255,255,255,.12);position:relative}.lesson-panel-close{position:absolute;right:20px;top:18px;width:42px;height:42px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#fff;font-size:22px;cursor:pointer}
-    .panel-status{display:inline-flex;border-radius:999px;padding:6px 12px;background:#0d3f78;color:#8fbeff;font-weight:900;font-size:13px;margin-bottom:10px}.panel-status.present{background:#214d16;color:#b9f397}.panel-status.late{background:#6b4b05;color:#ffe08a}.panel-status.no_show{background:#681d1d;color:#ffc4c4}.panel-status.excused{background:#604012;color:#ffd899}
-    .lesson-panel h2{font-size:26px;margin:0 0 6px}.panel-sub{font-size:15px;color:#cbc9c2;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(255,255,255,.12)}.panel-cell{padding:15px 28px;border-right:1px solid rgba(255,255,255,.12);border-bottom:1px solid rgba(255,255,255,.12)}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#98968f;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px}.panel-value{font-size:18px;font-weight:900;color:#fff}
-    .panel-section{padding:18px 28px;border-bottom:1px solid rgba(255,255,255,.12)}.panel-section h3{font-size:13px;text-transform:uppercase;color:#98968f;margin:0 0 12px;font-weight:900}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid rgba(255,255,255,.18);background:#2e302c;color:#fff;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer}.att-btn.active{background:#f7f7f2;color:#222421}.panel-field{width:100%;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle input{width:42px;height:24px;accent-color:#185FA5}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:56px;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:#373933}.owner-strip{margin-top:12px;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:10px 12px;color:#d9d6cd;background:#2b2d2a;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid rgba(255,255,255,.12);background:#222421}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-discard{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.18)}.panel-save{background:#f7f7f2;color:#20211f;border:0}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#214d16;color:#dfffd3;font-weight:800}.panel-toast.show{display:block}
+    .lesson-scrim{position:fixed;inset:0;background:rgba(17,24,39,.42);display:none;z-index:1100}.lesson-scrim.show{display:block}
+    .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#fff;color:#172033;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);display:flex;flex-direction:column;border-left:1px solid #E5E7EB}.lesson-panel.show{transform:translateX(0)}
+    .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
+    .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.cancelled{background:var(--s-cancelled)}
+    .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
+    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="late"].active{background:#D99019}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     </style>
     """
 
@@ -6277,7 +6294,7 @@ def teacher_dashboard():
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
-        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : ''; }}
+        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
