@@ -64,7 +64,7 @@ OWNER_PASSWORD = "1234"
 
 
 def hmusic_password_hash(password):
-    return generate_password_hash(password or "")
+    return generate_password_hash(password or "", method="pbkdf2:sha256", salt_length=16)
 
 
 def hmusic_check_password(password, password_hash=None, legacy_password=None):
@@ -1786,7 +1786,7 @@ def _csv_import_parent_username(email, phone_digits, name):
     return f"{slug}@hmusic.local"
 
 
-def _csv_import_ensure_parent(cursor, candidate):
+def _csv_import_ensure_parent(cursor, candidate, default_password_hash=None):
     email = _csv_import_normalize_email(candidate.get("email"))
     phone = _csv_import_clean(candidate.get("phone"))
     phone_digits = _csv_import_phone_digits(phone)
@@ -1799,7 +1799,7 @@ def _csv_import_ensure_parent(cursor, candidate):
         parent_id, existing_name, existing_phone, existing_hash = existing
         new_name = name if name and (not existing_name or existing_name == username) else existing_name
         new_phone = phone if phone and not existing_phone else existing_phone
-        new_hash = existing_hash or hmusic_password_hash("1234")
+        new_hash = existing_hash or default_password_hash or hmusic_password_hash("1234")
         cursor.execute(
             """
             UPDATE parent_profiles
@@ -1815,7 +1815,7 @@ def _csv_import_ensure_parent(cursor, candidate):
         INSERT INTO parent_profiles (parent_name, email, phone, password_hash, must_change_password, active)
         VALUES (?, ?, ?, ?, 1, 1)
         """,
-        (name, username, phone, hmusic_password_hash("1234")),
+        (name, username, phone, default_password_hash or hmusic_password_hash("1234")),
     )
     return cursor.lastrowid, True
 
@@ -1835,9 +1835,31 @@ def _csv_import_link_parent_student(cursor, parent_id, student_name):
 
 
 def _csv_import_ensure_schema():
-    ensure_production_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        teacher TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        parent_phone TEXT,
+        lessons_left INTEGER DEFAULT 0,
+        free_cancel_used INTEGER DEFAULT 0
+    )
+    """)
+    for column_name, column_sql in [
+        ("name", "name TEXT"),
+        ("teacher", "teacher TEXT"),
+        ("parent_name", "parent_name TEXT"),
+        ("parent_email", "parent_email TEXT"),
+        ("parent_phone", "parent_phone TEXT"),
+        ("lessons_left", "lessons_left INTEGER DEFAULT 0"),
+        ("free_cancel_used", "free_cancel_used INTEGER DEFAULT 0"),
+    ]:
+        add_column_if_missing(cursor, "students", column_name, column_sql)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS parent_profiles (
@@ -1916,6 +1938,7 @@ def _owner_import_students_from_csv_text(csv_text):
     }
     duplicate_names = []
     seen_student_names = set()
+    default_parent_password_hash = hmusic_password_hash("1234")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -1995,7 +2018,7 @@ def _owner_import_students_from_csv_text(csv_text):
                 stats["students_created"] += 1
 
         for candidate in parent_candidates:
-            parent_id, created = _csv_import_ensure_parent(cursor, candidate)
+            parent_id, created = _csv_import_ensure_parent(cursor, candidate, default_parent_password_hash)
             if created:
                 stats["parents_created"] += 1
             else:
