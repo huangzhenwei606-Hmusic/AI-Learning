@@ -26613,7 +26613,11 @@ def owner_backup_download(filename):
 @app.before_request
 def prepare_database_for_request():
     ensure_production_schema()
-    maybe_run_daily_backup()
+    # Automatic backup on every first daily request can block Render workers when
+    # production uploads are large. Keep manual /owner_backup available and only
+    # run automatic backups when explicitly enabled in Render env vars.
+    if os.environ.get("HMUSIC_ENABLE_AUTO_BACKUP") == "1":
+        maybe_run_daily_backup()
     public_paths = (
         "/static/",
         "/hmusic-icon",
