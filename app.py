@@ -3820,6 +3820,7 @@ H-Music
 @app.route("/calendar")
 def calendar():
     ensure_v321_schema()
+    ensure_calendar_lesson_panel_schema()
     if not require_owner():
         return redirect("/owner_login")
 
@@ -3987,6 +3988,7 @@ def calendar():
         options = [
             ("scheduled", "Scheduled"),
             ("present", "Present"),
+            ("late", "Late"),
             ("no_show", "No Show"),
             ("cancel_3h", "Cancel < 3h"),
             ("cancel_12h", "Cancel < 12h"),
@@ -4062,7 +4064,7 @@ def calendar():
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
                 event_cards += f"""
-                <div class="ev" draggable="true" style="{course_style}"
+                <div class="ev" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
@@ -4338,6 +4340,48 @@ def calendar():
                                border-radius:8px;font-size:13px;cursor:pointer;
                                font-family:inherit}}
 
+
+
+            /* ---- owner lesson edit panel ---- */
+            .lesson-scrim{{position:fixed;inset:0;background:rgba(0,0,0,.38);display:none;z-index:1100}}
+            .lesson-scrim.show{{display:block}}
+            .lesson-panel{{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#242522;color:#f8f7f2;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-20px 0 50px rgba(0,0,0,.28);display:flex;flex-direction:column}}
+            .lesson-panel.show{{transform:translateX(0)}}
+            .lesson-panel-scroll{{overflow:auto;padding-bottom:16px}}
+            .lesson-panel-head{{padding:24px 28px 18px;border-bottom:1px solid rgba(255,255,255,.12);position:relative}}
+            .lesson-panel-close{{position:absolute;right:20px;top:18px;width:42px;height:42px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#fff;font-size:22px;cursor:pointer}}
+            .panel-badges{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}}
+            .panel-status{{display:inline-flex;border-radius:999px;padding:6px 12px;background:#0d3f78;color:#8fbeff;font-weight:900;font-size:13px}}
+            .panel-status.present{{background:#214d16;color:#b9f397}} .panel-status.late{{background:#6b4b05;color:#ffe08a}} .panel-status.no_show{{background:#681d1d;color:#ffc4c4}} .panel-status.excused{{background:#604012;color:#ffd899}}
+            .panel-balance{{display:none;border-radius:999px;padding:5px 10px;background:#ffebeb;color:#9a1f1f;font-weight:900;font-size:12px}}
+            .lesson-panel h2{{font-size:27px;line-height:1.05;margin:0 0 6px;font-weight:900}}
+            .panel-sub{{font-size:16px;color:#cbc9c2;font-weight:700;line-height:1.35}}
+            .panel-grid{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(255,255,255,.12)}}
+            .panel-cell{{padding:16px 28px;border-right:1px solid rgba(255,255,255,.12);border-bottom:1px solid rgba(255,255,255,.12)}}
+            .panel-cell:nth-child(2n){{border-right:0}}
+            .panel-label{{display:block;color:#98968f;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px}}
+            .panel-value{{font-size:19px;font-weight:900;color:#fff}}
+            .panel-section{{padding:19px 28px;border-bottom:1px solid rgba(255,255,255,.12)}}
+            .panel-section h3{{font-size:13px;text-transform:uppercase;color:#98968f;margin:0 0 12px;font-weight:900}}
+            .att-row{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}
+            .att-btn{{border:1px solid rgba(255,255,255,.18);background:#2e302c;color:#fff;border-radius:8px;min-height:48px;font:inherit;font-weight:900;cursor:pointer}}
+            .att-btn.active{{background:#f7f7f2;color:#222421}}
+            .panel-field{{width:100%;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px}}
+            textarea.panel-field{{min-height:94px;resize:vertical;line-height:1.45}}
+            .panel-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}}
+            .panel-toggle{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0}}
+            .panel-toggle strong{{display:block;color:#fff;font-size:15px}} .panel-toggle span{{display:block;color:#cbc9c2;font-size:12px;margin-top:2px}}
+            .panel-toggle input{{width:42px;height:24px;accent-color:#185FA5}}
+            .panel-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+            .panel-action{{min-height:56px;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px}}
+            .panel-action:hover{{background:#373933}}
+            .panel-action.danger:hover{{background:#b42318;border-color:#b42318;color:#fff}}
+            .panel-footer{{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid rgba(255,255,255,.12);background:#242522}}
+            .panel-footer button{{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}}
+            .panel-discard{{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.18)}} .panel-save{{background:#f7f7f2;color:#20211f;border:0}}
+            .panel-toast{{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#214d16;color:#dfffd3;font-weight:800}}
+            .panel-toast.show{{display:block}}
+
             /* ---- success strip ---- */
             .success-strip{{background:#EAF3DE;border-radius:8px;padding:8px 14px;
                             font-size:12px;color:#27500A;margin:0 18px 12px;
@@ -4455,6 +4499,52 @@ def calendar():
       </div>
     </div>
 
+
+
+    <div class="lesson-scrim" id="lessonScrim" onclick="closeLessonPanel()"></div>
+    <aside class="lesson-panel" id="lessonPanel" aria-hidden="true">
+      <div class="lesson-panel-scroll">
+        <div class="lesson-panel-head">
+          <button class="lesson-panel-close" type="button" onclick="closeLessonPanel()"><i class="ti ti-x"></i></button>
+          <div class="panel-badges"><span class="panel-status" id="panelStatus">Scheduled</span><span class="panel-balance" id="panelBalance"></span></div>
+          <h2 id="panelStudent">Student</h2>
+          <div class="panel-sub" id="panelCourse">Course · Teacher</div>
+        </div>
+        <div class="panel-grid">
+          <div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="panelDate"></div></div>
+          <div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="panelTime"></div></div>
+          <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
+          <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
+        </div>
+        <div class="panel-section"><h3>Attendance</h3><div class="att-row">
+          <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
+          <button class="att-btn" data-status="late" onclick="setPanelStatus('late')">Late</button>
+          <button class="att-btn" data-status="no_show" onclick="setPanelStatus('no_show')">No show</button>
+          <button class="att-btn" data-status="excused_24h" onclick="setPanelStatus('excused_24h')">Excused</button>
+        </div></div>
+        <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="panelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
+        <div class="panel-section"><h3>Homework assignment</h3><textarea class="panel-field" id="panelHomework" placeholder="Add homework. Each line can be one assignment."></textarea></div>
+        <div class="panel-section"><h3>Reminders</h3>
+          <label class="panel-toggle"><span><strong>24h before lesson</strong><span>SMS + email to parent</span></span><input type="checkbox" id="panelPreReminder"></label>
+          <label class="panel-toggle"><span><strong>Practice reminder after lesson</strong><span>2h after lesson · includes homework</span></span><input type="checkbox" id="panelPracticeReminder"></label>
+          <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
+        </div>
+        <div class="panel-section"><h3>Quick actions</h3><div class="panel-actions">
+          <button class="panel-action" onclick="ownerReschedule()"><i class="ti ti-calendar"></i>Reschedule</button>
+          <button class="panel-action" onclick="ownerMessageParent()"><i class="ti ti-message"></i>Message parent</button>
+          <button class="panel-action" onclick="ownerViewStudent()"><i class="ti ti-user"></i>View student</button>
+          <button class="panel-action" onclick="ownerRenewPackage()"><i class="ti ti-refresh"></i>Renew package</button>
+          <button class="panel-action" onclick="ownerDuplicateLesson()"><i class="ti ti-copy"></i>Duplicate lesson</button>
+          <button class="panel-action danger" onclick="ownerDeleteLesson()"><i class="ti ti-trash"></i>Delete lesson</button>
+        </div>
+        <div class="panel-row"><input class="panel-field" type="date" id="panelNewDate"><input class="panel-field" type="time" id="panelNewTime"></div>
+        <div class="panel-row"><input class="panel-field" id="panelNewRoom" placeholder="Room"><input class="panel-field" id="panelReason" placeholder="Reason / note"></div>
+        </div>
+        <div class="panel-toast" id="panelToast"></div>
+      </div>
+      <div class="panel-footer"><button class="panel-discard" onclick="closeLessonPanel()">Discard</button><button class="panel-save" onclick="saveLessonPanel()">Save changes</button></div>
+    </aside>
+
     <!-- Reschedule modal -->
     <div class="modal-overlay" id="modalOverlay">
       <div class="modal">
@@ -4500,6 +4590,72 @@ def calendar():
       if (st === 'excused_24h' || st === 'excused') return 'sd-excused';
       return 'sd-scheduled';
     }}
+
+
+
+    // ---- owner lesson panel ----
+    let activePanelLesson = null;
+    let activePanelStatus = 'scheduled';
+    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
+    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : ''; }}
+    function inputTimeValue(timeText) {{
+      if (!timeText) return '';
+      const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
+      if (!m) return timeText;
+      let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase();
+      if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0;
+      return String(h).padStart(2, '0') + ':' + m[2];
+    }}
+    function paintPanelStatus(st) {{
+      activePanelStatus = st || 'scheduled';
+      const badge = document.getElementById('panelStatus');
+      badge.textContent = statusLabel(activePanelStatus);
+      badge.className = 'panel-status ' + statusClass(activePanelStatus);
+      document.querySelectorAll('.att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activePanelStatus));
+    }}
+    function setPanelStatus(st) {{ paintPanelStatus(st); saveLessonPanel(true); }}
+    function showPanelToast(msg) {{ const t = document.getElementById('panelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
+    function lessonAction(payload) {{
+      return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}})
+        .then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed'); return d; }});
+    }}
+    function openLessonPanel(scheduleId) {{
+      fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{
+        if (!d.ok) throw new Error(d.error || 'Lesson not found');
+        activePanelLesson = d.lesson;
+        document.getElementById('panelStudent').textContent = d.lesson.student || 'Student';
+        document.getElementById('panelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || '');
+        document.getElementById('panelDate').textContent = d.lesson.date || '';
+        document.getElementById('panelTime').textContent = d.lesson.time_range || d.lesson.time || '';
+        document.getElementById('panelRoom').textContent = d.lesson.classroom || '-';
+        document.getElementById('panelType').textContent = d.lesson.schedule_type || 'Lesson';
+        document.getElementById('panelLessonNote').value = d.lesson.lesson_note || '';
+        document.getElementById('panelHomework').value = d.lesson.homework || '';
+        document.getElementById('panelPreReminder').checked = !!d.lesson.parent_lesson_reminder_enabled;
+        document.getElementById('panelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled;
+        document.getElementById('panelLowBalance').checked = !!d.lesson.low_balance_alert_enabled;
+        document.getElementById('panelNewDate').value = d.lesson.date || '';
+        document.getElementById('panelNewTime').value = inputTimeValue(d.lesson.time || '');
+        document.getElementById('panelNewRoom').value = d.lesson.classroom || '';
+        document.getElementById('panelReason').value = '';
+        const bal = document.getElementById('panelBalance');
+        const left = Number(d.lesson.lessons_left || 0);
+        bal.style.display = left <= 2 ? 'inline-flex' : 'none';
+        bal.textContent = left <= 0 ? 'Last!' : left + ' left';
+        paintPanelStatus(d.lesson.status || 'scheduled');
+        document.getElementById('lessonScrim').classList.add('show');
+        document.getElementById('lessonPanel').classList.add('show');
+      }}).catch(e => alert(e.message));
+    }}
+    function closeLessonPanel() {{ document.getElementById('lessonScrim').classList.remove('show'); document.getElementById('lessonPanel').classList.remove('show'); activePanelLesson = null; }}
+    function panelSavePayload() {{ return {{action:'save', schedule_id:activePanelLesson.id, status:activePanelStatus, lesson_note:document.getElementById('panelLessonNote').value, homework:document.getElementById('panelHomework').value, parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked, practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked, low_balance_alert_enabled:document.getElementById('panelLowBalance').checked}}; }}
+    function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) showPanelToast(d.message || 'Saved.'); }}).catch(e => alert(e.message)); }}
+    function ownerReschedule() {{ if (!activePanelLesson) return; lessonAction({{action:'reschedule', schedule_id:activePanelLesson.id, new_date:document.getElementById('panelNewDate').value, new_time:document.getElementById('panelNewTime').value, classroom:document.getElementById('panelNewRoom').value, reason:document.getElementById('panelReason').value}}).then(d => {{ showPanelToast(d.message || 'Rescheduled.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
+    function ownerDuplicateLesson() {{ if (!activePanelLesson) return; lessonAction({{action:'duplicate', schedule_id:activePanelLesson.id}}).then(d => {{ showPanelToast(d.message || 'Duplicated.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
+    function ownerDeleteLesson() {{ if (!activePanelLesson || !confirm('Delete this lesson?')) return; lessonAction({{action:'delete', schedule_id:activePanelLesson.id}}).then(d => {{ showPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+    function ownerMessageParent() {{ if (activePanelLesson) window.location.href = '/messages?student=' + encodeURIComponent(activePanelLesson.student || ''); }}
+    function ownerViewStudent() {{ if (activePanelLesson) window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || ''); }}
+    function ownerRenewPackage() {{ if (activePanelLesson) window.location.href = '/payment/' + encodeURIComponent(activePanelLesson.student || ''); }}
 
     // ---- drag-and-drop ----
     let dragId = null, dragStudent = null, dragTeacher = null;
@@ -5755,6 +5911,7 @@ def teacher_dashboard():
         return redirect("/teacher_login")
 
     ensure_v321_schema()
+    ensure_calendar_lesson_panel_schema()
 
     teacher_name = session.get("teacher_name")
     unread_messages = get_unread_message_count("teacher", teacher_name)
@@ -5959,6 +6116,12 @@ def teacher_dashboard():
     .teacher-rs-buttons{display:flex;gap:8px;margin-top:14px}
     .teacher-rs-buttons button{flex:1;border:1px solid #D9DEE8;border-radius:10px;padding:9px 10px;font-weight:700;cursor:pointer}
     .teacher-rs-ok{background:var(--blue);border-color:var(--blue)!important;color:white}
+    .lesson-scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:1100}.lesson-scrim.show{display:block}
+    .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#222421;color:#f8f7f2;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-20px 0 50px rgba(0,0,0,.28);display:flex;flex-direction:column}.lesson-panel.show{transform:translateX(0)}
+    .lesson-panel-scroll{overflow:auto;padding-bottom:16px}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid rgba(255,255,255,.12);position:relative}.lesson-panel-close{position:absolute;right:20px;top:18px;width:42px;height:42px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#fff;font-size:22px;cursor:pointer}
+    .panel-status{display:inline-flex;border-radius:999px;padding:6px 12px;background:#0d3f78;color:#8fbeff;font-weight:900;font-size:13px;margin-bottom:10px}.panel-status.present{background:#214d16;color:#b9f397}.panel-status.late{background:#6b4b05;color:#ffe08a}.panel-status.no_show{background:#681d1d;color:#ffc4c4}.panel-status.excused{background:#604012;color:#ffd899}
+    .lesson-panel h2{font-size:26px;margin:0 0 6px}.panel-sub{font-size:15px;color:#cbc9c2;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(255,255,255,.12)}.panel-cell{padding:15px 28px;border-right:1px solid rgba(255,255,255,.12);border-bottom:1px solid rgba(255,255,255,.12)}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#98968f;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px}.panel-value{font-size:18px;font-weight:900;color:#fff}
+    .panel-section{padding:18px 28px;border-bottom:1px solid rgba(255,255,255,.12)}.panel-section h3{font-size:13px;text-transform:uppercase;color:#98968f;margin:0 0 12px;font-weight:900}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid rgba(255,255,255,.18);background:#2e302c;color:#fff;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer}.att-btn.active{background:#f7f7f2;color:#222421}.panel-field{width:100%;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle input{width:42px;height:24px;accent-color:#185FA5}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:56px;border:1px solid rgba(255,255,255,.16);background:#2d2f2b;color:#fff;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:#373933}.owner-strip{margin-top:12px;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:10px 12px;color:#d9d6cd;background:#2b2d2a;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid rgba(255,255,255,.12);background:#222421}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-discard{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.18)}.panel-save{background:#f7f7f2;color:#20211f;border:0}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#214d16;color:#dfffd3;font-weight:800}.panel-toast.show{display:block}
     </style>
     """
 
@@ -5970,7 +6133,7 @@ def teacher_dashboard():
         course_style = course_calendar_style(course_color)
         return f"""
         <div class="calendar-event"
-             draggable="true" style="border-left-width:3px;{course_style}"
+             draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
              data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
              data-time="{escape(str(lesson[2] or ''))}"
             data-student="{escape(str(lesson[3] or ''))}"
@@ -5981,7 +6144,7 @@ def teacher_dashboard():
                   <span style="display:block;margin-top:3px">{time_range}</span>
                 </span>
             </div>
-            <a class="event-student" href="/add_lesson/{lesson[3]}">{escape(lesson[3] or '-')}</a>
+            <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
             <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
@@ -6077,6 +6240,20 @@ def teacher_dashboard():
             </div>
             {TEACHER_CAL_CSS}
         <div class="calendar-grid">{day_columns}</div>
+
+        <div class="lesson-scrim" id="teacherLessonScrim" onclick="closeTeacherLessonPanel()"></div>
+        <aside class="lesson-panel" id="teacherLessonPanel" aria-hidden="true">
+          <div class="lesson-panel-scroll">
+            <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
+            <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
+            <div class="panel-section"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="late" onclick="setTeacherPanelStatus('late')">Late</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Excused</button></div></div>
+            <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
+            <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
+            <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">Reschedule</button><button class="panel-action" onclick="teacherSubRequest()">Sub request</button><button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">Cancel lesson</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">Owner approval required for delete, billing, final reschedule, sub assignment, and cancellation. Parents are notified only after owner confirmation.</div></div>
+            <div class="panel-toast" id="tPanelToast"></div>
+          </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" onclick="saveTeacherLessonPanel()">Save changes</button></div>
+        </aside>
         <div class="teacher-rs-overlay" id="teacherRsOverlay">
             <div class="teacher-rs-modal">
                 <h3>Move lesson</h3>
@@ -6096,6 +6273,25 @@ def teacher_dashboard():
             </div>
         </div>
         <script>
+
+        let activeTeacherLesson = null;
+        let activeTeacherStatus = 'scheduled';
+        function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
+        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : ''; }}
+        function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
+        function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
+        function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
+        function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed'); return d; }}); }}
+        function openTeacherLessonPanel(scheduleId) {{ fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
+        function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
+        function saveTeacherLessonPanel(quiet) {{ if (!activeTeacherLesson) return; teacherLessonAction(teacherPayload()).then(d => {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); }}).catch(e => alert(e.message)); }}
+        function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true); }}
+        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
+        function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
+        function teacherCancelRequest() {{ if (!activeTeacherLesson || !confirm('Send cancellation request to owner?')) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
+        function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
+
         let teacherDrag = null;
         function teacherAddOnDate(dateStr) {{
             window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
@@ -6750,6 +6946,300 @@ def update_lesson_status():
         """
 
     return redirect(return_to)
+
+
+# =========================
+# Calendar lesson detail drawers
+# =========================
+
+def ensure_calendar_lesson_panel_schema():
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    for column_name, column_sql in [
+        ("private_note", "private_note TEXT"),
+        ("homework_assignment", "homework_assignment TEXT"),
+        ("parent_lesson_reminder_enabled", "parent_lesson_reminder_enabled INTEGER DEFAULT 0"),
+        ("practice_reminder_enabled", "practice_reminder_enabled INTEGER DEFAULT 0"),
+        ("low_balance_alert_enabled", "low_balance_alert_enabled INTEGER DEFAULT 0"),
+        ("owner_calendar_updated_at", "owner_calendar_updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "schedule", column_name, column_sql)
+    for column_name, column_sql in [
+        ("schedule_id", "schedule_id INTEGER"),
+        ("private_note", "private_note TEXT"),
+        ("created_by", "created_by TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "lessons", column_name, column_sql)
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_schedule_id ON lessons(schedule_id)")
+    except sqlite3.Error:
+        pass
+    conn.commit()
+    conn.close()
+
+
+def calendar_status_label(status):
+    status = status or "scheduled"
+    if status == "present":
+        return "Present"
+    if status == "late":
+        return "Late"
+    if status in ("no_show", "no-show"):
+        return "No show"
+    if status in ("excused", "excused_24h", "teacher_cancelled") or status.startswith("cancel"):
+        return "Excused"
+    return "Scheduled"
+
+
+def calendar_parent_ids(cursor, student_name):
+    cursor.execute("""
+    SELECT parent_id FROM parent_students
+    WHERE student_name = ? AND active = 1
+    """, (student_name,))
+    return [row[0] for row in cursor.fetchall()]
+
+
+def calendar_queue_parent_notice(student_name, title, body, related_type, related_id):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    parent_ids = calendar_parent_ids(cursor, student_name)
+    conn.close()
+    for parent_id in parent_ids:
+        create_notification("parent", str(parent_id), title, body, "/parent_dashboard", related_type=related_type, related_id=related_id)
+    return len(parent_ids)
+
+
+def upsert_calendar_lesson_record(cursor, schedule_id, student_name, lesson_note, homework, private_note, actor):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1", (schedule_id,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute("""
+        UPDATE lessons
+        SET lesson_content = ?, homework = ?, private_note = ?, updated_at = ?
+        WHERE id = ?
+        """, (lesson_note or "Lesson note", homework or "", private_note or "", now, row[0]))
+        return row[0]
+    cursor.execute("""
+    INSERT INTO lessons (student_name, lesson_content, performance, homework, lesson_date, schedule_id, private_note, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (student_name, lesson_note or "Lesson note", "", homework or "", date.today().strftime("%Y-%m-%d"), schedule_id, private_note or "", actor, now, now))
+    return cursor.lastrowid
+
+
+def calendar_lesson_row(cursor, schedule_id):
+    cursor.execute("""
+    SELECT
+        s.id, s.student_name, s.teacher, s.lesson_date, s.lesson_time, COALESCE(s.classroom, ''),
+        COALESCE(s.status, 'scheduled'), COALESCE(s.course_type_name, ''), COALESCE(s.schedule_type, ''),
+        COALESCE(s.package_type, ''), COALESCE(s.duration, 30), COALESCE(st.lessons_left, 0),
+        COALESCE(s.notes, ''), COALESCE(s.private_note, ''), COALESCE(s.homework_assignment, ''),
+        COALESCE(s.parent_lesson_reminder_enabled, 0), COALESCE(s.practice_reminder_enabled, 0),
+        COALESCE(s.low_balance_alert_enabled, 0), COALESCE(s.is_group, 0)
+    FROM schedule s
+    LEFT JOIN students st ON s.student_name = st.name
+    WHERE s.id = ?
+    """, (schedule_id,))
+    return cursor.fetchone()
+
+
+@app.route("/calendar_lesson_detail/<int:schedule_id>")
+def calendar_lesson_detail(schedule_id):
+    ensure_calendar_lesson_panel_schema()
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Login required"}, 401
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    row = calendar_lesson_row(cursor, schedule_id)
+    conn.close()
+    if not row:
+        return {"ok": False, "error": "Lesson not found"}, 404
+    if require_teacher() and not require_owner() and row[2] != session.get("teacher_name"):
+        return {"ok": False, "error": "Permission denied"}, 403
+    course_name = row[7] or row[8] or row[9] or "Lesson"
+    return {
+        "ok": True,
+        "lesson": {
+            "id": row[0], "student": row[1] or "", "teacher": row[2] or "", "date": row[3] or "",
+            "time": row[4] or "", "time_range": format_lesson_time_range(row[4], row[10]),
+            "classroom": row[5] or "", "status": row[6] or "scheduled", "status_label": calendar_status_label(row[6]),
+            "course_name": course_name, "schedule_type": row[8] or row[9] or "Lesson", "duration": row[10] or 30,
+            "lessons_left": row[11] or 0, "lesson_note": row[12] or "", "private_note": row[13] or "",
+            "homework": row[14] or "", "parent_lesson_reminder_enabled": int(row[15] or 0),
+            "practice_reminder_enabled": int(row[16] or 0), "low_balance_alert_enabled": int(row[17] or 0),
+            "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
+        }
+    }
+
+
+@app.route("/calendar_lesson_action", methods=["POST"])
+def calendar_lesson_action():
+    ensure_calendar_lesson_panel_schema()
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Login required"}, 401
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip()
+    schedule_id = data.get("schedule_id")
+    if not schedule_id:
+        return {"ok": False, "error": "schedule_id required"}, 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    row = calendar_lesson_row(cursor, schedule_id)
+    if not row:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found"}, 404
+    is_owner = require_owner()
+    teacher_name = session.get("teacher_name")
+    if require_teacher() and not is_owner and row[2] != teacher_name:
+        conn.close()
+        return {"ok": False, "error": "Permission denied"}, 403
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    actor = "owner" if is_owner else f"teacher:{teacher_name}"
+
+    if action == "save":
+        status = (data.get("status") or row[6] or "scheduled").strip()
+        lesson_note = (data.get("lesson_note") or "").strip()
+        private_note = (data.get("private_note") or "").strip()
+        homework_items = data.get("homework_items")
+        if isinstance(homework_items, list):
+            homework = "\n".join([str(item).strip() for item in homework_items if str(item).strip()])
+        else:
+            homework = (data.get("homework") or "").strip()
+        parent_reminder = 1 if data.get("parent_lesson_reminder_enabled") else 0
+        practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
+        low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
+
+        if status != row[6]:
+            conn.close()
+            result = apply_lesson_status(schedule_id, status, actor=actor)
+            if not result.get("ok"):
+                return {"ok": False, "error": result.get("error", "Attendance was not updated")}, 400
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            row = calendar_lesson_row(cursor, schedule_id)
+
+        if is_owner:
+            cursor.execute("""
+            UPDATE schedule
+            SET notes = ?, private_note = ?, homework_assignment = ?,
+                parent_lesson_reminder_enabled = ?, practice_reminder_enabled = ?, low_balance_alert_enabled = ?,
+                owner_calendar_updated_at = ?
+            WHERE id = ?
+            """, (lesson_note, private_note, homework, parent_reminder, practice_reminder, low_balance_alert, now, schedule_id))
+        else:
+            cursor.execute("""
+            UPDATE schedule
+            SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
+            WHERE id = ?
+            """, (lesson_note, private_note, homework, practice_reminder, schedule_id))
+        upsert_calendar_lesson_record(cursor, int(schedule_id), row[1], lesson_note, homework, private_note, actor)
+        conn.commit()
+        conn.close()
+        queued = 0
+        if homework and (practice_reminder or data.get("send_homework_now")):
+            queued += calendar_queue_parent_notice(row[1], "Practice reminder", f"Homework for {row[1]}:\n{homework}", "homework_assignment", int(schedule_id))
+        if is_owner and parent_reminder:
+            queued += calendar_queue_parent_notice(row[1], "Lesson reminder", f"{row[1]} has a lesson on {row[3]} at {row[4]} with {row[2]} in {row[5] or 'the studio'}.", "lesson_reminder", int(schedule_id))
+        if is_owner and low_balance_alert:
+            queued += calendar_queue_parent_notice(row[1], "Low lesson balance", f"{row[1]}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
+        return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
+
+    if action == "reschedule":
+        if is_owner:
+            new_date = (data.get("new_date") or "").strip()
+            new_time = (data.get("new_time") or row[4] or "").strip()
+            classroom = (data.get("classroom") or row[5] or "").strip()
+            try:
+                new_date_obj = datetime.strptime(new_date, "%Y-%m-%d").date()
+            except ValueError:
+                conn.close()
+                return {"ok": False, "error": "Invalid date"}, 400
+            if not parse_lesson_time_value(new_time):
+                conn.close()
+                return {"ok": False, "error": "Invalid time"}, 400
+            cursor.execute("""
+            UPDATE schedule SET lesson_date = ?, weekday = ?, lesson_time = ?, classroom = ?, status = 'scheduled'
+            WHERE id = ?
+            """, (new_date, new_date_obj.strftime("%A"), new_time, classroom, schedule_id))
+            conn.commit()
+            conn.close()
+            if row[2]:
+                create_notification("teacher", row[2], "Lesson rescheduled", f"{row[1]}'s lesson moved to {new_date} at {new_time}.", "/teacher_dashboard?view=schedule", related_type="owner_reschedule", related_id=int(schedule_id))
+            return {"ok": True, "message": "Lesson rescheduled."}
+        requested_date = (data.get("new_date") or row[3] or "").strip()
+        requested_time = (data.get("new_time") or row[4] or "").strip()
+        reason = (data.get("reason") or "Teacher requested from calendar panel").strip()
+        cursor.execute("""
+        INSERT INTO reschedule_requests (parent_id, student_name, original_schedule_id, original_date, original_time, original_teacher, original_classroom, requested_date, requested_time, reason, status, created_at, updated_at, requested_teacher, requested_classroom)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        """, (None, row[1], schedule_id, row[3], row[4], row[2], row[5], requested_date, requested_time, reason, now, now, row[2], row[5]))
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        create_notification("owner", "owner", "Teacher reschedule request", f"{row[2]} requested reschedule for {row[1]} to {requested_date} {requested_time}.", f"/reschedule_request/{request_id}", related_type="reschedule_request", related_id=request_id)
+        return {"ok": True, "message": "Reschedule request sent to owner."}
+
+    if action == "sub_request":
+        if is_owner:
+            conn.close()
+            return {"ok": False, "error": "Owner does not need sub approval."}, 400
+        reason = (data.get("reason") or "Requested from teacher calendar panel").strip()
+        ensure_v145_schema()
+        cursor.execute("""
+        INSERT INTO sub_requests (schedule_id, teacher_name, student_name, lesson_date, lesson_time, classroom, reason, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        """, (schedule_id, row[2], row[1], row[3], row[4], row[5], reason, now))
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        create_notification("owner", "owner", "Teacher sub request", f"{row[2]} requested a substitute for {row[1]} on {row[3]} {row[4]}.", "/owner_sub_requests", related_type="sub_request", related_id=request_id)
+        return {"ok": True, "message": "Sub request sent to owner."}
+
+    if action == "cancel_request":
+        if is_owner:
+            status = (data.get("status") or "teacher_cancelled").strip()
+            conn.close()
+            result = apply_lesson_status(schedule_id, status, actor="owner", reason=data.get("reason"))
+            return {"ok": bool(result.get("ok")), "message": "Lesson cancelled." if result.get("ok") else result.get("error"), "error": result.get("error")}
+        reason = (data.get("reason") or "Teacher requested cancellation from calendar panel").strip()
+        thread_id = get_or_create_message_thread(f"Cancel request - {row[1]}", student_name=row[1], teacher_name=row[2], thread_type="teacher_cancel_request", related_type="schedule", related_id=int(schedule_id))
+        add_message(thread_id, "teacher", row[2], "owner", f"Cancel request for {row[1]} on {row[3]} {row[4]}. Reason: {reason}")
+        conn.close()
+        create_notification("owner", "owner", "Teacher cancellation request", f"{row[2]} requested cancellation for {row[1]} on {row[3]} {row[4]}.", f"/message_thread/{thread_id}", related_type="schedule", related_id=int(schedule_id))
+        return {"ok": True, "message": "Cancellation request sent to owner."}
+
+    if action == "duplicate":
+        if not is_owner:
+            conn.close()
+            return {"ok": False, "error": "Only owner can duplicate lessons."}, 403
+        next_date = (datetime.strptime(row[3], "%Y-%m-%d").date() + timedelta(days=7)).strftime("%Y-%m-%d")
+        cursor.execute("""
+        INSERT INTO schedule (student_name, teacher, lesson_date, lesson_time, classroom, duration, course_type_name, schedule_type, package_type, status, notes, private_note, homework_assignment)
+        SELECT student_name, teacher, ?, lesson_time, classroom, duration, course_type_name, schedule_type, package_type, 'scheduled', notes, private_note, homework_assignment
+        FROM schedule WHERE id = ?
+        """, (next_date, schedule_id))
+        new_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return {"ok": True, "message": "Duplicated to next week.", "new_id": new_id}
+
+    if action == "delete":
+        if not is_owner:
+            conn.close()
+            return {"ok": False, "error": "Only owner can delete lessons."}, 403
+        cursor.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return {"ok": True, "message": f"Deleted {deleted} lesson."}
+
+    conn.close()
+    return {"ok": False, "error": "Unknown action"}, 400
 
 @app.route("/invoices")
 def invoices():
@@ -25263,6 +25753,7 @@ def ensure_v252_schema():
 
     default_rules = [
         ("present", "Present", 100, 100, 1),
+        ("late", "Late", 100, 100, 1),
         ("no_show", "No Show", 100, 100, 1),
         ("cancel_3h", "Cancel < 3h", 100, 100, 1),
         ("cancel_12h", "Cancel < 12h", 100, 75, 1),
