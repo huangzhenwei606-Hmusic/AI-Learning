@@ -7388,6 +7388,7 @@ def ensure_v27_schema():
     """)
 
     students = cursor.fetchall()
+    default_parent_password_hash = hmusic_password_hash("1234") if students else ""
 
     for student in students:
         student_name = student[0]
@@ -7413,7 +7414,7 @@ def ensure_v27_schema():
             parent_email,
             parent_phone,
             "",
-            hmusic_password_hash("1234"),
+            default_parent_password_hash,
             1,
             1,
             now,
@@ -7459,7 +7460,7 @@ def ensure_v27_schema():
                 now
             ))
 
-    migrate_legacy_passwords(cursor, "parent_profiles")
+    migrate_legacy_passwords(cursor, "parent_profiles", limit=5)
 
     conn.commit()
     conn.close()
