@@ -926,14 +926,15 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
     return f"""
         <div class="td-nav-section">Today</div>
         {item("home", "/teacher_dashboard", "ti-home", "Home")}
-        {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Schedule")}
-        {item("messages", "/teacher_messages", "ti-message", "Messages", message_badge)}
+        {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Calendar")}
+        {item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge)}
         <div class="td-nav-section">Lessons</div>
-        {item("records", "/teacher_lesson_notes", "ti-notes", "Lesson Records", homework_badge)}
+        {item("records", "/teacher_dashboard?view=records", "ti-notes", "Lesson Records", homework_badge)}
         {item("homework", "/teacher_missing_homework", "ti-alert-circle", "Missing Homework", homework_badge)}
         {item("sub", "/teacher_sub_request", "ti-replace", "Sub Request")}
         {item("reschedule", "/teacher_reschedule", "ti-calendar-x", "Reschedule Request")}
-        {item("add_schedule", "/add_schedule", "ti-calendar-plus", "Add Schedule")}
+        {item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule")}
+        {item("time_off", "/teacher_dashboard?view=time_off", "ti-calendar-off", "Time Off")}
         <div class="td-nav-section">Payroll</div>
         {item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>')}
         <div class="td-nav-section">Account</div>
@@ -1077,6 +1078,236 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
         </div>
     </body>
     </html>
+    """
+
+
+def ensure_teacher_time_off_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_time_off_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        start_time TEXT,
+        end_time TEXT,
+        all_day INTEGER DEFAULT 1,
+        reason TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def teacher_dashboard_messages_content(teacher_name):
+    rows_data = get_message_inbox_threads("teacher", teacher_name)
+    rows = ""
+    for t in rows_data:
+        unread = f"<span class='td-msg-badge unread'>{t[10]} unread</span>" if t[10] else "<span class='td-msg-badge'>Read</span>"
+        files = f"<span class='td-msg-badge file'>{t[11]} files</span>" if t[11] else ""
+        latest = t[9] or ""
+        if len(latest) > 120:
+            latest = latest[:117] + "..."
+        rows += f"""
+        <tr class="{'is-unread' if t[10] else ''}">
+            <td>{unread} {files}</td>
+            <td><a href="/message_thread/{t[0]}">{escape(t[1] or 'Message')}</a><div class="td-subtle">#{t[0]} · {escape(t[5] or '')}</div></td>
+            <td>{escape(t[2] or '-')}</td>
+            <td>{escape(t[3] or '-')}</td>
+            <td>{escape(t[7] or '')}</td>
+            <td>{escape(latest)}</td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='6'>No messages yet.</td></tr>"
+    return f"""
+        <div class="schedule-head">
+            <div class="schedule-title"><h1>Messages</h1><p>Parent and owner conversations stay inside the teacher portal.</p></div>
+            <div class="schedule-controls"><a href="/new_teacher_message">New Message</a></div>
+        </div>
+        <section class="td-card">
+            <table class="td-table td-message-table">
+                <tr><th>Status</th><th>Subject</th><th>Student</th><th>Parent</th><th>Updated</th><th>Latest</th></tr>
+                {rows}
+            </table>
+        </section>
+        <style>
+            .td-table {{ width:100%; border-collapse:collapse; }}
+            .td-table th,.td-table td {{ border-bottom:1px solid var(--td-line); padding:12px; text-align:left; vertical-align:top; }}
+            .td-table th {{ color:var(--td-muted); font-weight:600; font-size:12px; background:#F8FAFC; }}
+            .td-table a {{ color:var(--td-blue); font-weight:700; }}
+            .td-subtle {{ color:var(--td-muted); font-size:12px; margin-top:3px; }}
+            .td-msg-badge {{ display:inline-flex; border-radius:999px; padding:4px 8px; background:var(--td-blue-soft); color:var(--td-blue); font-size:11px; font-weight:800; }}
+            .td-msg-badge.unread {{ background:var(--td-red-soft); color:var(--td-red); }}
+            .td-msg-badge.file {{ background:var(--td-gray-soft); color:var(--td-muted); }}
+            tr.is-unread td {{ background:#FFF8ED; }}
+        </style>
+    """
+
+
+def teacher_dashboard_records_content(teacher_name):
+    selected_date = request.values.get("lesson_date") or date.today().strftime("%Y-%m-%d")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT DISTINCT student_name
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date = ?
+    ORDER BY lesson_time, student_name
+    """, (teacher_name, selected_date))
+    day_students = [row[0] for row in cursor.fetchall() if row[0]]
+    selected_student = request.values.get("student_name") or (day_students[0] if day_students else "")
+    cursor.execute("""
+    SELECT lesson_date, student_name, lesson_content, performance, homework
+    FROM lessons
+    WHERE student_name IN (SELECT DISTINCT student_name FROM schedule WHERE teacher = ?)
+    ORDER BY lesson_date DESC, id DESC
+    LIMIT 25
+    """, (teacher_name,))
+    history = cursor.fetchall()
+    conn.close()
+    student_options = "".join(f'<option value="{escape(st)}" {"selected" if st == selected_student else ""}>{escape(st)}</option>' for st in day_students)
+    if not student_options:
+        student_options = '<option value="">No students scheduled on this date</option>'
+    disabled = "disabled" if not day_students else ""
+    history_rows = "".join(f"<tr><td>{escape(r[0] or '')}</td><td>{escape(r[1] or '')}</td><td>{escape(r[3] or '')}</td><td>{escape(r[4] or '')}</td></tr>" for r in history) or "<tr><td colspan='4'>No lesson records yet.</td></tr>"
+    return f"""
+        <div class="schedule-head">
+            <div class="schedule-title"><h1>Lesson Records</h1><p>Write parent-visible notes and homework without leaving the teacher portal.</p></div>
+        </div>
+        <div class="td-layout">
+            <section class="td-card">
+                <h2>Write Lesson Notes</h2>
+                <form method="GET" action="/teacher_dashboard" class="td-form">
+                    <input type="hidden" name="view" value="records">
+                    <label>Date<input type="date" name="lesson_date" value="{selected_date}" onchange="this.form.submit()" required></label>
+                </form>
+                <form method="POST" action="/teacher_lesson_notes" class="td-form">
+                    <input type="hidden" name="lesson_date" value="{selected_date}">
+                    <label>Student<select name="student_name" required {disabled}>{student_options}</select></label>
+                    <input type="hidden" name="lesson_content" value="Lesson note">
+                    <label>Performance<select name="performance" required {disabled}><option value="Excellent focus and progress">Excellent focus and progress</option><option value="Strong effort with steady growth">Strong effort with steady growth</option><option value="Good participation, keep practicing">Good participation, keep practicing</option><option value="Building consistency and confidence">Building consistency and confidence</option></select></label>
+                    <label>Homework<textarea name="homework" placeholder="Write homework clearly for the parent and student." {disabled}></textarea></label>
+                    <button type="submit" {disabled}>Save Notes</button>
+                </form>
+            </section>
+            <section class="td-card">
+                <h2>Recent Records</h2>
+                <table class="td-table"><tr><th>Date</th><th>Student</th><th>Performance</th><th>Homework</th></tr>{history_rows}</table>
+            </section>
+        </div>
+        <style>
+            .td-form label {{ display:block; color:var(--td-muted); font-weight:600; margin-bottom:12px; }}
+            .td-form input,.td-form select,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
+            .td-form textarea {{ min-height:160px; resize:vertical; }}
+            .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
+            .td-table {{ width:100%; border-collapse:collapse; }} .td-table th,.td-table td {{ border-bottom:1px solid var(--td-line); padding:10px; text-align:left; vertical-align:top; }} .td-table th {{ color:var(--td-muted); font-size:12px; background:#F8FAFC; }}
+        </style>
+    """
+
+
+def teacher_dashboard_add_schedule_content(teacher_name):
+    ensure_v18_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classrooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_name TEXT UNIQUE
+    )
+    """)
+    cursor.executemany("INSERT OR IGNORE INTO classrooms (room_name) VALUES (?)", [("Room 1",), ("Room 2",), ("Room 3",), ("Trial Room",)])
+    conn.commit()
+    cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
+    classrooms = cursor.fetchall()
+    cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
+    course_types = cursor.fetchall()
+    cursor.execute("""
+    SELECT DISTINCT student_name FROM (
+        SELECT student_name FROM enrollments WHERE teacher_name = ? AND status = 'active'
+        UNION SELECT name FROM students WHERE teacher = ?
+        UNION SELECT student_name FROM schedule WHERE teacher = ?
+    ) WHERE student_name IS NOT NULL AND student_name != '' ORDER BY student_name
+    """, (teacher_name, teacher_name, teacher_name))
+    students = cursor.fetchall()
+    conn.close()
+    room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in classrooms)
+    course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {int(c[2] or 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
+    student_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in students) or '<option value="">No students found</option>'
+    created = request.args.get('created')
+    created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
+    return f"""
+        <div class="schedule-head"><div class="schedule-title"><h1>Add Schedule</h1><p>Create lessons from inside the teacher portal. New/unassigned students will notify owner for review.</p></div></div>
+        {created_html}
+        <section class="td-card">
+            <form method="POST" action="/add_schedule" class="td-form td-form-grid">
+                <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
+                <label>Student<select id="student_name" name="student_name" required>{student_options}</select></label>
+                <label>Room<select name="classroom" required>{room_options}</select></label>
+                <label>Weekday<select name="weekday"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option></select></label>
+                <label>Time<input type="time" name="lesson_time" required></label>
+                <label>Schedule Type<select name="schedule_type"><option value="weekly">Weekly</option><option value="one_time">One time</option></select></label>
+                <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option></select></label>
+                <label>Start Date<input type="date" name="start_date" value="{date.today().strftime('%Y-%m-%d')}" required></label>
+                <label>Course<select name="course_type_id" required>{course_options}</select></label>
+                <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
+                <label class="full">Group Students<textarea name="group_student_names" placeholder="For group classes, list names here."></textarea></label>
+                <div class="full"><button type="submit">Create Schedule</button></div>
+            </form>
+        </section>
+        <style>
+            .td-success {{ background:var(--td-green-soft); color:var(--td-green); border:1px solid #c9efd5; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-weight:800; }}
+            .td-form-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }} .td-form-grid .full {{ grid-column:1 / -1; }}
+            .td-form label {{ display:block; color:var(--td-muted); font-weight:600; }}
+            .td-form input,.td-form select,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
+            .td-form textarea {{ min-height:90px; resize:vertical; }} .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
+        </style>
+    """
+
+
+def teacher_dashboard_time_off_content(teacher_name):
+    ensure_teacher_time_off_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT start_date, end_date, start_time, end_time, all_day, reason, status, created_at
+    FROM teacher_time_off_requests
+    WHERE teacher_name = ?
+    ORDER BY id DESC
+    LIMIT 20
+    """, (teacher_name,))
+    rows = cursor.fetchall()
+    conn.close()
+    row_html = ''.join(f"<tr><td>{escape(r[0] or '')} to {escape(r[1] or '')}</td><td>{'All day' if r[4] else escape((r[2] or '') + ' - ' + (r[3] or ''))}</td><td>{escape(r[6] or '')}</td><td>{escape(r[5] or '')}</td></tr>" for r in rows) or "<tr><td colspan='4'>No time off requests yet.</td></tr>"
+    sent = '<div class="td-success">Time off request sent to owner.</div>' if request.args.get('sent') else ''
+    return f"""
+        <div class="schedule-head"><div class="schedule-title"><h1>Time Off</h1><p>Request a date off or a specific unavailable time range. Owner approval is required before schedules change.</p></div></div>
+        {sent}
+        <div class="td-layout">
+            <section class="td-card"><h2>Request Time Off</h2>
+                <form method="POST" action="/teacher_time_off_request" class="td-form">
+                    <label>Start Date<input type="date" name="start_date" required></label>
+                    <label>End Date<input type="date" name="end_date" required></label>
+                    <label class="check"><input type="checkbox" name="all_day" value="1" checked> Full day / off date</label>
+                    <div class="td-two"><label>Start Time<input type="time" name="start_time"></label><label>End Time<input type="time" name="end_time"></label></div>
+                    <label>Reason<textarea name="reason" placeholder="Optional note for owner"></textarea></label>
+                    <button type="submit">Send Request</button>
+                </form>
+            </section>
+            <section class="td-card"><h2>My Requests</h2><table class="td-table"><tr><th>Date</th><th>Time</th><th>Status</th><th>Reason</th></tr>{row_html}</table></section>
+        </div>
+        <style>
+            .td-success {{ background:var(--td-green-soft); color:var(--td-green); border:1px solid #c9efd5; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-weight:800; }}
+            .td-form label {{ display:block; color:var(--td-muted); font-weight:600; margin-bottom:12px; }} .td-form input,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
+            .td-form textarea {{ min-height:110px; resize:vertical; }} .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
+            .td-form .check {{ display:flex; gap:8px; align-items:center; color:var(--td-text); }} .td-form .check input {{ width:auto; margin:0; }} .td-two {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .td-table {{ width:100%; border-collapse:collapse; }} .td-table th,.td-table td {{ border-bottom:1px solid var(--td-line); padding:10px; text-align:left; vertical-align:top; }} .td-table th {{ color:var(--td-muted); font-size:12px; background:#F8FAFC; }}
+        </style>
     """
 
 @app.route("/")
@@ -3190,11 +3421,7 @@ def teacher_lesson_notes():
 
         conn.commit()
         conn.close()
-        return f"""
-        <h1>Lesson Notes Saved!</h1>
-        <p>{escape(selected_student)}</p>
-        <p><a href="/teacher_dashboard">Back</a></p>
-        """
+        return redirect(f"/teacher_dashboard?view=records&lesson_date={selected_date}")
 
     conn.close()
 
@@ -5225,6 +5452,9 @@ def add_schedule():
                 related_type="teacher_student_setup"
             )
 
+        if require_teacher() and not require_owner():
+            return redirect(f"/teacher_dashboard?view=add_schedule&created={generated_count}")
+
         student_charge_line = "" if require_teacher() and not require_owner() else f"<p>Student Charge Per Lesson: ${student_charge_amount}</p>"
 
         return f"""
@@ -6172,6 +6402,46 @@ def teacher_dashboard():
         </div>
         """
 
+    if view == "messages":
+        content = teacher_dashboard_messages_content(teacher_name or "")
+        return hstudio_teacher_dark_shell(
+            teacher_name or "Teacher",
+            unread_messages,
+            content,
+            active="messages",
+            missing_homework_count=missing_homework_count
+        )
+
+    if view == "records":
+        content = teacher_dashboard_records_content(teacher_name or "")
+        return hstudio_teacher_dark_shell(
+            teacher_name or "Teacher",
+            unread_messages,
+            content,
+            active="records",
+            missing_homework_count=missing_homework_count
+        )
+
+    if view == "add_schedule":
+        content = teacher_dashboard_add_schedule_content(teacher_name or "")
+        return hstudio_teacher_dark_shell(
+            teacher_name or "Teacher",
+            unread_messages,
+            content,
+            active="add_schedule",
+            missing_homework_count=missing_homework_count
+        )
+
+    if view == "time_off":
+        content = teacher_dashboard_time_off_content(teacher_name or "")
+        return hstudio_teacher_dark_shell(
+            teacher_name or "Teacher",
+            unread_messages,
+            content,
+            active="time_off",
+            missing_homework_count=missing_homework_count
+        )
+
     if view in ("schedule", "week"):
         schedule_mode = request.args.get("mode", "week")
         if schedule_mode not in ("week", "month"):
@@ -6244,7 +6514,7 @@ def teacher_dashboard():
         content = f"""
             <div class="schedule-head">
                 <div class="schedule-title">
-                    <h1>My Schedule</h1>
+                    <h1>My Calendar</h1>
                     <p>Daily lessons, class time, and attendance status.</p>
                 </div>
                 <div class="schedule-controls">
@@ -6430,9 +6700,9 @@ def teacher_dashboard():
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i>This Week</a>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=month"><i class="ti ti-calendar-month"></i>This Month</a>
                     <a class="td-action" href="/teacher_missing_homework"><i class="ti ti-alert-circle"></i>Missing Homework {homework_badge}</a>
-                    <a class="td-action" href="/teacher_lesson_notes"><i class="ti ti-notes"></i>Write Lesson Notes</a>
+                    <a class="td-action" href="/teacher_dashboard?view=records"><i class="ti ti-notes"></i>Write Lesson Notes</a>
                     <a class="td-action" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i>Reschedule</a>
-                    <a class="td-action" href="/open_slots"><i class="ti ti-clock-plus"></i>Open Slot Settings</a>
+                    <a class="td-action" href="/teacher_dashboard?view=time_off"><i class="ti ti-calendar-off"></i>Request Time Off</a>
                     <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>Request a Sub</a>
                 </section>
                 <section class="td-card">
@@ -6487,7 +6757,7 @@ def teacher_missing_homework():
             </div>
             <div class="schedule-controls">
                 <a href="/teacher_dashboard">Home</a>
-                <a href="/teacher_lesson_notes">Lesson Records</a>
+                <a href="/teacher_dashboard?view=records">Lesson Records</a>
             </div>
         </div>
         <section class="td-card">
@@ -13106,6 +13376,42 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
             }
 
     return {"has_conflict": False, "message": ""}
+
+
+
+@app.route("/teacher_time_off_request", methods=["POST"])
+def teacher_time_off_request():
+    if not require_teacher():
+        return redirect("/teacher_login")
+    ensure_teacher_time_off_schema()
+    teacher_name = session.get("teacher_name") or "Teacher"
+    start_date = (request.form.get("start_date") or "").strip()
+    end_date = (request.form.get("end_date") or start_date).strip()
+    start_time = (request.form.get("start_time") or "").strip()
+    end_time = (request.form.get("end_time") or "").strip()
+    all_day = 1 if request.form.get("all_day") else 0
+    reason = (request.form.get("reason") or "").strip()
+    if not start_date:
+        return redirect("/teacher_dashboard?view=time_off")
+    if not end_date:
+        end_date = start_date
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO teacher_time_off_requests (
+        teacher_name, start_date, end_date, start_time, end_time, all_day, reason, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    """, (teacher_name, start_date, end_date, start_time, end_time, all_day, reason, now, now))
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    time_label = "full day" if all_day else f"{start_time or '?'}-{end_time or '?'}"
+    body = f"{teacher_name} requested time off from {start_date} to {end_date} ({time_label})."
+    if reason:
+        body += f" Reason: {reason}"
+    create_notification("owner", "owner", "Teacher time off request", body, "/teacher_dashboard", related_type="teacher_time_off", related_id=request_id)
+    return redirect("/teacher_dashboard?view=time_off&sent=1")
 
 
 @app.route("/teacher_messages")
