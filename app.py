@@ -11740,6 +11740,174 @@ def mark_notifications_read(user_role, user_key):
     conn.close()
 
 
+def ensure_parent_portal_feature_schema():
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_notification_preferences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER UNIQUE,
+        lesson_reminders INTEGER DEFAULT 1,
+        practice_reminders INTEGER DEFAULT 1,
+        billing_alerts INTEGER DEFAULT 1,
+        event_updates INTEGER DEFAULT 1,
+        schedule_changes INTEGER DEFAULT 1,
+        message_alerts INTEGER DEFAULT 1,
+        quiet_hours_start TEXT,
+        quiet_hours_end TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_credit_wallets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT UNIQUE,
+        service_credits REAL DEFAULT 0,
+        makeup_credits REAL DEFAULT 0,
+        monetary_credits REAL DEFAULT 0,
+        notes TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_booking_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        request_type TEXT,
+        preferred_date TEXT,
+        preferred_time TEXT,
+        preferred_teacher TEXT,
+        preferred_room TEXT,
+        notes TEXT,
+        status TEXT DEFAULT 'pending_owner_review',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS guardian_invites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        guardian_name TEXT,
+        guardian_email TEXT,
+        guardian_phone TEXT,
+        relationship TEXT,
+        status TEXT DEFAULT 'pending_owner_review',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS studio_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        event_date TEXT,
+        event_time TEXT,
+        location TEXT,
+        description TEXT,
+        status TEXT DEFAULT 'published',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS event_rsvps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id INTEGER,
+        parent_id INTEGER,
+        student_name TEXT,
+        rsvp_status TEXT,
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        UNIQUE(event_id, parent_id, student_name)
+    )
+    """)
+
+    for table_name, column_name, column_sql in [
+        ("parent_notification_preferences", "quiet_hours_start", "quiet_hours_start TEXT"),
+        ("parent_notification_preferences", "quiet_hours_end", "quiet_hours_end TEXT"),
+        ("student_credit_wallets", "makeup_credits", "makeup_credits REAL DEFAULT 0"),
+        ("parent_booking_requests", "preferred_room", "preferred_room TEXT"),
+        ("guardian_invites", "guardian_phone", "guardian_phone TEXT"),
+        ("studio_events", "status", "status TEXT DEFAULT 'published'"),
+        ("event_rsvps", "notes", "notes TEXT"),
+    ]:
+        add_column_if_missing(cursor, table_name, column_name, column_sql)
+
+    conn.commit()
+    conn.close()
+
+
+def parent_portal_shell(title, active, body_html):
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta(title)}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f6f3; color:#151515; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12px; }}
+            a {{ color:inherit; text-decoration:none; }}
+            .container {{ min-height:100vh; max-width:640px; margin:0 auto; background:#f7f6f3; padding:max(24px, env(safe-area-inset-top)) 20px calc(92px + env(safe-area-inset-bottom)); }}
+            .page-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin:4px 0 16px; }}
+            .brand {{ display:flex; align-items:center; gap:10px; }}
+            .brand-mark {{ width:38px; height:38px; border-radius:11px; background:{PARENT_APP_ICON_BG} url('/hmusic-icon.png') center / cover no-repeat; }}
+            .brand-name {{ font-size:13px; font-weight:900; }}
+            h1 {{ margin:0 0 4px; font-size:18px; line-height:1.15; }}
+            h2 {{ margin:0; font-size:13px; text-transform:uppercase; color:#3e3e3e; letter-spacing:0; }}
+            h3 {{ margin:0 0 6px; font-size:14px; }}
+            p {{ margin:4px 0; line-height:1.42; }}
+            .muted {{ color:#716d67; }}
+            .app-card {{ background:#fff; border:1px solid #ddd9d2; border-radius:16px; padding:16px; margin-bottom:12px; box-shadow:0 1px 0 rgba(0,0,0,.02); }}
+            .grid-2 {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .metric {{ min-height:92px; }}
+            .metric-label {{ color:#3f3f3f; font-size:11px; font-weight:750; }}
+            .metric-value {{ margin-top:8px; font-size:24px; line-height:1; font-weight:900; color:#6b5218; }}
+            .metric-sub {{ margin-top:6px; color:#75716b; font-size:11px; font-weight:700; }}
+            .section-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }}
+            .button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; border:0; border-radius:12px; padding:10px 13px; background:#1d65ad; color:#fff; font-weight:900; font-size:12px; text-decoration:none; }}
+            .button.secondary {{ background:#fff; color:#111; border:1px solid #ddd9d2; }}
+            .button.full, button.full {{ width:100%; }}
+            label {{ display:block; font-size:11px; color:#605c56; font-weight:800; margin:10px 0 5px; }}
+            input, select, textarea {{ width:100%; border:1px solid #d8d4cd; border-radius:12px; background:#fff; min-height:42px; padding:10px 12px; font-size:13px; color:#111; }}
+            textarea {{ min-height:96px; resize:vertical; }}
+            .toggle-row {{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 0; border-top:1px solid #eee9e2; }}
+            .toggle-row:first-child {{ border-top:0; }}
+            .switch {{ position:relative; width:48px; height:28px; flex:0 0 auto; }}
+            .switch input {{ opacity:0; width:0; height:0; }}
+            .slider {{ position:absolute; cursor:pointer; inset:0; background:#d8d4cd; border-radius:999px; transition:.18s; }}
+            .slider:before {{ content:""; position:absolute; height:22px; width:22px; left:3px; top:3px; background:white; border-radius:50%; transition:.18s; box-shadow:0 1px 3px rgba(0,0,0,.2); }}
+            .switch input:checked + .slider {{ background:#1d65ad; }}
+            .switch input:checked + .slider:before {{ transform:translateX(20px); }}
+            .list-row {{ display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-top:1px solid #eee9e2; }}
+            .list-row:first-child {{ border-top:0; }}
+            .pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; background:#eef6ff; color:#1d65ad; font-size:10px; font-weight:900; white-space:nowrap; }}
+            .pill.warn {{ background:#fff7ed; color:#9a3412; }}
+            .pill.good {{ background:#ecfdf5; color:#166534; }}
+            .actions {{ display:grid; gap:10px; margin-top:12px; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:7px 10px calc(7px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.97); border-top:1px solid #ddd9d2; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; color:#6f6b65; font-size:11px; font-weight:750; padding:8px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#1d65ad; background:#eef6ff; }}
+            @media (min-width:700px) {{ body {{ padding:28px; }} .container {{ min-height:auto; border-radius:22px; box-shadow:0 2px 12px rgba(0,0,0,.08); }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="page-top">
+                <a class="brand" href="/parent_dashboard"><span class="brand-mark"></span><span class="brand-name">H-Music</span></a>
+                <a class="button secondary" href="/parent_dashboard">Home</a>
+            </div>
+            {body_html}
+        </div>
+        {parent_bottom_nav(active)}
+    </body>
+    </html>
+    """
+
+
 def ensure_billing_schema():
     ensure_v27_schema()
 
@@ -16304,7 +16472,7 @@ def parent_dashboard():
             .container {{ min-height:100vh; max-width:640px; margin:0 auto; background:#f7f6f3; padding:max(24px, env(safe-area-inset-top)) 20px calc(92px + env(safe-area-inset-bottom)); }}
             .app-top {{ display:flex; align-items:center; justify-content:space-between; gap:14px; margin:4px 0 14px; }}
             .brand {{ display:flex; align-items:center; gap:12px; }}
-            .brand-mark {{ width:38px; height:38px; border-radius:11px; background:#1d65ad; color:#fff; display:grid; place-items:center; font-size:20px; font-weight:800; }}
+            .brand-mark {{ width:38px; height:38px; border-radius:11px; background:{PARENT_APP_ICON_BG} url('/hmusic-icon.png') center / cover no-repeat; display:block; }}
             .brand-name {{ font-size:13px; font-weight:800; letter-spacing:0; }}
             .top-dot {{ width:10px; height:10px; border-radius:999px; background:#8c2e2b; }}
             .welcome {{ margin:0 0 10px; font-size:13px; line-height:1.25; color:#333; }}
@@ -16356,6 +16524,11 @@ def parent_dashboard():
             .note-date {{ color:#77736d; font-size:10px; font-weight:800; margin-bottom:5px; }}
             .note-performance {{ display:inline-block; color:#1d65ad; background:#eef6ff; border-radius:999px; padding:3px 7px; font-size:10px; font-weight:800; margin-bottom:6px; }}
             .note-section {{ margin-top:5px; }} .note-section strong {{ display:block; font-size:11px; margin-bottom:2px; }} .note-section p {{ margin:0; color:#555; font-size:11px; line-height:1.35; }}
+            .parent-tools {{ margin-bottom:14px; }}
+            .tool-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .tool-card {{ min-height:84px; background:#fff; border:1px solid #ddd9d2; border-radius:14px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; }}
+            .tool-card strong {{ font-size:13px; line-height:1.15; }}
+            .tool-card span {{ color:#716d67; font-size:10px; font-weight:750; line-height:1.25; }}
             .quick-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }}
             .quick-action {{ min-height:74px; display:flex; align-items:center; justify-content:center; gap:10px; text-align:center; background:#fff; border:1px solid #ddd9d2; border-radius:14px; color:#111; font-size:17px; font-weight:900; padding:10px; }}
             .quick-action.primary {{ color:#2a65ad; }} .quick-action.small {{ min-height:56px; font-size:15px; }}
@@ -16371,7 +16544,7 @@ def parent_dashboard():
     <body>
         <div class="container">
             <div class="app-top">
-                <div class="brand"><div class="brand-mark">H</div><div class="brand-name">H-Music</div></div>
+                <div class="brand"><div class="brand-mark"></div><div class="brand-name">H-Music</div></div>
                 <div class="top-dot"></div>
             </div>
             <p class="welcome">Welcome back, <strong>{escape(session.get('parent_name', 'Parent'))}</strong></p>
@@ -16395,6 +16568,16 @@ def parent_dashboard():
             <section class="app-card notes-card">
                 <div class="section-head"><h2>Recent Notes</h2><a href="#records">See all</a></div>
                 <div class="notes-list">{notes_preview}</div>
+            </section>
+            <section class="parent-tools">
+                <div class="section-head"><h2>Parent Tools</h2></div>
+                <div class="tool-grid">
+                    <a class="tool-card" href="/parent_credits"><strong>Credits</strong><span>Lessons, service credits, makeup, money credit</span></a>
+                    <a class="tool-card" href="/parent_booking"><strong>Book / Makeup</strong><span>Self-booking, makeup, and trial requests</span></a>
+                    <a class="tool-card" href="/parent_family"><strong>Family Account</strong><span>Students and guardian access</span></a>
+                    <a class="tool-card" href="/parent_events"><strong>Recital / Events</strong><span>Studio events and RSVP</span></a>
+                    <a class="tool-card" href="/parent_notification_preferences"><strong>Notifications</strong><span>Reminder and message preferences</span></a>
+                </div>
             </section>
             <div class="quick-actions">
                 <a class="quick-action primary" href="/parent_agent">Family<br>Assistant</a>
@@ -16691,6 +16874,569 @@ def parent_agent():
     </body>
     </html>
     """
+
+
+def get_parent_context():
+    parent_id = session.get("parent_id")
+    linked_students = get_parent_students(parent_id) if parent_id else []
+    current_student = session.get("parent_student_name") or (linked_students[0][0] if linked_students else None)
+    if current_student:
+        session["parent_student_name"] = current_student
+    return parent_id, linked_students, current_student
+
+
+@app.route("/parent_notification_preferences", methods=["GET", "POST"])
+def parent_notification_preferences():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_parent_portal_feature_schema()
+    parent_id, linked_students, current_student = get_parent_context()
+    if not parent_id:
+        return redirect("/parent_dashboard")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if request.method == "POST":
+        values = {
+            "lesson_reminders": 1 if request.form.get("lesson_reminders") == "1" else 0,
+            "practice_reminders": 1 if request.form.get("practice_reminders") == "1" else 0,
+            "billing_alerts": 1 if request.form.get("billing_alerts") == "1" else 0,
+            "event_updates": 1 if request.form.get("event_updates") == "1" else 0,
+            "schedule_changes": 1 if request.form.get("schedule_changes") == "1" else 0,
+            "message_alerts": 1 if request.form.get("message_alerts") == "1" else 0,
+            "quiet_hours_start": (request.form.get("quiet_hours_start") or "").strip(),
+            "quiet_hours_end": (request.form.get("quiet_hours_end") or "").strip(),
+        }
+        cursor.execute("""
+        INSERT INTO parent_notification_preferences (
+            parent_id, lesson_reminders, practice_reminders, billing_alerts,
+            event_updates, schedule_changes, message_alerts, quiet_hours_start,
+            quiet_hours_end, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(parent_id) DO UPDATE SET
+            lesson_reminders = excluded.lesson_reminders,
+            practice_reminders = excluded.practice_reminders,
+            billing_alerts = excluded.billing_alerts,
+            event_updates = excluded.event_updates,
+            schedule_changes = excluded.schedule_changes,
+            message_alerts = excluded.message_alerts,
+            quiet_hours_start = excluded.quiet_hours_start,
+            quiet_hours_end = excluded.quiet_hours_end,
+            updated_at = excluded.updated_at
+        """, (
+            parent_id, values["lesson_reminders"], values["practice_reminders"],
+            values["billing_alerts"], values["event_updates"], values["schedule_changes"],
+            values["message_alerts"], values["quiet_hours_start"], values["quiet_hours_end"], now
+        ))
+        conn.commit()
+        conn.close()
+        return redirect("/parent_notification_preferences?saved=1")
+
+    cursor.execute("""
+    SELECT lesson_reminders, practice_reminders, billing_alerts, event_updates,
+           schedule_changes, message_alerts, quiet_hours_start, quiet_hours_end
+    FROM parent_notification_preferences
+    WHERE parent_id = ?
+    """, (parent_id,))
+    prefs = cursor.fetchone() or (1, 1, 1, 1, 1, 1, "", "")
+    conn.close()
+
+    def checked(index):
+        return "checked" if prefs[index] else ""
+
+    saved = "<div class='app-card'><span class='pill good'>Saved</span><p>Your notification preferences were updated.</p></div>" if request.args.get("saved") == "1" else ""
+    body = f"""
+    <h1>Notification Preferences</h1>
+    <p class="muted">Choose what parent app updates this family receives.</p>
+    {saved}
+    <form method="POST" class="app-card">
+        <div class="toggle-row"><div><h3>Lesson reminders</h3><p class="muted">Before class reminders by app, SMS, or email.</p></div><label class="switch"><input type="checkbox" name="lesson_reminders" value="1" {checked(0)}><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><h3>Practice reminders</h3><p class="muted">Homework and practice follow-ups after lessons.</p></div><label class="switch"><input type="checkbox" name="practice_reminders" value="1" {checked(1)}><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><h3>Billing alerts</h3><p class="muted">Invoices, renewals, and low balance messages.</p></div><label class="switch"><input type="checkbox" name="billing_alerts" value="1" {checked(2)}><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><h3>Event updates</h3><p class="muted">Recital, studio events, and RSVP reminders.</p></div><label class="switch"><input type="checkbox" name="event_updates" value="1" {checked(3)}><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><h3>Schedule changes</h3><p class="muted">Teacher changes, room changes, reschedules, cancellations.</p></div><label class="switch"><input type="checkbox" name="schedule_changes" value="1" {checked(4)}><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><h3>Message alerts</h3><p class="muted">Owner and teacher messages.</p></div><label class="switch"><input type="checkbox" name="message_alerts" value="1" {checked(5)}><span class="slider"></span></label></div>
+        <label>Quiet hours start</label><input type="time" name="quiet_hours_start" value="{escape(str(prefs[6] or ''))}">
+        <label>Quiet hours end</label><input type="time" name="quiet_hours_end" value="{escape(str(prefs[7] or ''))}">
+        <button class="full" type="submit">Save preferences</button>
+    </form>
+    """
+    return parent_portal_shell("Notification Preferences", "profile", body)
+
+
+@app.route("/parent_credits")
+def parent_credits():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_parent_portal_feature_schema()
+    parent_id, linked_students, current_student = get_parent_context()
+    requested_student = request.args.get("student_name")
+    if requested_student and parent_can_access_student(parent_id, requested_student):
+        current_student = requested_student
+        session["parent_student_name"] = current_student
+
+    if not current_student:
+        return redirect("/parent_dashboard")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT lessons_left FROM students WHERE name = ?", (current_student,))
+    student_row = cursor.fetchone() or (0,)
+    cursor.execute("""
+    SELECT service_credits, makeup_credits, monetary_credits, notes, updated_at
+    FROM student_credit_wallets
+    WHERE student_name = ?
+    """, (current_student,))
+    wallet = cursor.fetchone() or (0, 0, 0, "", "")
+    cursor.execute("""
+    SELECT entry_type, amount, description, created_at
+    FROM student_ledger
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 8
+    """, (current_student,))
+    ledger = cursor.fetchall()
+    cursor.execute("""
+    SELECT request_type, preferred_date, preferred_time, status, created_at
+    FROM parent_booking_requests
+    WHERE parent_id = ?
+    AND student_name = ?
+    ORDER BY id DESC
+    LIMIT 5
+    """, (parent_id, current_student))
+    requests = cursor.fetchall()
+    conn.close()
+
+    student_tabs = "".join(
+        f'<a class="button secondary" href="/parent_credits?student_name={escape(str(st[0]))}">{escape(str(st[0]))}</a>'
+        for st in linked_students
+    )
+    ledger_rows = "".join(
+        f"<div class='list-row'><div><b>{escape(str(row[0]))}</b><p class='muted'>{escape(str(row[2] or ''))}</p></div><span class='pill'>${hmusic_money(row[1])}</span></div>"
+        for row in ledger
+    ) or "<p class='muted'>No credit activity yet.</p>"
+    request_rows = "".join(
+        f"<div class='list-row'><div><b>{escape(str(row[0]).replace('_', ' ').title())}</b><p class='muted'>{escape(str(row[1] or 'Date TBD'))} {escape(str(row[2] or ''))}</p></div><span class='pill warn'>{escape(str(row[3] or 'pending'))}</span></div>"
+        for row in requests
+    ) or "<p class='muted'>No booking or makeup requests yet.</p>"
+
+    body = f"""
+    <h1>Credits</h1>
+    <p class="muted">{escape(str(current_student))}</p>
+    <div class="actions" style="grid-template-columns:1fr 1fr; margin-bottom:12px;">{student_tabs}</div>
+    <div class="grid-2">
+        <section class="app-card metric"><div class="metric-label">Lesson Credits</div><div class="metric-value">{student_row[0] or 0}</div><div class="metric-sub">Package balance</div></section>
+        <section class="app-card metric"><div class="metric-label">Service Credits</div><div class="metric-value">{wallet[0] or 0}</div><div class="metric-sub">Studio-issued service credit</div></section>
+        <section class="app-card metric"><div class="metric-label">Makeup Credits</div><div class="metric-value">{wallet[1] or 0}</div><div class="metric-sub">Available makeup lessons</div></section>
+        <section class="app-card metric"><div class="metric-label">Monetary Credits</div><div class="metric-value">${hmusic_money(wallet[2])}</div><div class="metric-sub">Money credit on account</div></section>
+    </div>
+    <section class="app-card"><div class="section-head"><h2>Recent Credit Activity</h2></div>{ledger_rows}</section>
+    <section class="app-card"><div class="section-head"><h2>Requests</h2><a href="/parent_booking">Book</a></div>{request_rows}</section>
+    """
+    return parent_portal_shell("Credits", "home", body)
+
+
+@app.route("/parent_booking", methods=["GET", "POST"])
+def parent_booking():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_parent_portal_feature_schema()
+    parent_id, linked_students, current_student = get_parent_context()
+    if not parent_id or not linked_students:
+        return redirect("/parent_dashboard")
+
+    if request.method == "POST":
+        student_name = request.form.get("student_name") or current_student
+        if not parent_can_access_student(parent_id, student_name):
+            return "<h1>Permission denied</h1>"
+        request_type = (request.form.get("request_type") or "self_booking").strip()
+        if request_type not in ("self_booking", "makeup", "trial"):
+            request_type = "self_booking"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO parent_booking_requests (
+            parent_id, student_name, request_type, preferred_date, preferred_time,
+            preferred_teacher, preferred_room, notes, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_owner_review', ?, ?)
+        """, (
+            parent_id, student_name, request_type,
+            request.form.get("preferred_date"), request.form.get("preferred_time"),
+            request.form.get("preferred_teacher"), request.form.get("preferred_room"),
+            (request.form.get("notes") or "").strip(), now, now
+        ))
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        create_notification(
+            "owner", "owner", "Parent booking request",
+            f"{session.get('parent_name', 'Parent')} requested {request_type.replace('_', ' ')} for {student_name}.",
+            "/dashboard", related_type="parent_booking_request", related_id=request_id
+        )
+        return redirect("/parent_booking?sent=1")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teachers = [row[0] for row in cursor.fetchall()]
+    cursor.execute("""
+    SELECT student_name, request_type, preferred_date, preferred_time, status, created_at
+    FROM parent_booking_requests
+    WHERE parent_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (parent_id,))
+    requests = cursor.fetchall()
+    conn.close()
+
+    student_options = "".join(f'<option value="{escape(str(row[0]))}" {"selected" if row[0] == current_student else ""}>{escape(str(row[0]))}</option>' for row in linked_students)
+    teacher_options = '<option value="">Any teacher</option>' + "".join(f'<option value="{escape(str(t))}">{escape(str(t))}</option>' for t in teachers)
+    rows = "".join(
+        f"<div class='list-row'><div><b>{escape(str(row[1]).replace('_', ' ').title())}</b><p class='muted'>{escape(str(row[0]))} · {escape(str(row[2] or 'Date TBD'))} {escape(str(row[3] or ''))}</p></div><span class='pill warn'>{escape(str(row[4]))}</span></div>"
+        for row in requests
+    ) or "<p class='muted'>No requests yet.</p>"
+    sent = "<div class='app-card'><span class='pill good'>Request sent</span><p>Owner will confirm before the schedule changes or family is notified.</p></div>" if request.args.get("sent") == "1" else ""
+
+    body = f"""
+    <h1>Book / Makeup / Trial</h1>
+    <p class="muted">Submit a request. Owner approval is required before anything changes on the calendar.</p>
+    {sent}
+    <form method="POST" class="app-card">
+        <label>Student</label><select name="student_name">{student_options}</select>
+        <label>Request type</label>
+        <select name="request_type">
+            <option value="self_booking">Self-booking</option>
+            <option value="makeup">Makeup lesson</option>
+            <option value="trial">Trial lesson</option>
+        </select>
+        <label>Preferred date</label><input type="date" name="preferred_date">
+        <label>Preferred time</label><input type="time" name="preferred_time">
+        <label>Teacher</label><select name="preferred_teacher">{teacher_options}</select>
+        <label>Room / location</label><input name="preferred_room" placeholder="Optional">
+        <label>Notes</label><textarea name="notes" placeholder="What schedule would work best?"></textarea>
+        <button class="full" type="submit">Send request</button>
+    </form>
+    <section class="app-card"><div class="section-head"><h2>Recent Requests</h2></div>{rows}</section>
+    """
+    return parent_portal_shell("Book Lessons", "schedule", body)
+
+
+@app.route("/parent_family", methods=["GET", "POST"])
+def parent_family():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_parent_portal_feature_schema()
+    parent_id, linked_students, current_student = get_parent_context()
+    if not parent_id:
+        return redirect("/parent_dashboard")
+
+    if request.method == "POST":
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO guardian_invites (
+            parent_id, guardian_name, guardian_email, guardian_phone,
+            relationship, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'pending_owner_review', ?, ?)
+        """, (
+            parent_id,
+            (request.form.get("guardian_name") or "").strip(),
+            (request.form.get("guardian_email") or "").strip(),
+            (request.form.get("guardian_phone") or "").strip(),
+            (request.form.get("relationship") or "Guardian").strip(),
+            now, now
+        ))
+        invite_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        create_notification(
+            "owner", "owner", "Guardian access request",
+            f"{session.get('parent_name', 'Parent')} requested an additional guardian account.",
+            "/dashboard", related_type="guardian_invite", related_id=invite_id
+        )
+        return redirect("/parent_family?sent=1")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT parent_name, email, phone FROM parent_profiles WHERE id = ?", (parent_id,))
+    profile = cursor.fetchone() or ("Parent", "", "")
+    cursor.execute("""
+    SELECT guardian_name, guardian_email, relationship, status, created_at
+    FROM guardian_invites
+    WHERE parent_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (parent_id,))
+    invites = cursor.fetchall()
+    conn.close()
+
+    student_rows = "".join(
+        f"<div class='list-row'><div><b>{escape(str(row[0]))}</b><p class='muted'>{escape(str(row[1] or 'Family'))}</p></div><span class='pill good'>Linked</span></div>"
+        for row in linked_students
+    ) or "<p class='muted'>No linked students.</p>"
+    invite_rows = "".join(
+        f"<div class='list-row'><div><b>{escape(str(row[0] or 'Guardian'))}</b><p class='muted'>{escape(str(row[1] or ''))} · {escape(str(row[2] or 'Guardian'))}</p></div><span class='pill warn'>{escape(str(row[3] or 'pending'))}</span></div>"
+        for row in invites
+    ) or "<p class='muted'>No extra guardians requested yet.</p>"
+    sent = "<div class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and activate guardian access.</p></div>" if request.args.get("sent") == "1" else ""
+
+    body = f"""
+    <h1>Family Account</h1>
+    <p class="muted">Manage students and request access for another guardian.</p>
+    {sent}
+    <section class="app-card"><h2>Primary Guardian</h2><div class="list-row"><div><b>{escape(str(profile[0] or 'Parent'))}</b><p class="muted">{escape(str(profile[1] or ''))} · {escape(str(profile[2] or ''))}</p></div><span class="pill good">Owner-visible</span></div></section>
+    <section class="app-card"><div class="section-head"><h2>Students</h2></div>{student_rows}</section>
+    <form method="POST" class="app-card">
+        <h2>Add Guardian</h2>
+        <label>Name</label><input name="guardian_name" required>
+        <label>Email</label><input type="email" name="guardian_email" required>
+        <label>Phone</label><input name="guardian_phone">
+        <label>Relationship</label><input name="relationship" placeholder="Mother, father, caregiver">
+        <button class="full" type="submit">Request guardian access</button>
+    </form>
+    <section class="app-card"><div class="section-head"><h2>Pending Access</h2></div>{invite_rows}</section>
+    """
+    return parent_portal_shell("Family Account", "profile", body)
+
+
+@app.route("/studio_events", methods=["GET", "POST"])
+def studio_events_admin():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_parent_portal_feature_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "create":
+            cursor.execute("""
+            INSERT INTO studio_events (title, event_date, event_time, location, description, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'published', ?, ?)
+            """, (
+                (request.form.get("title") or "").strip(),
+                request.form.get("event_date"),
+                request.form.get("event_time"),
+                (request.form.get("location") or "").strip(),
+                (request.form.get("description") or "").strip(),
+                now,
+                now
+            ))
+            event_id = cursor.lastrowid
+            cursor.execute("""
+            SELECT DISTINCT ps.parent_id
+            FROM parent_students ps
+            JOIN parent_profiles pp ON pp.id = ps.parent_id
+            WHERE ps.active = 1
+            AND pp.active = 1
+            """)
+            parent_ids = [row[0] for row in cursor.fetchall()]
+            conn.commit()
+            conn.close()
+            for parent_id in parent_ids:
+                create_notification(
+                    "parent", str(parent_id), "New studio event",
+                    f"{request.form.get('title') or 'A new H-Music event'} is open for RSVP.",
+                    "/parent_events", related_type="studio_event", related_id=event_id
+                )
+            return redirect("/studio_events")
+        if action == "status":
+            event_id = request.form.get("event_id")
+            status = request.form.get("status") or "published"
+            if status not in ("published", "closed", "draft"):
+                status = "published"
+            cursor.execute("UPDATE studio_events SET status = ?, updated_at = ? WHERE id = ?", (status, now, event_id))
+            conn.commit()
+            conn.close()
+            return redirect("/studio_events")
+
+    cursor.execute("""
+    SELECT e.id, e.title, e.event_date, e.event_time, e.location, e.status,
+           COUNT(r.id) AS rsvp_count,
+           SUM(CASE WHEN r.rsvp_status = 'going' THEN 1 ELSE 0 END) AS going_count
+    FROM studio_events e
+    LEFT JOIN event_rsvps r ON r.event_id = e.id
+    GROUP BY e.id
+    ORDER BY e.event_date DESC, e.id DESC
+    LIMIT 50
+    """)
+    events = cursor.fetchall()
+    cursor.execute("""
+    SELECT e.title, r.student_name, COALESCE(pp.parent_name, ''), r.rsvp_status, r.notes, r.updated_at
+    FROM event_rsvps r
+    JOIN studio_events e ON e.id = r.event_id
+    LEFT JOIN parent_profiles pp ON pp.id = r.parent_id
+    ORDER BY r.id DESC
+    LIMIT 60
+    """)
+    rsvps = cursor.fetchall()
+    conn.close()
+
+    event_rows = "".join(
+        f"""
+        <tr>
+            <td>{event[0]}</td>
+            <td>{escape(str(event[1] or ''))}</td>
+            <td>{escape(str(event[2] or ''))} {escape(str(event[3] or ''))}</td>
+            <td>{escape(str(event[4] or ''))}</td>
+            <td>{escape(str(event[5] or ''))}</td>
+            <td>{event[6] or 0} / going {event[7] or 0}</td>
+            <td>
+                <form method="POST" style="display:flex;gap:6px;margin:0;">
+                    <input type="hidden" name="action" value="status">
+                    <input type="hidden" name="event_id" value="{event[0]}">
+                    <select name="status"><option value="published">published</option><option value="closed">closed</option><option value="draft">draft</option></select>
+                    <button type="submit">Save</button>
+                </form>
+            </td>
+        </tr>
+        """
+        for event in events
+    ) or "<tr><td colspan='7'>No events yet.</td></tr>"
+    rsvp_rows = "".join(
+        f"<tr><td>{escape(str(row[0] or ''))}</td><td>{escape(str(row[1] or ''))}</td><td>{escape(str(row[2] or ''))}</td><td>{escape(str(row[3] or ''))}</td><td>{escape(str(row[4] or ''))}</td><td>{escape(str(row[5] or ''))}</td></tr>"
+        for row in rsvps
+    ) or "<tr><td colspan='6'>No RSVPs yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Studio Events</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f4f6fb; margin:0; padding:24px; color:#111827; }}
+            .wrap {{ max-width:1100px; margin:auto; }}
+            .card {{ background:white; border:1px solid #e5e7eb; border-radius:10px; padding:18px; margin-bottom:16px; }}
+            input, select, textarea {{ width:100%; min-height:40px; padding:9px; border:1px solid #d1d5db; border-radius:8px; margin:5px 0 12px; }}
+            textarea {{ min-height:90px; }}
+            button, .button {{ display:inline-block; background:#1d65ad; color:white; border:0; border-radius:8px; padding:10px 14px; font-weight:800; text-decoration:none; }}
+            table {{ width:100%; border-collapse:collapse; background:white; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:9px; text-align:left; vertical-align:top; }}
+            th {{ background:#f8fafc; color:#475569; font-size:12px; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+        </style>
+    </head>
+    <body><div class="wrap">
+        <p><a class="button" href="/dashboard">Dashboard</a></p>
+        <h1>Studio Events</h1>
+        <form method="POST" class="card">
+            <input type="hidden" name="action" value="create">
+            <div class="grid"><div><label>Title</label><input name="title" required></div><div><label>Location</label><input name="location"></div></div>
+            <div class="grid"><div><label>Date</label><input type="date" name="event_date"></div><div><label>Time</label><input type="time" name="event_time"></div></div>
+            <label>Description</label><textarea name="description"></textarea>
+            <button type="submit">Publish Event</button>
+        </form>
+        <div class="card"><h2>Events</h2><table><tr><th>ID</th><th>Title</th><th>Date</th><th>Location</th><th>Status</th><th>RSVP</th><th>Action</th></tr>{event_rows}</table></div>
+        <div class="card"><h2>Recent RSVPs</h2><table><tr><th>Event</th><th>Student</th><th>Parent</th><th>Status</th><th>Notes</th><th>Updated</th></tr>{rsvp_rows}</table></div>
+    </div></body></html>
+    """
+
+
+@app.route("/parent_events", methods=["GET", "POST"])
+def parent_events():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_parent_portal_feature_schema()
+    parent_id, linked_students, current_student = get_parent_context()
+    if not parent_id:
+        return redirect("/parent_dashboard")
+
+    if request.method == "POST":
+        event_id = request.form.get("event_id")
+        student_name = request.form.get("student_name") or current_student
+        if not parent_can_access_student(parent_id, student_name):
+            return "<h1>Permission denied</h1>"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO event_rsvps (event_id, parent_id, student_name, rsvp_status, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(event_id, parent_id, student_name) DO UPDATE SET
+            rsvp_status = excluded.rsvp_status,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at
+        """, (
+            event_id, parent_id, student_name, request.form.get("rsvp_status") or "interested",
+            (request.form.get("notes") or "").strip(), now, now
+        ))
+        conn.commit()
+        conn.close()
+        create_notification(
+            "owner", "owner", "Event RSVP updated",
+            f"{session.get('parent_name', 'Parent')} updated an event RSVP for {student_name}.",
+            "/dashboard", related_type="event_rsvp", related_id=event_id
+        )
+        return redirect("/parent_events?saved=1")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT e.id, e.title, e.event_date, e.event_time, e.location, e.description,
+           COALESCE(r.rsvp_status, ''), COALESCE(r.notes, '')
+    FROM studio_events e
+    LEFT JOIN event_rsvps r
+        ON r.event_id = e.id
+        AND r.parent_id = ?
+        AND r.student_name = ?
+    WHERE COALESCE(e.status, 'published') = 'published'
+    AND (e.event_date IS NULL OR e.event_date >= ?)
+    ORDER BY e.event_date, e.event_time
+    LIMIT 20
+    """, (parent_id, current_student, date.today().strftime("%Y-%m-%d")))
+    events = cursor.fetchall()
+    conn.close()
+
+    student_options = "".join(f'<option value="{escape(str(row[0]))}" {"selected" if row[0] == current_student else ""}>{escape(str(row[0]))}</option>' for row in linked_students)
+    saved = "<div class='app-card'><span class='pill good'>Saved</span><p>Your RSVP was updated.</p></div>" if request.args.get("saved") == "1" else ""
+    event_cards = ""
+    for event in events:
+        event_cards += f"""
+        <form method="POST" class="app-card">
+            <div class="section-head"><h2>{escape(str(event[1] or 'Studio Event'))}</h2><span class="pill">{escape(str(event[2] or 'Date TBD'))}</span></div>
+            <p><b>{escape(str(event[3] or 'Time TBD'))}</b> · {escape(str(event[4] or 'Location TBD'))}</p>
+            <p class="muted">{escape(str(event[5] or 'Event details coming soon.'))}</p>
+            <input type="hidden" name="event_id" value="{event[0]}">
+            <label>Student</label><select name="student_name">{student_options}</select>
+            <label>RSVP</label>
+            <select name="rsvp_status">
+                <option value="interested" {"selected" if event[6] == "interested" else ""}>Interested</option>
+                <option value="going" {"selected" if event[6] == "going" else ""}>Going</option>
+                <option value="not_going" {"selected" if event[6] == "not_going" else ""}>Not going</option>
+            </select>
+            <label>Notes</label><textarea name="notes" placeholder="Questions, guest count, or recital piece">{escape(str(event[7] or ''))}</textarea>
+            <button class="full" type="submit">Save RSVP</button>
+        </form>
+        """
+    if not event_cards:
+        event_cards = """
+        <section class="app-card">
+            <span class="pill warn">No published events</span>
+            <h3 style="margin-top:10px;">Recital and studio events will appear here.</h3>
+            <p class="muted">Once the owner publishes an event, families can RSVP from this page.</p>
+        </section>
+        """
+
+    body = f"""
+    <h1>Recital / Events</h1>
+    <p class="muted">View studio events and RSVP for your student.</p>
+    {saved}
+    {event_cards}
+    """
+    return parent_portal_shell("Events", "home", body)
 
 
 @app.route("/parent_notifications", methods=["GET", "POST"])
