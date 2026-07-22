@@ -15,6 +15,8 @@ from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
 from urllib.parse import urlencode, quote
+from urllib import request as urlrequest
+from urllib.error import HTTPError, URLError
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import HTTPException
 
@@ -36,6 +38,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("HMUSIC_COOKIE_SECURE", "1") != "0",
+    PERMANENT_SESSION_LIFETIME=timedelta(days=int(os.environ.get("HMUSIC_PARENT_SESSION_DAYS", "180"))),
     MAX_CONTENT_LENGTH=int(os.environ.get("HMUSIC_MAX_UPLOAD_MB", "10")) * 1024 * 1024,
 )
 HMUSIC_DB_PATH = os.environ.get("HMUSIC_DB_PATH", "hmusic.db")
@@ -95,6 +98,7 @@ def hmusic_validate_csrf():
         "/teacher_login",
         "/parent_login",
         "/stripe/webhook",
+        "/square/webhook",
     }
     if request.path in csrf_exempt_paths:
         return True
@@ -134,6 +138,12 @@ def hmusic_inject_csrf(html):
 def enforce_csrf_token():
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and not hmusic_validate_csrf():
         return "CSRF token missing or invalid", 403
+
+
+@app.before_request
+def refresh_parent_session_lifetime():
+    if session.get("parent_id") is not None or session.get("parent_student_name") is not None:
+        session.permanent = True
 
 
 @app.after_request
@@ -12024,6 +12034,175 @@ def public_url_for(path):
     return f"{base_url}{path}"
 
 
+def get_square_access_token():
+    return os.environ.get("SQUARE_ACCESS_TOKEN")
+
+
+def get_square_location_id():
+    return os.environ.get("SQUARE_LOCATION_ID")
+
+
+def get_square_base_url():
+    environment = (os.environ.get("SQUARE_ENVIRONMENT") or "production").strip().lower()
+    if environment == "sandbox":
+        return "https://connect.squareupsandbox.com"
+    return "https://connect.squareup.com"
+
+
+def square_is_configured():
+    return bool(get_square_access_token() and get_square_location_id())
+
+
+def square_api_request(path, payload=None, method="POST"):
+    access_token = get_square_access_token()
+    if not access_token:
+        raise RuntimeError("SQUARE_ACCESS_TOKEN is not configured.")
+
+    data = None
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Square-Version": os.environ.get("SQUARE_VERSION", "2026-05-20"),
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urlrequest.Request(
+        get_square_base_url() + path,
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=20) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Square API error {exc.code}: {body}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Square API connection failed: {exc.reason}") from exc
+
+
+def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_order_id=None, source="square_checkout"):
+    ensure_v321_schema()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    payment_date = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        enrollment_id,
+        square_payment_link_id,
+        square_order_id,
+        square_payment_id
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return False
+
+    if invoice[4] == "paid":
+        conn.close()
+        return True
+
+    student_name = invoice[1]
+    amount = invoice[3] or 0
+    enrollment_id = invoice[6]
+    square_order_id = square_order_id or invoice[8]
+    square_payment_id = square_payment_id or invoice[9]
+
+    cursor.execute("""
+    INSERT INTO payments
+    (
+        student_name,
+        amount,
+        lessons_added,
+        payment_method,
+        payment_date,
+        enrollment_id,
+        package_name,
+        notes,
+        visible_to_parent
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        student_name,
+        amount,
+        0,
+        "Square Card",
+        payment_date,
+        enrollment_id,
+        "Tuition Invoice",
+        f"Invoice #{invoice_id} paid via Square ({source})",
+        1
+    ))
+
+    payment_id = cursor.lastrowid
+
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'paid',
+        square_order_id = COALESCE(?, square_order_id),
+        square_payment_id = COALESCE(?, square_payment_id),
+        autopay_status = 'square_paid'
+    WHERE id = ?
+    """, (
+        square_order_id,
+        square_payment_id,
+        invoice_id
+    ))
+
+    cursor.execute("""
+    INSERT INTO student_ledger (
+        student_name,
+        entry_type,
+        amount,
+        description,
+        related_invoice_id,
+        related_payment_id,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        student_name,
+        "invoice_payment",
+        amount,
+        f"Invoice #{invoice_id} paid via Square",
+        invoice_id,
+        payment_id,
+        None,
+        now
+    ))
+
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+    conn.commit()
+    conn.close()
+
+    create_invoice_message_event(
+        invoice_id,
+        "square_paid",
+        parent_id=parent_id,
+        student_name=student_name,
+        amount=amount
+    )
+
+    return True
+
+
 def mark_message_thread_read(thread_id):
     viewer_role, viewer_key = get_message_identity()
     if not viewer_role:
@@ -15378,6 +15557,8 @@ def parent_login():
     native_app = request.args.get("native_app") == "1" or session.get("parent_native_app") == 1
     if native_app:
         session["parent_native_app"] = 1
+    if require_parent() and request.method == "GET":
+        return redirect("/parent_dashboard")
 
     if request.method == "POST":
         parent_email = request.form.get("parent_email")
@@ -15414,6 +15595,7 @@ def parent_login():
                 conn.close()
 
                 session.clear()
+                session.permanent = True
                 if native_app:
                     session["parent_native_app"] = 1
                 session["parent_id"] = parent[0]
@@ -15450,6 +15632,7 @@ def parent_login():
                 conn.close()
 
                 session.clear()
+                session.permanent = True
                 if native_app:
                     session["parent_native_app"] = 1
 
@@ -17224,6 +17407,195 @@ def stripe_invoice_success():
     return redirect(f"/parent_invoice/{invoice_id}?stripe_processing=1")
 
 
+@app.route("/square/invoice/<int:invoice_id>/checkout")
+def square_invoice_checkout(invoice_id):
+    if not require_parent():
+        return redirect("/parent_login")
+
+    if not square_is_configured():
+        return redirect(f"/parent_invoice/{invoice_id}?square_missing=1")
+
+    ensure_v321_schema()
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, amount, status
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    if not parent_can_access_student(parent_id, invoice[1]):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    if invoice[3] is None or float(invoice[3] or 0) <= 0:
+        conn.close()
+        return redirect(f"/parent_invoice/{invoice_id}?square_invalid_amount=1")
+
+    amount_cents = int(round(float(invoice[3] or 0) * 100))
+    idempotency_key = secrets.token_urlsafe(24)
+    payload = {
+        "idempotency_key": idempotency_key,
+        "order": {
+            "location_id": get_square_location_id(),
+            "reference_id": f"hmusic-invoice-{invoice_id}",
+            "metadata": {
+                "invoice_id": str(invoice_id),
+                "parent_id": str(parent_id),
+                "student_name": str(invoice[1] or ""),
+                "app": "hmusic-crm",
+            },
+            "line_items": [{
+                "name": f"H-Music Tuition - {invoice[1]}",
+                "quantity": "1",
+                "base_price_money": {
+                    "amount": amount_cents,
+                    "currency": "USD",
+                },
+            }],
+        },
+        "checkout_options": {
+            "redirect_url": public_url_for(f"/square/invoice/success?invoice_id={invoice_id}"),
+            "accepted_payment_methods": {
+                "card": True,
+            },
+        },
+        "pre_populated_data": {
+            "buyer_email": session.get("parent_email") or "",
+        },
+        "payment_note": f"H-Music invoice #{invoice_id}",
+    }
+
+    try:
+        result = square_api_request("/v2/online-checkout/payment-links", payload)
+        payment_link = result.get("payment_link") or {}
+        order_id = payment_link.get("order_id")
+        payment_link_id = payment_link.get("id")
+        payment_url = payment_link.get("url")
+        if not payment_url:
+            raise RuntimeError("Square did not return a payment URL.")
+
+        cursor.execute("""
+        UPDATE invoices
+        SET square_payment_link_id = ?,
+            square_order_id = ?,
+            autopay_status = COALESCE(autopay_status, 'square_checkout_started')
+        WHERE id = ?
+        """, (payment_link_id, order_id, invoice_id))
+        conn.commit()
+        conn.close()
+        return redirect(payment_url)
+    except Exception as exc:
+        conn.rollback()
+        conn.close()
+        return f"""
+        <h1>Square Checkout Failed</h1>
+        <p>{escape(str(exc))}</p>
+        <p><a href="/parent_invoice/{invoice_id}">Back to Invoice</a></p>
+        """
+
+
+@app.route("/square/invoice/success")
+def square_invoice_success():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    invoice_id = request.args.get("invoice_id")
+    if not invoice_id:
+        return redirect("/parent_dashboard")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name, square_order_id
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return redirect("/parent_dashboard")
+    if not parent_can_access_student(session.get("parent_id"), invoice[0]):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'square_processing',
+        autopay_status = 'square_returned'
+    WHERE id = ?
+    AND status != 'paid'
+    """, (invoice_id,))
+    conn.commit()
+    conn.close()
+
+    create_notification(
+        "owner",
+        "owner",
+        "Square payment needs confirmation",
+        f"{session.get('parent_name', 'Parent')} returned from Square checkout for invoice #{invoice_id}. Confirm payment in Square or wait for webhook.",
+        f"/pay_invoice/{invoice_id}",
+        related_type="invoice",
+        related_id=invoice_id
+    )
+
+    return redirect(f"/parent_invoice/{invoice_id}?square_processing=1")
+
+
+@app.route("/square/webhook", methods=["POST"])
+def square_webhook():
+    ensure_v321_schema()
+    try:
+        event = request.get_json(force=True) or {}
+    except Exception:
+        return Response("Invalid payload", status=400)
+
+    data_object = event.get("data", {}).get("object", {}) or {}
+    payment = data_object.get("payment") or data_object
+    order_id = payment.get("order_id") or data_object.get("order_id")
+    payment_id = payment.get("id")
+    status = (payment.get("status") or "").upper()
+
+    if not order_id:
+        return Response("ok", status=200)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id
+    FROM invoices
+    WHERE square_order_id = ?
+    LIMIT 1
+    """, (order_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row and status in ("COMPLETED", "APPROVED"):
+        finalize_square_invoice_payment(row[0], square_payment_id=payment_id, square_order_id=order_id, source="square_webhook")
+    elif row:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        UPDATE invoices
+        SET square_payment_id = COALESCE(?, square_payment_id),
+            autopay_status = ?
+        WHERE id = ?
+        AND status != 'paid'
+        """, (payment_id, f"square_{status.lower() or 'updated'}", row[0]))
+        conn.commit()
+        conn.close()
+
+    return Response("ok", status=200)
+
+
 @app.route("/parent_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def parent_invoice(invoice_id):
     if not require_parent():
@@ -17311,24 +17683,51 @@ def parent_invoice(invoice_id):
     checked_yes = "selected" if invoice[10] == 1 else ""
     checked_no = "" if invoice[10] == 1 else "selected"
     auto_lessons = invoice[11] or invoice[2] or 10
-    stripe_payment_html = ""
-    stripe_status_alert = ""
-    card_fee = hmusic_card_gross_up(invoice[3])
-    if request.args.get("stripe_missing") == "1":
-        stripe_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
+    online_payment_html = ""
+    payment_status_alert = ""
+    if request.args.get("square_missing") == "1":
+        payment_status_alert = "<div class='warn'>Square card payment is not configured yet. Please add SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID in Render.</div>"
+    elif request.args.get("square_invalid_amount") == "1":
+        payment_status_alert = "<div class='warn'>This invoice needs a valid amount before Square checkout can start.</div>"
+    elif request.args.get("square_processing") == "1" or invoice[4] == "square_processing":
+        payment_status_alert = "<div class='alert'>Square checkout returned successfully. H-Music will confirm the card payment and mark this invoice paid.</div>"
+    elif request.args.get("stripe_missing") == "1":
+        payment_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
     elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
-        stripe_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
+        payment_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
     elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
-        stripe_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
+        payment_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
     elif request.args.get("cancelled") == "1":
-        stripe_status_alert = "<div class='warn'>Stripe checkout was cancelled. You can try again or use the current studio payment method.</div>"
+        payment_status_alert = "<div class='warn'>Online checkout was cancelled. You can try again or use the current studio payment method.</div>"
 
-    if invoice[4] not in ("paid", "stripe_processing"):
-        if stripe_is_configured():
-            stripe_payment_html = f"""
-            <div class="payment-choice-grid">
+    if invoice[4] not in ("paid", "stripe_processing", "square_processing"):
+        payment_choices = []
+        if square_is_configured():
+            payment_choices.append(f"""
                 <div class="payment-choice recommended">
-                    <div class="choice-kicker">Recommended</div>
+                    <div class="choice-kicker">Card payment</div>
+                    <h3>Pay with Square</h3>
+                    <p>Use Square's secure checkout to pay this invoice by credit or debit card.</p>
+                    <div class="pay-summary">
+                        <span>Invoice</span><b>${hmusic_money(invoice[3])}</b>
+                        <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
+                    </div>
+                    <a class="button square-button" href="/square/invoice/{invoice_id}/checkout">Pay by Square Card</a>
+                </div>
+            """)
+        else:
+            payment_choices.append("""
+                <div class="payment-choice disabled">
+                    <div class="choice-kicker">Card payment</div>
+                    <h3>Square Card</h3>
+                    <p>Square card checkout will appear here after SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID are added in Render.</p>
+                </div>
+            """)
+
+        if stripe_is_configured():
+            payment_choices.append(f"""
+                <div class="payment-choice">
+                    <div class="choice-kicker">Bank option</div>
                     <h3>Bank Payment / ACH</h3>
                     <p>No processing fee for families. H-Music covers the ACH bank transfer fee.</p>
                     <div class="pay-summary">
@@ -17338,21 +17737,16 @@ def parent_invoice(invoice_id):
                     </div>
                     <a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
                 </div>
-                <div class="payment-choice">
-                    <div class="choice-kicker">Card option</div>
-                    <h3>Credit / Debit Card</h3>
-                    <p>Card processing fee is added so H-Music receives the full lesson package amount.</p>
-                    <div class="pay-summary">
-                        <span>Package</span><b>${hmusic_money(invoice[3])}</b>
-                        <span>Card fee</span><b>${hmusic_money(card_fee["fee"])}</b>
-                        <span>Total today</span><b>${hmusic_money(card_fee["total"])}</b>
-                    </div>
-                    <a class="button card-button" href="/stripe/invoice/{invoice_id}/checkout?method=card">Pay by Card</a>
-                </div>
+            """)
+
+        if payment_choices:
+            online_payment_html = f"""
+            <div class="payment-choice-grid">
+                {''.join(payment_choices)}
             </div>
             """
         else:
-            stripe_payment_html = """
+            online_payment_html = """
             <p class="hint">Online payment is not enabled yet. Please use the current studio payment method below.</p>
             """
 
@@ -17376,10 +17770,12 @@ def parent_invoice(invoice_id):
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
             .secondary {{ background:#111827 !important; }}
             .stripe-button {{ background:#4f46e5 !important; }}
+            .square-button {{ background:#1d65ad !important; }}
             .card-button {{ background:#111827 !important; }}
             .payment-choice-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:14px 0; }}
             .payment-choice {{ border:1px solid #e5e7eb; border-radius:14px; padding:14px; background:#fff; }}
-            .payment-choice.recommended {{ border-color:#a7f3d0; background:#f0fdf4; }}
+            .payment-choice.recommended {{ border-color:#bfdbfe; background:#eff6ff; }}
+            .payment-choice.disabled {{ opacity:.72; }}
             .payment-choice h3 {{ margin:4px 0 8px; }}
             .payment-choice p {{ color:#6b7280; line-height:1.45; }}
             .choice-kicker {{ color:#047857; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
@@ -17396,7 +17792,7 @@ def parent_invoice(invoice_id):
     <body>
         <div class="container">
             <h1>Tuition Invoice</h1>
-            {stripe_status_alert}
+            {payment_status_alert}
             <div class="card">
                 <div class="label">Student</div>
                 <div class="value">{invoice[1]}</div>
@@ -17411,8 +17807,8 @@ def parent_invoice(invoice_id):
             <p>{invoice[9] or ''}</p>
 
             <h2>Payment</h2>
-            {stripe_payment_html}
-            <p class="hint">Bank/ACH payments have no family processing fee. If you choose credit/debit card, the card processing fee is included in the total before checkout.</p>
+            {online_payment_html}
+            <p class="hint">Card payments open Square secure checkout. Bank/ACH remains available when Stripe ACH is configured.</p>
             <p>Please use the manual confirmation below only if you paid outside the online payment flow.</p>
             <form method="POST">
                 <input type="hidden" name="action" value="notify_paid">
@@ -25015,6 +25411,9 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "notes", "notes TEXT")
     add_column_if_missing("invoices", "stripe_checkout_session_id", "stripe_checkout_session_id TEXT")
     add_column_if_missing("invoices", "stripe_payment_intent_id", "stripe_payment_intent_id TEXT")
+    add_column_if_missing("invoices", "square_payment_link_id", "square_payment_link_id TEXT")
+    add_column_if_missing("invoices", "square_order_id", "square_order_id TEXT")
+    add_column_if_missing("invoices", "square_payment_id", "square_payment_id TEXT")
     add_column_if_missing("invoices", "autopay_status", "autopay_status TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
 
