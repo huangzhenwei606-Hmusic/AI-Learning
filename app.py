@@ -67,7 +67,7 @@ OWNER_PASSWORD = "1234"
 
 
 def hmusic_password_hash(password):
-    return generate_password_hash(password or "", method="pbkdf2:sha256", salt_length=16)
+    return generate_password_hash(password or "", method="pbkdf2:sha256:260000", salt_length=16)
 
 
 def hmusic_check_password(password, password_hash=None, legacy_password=None):
@@ -813,6 +813,42 @@ def ensure_teacher_management_schema():
 def teacher_login_username(teacher_name):
     base = "".join(ch.lower() for ch in (teacher_name or "") if ch.isalnum())
     return base or "teacher"
+
+
+def sqlite_table_exists(cursor, table_name):
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,))
+    return cursor.fetchone() is not None
+
+
+def update_teacher_name_references(cursor, old_name, new_name):
+    for table, column in [
+        ("students", "teacher"),
+        ("schedule", "teacher"),
+        ("teacher_open_slots", "teacher"),
+        ("teacher_course_rates", "teacher_name"),
+        ("teacher_rate_cards", "teacher_name"),
+        ("teacher_permissions", "teacher_name"),
+        ("teacher_time_off_requests", "teacher_name")
+    ]:
+        if sqlite_table_exists(cursor, table):
+            cursor.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (new_name, old_name))
+
+
+def count_teacher_references(cursor, teacher_name):
+    reference_count = 0
+    for table, column in [
+        ("students", "teacher"),
+        ("schedule", "teacher"),
+        ("teacher_open_slots", "teacher"),
+        ("teacher_course_rates", "teacher_name"),
+        ("teacher_rate_cards", "teacher_name"),
+        ("teacher_permissions", "teacher_name"),
+        ("teacher_time_off_requests", "teacher_name")
+    ]:
+        if sqlite_table_exists(cursor, table):
+            cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (teacher_name,))
+            reference_count += cursor.fetchone()[0] or 0
+    return reference_count
 
 
 
@@ -3113,11 +3149,12 @@ def edit_teacher(teacher_id):
         notes = request.form.get("notes")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+        new_password_hash = hmusic_password_hash(password) if password else None
         password_sql = ""
         password_values = []
-        if password:
+        if new_password_hash:
             password_sql = "password = '', password_hash = ?, must_change_password = 1,"
-            password_values.append(hmusic_password_hash(password))
+            password_values.append(new_password_hash)
 
         cursor.execute(f"""
         UPDATE teachers
@@ -3133,14 +3170,7 @@ def edit_teacher(teacher_id):
         WHERE id = ?
         """, (teacher_name, username, *password_values, email, phone, hourly_rate, active, notes, now, teacher_id))
 
-        for table, column in [
-            ("students", "teacher"),
-            ("schedule", "teacher"),
-            ("teacher_open_slots", "teacher"),
-            ("teacher_course_rates", "teacher_name"),
-            ("teacher_rate_cards", "teacher_name")
-        ]:
-            cursor.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (teacher_name, old_name))
+        update_teacher_name_references(cursor, old_name, teacher_name)
 
         cursor.execute("""
         INSERT OR IGNORE INTO users (
@@ -3151,9 +3181,9 @@ def edit_teacher(teacher_id):
 
         user_password_sql = ""
         user_password_values = []
-        if password:
+        if new_password_hash:
             user_password_sql = "password = '', password_hash = ?, must_change_password = 1,"
-            user_password_values.append(hmusic_password_hash(password))
+            user_password_values.append(new_password_hash)
 
         cursor.execute(f"""
         UPDATE users
@@ -3274,16 +3304,7 @@ def delete_teacher(teacher_id):
         return "<h1>Teacher not found</h1>"
 
     teacher_name = teacher[0]
-    reference_count = 0
-    for table, column in [
-        ("students", "teacher"),
-        ("schedule", "teacher"),
-        ("teacher_open_slots", "teacher"),
-        ("teacher_course_rates", "teacher_name"),
-        ("teacher_rate_cards", "teacher_name")
-    ]:
-        cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (teacher_name,))
-        reference_count += cursor.fetchone()[0] or 0
+    reference_count = count_teacher_references(cursor, teacher_name)
 
     if reference_count:
         cursor.execute("UPDATE teachers SET active = 0, updated_at = ? WHERE id = ?", (datetime.now().strftime("%Y-%m-%d %H:%M"), teacher_id))
@@ -9340,11 +9361,12 @@ def edit_parent_admin(parent_id):
         password = request.form.get("password")
         active = request.form.get("active") or "1"
 
+        new_password_hash = hmusic_password_hash(password) if password else None
         password_sql = ""
         password_values = []
-        if password:
+        if new_password_hash:
             password_sql = "password = '', password_hash = ?, must_change_password = 1,"
-            password_values.append(hmusic_password_hash(password))
+            password_values.append(new_password_hash)
 
         cursor.execute(f"""
         UPDATE parent_profiles
