@@ -851,6 +851,25 @@ def count_teacher_references(cursor, teacher_name):
     return reference_count
 
 
+def unique_teacher_username(cursor, desired_username, teacher_id, linked_teacher_name):
+    base = "".join(ch for ch in (desired_username or "").strip() if ch.isalnum() or ch in ("_", "-")) or f"teacher{teacher_id}"
+    candidate = base
+    suffix = 2
+    while True:
+        cursor.execute("SELECT 1 FROM teachers WHERE username = ? AND id != ?", (candidate, teacher_id))
+        teacher_conflict = cursor.fetchone() is not None
+        cursor.execute("""
+        SELECT 1 FROM users
+        WHERE username = ?
+        AND COALESCE(linked_teacher_name, '') != ?
+        """, (candidate, linked_teacher_name or ""))
+        user_conflict = cursor.fetchone() is not None
+        if not teacher_conflict and not user_conflict:
+            return candidate
+        candidate = f"{base}{suffix}"
+        suffix += 1
+
+
 
 HSTUDIO_APP_NAME = "H-Music Studio"
 
@@ -3139,8 +3158,9 @@ def edit_teacher(teacher_id):
     old_name = teacher[1]
 
     if request.method == "POST":
-        teacher_name = request.form.get("teacher_name")
-        username = request.form.get("username") or teacher_login_username(teacher_name)
+        teacher_name = (request.form.get("teacher_name") or "").strip()
+        requested_username = (request.form.get("username") or "").strip() or teacher_login_username(teacher_name)
+        username = unique_teacher_username(cursor, requested_username, teacher_id, old_name)
         password = request.form.get("password")
         email = request.form.get("email")
         phone = request.form.get("phone")
@@ -3195,7 +3215,17 @@ def edit_teacher(teacher_id):
         WHERE linked_teacher_name = ?
         """, (username, *user_password_values, teacher_name, teacher_name, old_name))
 
-        conn.commit()
+        try:
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            conn.close()
+            return f"""
+            <h1>Could not update teacher</h1>
+            <p>The username or teacher name conflicts with another account.</p>
+            <pre>{escape(str(exc))}</pre>
+            <p><a href="/edit_teacher/{teacher_id}">Back to Edit Teacher</a></p>
+            """, 409
         conn.close()
         return redirect("/teachers")
 
