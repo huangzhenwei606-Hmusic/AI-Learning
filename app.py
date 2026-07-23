@@ -928,25 +928,32 @@ def get_missing_homework_count(teacher_name=None):
 def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_count=0):
     message_badge = hstudio_badge(unread_messages)
     homework_badge = hstudio_badge(missing_homework_count)
+    teacher_name = session.get("teacher_name")
+    perms = get_teacher_permissions(teacher_name) if teacher_name else dict(TEACHER_PERMISSION_DEFAULTS)
 
     def item(key, href, icon, label, extra=""):
         active_class = " active" if key == active else ""
         return f'<a class="td-nav-item{active_class}" href="{href}"><i class="ti {icon}"></i><span>{label}</span>{extra}</a>'
 
+    messages_item = item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge) if perms.get("message_parents") else ""
+    add_schedule_item = item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
+    payroll_item = item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>') if perms.get("view_payroll") else ""
+    sub_item = item("sub", "/teacher_sub_request", "ti-replace", "Sub Request") if perms.get("sub_request") else ""
+
     return f"""
         <div class="td-nav-section">Today</div>
         {item("home", "/teacher_dashboard", "ti-home", "Home")}
         {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Calendar")}
-        {item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge)}
+        {messages_item}
         <div class="td-nav-section">Lessons</div>
         {item("records", "/teacher_dashboard?view=records", "ti-notes", "Lesson Records", homework_badge)}
         {item("homework", "/teacher_missing_homework", "ti-alert-circle", "Missing Homework", homework_badge)}
-        {item("sub", "/teacher_sub_request", "ti-replace", "Sub Request")}
+        {sub_item}
         {item("reschedule", "/teacher_reschedule", "ti-calendar-x", "Reschedule Request")}
-        {item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule")}
+        {add_schedule_item}
         {item("time_off", "/teacher_dashboard?view=time_off", "ti-calendar-off", "Time Off")}
         <div class="td-nav-section">Payroll</div>
-        {item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>')}
+        {payroll_item}
         <div class="td-nav-section">Account</div>
         {item("profile", "/teacher_dashboard", "ti-settings", "Profile Settings")}
         {item("logout", "/teacher_logout", "ti-logout", "Logout")}
@@ -1088,6 +1095,308 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
         </div>
     </body>
     </html>
+    """
+
+
+TEACHER_PERMISSION_DEFAULTS = {
+    "attendance": 1,
+    "lesson_notes": 1,
+    "private_notes": 1,
+    "homework": 1,
+    "message_parents": 1,
+    "lesson_history": 1,
+    "schedule_reminders": 1,
+    "add_own_schedule": 1,
+    "direct_reschedule": 1,
+    "direct_cancel": 0,
+    "sub_request": 1,
+    "view_payroll": 1,
+    "view_billing": 0,
+    "delete_lessons": 0,
+    "edit_student_profile": 0,
+    "view_other_teachers": 0,
+}
+
+
+TEACHER_PERMISSION_LABELS = [
+    ("attendance", "Attendance", "Mark Present, Late, No show, Excused."),
+    ("lesson_notes", "Lesson note", "Write parent-visible lesson notes."),
+    ("private_notes", "Private note", "Write notes only teacher and owner can see."),
+    ("homework", "Homework", "Assign homework and send practice reminders."),
+    ("message_parents", "Message parents", "Message families from teacher inbox."),
+    ("lesson_history", "Lesson history", "Open student lesson history."),
+    ("schedule_reminders", "Schedule reminders", "Receive lesson schedule reminders before class."),
+    ("add_own_schedule", "Add own schedule", "Create lessons on the teacher's own calendar."),
+    ("direct_reschedule", "Direct reschedule", "Move the teacher's own lessons without owner approval."),
+    ("direct_cancel", "Direct cancel", "Cancel the teacher's own lessons without owner approval."),
+    ("sub_request", "Sub request", "Request substitute coverage."),
+    ("view_payroll", "View payroll", "See teacher payroll summary."),
+    ("view_billing", "Billing visibility", "See student billing details. Recommended off."),
+    ("delete_lessons", "Delete lessons", "Delete lessons. Recommended off."),
+    ("edit_student_profile", "Edit student profile", "Edit full student profile. Recommended off."),
+    ("view_other_teachers", "Other teachers calendars", "See schedules owned by other teachers. Recommended off."),
+]
+
+
+def ensure_teacher_permission_schema():
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_permissions (
+        teacher_name TEXT PRIMARY KEY,
+        attendance INTEGER DEFAULT 1,
+        lesson_notes INTEGER DEFAULT 1,
+        private_notes INTEGER DEFAULT 1,
+        homework INTEGER DEFAULT 1,
+        message_parents INTEGER DEFAULT 1,
+        lesson_history INTEGER DEFAULT 1,
+        schedule_reminders INTEGER DEFAULT 1,
+        add_own_schedule INTEGER DEFAULT 1,
+        direct_reschedule INTEGER DEFAULT 1,
+        direct_cancel INTEGER DEFAULT 0,
+        sub_request INTEGER DEFAULT 1,
+        view_payroll INTEGER DEFAULT 1,
+        view_billing INTEGER DEFAULT 0,
+        delete_lessons INTEGER DEFAULT 0,
+        edit_student_profile INTEGER DEFAULT 0,
+        view_other_teachers INTEGER DEFAULT 0,
+        lesson_reminder_minutes INTEGER DEFAULT 60,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    for key, default in TEACHER_PERMISSION_DEFAULTS.items():
+        add_column_if_missing(cursor, "teacher_permissions", key, f"{key} INTEGER DEFAULT {int(default)}")
+    add_column_if_missing(cursor, "teacher_permissions", "lesson_reminder_minutes", "lesson_reminder_minutes INTEGER DEFAULT 60")
+    add_column_if_missing(cursor, "teacher_permissions", "created_at", "created_at TEXT")
+    add_column_if_missing(cursor, "teacher_permissions", "updated_at", "updated_at TEXT")
+    conn.commit()
+    conn.close()
+
+
+def get_teacher_permissions(teacher_name):
+    ensure_teacher_permission_schema()
+    perms = dict(TEACHER_PERMISSION_DEFAULTS)
+    perms["lesson_reminder_minutes"] = 60
+    if not teacher_name:
+        return perms
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    columns = list(TEACHER_PERMISSION_DEFAULTS.keys()) + ["lesson_reminder_minutes"]
+    cursor.execute(f"""
+    SELECT {", ".join(columns)}
+    FROM teacher_permissions
+    WHERE teacher_name = ?
+    """, (teacher_name,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        for idx, column in enumerate(columns):
+            value = row[idx]
+            if column == "lesson_reminder_minutes":
+                try:
+                    perms[column] = int(value or 60)
+                except Exception:
+                    perms[column] = 60
+            else:
+                perms[column] = 1 if value else 0
+    return perms
+
+
+def teacher_has_permission(teacher_name, permission_key):
+    return bool(get_teacher_permissions(teacher_name).get(permission_key, 0))
+
+
+def upsert_teacher_permissions(cursor, teacher_name, values):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    columns = list(TEACHER_PERMISSION_DEFAULTS.keys()) + ["lesson_reminder_minutes"]
+    payload = {}
+    for column in columns:
+        if column == "lesson_reminder_minutes":
+            try:
+                payload[column] = max(5, min(1440, int(values.get(column) or 60)))
+            except Exception:
+                payload[column] = 60
+        else:
+            payload[column] = 1 if values.get(column) in (1, "1", True, "true", "on") else 0
+    insert_columns = ["teacher_name"] + columns + ["created_at", "updated_at"]
+    placeholders = ", ".join(["?"] * len(insert_columns))
+    updates = ", ".join([f"{column} = excluded.{column}" for column in columns] + ["updated_at = excluded.updated_at"])
+    cursor.execute(f"""
+    INSERT INTO teacher_permissions ({", ".join(insert_columns)})
+    VALUES ({placeholders})
+    ON CONFLICT(teacher_name) DO UPDATE SET {updates}
+    """, ([teacher_name] + [payload[column] for column in columns] + [now, now]))
+
+
+def queue_teacher_lesson_reminder(schedule_id, teacher_name=None):
+    ensure_teacher_permission_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
+    FROM schedule
+    WHERE id = ?
+    """, (schedule_id,))
+    lesson = cursor.fetchone()
+    if not lesson:
+        conn.close()
+        return 0
+    teacher_name = teacher_name or lesson[2]
+    if not teacher_name or not teacher_has_permission(teacher_name, "schedule_reminders"):
+        conn.close()
+        return 0
+    cursor.execute("""
+    SELECT id
+    FROM notification_delivery_queue
+    WHERE user_role = 'teacher'
+    AND user_key = ?
+    AND related_type = 'teacher_lesson_reminder'
+    AND related_id = ?
+    AND status IN ('pending', 'sent')
+    LIMIT 1
+    """, (teacher_name, schedule_id))
+    if cursor.fetchone():
+        conn.close()
+        return 0
+    conn.close()
+    body = f"{lesson[1]} has a lesson on {lesson[3]} at {lesson[4]} in {lesson[5] or 'the studio'}."
+    create_notification(
+        "teacher",
+        teacher_name,
+        "Lesson reminder",
+        body,
+        "/teacher_dashboard?view=schedule",
+        related_type="teacher_lesson_reminder",
+        related_id=int(schedule_id)
+    )
+    return 1
+
+
+def create_teacher_lesson_reminders_for_date(target_date):
+    ensure_teacher_permission_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, teacher
+    FROM schedule
+    WHERE lesson_date = ?
+    AND COALESCE(status, 'scheduled') = 'scheduled'
+    AND COALESCE(teacher, '') != ''
+    ORDER BY lesson_time
+    """, (target_date,))
+    rows = cursor.fetchall()
+    conn.close()
+    created = 0
+    for schedule_id, teacher_name in rows:
+        created += queue_teacher_lesson_reminder(schedule_id, teacher_name)
+    return created
+
+
+@app.route("/teacher_permissions", methods=["GET", "POST"])
+def teacher_permissions_admin():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_permission_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
+    teachers = [row[0] for row in cursor.fetchall()]
+
+    selected_teacher = request.args.get("teacher") or (teachers[0] if teachers else "")
+    if request.method == "POST":
+        selected_teacher = request.form.get("teacher_name") or selected_teacher
+        if selected_teacher:
+            values = {key: request.form.get(key) for key in TEACHER_PERMISSION_DEFAULTS}
+            values["lesson_reminder_minutes"] = request.form.get("lesson_reminder_minutes")
+            upsert_teacher_permissions(cursor, selected_teacher, values)
+            conn.commit()
+        conn.close()
+        return redirect(f"/teacher_permissions?teacher={quote(selected_teacher)}&saved=1")
+
+    perms = get_teacher_permissions(selected_teacher) if selected_teacher else get_teacher_permissions("")
+    conn.close()
+
+    teacher_options = "".join(
+        f'<option value="{escape(t)}" {"selected" if t == selected_teacher else ""}>{escape(t)}</option>'
+        for t in teachers
+    )
+    rows = ""
+    direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders"}
+    approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule"}
+    hidden_keys = {"view_billing", "delete_lessons", "edit_student_profile", "view_other_teachers"}
+    for key, label, hint in TEACHER_PERMISSION_LABELS:
+        checked = "checked" if perms.get(key) else ""
+        group = "Direct" if key in direct_keys else "Needs policy" if key in approval_keys else "Restricted" if key in hidden_keys else "Other"
+        rows += f"""
+        <label class="perm-row">
+            <input type="checkbox" name="{key}" value="1" {checked}>
+            <span><b>{escape(label)}</b><small>{escape(group)} · {escape(hint)}</small></span>
+        </label>
+        """
+    saved = "<div class='alert'>Teacher permissions saved.</div>" if request.args.get("saved") == "1" else ""
+    return f"""
+    <html>
+    <head>
+        <title>Teacher Permissions</title>
+        <style>
+            body {{ font-family:Arial,sans-serif; background:#f7f7fb; margin:0; padding:34px; color:#111827; }}
+            .wrap {{ max-width:980px; margin:auto; }}
+            .card {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:22px; margin-bottom:16px; box-shadow:0 2px 10px rgba(15,23,42,.06); }}
+            .button, button {{ display:inline-block; background:#1d65ad; color:#fff; border:0; border-radius:8px; padding:10px 14px; font-weight:800; text-decoration:none; cursor:pointer; }}
+            .secondary {{ background:#111827; }}
+            select, input[type=number] {{ width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; font-size:15px; }}
+            .perm-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .perm-row {{ display:flex; gap:10px; align-items:flex-start; border:1px solid #e5e7eb; border-radius:10px; padding:12px; }}
+            .perm-row input {{ margin-top:4px; }}
+            .perm-row small {{ display:block; color:#6b7280; line-height:1.35; margin-top:3px; }}
+            .policy-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
+            .policy {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:12px; }}
+            .policy b {{ display:block; margin-bottom:5px; }}
+            .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; padding:12px; border-radius:10px; font-weight:800; }}
+            @media(max-width:760px) {{ .perm-grid,.policy-grid {{ grid-template-columns:1fr; }} }}
+        </style>
+    </head>
+    <body><div class="wrap">
+        <p><a class="button secondary" href="/teachers">Back to Teachers</a> <a class="button secondary" href="/dashboard">Dashboard</a></p>
+        <h1>Teacher Permissions</h1>
+        <div class="card">
+            <h2>Recommended model</h2>
+            <div class="policy-grid">
+                <div class="policy"><b>Direct</b>Attendance, notes, homework, messages, history, reminders.</div>
+                <div class="policy"><b>Owner policy</b>Add own schedule and direct reschedule can be enabled per teacher.</div>
+                <div class="policy"><b>Restricted</b>Billing, deleting lessons, student profile edits, other teacher calendars.</div>
+            </div>
+        </div>
+        {saved}
+        <form class="card" method="POST">
+            <label><b>Teacher</b></label>
+            <select name="teacher_name" onchange="window.location='/teacher_permissions?teacher=' + encodeURIComponent(this.value)">{teacher_options}</select>
+            <label><b>Lesson reminder lead time</b></label>
+            <input type="number" name="lesson_reminder_minutes" min="5" max="1440" value="{perms.get('lesson_reminder_minutes', 60)}">
+            <div class="perm-grid" style="margin-top:14px">{rows}</div>
+            <button type="submit" style="margin-top:16px">Save permissions</button>
+        </form>
+    </div></body></html>
+    """
+
+
+@app.route("/run_teacher_lesson_reminders")
+def run_teacher_lesson_reminders():
+    if not require_owner():
+        return redirect("/owner_login")
+    target_date = request.args.get("date")
+    if not target_date:
+        target_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    created = create_teacher_lesson_reminders_for_date(target_date)
+    return f"""
+    <html><body style="font-family:Arial,sans-serif;padding:32px">
+    <h1>Teacher Lesson Reminders</h1>
+    <p>Queued {created} teacher reminder(s) for {escape(target_date)}.</p>
+    <p><a href="/teacher_permissions">Teacher Permissions</a> · <a href="/dashboard">Dashboard</a></p>
+    </body></html>
     """
 
 
@@ -2528,6 +2837,7 @@ def teachers():
             <td>{t[11]}</td>
             <td>
                 <a href="/edit_teacher/{t[0]}">Edit</a>
+                <a href="/teacher_permissions?teacher={quote(t[1])}">Permissions</a>
                 <form method="POST" action="/reset_teacher_password/{t[0]}" style="display:inline;">
                     <button type="submit">Reset Password</button>
                 </form>
@@ -2571,6 +2881,7 @@ def teachers():
             <a class="button" href="/add_teacher">Add Teacher</a>
             <a class="button" href="/rate_overrides">Teacher Course Rates</a>
             <a class="button" href="/add_teacher_course_rate">Add Course Pay</a>
+            <a class="button" href="/teacher_permissions">Teacher Permissions</a>
             <a class="button" href="/course_types">Course Types</a>
             <table>
                 <tr>
@@ -5113,6 +5424,12 @@ def calendar_today():
 def add_schedule():
     if not (require_owner() or require_teacher()):
         return redirect("/owner_login")
+    if require_teacher() and not require_owner() and not teacher_has_permission(session.get("teacher_name"), "add_own_schedule"):
+        return """
+        <h1>Add Schedule Requires Owner Permission</h1>
+        <p>The owner can enable this from Teacher Permissions.</p>
+        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        """, 403
 
     ensure_v18_schema()
 
@@ -6164,8 +6481,10 @@ def teacher_dashboard():
 
     ensure_v321_schema()
     ensure_calendar_lesson_panel_schema()
+    ensure_teacher_permission_schema()
 
     teacher_name = session.get("teacher_name")
+    teacher_perms = get_teacher_permissions(teacher_name)
     unread_messages = get_unread_message_count("teacher", teacher_name)
     missing_homework_count = get_missing_homework_count(teacher_name)
     today_obj = date.today()
@@ -6379,6 +6698,7 @@ def teacher_dashboard():
     .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
     .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="late"].active{background:#D99019}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
+    .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
     </style>
     """
 
@@ -6433,7 +6753,15 @@ def teacher_dashboard():
         )
 
     if view == "add_schedule":
-        content = teacher_dashboard_add_schedule_content(teacher_name or "")
+        if not teacher_perms.get("add_own_schedule"):
+            content = """
+            <section class='td-card'>
+                <h2>Add Schedule Requires Owner Permission</h2>
+                <p class='muted'>The owner can enable this from Teacher Permissions.</p>
+            </section>
+            """
+        else:
+            content = teacher_dashboard_add_schedule_content(teacher_name or "")
         return hstudio_teacher_dark_shell(
             teacher_name or "Teacher",
             unread_messages,
@@ -6521,11 +6849,20 @@ def teacher_dashboard():
 
         week_active = "active" if schedule_mode == "week" else ""
         month_active = "active" if schedule_mode == "month" else ""
+        direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
+        direct_cancel = bool(teacher_perms.get("direct_cancel"))
+        sub_allowed = bool(teacher_perms.get("sub_request"))
+        reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
+        reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
+        cancel_label = "Cancel lesson" if direct_cancel else "Cancel request"
+        owner_policy_copy = "Direct reschedule is enabled for your own lessons. Delete, billing, and student profile changes still require owner approval." if direct_reschedule else "Owner approval required for final reschedule, delete, billing, sub assignment, and cancellation. Parents are notified only after owner confirmation."
+        sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
+        reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
         content = f"""
             <div class="schedule-head">
                 <div class="schedule-title">
                     <h1>My Calendar</h1>
-                    <p>Daily lessons, class time, and attendance status.</p>
+                    <p>Daily lessons, class time, and attendance status.</p>{reminder_note_html}
                 </div>
                 <div class="schedule-controls">
                     <div class="schedule-tabs">
@@ -6547,7 +6884,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
-            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">Reschedule</button><button class="panel-action" onclick="teacherSubRequest()">Sub request</button><button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">Cancel lesson</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">Owner approval required for delete, billing, final reschedule, sub assignment, and cancellation. Parents are notified only after owner confirmation.</div></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" onclick="saveTeacherLessonPanel()">Save changes</button></div>
         </aside>
@@ -6571,6 +6908,8 @@ def teacher_dashboard():
         </div>
         <script>
 
+        const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
+        const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
@@ -6586,7 +6925,7 @@ def teacher_dashboard():
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
-        function teacherCancelRequest() {{ if (!activeTeacherLesson || !confirm('Send cancellation request to owner?')) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
+        function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? 'Cancel this lesson now?' : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
 
         let teacherDrag = null;
@@ -7356,6 +7695,7 @@ def calendar_lesson_detail(schedule_id):
         return {"ok": False, "error": "Lesson not found"}, 404
     if require_teacher() and not require_owner() and row[2] != session.get("teacher_name"):
         return {"ok": False, "error": "Permission denied"}, 403
+    teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
     course_name = row[7] or row[8] or row[9] or "Lesson"
     return {
         "ok": True,
@@ -7368,6 +7708,7 @@ def calendar_lesson_detail(schedule_id):
             "homework": row[14] or "", "parent_lesson_reminder_enabled": int(row[15] or 0),
             "practice_reminder_enabled": int(row[16] or 0), "low_balance_alert_enabled": int(row[17] or 0),
             "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
+            "permissions": teacher_permissions,
         }
     }
 
@@ -7397,6 +7738,7 @@ def calendar_lesson_action():
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     actor = "owner" if is_owner else f"teacher:{teacher_name}"
+    teacher_permissions = get_teacher_permissions(teacher_name) if not is_owner else dict(TEACHER_PERMISSION_DEFAULTS)
 
     if action == "save":
         status = (data.get("status") or row[6] or "scheduled").strip()
@@ -7410,6 +7752,20 @@ def calendar_lesson_action():
         parent_reminder = 1 if data.get("parent_lesson_reminder_enabled") else 0
         practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
         low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
+
+        if not is_owner:
+            if status != row[6] and not teacher_permissions.get("attendance"):
+                conn.close()
+                return {"ok": False, "error": "Attendance permission is not enabled."}, 403
+            if lesson_note and not teacher_permissions.get("lesson_notes"):
+                conn.close()
+                return {"ok": False, "error": "Lesson note permission is not enabled."}, 403
+            if private_note and not teacher_permissions.get("private_notes"):
+                conn.close()
+                return {"ok": False, "error": "Private note permission is not enabled."}, 403
+            if homework and not teacher_permissions.get("homework"):
+                conn.close()
+                return {"ok": False, "error": "Homework permission is not enabled."}, 403
 
         if status != row[6]:
             conn.close()
@@ -7447,7 +7803,7 @@ def calendar_lesson_action():
         return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
 
     if action == "reschedule":
-        if is_owner:
+        if is_owner or teacher_permissions.get("direct_reschedule"):
             new_date = (data.get("new_date") or "").strip()
             new_time = (data.get("new_time") or row[4] or "").strip()
             classroom = (data.get("classroom") or row[5] or "").strip()
@@ -7465,9 +7821,12 @@ def calendar_lesson_action():
             """, (new_date, new_date_obj.strftime("%A"), new_time, classroom, schedule_id))
             conn.commit()
             conn.close()
-            if row[2]:
+            if is_owner and row[2]:
                 create_notification("teacher", row[2], "Lesson rescheduled", f"{row[1]}'s lesson moved to {new_date} at {new_time}.", "/teacher_dashboard?view=schedule", related_type="owner_reschedule", related_id=int(schedule_id))
-            return {"ok": True, "message": "Lesson rescheduled."}
+            elif not is_owner:
+                create_notification("owner", "owner", "Teacher rescheduled lesson", f"{row[2]} moved {row[1]}'s lesson to {new_date} at {new_time}.", "/calendar", related_type="teacher_direct_reschedule", related_id=int(schedule_id))
+            queue_teacher_lesson_reminder(int(schedule_id), row[2])
+            return {"ok": True, "message": "Lesson rescheduled." if is_owner else "Lesson moved. Owner was notified."}
         requested_date = (data.get("new_date") or row[3] or "").strip()
         requested_time = (data.get("new_time") or row[4] or "").strip()
         reason = (data.get("reason") or "Teacher requested from calendar panel").strip()
@@ -7482,6 +7841,9 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Reschedule request sent to owner."}
 
     if action == "sub_request":
+        if not is_owner and not teacher_permissions.get("sub_request"):
+            conn.close()
+            return {"ok": False, "error": "Sub request permission is not enabled."}, 403
         if is_owner:
             conn.close()
             return {"ok": False, "error": "Owner does not need sub approval."}, 400
@@ -7498,10 +7860,12 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Sub request sent to owner."}
 
     if action == "cancel_request":
-        if is_owner:
+        if is_owner or teacher_permissions.get("direct_cancel"):
             status = (data.get("status") or "teacher_cancelled").strip()
             conn.close()
-            result = apply_lesson_status(schedule_id, status, actor="owner", reason=data.get("reason"))
+            result = apply_lesson_status(schedule_id, status, actor=actor, reason=data.get("reason"))
+            if result.get("ok") and not is_owner:
+                create_notification("owner", "owner", "Teacher cancelled lesson", f"{row[2]} cancelled {row[1]}'s lesson on {row[3]} {row[4]}.", "/calendar", related_type="teacher_direct_cancel", related_id=int(schedule_id))
             return {"ok": bool(result.get("ok")), "message": "Lesson cancelled." if result.get("ok") else result.get("error"), "error": result.get("error")}
         reason = (data.get("reason") or "Teacher requested cancellation from calendar panel").strip()
         thread_id = get_or_create_message_thread(f"Cancel request - {row[1]}", student_name=row[1], teacher_name=row[2], thread_type="teacher_cancel_request", related_type="schedule", related_id=int(schedule_id))
@@ -11146,11 +11510,13 @@ def run_lesson_reminders():
 
     target_date = request.args.get("date") or (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     created = create_lesson_reminders_for_date(target_date)
+    teacher_created = create_teacher_lesson_reminders_for_date(target_date)
 
     return f"""
     <h1>Lesson Reminders Queued</h1>
     <p>Date: {target_date}</p>
-    <p>Created: {created}</p>
+    <p>Parent reminders created: {created}</p>
+    <p>Teacher reminders created: {teacher_created}</p>
     <p><a href="/notification_queue">Notification Queue</a></p>
     <p><a href="/">Home</a></p>
     """
@@ -28204,6 +28570,9 @@ def reschedule_schedule():
         if lesson[2] != session.get("teacher_name"):
             conn.close()
             return {"ok": False, "error": "Permission denied"}, 403
+        if not teacher_has_permission(session.get("teacher_name"), "direct_reschedule"):
+            conn.close()
+            return {"ok": False, "error": "Owner approval required. Ask the owner to enable Direct reschedule in Teacher Permissions."}, 403
 
     old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
     day_delta    = (new_date_obj - old_date_obj).days
@@ -28234,6 +28603,20 @@ def reschedule_schedule():
         return {"ok": False, "error": "Invalid scope"}, 400
 
     conn.commit()
+
+    if require_teacher() and not require_owner():
+        try:
+            create_notification(
+                "owner", "owner",
+                "Teacher moved lesson",
+                f"{lesson[2]} moved {lesson[1]}'s lesson from {lesson[3]} to {new_date}.",
+                "/calendar",
+                related_type="teacher_direct_reschedule",
+                related_id=int(schedule_id)
+            )
+            queue_teacher_lesson_reminder(int(schedule_id), lesson[2])
+        except Exception:
+            pass
 
     # Notify teacher when owner moves a lesson
     if require_owner() and lesson[2]:
