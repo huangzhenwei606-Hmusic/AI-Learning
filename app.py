@@ -137,7 +137,12 @@ def hmusic_inject_csrf(html):
 @app.before_request
 def enforce_csrf_token():
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and not hmusic_validate_csrf():
-        return "CSRF token missing or invalid", 403
+        session.pop("_csrf_token", None)
+        if request.method == "POST" and not request.is_json:
+            target = request.path
+            separator = "&" if "?" in target else "?"
+            return redirect(f"{target}{separator}csrf_refresh=1")
+        return {"ok": False, "error": "CSRF token missing or invalid. Please refresh and try again."}, 403
 
 
 @app.before_request
@@ -3268,6 +3273,12 @@ def edit_teacher(teacher_id):
     def selected(value, current):
         return "selected" if value == current else ""
 
+    csrf_notice = ""
+    if request.args.get("csrf_refresh") == "1":
+        csrf_notice = """
+        <div class="notice">This page was refreshed for security. Please review the information and click Update Teacher again.</div>
+        """
+
     return f"""
     <html>
     <head>
@@ -3279,6 +3290,7 @@ def edit_teacher(teacher_id):
             button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; cursor:pointer; }}
             button:disabled {{ opacity:0.65; cursor:not-allowed; }}
             .actions {{ display:flex; gap:8px; align-items:center; margin-top:8px; }}
+            .notice {{ background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; padding:12px 14px; border-radius:8px; margin:0 0 18px; font-weight:700; }}
         </style>
         <script>
             document.addEventListener("DOMContentLoaded", function () {{
@@ -3300,6 +3312,7 @@ def edit_teacher(teacher_id):
     <body>
         <div class="container">
             <h1>Edit Teacher</h1>
+            {csrf_notice}
             <form id="edit-teacher-form" method="POST" action="/edit_teacher/{teacher_id}">
                 Teacher Name:<br>
                 <input name="teacher_name" value="{teacher[1] or ''}" required>
