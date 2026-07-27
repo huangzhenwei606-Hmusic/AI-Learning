@@ -870,6 +870,61 @@ def unique_teacher_username(cursor, desired_username, teacher_id, linked_teacher
         suffix += 1
 
 
+def sync_teacher_user_account(cursor, old_name, teacher_name, username, password_hash=None):
+    cursor.execute("""
+    SELECT id FROM users
+    WHERE linked_teacher_name = ?
+    AND username = ?
+    ORDER BY id
+    LIMIT 1
+    """, (old_name, username))
+    primary_user = cursor.fetchone()
+
+    if not primary_user:
+        cursor.execute("""
+        SELECT id FROM users
+        WHERE linked_teacher_name = ?
+        AND role = 'teacher'
+        ORDER BY id
+        LIMIT 1
+        """, (old_name,))
+        primary_user = cursor.fetchone()
+
+    if primary_user:
+        primary_user_id = primary_user[0]
+    else:
+        cursor.execute("""
+        INSERT INTO users (username, password, role, display_name, linked_teacher_name)
+        VALUES (?, '', 'teacher', ?, ?)
+        """, (username, teacher_name, teacher_name))
+        primary_user_id = cursor.lastrowid
+
+    password_sql = ""
+    password_values = []
+    if password_hash:
+        password_sql = "password = '', password_hash = ?, must_change_password = 1,"
+        password_values.append(password_hash)
+
+    cursor.execute(f"""
+    UPDATE users
+    SET username = ?,
+        {password_sql}
+        role = 'teacher',
+        display_name = ?,
+        linked_teacher_name = ?
+    WHERE id = ?
+    """, (username, *password_values, teacher_name, teacher_name, primary_user_id))
+
+    cursor.execute("""
+    UPDATE users
+    SET role = 'teacher',
+        display_name = ?,
+        linked_teacher_name = ?
+    WHERE linked_teacher_name = ?
+    AND id != ?
+    """, (teacher_name, teacher_name, old_name, primary_user_id))
+
+
 
 HSTUDIO_APP_NAME = "H-Music Studio"
 
@@ -3192,28 +3247,7 @@ def edit_teacher(teacher_id):
 
         update_teacher_name_references(cursor, old_name, teacher_name)
 
-        cursor.execute("""
-        INSERT OR IGNORE INTO users (
-            username, password, role, display_name, linked_teacher_name
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """, (username, "", "teacher", teacher_name, teacher_name))
-
-        user_password_sql = ""
-        user_password_values = []
-        if new_password_hash:
-            user_password_sql = "password = '', password_hash = ?, must_change_password = 1,"
-            user_password_values.append(new_password_hash)
-
-        cursor.execute(f"""
-        UPDATE users
-        SET username = ?,
-            {user_password_sql}
-            role = 'teacher',
-            display_name = ?,
-            linked_teacher_name = ?
-        WHERE linked_teacher_name = ?
-        """, (username, *user_password_values, teacher_name, teacher_name, old_name))
+        sync_teacher_user_account(cursor, old_name, teacher_name, username, new_password_hash)
 
         try:
             conn.commit()
