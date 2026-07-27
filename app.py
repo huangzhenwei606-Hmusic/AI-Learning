@@ -5020,6 +5020,7 @@ def calendar():
             .delete-cancel{{background:#fff;border:1px solid var(--line);color:var(--text)}}
             .delete-confirm{{background:#D92D20;border:0;color:#fff}}
             .delete-confirm:hover{{background:#B42318}}
+            #deleteModalOverlay{{z-index:1205}}
 
 
 
