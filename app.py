@@ -4990,6 +4990,36 @@ def calendar():
                                border:1px solid var(--line);color:var(--muted);
                                border-radius:8px;font-size:13px;cursor:pointer;
                                font-family:inherit}}
+            .delete-modal{{width:min(440px,calc(100vw - 28px));padding:0;overflow:hidden}}
+            .delete-modal-head{{padding:18px 20px 14px;border-bottom:1px solid var(--line);
+                                display:flex;gap:12px;align-items:flex-start}}
+            .delete-icon{{width:38px;height:38px;border-radius:10px;background:#FEE4E2;
+                          color:#B42318;display:flex;align-items:center;justify-content:center;
+                          font-size:20px;flex:0 0 auto}}
+            .delete-modal-title{{font-size:18px;font-weight:900;color:var(--text);margin:0 0 4px}}
+            .delete-modal-sub{{font-size:12px;color:var(--muted);line-height:1.45}}
+            .delete-modal-body{{padding:16px 20px}}
+            .delete-choice{{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;
+                            padding:12px;border:1px solid var(--line);border-radius:9px;
+                            margin-bottom:10px;cursor:pointer;background:#fff}}
+            .delete-choice:hover{{border-color:#FDA29B;background:#FFF7F5}}
+            .delete-choice.sel{{border-color:#F04438;background:#FEF3F2;box-shadow:0 0 0 2px rgba(240,68,56,.08)}}
+            .delete-choice input{{margin-top:2px;accent-color:#D92D20}}
+            .delete-choice-title{{font-size:14px;font-weight:900;color:var(--text)}}
+            .delete-choice-desc{{font-size:12px;color:var(--muted);margin-top:2px;line-height:1.4}}
+            .delete-range{{display:none;grid-template-columns:1fr 1fr;gap:10px;margin:2px 0 12px 32px}}
+            .delete-range.show{{display:grid}}
+            .delete-range label{{font-size:11px;font-weight:900;text-transform:uppercase;color:var(--muted)}}
+            .delete-range input{{width:100%;margin-top:5px;border:1px solid var(--line);border-radius:8px;
+                                padding:9px 10px;font:inherit;color:var(--text);background:#fff}}
+            .delete-warning{{font-size:12px;line-height:1.45;color:#B42318;background:#FEF3F2;
+                             border:1px solid #FECDCA;border-radius:8px;padding:10px 12px}}
+            .delete-modal-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px;
+                                  padding:14px 20px;border-top:1px solid var(--line);background:#fff}}
+            .delete-cancel,.delete-confirm{{height:42px;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}}
+            .delete-cancel{{background:#fff;border:1px solid var(--line);color:var(--text)}}
+            .delete-confirm{{background:#D92D20;border:0;color:#fff}}
+            .delete-confirm:hover{{background:#B42318}}
 
 
 
@@ -5228,6 +5258,51 @@ def calendar():
       </div>
     </div>
 
+    <!-- Delete lesson modal -->
+    <div class="modal-overlay" id="deleteModalOverlay">
+      <div class="modal delete-modal">
+        <div class="delete-modal-head">
+          <div class="delete-icon"><i class="ti ti-trash"></i></div>
+          <div>
+            <div class="delete-modal-title">Delete lesson</div>
+            <div class="delete-modal-sub" id="deleteModalSub">Choose what should be deleted.</div>
+          </div>
+        </div>
+        <div class="delete-modal-body">
+          <label class="delete-choice sel" id="deleteChoiceOnce" onclick="setDeleteScope('once')">
+            <input type="radio" name="deleteScope" value="once" checked>
+            <span>
+              <span class="delete-choice-title">Only this lesson</span>
+              <span class="delete-choice-desc">Remove this single class only. Future lessons stay on the calendar.</span>
+            </span>
+          </label>
+          <label class="delete-choice" id="deleteChoiceFollowing" onclick="setDeleteScope('following')">
+            <input type="radio" name="deleteScope" value="following">
+            <span>
+              <span class="delete-choice-title">This and all following lessons</span>
+              <span class="delete-choice-desc">Delete this lesson and every future matching recurring class.</span>
+            </span>
+          </label>
+          <label class="delete-choice" id="deleteChoiceRange" onclick="setDeleteScope('range')">
+            <input type="radio" name="deleteScope" value="range">
+            <span>
+              <span class="delete-choice-title">Custom date range</span>
+              <span class="delete-choice-desc">Delete matching lessons only inside the selected dates.</span>
+            </span>
+          </label>
+          <div class="delete-range" id="deleteRangeFields">
+            <label>Start date<input type="date" id="deleteStartDate"></label>
+            <label>End date<input type="date" id="deleteEndDate"></label>
+          </div>
+          <div class="delete-warning">This cannot be undone. Deleted lessons will be removed from the owner calendar immediately.</div>
+        </div>
+        <div class="delete-modal-actions">
+          <button class="delete-cancel" type="button" onclick="closeDeleteModal()">Cancel</button>
+          <button class="delete-confirm" type="button" onclick="confirmDeleteLesson()">Delete selected</button>
+        </div>
+      </div>
+    </div>
+
     <script>
     // ---- instrument color helper ----
     function instrClass(courseName) {{
@@ -5310,7 +5385,49 @@ def calendar():
     function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) showPanelToast(d.message || 'Saved.'); }}).catch(e => alert(e.message)); }}
     function ownerReschedule() {{ if (!activePanelLesson) return; lessonAction({{action:'reschedule', schedule_id:activePanelLesson.id, new_date:document.getElementById('panelNewDate').value, new_time:document.getElementById('panelNewTime').value, classroom:document.getElementById('panelNewRoom').value, reason:document.getElementById('panelReason').value}}).then(d => {{ showPanelToast(d.message || 'Rescheduled.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
     function ownerDuplicateLesson() {{ if (!activePanelLesson) return; lessonAction({{action:'duplicate', schedule_id:activePanelLesson.id}}).then(d => {{ showPanelToast(d.message || 'Duplicated.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
-    function ownerDeleteLesson() {{ if (!activePanelLesson || !confirm('Delete this lesson?')) return; lessonAction({{action:'delete', schedule_id:activePanelLesson.id}}).then(d => {{ showPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+    function setDeleteScope(scope) {{
+      document.querySelectorAll('[name=deleteScope]').forEach(r => r.checked = r.value === scope);
+      document.getElementById('deleteChoiceOnce').classList.toggle('sel', scope === 'once');
+      document.getElementById('deleteChoiceFollowing').classList.toggle('sel', scope === 'following');
+      document.getElementById('deleteChoiceRange').classList.toggle('sel', scope === 'range');
+      document.getElementById('deleteRangeFields').classList.toggle('show', scope === 'range');
+    }}
+    function ownerDeleteLesson() {{
+      if (!activePanelLesson) return;
+      document.getElementById('deleteModalSub').innerHTML =
+        `<b>${{activePanelLesson.student || 'Student'}}</b><br>${{activePanelLesson.date || ''}} · ${{activePanelLesson.time_range || activePanelLesson.time || ''}}`;
+      document.getElementById('deleteStartDate').value = activePanelLesson.date || '';
+      document.getElementById('deleteEndDate').value = activePanelLesson.date || '';
+      setDeleteScope('once');
+      document.getElementById('deleteModalOverlay').classList.add('show');
+    }}
+    function closeDeleteModal() {{
+      document.getElementById('deleteModalOverlay').classList.remove('show');
+    }}
+    function confirmDeleteLesson() {{
+      if (!activePanelLesson) return;
+      const scope = document.querySelector('[name=deleteScope]:checked').value;
+      const payload = {{action:'delete', schedule_id:activePanelLesson.id, delete_scope:scope}};
+      if (scope === 'range') {{
+        const startDate = document.getElementById('deleteStartDate').value;
+        const endDate = document.getElementById('deleteEndDate').value;
+        if (!startDate || !endDate) {{
+          alert('Please choose a start and end date.');
+          return;
+        }}
+        if (endDate < startDate) {{
+          alert('End date must be after the start date.');
+          return;
+        }}
+        payload.start_date = startDate;
+        payload.end_date = endDate;
+      }}
+      lessonAction(payload).then(d => {{
+        closeDeleteModal();
+        showPanelToast(d.message || 'Deleted.');
+        setTimeout(() => location.reload(), 800);
+      }}).catch(e => alert(e.message));
+    }}
     function ownerMessageParent() {{ if (activePanelLesson) window.location.href = '/messages?student=' + encodeURIComponent(activePanelLesson.student || ''); }}
     function ownerViewStudent() {{ if (activePanelLesson) window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || ''); }}
     function ownerRenewPackage() {{ if (activePanelLesson) window.location.href = '/payment/' + encodeURIComponent(activePanelLesson.student || ''); }}
@@ -7991,11 +8108,60 @@ def calendar_lesson_action():
         if not is_owner:
             conn.close()
             return {"ok": False, "error": "Only owner can delete lessons."}, 403
-        cursor.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
+        delete_scope = (data.get("delete_scope") or data.get("scope") or "once").strip()
+        delete_scope = delete_scope if delete_scope in {"once", "following", "range"} else "once"
+        delete_params = [
+            row[1] or "",
+            row[2] or "",
+            row[4] or "",
+            row[5] or "",
+            row[7] or "",
+            row[8] or "",
+            row[9] or "",
+            int(row[10] or 30),
+            int(row[18] or 0),
+        ]
+        match_where = """
+            COALESCE(student_name, '') = ?
+            AND COALESCE(teacher, '') = ?
+            AND COALESCE(lesson_time, '') = ?
+            AND COALESCE(classroom, '') = ?
+            AND COALESCE(course_type_name, '') = ?
+            AND COALESCE(schedule_type, '') = ?
+            AND COALESCE(package_type, '') = ?
+            AND COALESCE(duration, 30) = ?
+            AND COALESCE(is_group, 0) = ?
+        """
+        if delete_scope == "following":
+            cursor.execute(f"""
+            DELETE FROM schedule
+            WHERE {match_where}
+            AND lesson_date >= ?
+            """, (*delete_params, row[3]))
+        elif delete_scope == "range":
+            start_date = (data.get("start_date") or row[3] or "").strip()
+            end_date = (data.get("end_date") or row[3] or "").strip()
+            try:
+                start_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+                end_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                conn.close()
+                return {"ok": False, "error": "Invalid date range"}, 400
+            if end_obj < start_obj:
+                conn.close()
+                return {"ok": False, "error": "End date must be after the start date."}, 400
+            cursor.execute(f"""
+            DELETE FROM schedule
+            WHERE {match_where}
+            AND lesson_date BETWEEN ? AND ?
+            """, (*delete_params, start_date, end_date))
+        else:
+            cursor.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
         deleted = cursor.rowcount
         conn.commit()
         conn.close()
-        return {"ok": True, "message": f"Deleted {deleted} lesson."}
+        scope_message = "lesson" if deleted == 1 else "lessons"
+        return {"ok": True, "message": f"Deleted {deleted} {scope_message}."}
 
     conn.close()
     return {"ok": False, "error": "Unknown action"}, 400
