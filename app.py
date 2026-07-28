@@ -5330,7 +5330,7 @@ def calendar():
           <div class="pop-section">
             <h3>Course</h3>
             <label class="pop-label">Course / Duration</label>
-            <select class="pop-sel" id="popCourse" name="course_type_id" onchange="updateQuickCourseSummary()" required>
+            <select class="pop-sel" id="popCourse" name="course_type_id" onchange="updateQuickCourseBilling()" required>
               {quick_course_options}
             </select>
             <button class="pop-mini-action" type="button" onclick="toggleOwnerDurationBox()">
@@ -5408,6 +5408,19 @@ def calendar():
               <div>
                 <label class="pop-label">Custom count</label>
                 <input class="pop-inp" type="number" name="custom_lesson_count" id="popCustomLessonCount" min="1" max="260" step="1" placeholder="8" disabled onchange="updateQuickCourseSummary()">
+              </div>
+            </div>
+            <div class="pop-row">
+              <div>
+                <label class="pop-label">Price type</label>
+                <select class="pop-sel" name="parent_billing_basis" id="popParentBillingBasis" onchange="updateQuickCourseSummary()">
+                  <option value="per_class">Per class</option>
+                  <option value="hourly">Hourly</option>
+                </select>
+              </div>
+              <div>
+                <label class="pop-label">Parent charge / rate</label>
+                <input class="pop-inp" type="number" name="parent_charge_rate" id="popParentChargeRate" min="0" step="0.01" placeholder="0.00" onchange="updateQuickCourseSummary()">
               </div>
             </div>
             <label class="pop-label" id="popCustomPriceLabel" style="display:none">Custom student price</label>
@@ -5924,10 +5937,15 @@ def calendar():
       const duration = isCustom ? Number(customDurationInput.value || course.duration || 60) : Number(course.duration || 30);
       document.getElementById('popEnd').value = minutesToTime(document.getElementById('popStart').value, duration);
       const billingDecision = (document.getElementById('popBillingDecision') || {{value:'existing_credits'}}).value;
-      let studentCharge = quickAmount(course.student_billing_method, course.student_price, duration);
+      const basis = (document.getElementById('popParentBillingBasis') || {{value:methodToQuickBillingBasis(course.student_billing_method)}}).value;
+      const rate = Number((document.getElementById('popParentChargeRate') || {{value:course.student_price || 0}}).value || 0);
+      const basisMethod = billingBasisToMethod(basis);
+      let studentCharge = quickAmount(basisMethod, rate, duration);
       if (['trial_free','makeup_credit','no_charge'].includes(billingDecision)) studentCharge = 0;
       if (billingDecision === 'custom_price') {{
-        studentCharge = Number((document.getElementById('popCustomStudentPrice') || {{value:0}}).value || 0);
+        studentCharge = quickAmount(basisMethod, rate, duration);
+        const customPrice = document.getElementById('popCustomStudentPrice');
+        if (customPrice) customPrice.value = rate.toFixed(2);
       }}
       const packageSelect = document.getElementById('popPackageType');
       const customCount = document.getElementById('popCustomLessonCount');
@@ -5939,7 +5957,7 @@ def calendar():
         `<strong>${{course.name || 'Course'}}</strong> · ${{duration}} min<br>` +
         `Student charge: <strong>$${{studentCharge.toFixed(2)}}</strong><br>` +
         `Billing: ${{billingLabel(billingDecision)}} · ${{countLabel}}<br>` +
-        `Pricing basis: ${{course.student_billing_method || 'Per lesson'}}`;
+        `Pricing basis: ${{basisMethod}}`;
     }}
     function toggleOwnerDurationBox() {{
       const box = document.getElementById('popDurationBox');
@@ -5995,6 +6013,7 @@ def calendar():
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
       if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
       updateBillingControls();
+      updateQuickCourseBilling();
     }}
     function updateQuickRooms() {{
       const locationSelect = document.getElementById('popLocation');
@@ -6042,6 +6061,19 @@ def calendar():
     }}
     function billingBasisToMethod(basis) {{
       return basis === 'hourly' ? 'Hourly' : 'Per Lesson';
+    }}
+    function methodToQuickBillingBasis(method) {{
+      const m = String(method || '').toLowerCase();
+      return m.includes('hour') ? 'hourly' : 'per_class';
+    }}
+    function updateQuickCourseBilling() {{
+      const course = selectedQuickCourse();
+      if (!course) return;
+      const basis = document.getElementById('popParentBillingBasis');
+      const rate = document.getElementById('popParentChargeRate');
+      if (basis) basis.value = methodToQuickBillingBasis(course.student_billing_method);
+      if (rate) rate.value = Number(course.student_price || 0).toFixed(2);
+      updateQuickCourseSummary();
     }}
     function updatePanelRooms(preferredRoomId, preferredRoomName) {{
       const locationSelect = document.getElementById('panelDetailLocation');
@@ -6188,7 +6220,7 @@ def calendar():
       syncPopDateFromInput();
       updateQuickRooms();
       updateQuickRoomId();
-      updateLessonKind();
+      updateBillingControls();
       const form = document.getElementById('quickLessonForm');
       if (!form.reportValidity()) return;
       form.submit();
@@ -6402,6 +6434,8 @@ def add_schedule():
                     "custom_lesson_count": request.form.get("custom_lesson_count"),
                     "billing_decision": request.form.get("billing_decision"),
                     "custom_student_price": request.form.get("custom_student_price"),
+                    "parent_billing_basis": request.form.get("parent_billing_basis"),
+                    "parent_charge_rate": request.form.get("parent_charge_rate"),
                     "start_date": request.form.get("start_date"),
                     "course_type_id": request.form.get("course_type_id")
                 }
@@ -6459,6 +6493,8 @@ def add_schedule():
         billing_decision = request.form.get("billing_decision") or "existing_credits"
         custom_lesson_count = request.form.get("custom_lesson_count")
         custom_student_price = request.form.get("custom_student_price")
+        parent_billing_basis = request.form.get("parent_billing_basis")
+        parent_charge_rate = request.form.get("parent_charge_rate")
         start_date = request.form.get("start_date")
         course_type_id = request.form.get("course_type_id")
         custom_duration = request.form.get("custom_duration")
@@ -6542,9 +6578,17 @@ def add_schedule():
                 custom_note += f" Group size: {group_size or ''}. Students: {group_student_names or student_name}."
             schedule_note = (schedule_note + " " + custom_note).strip()
 
+        if parent_billing_basis or parent_charge_rate:
+            student_billing_method = "Hourly" if parent_billing_basis == "hourly" else "Per Lesson"
+            try:
+                student_price = max(0, float(parent_charge_rate or 0))
+            except:
+                student_price = 0
+            student_charge_amount = calculate_course_amount(student_billing_method, student_price, duration)
+
         if billing_decision in ("trial_free", "makeup_credit", "no_charge"):
             student_charge_amount = 0
-        elif billing_decision == "custom_price" and custom_student_price:
+        elif billing_decision == "custom_price" and custom_student_price and not (parent_billing_basis or parent_charge_rate):
             try:
                 custom_student_price_value = max(0, float(custom_student_price))
             except:
