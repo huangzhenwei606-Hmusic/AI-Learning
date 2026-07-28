@@ -4608,6 +4608,22 @@ def calendar():
     ORDER BY is_group DESC, name, duration
     """)
     course_legend_rows = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        id,
+        name,
+        duration,
+        COALESCE(student_billing_method, ''),
+        COALESCE(student_price, 0),
+        COALESCE(teacher_billing_method, ''),
+        COALESCE(teacher_pay, 0),
+        COALESCE(is_group, 0)
+    FROM course_types
+    WHERE active = 1
+    ORDER BY is_group DESC, name, duration
+    """)
+    quick_course_rows = cursor.fetchall()
     conn.close()
 
     teacher_options = '<option value="">All Teachers</option>'
@@ -4639,6 +4655,23 @@ def calendar():
             "location_name": row[3],
         }
         for row in quick_room_rows
+    ])
+    quick_course_options = ""
+    for c in quick_course_rows:
+        group_label = "Group" if c[7] else "Private"
+        quick_course_options += f'<option value="{c[0]}">{escape(str(c[1] or "Course"))} · {int(c[2] or 0)}m · {group_label}</option>'
+    quick_course_data_json = json.dumps([
+        {
+            "id": c[0],
+            "name": c[1],
+            "duration": c[2] or 30,
+            "student_billing_method": c[3],
+            "student_price": c[4] or 0,
+            "teacher_billing_method": c[5],
+            "teacher_pay": c[6] or 0,
+            "is_group": c[7] or 0,
+        }
+        for c in quick_course_rows
     ])
 
     events_by_date = {}
@@ -4983,33 +5016,46 @@ def calendar():
                         margin-bottom:2px;border:1px dashed var(--line);
                         color:var(--faint)}}
 
-            /* ---- quick-add popover ---- */
-            .popover{{position:fixed;z-index:999;background:var(--surface);
-                      border:1px solid var(--line);border-radius:12px;
-                      padding:14px;width:230px;box-shadow:0 4px 20px rgba(0,0,0,.12);
-                      display:none}}
+            /* ---- add lesson drawer ---- */
+            .popover{{position:fixed;z-index:999;background:var(--surface);top:0;right:0;
+                      width:min(460px,100vw);height:100vh;border-left:1px solid var(--line);
+                      box-shadow:-12px 0 34px rgba(15,23,42,.16);display:none;
+                      overflow:auto}}
             .popover.show{{display:block}}
-            .pop-title{{font-size:13px;font-weight:600;color:var(--text);
-                        margin-bottom:10px;display:flex;align-items:center;
+            .pop-inner{{padding:18px 18px 92px}}
+            .pop-title{{font-size:17px;font-weight:800;color:var(--text);
+                        margin-bottom:4px;display:flex;align-items:center;
                         justify-content:space-between}}
-            .pop-close{{cursor:pointer;color:var(--muted);font-size:16px;line-height:1}}
-            .pop-note{{font-size:10px;color:var(--faint);margin-bottom:8px;
-                       padding:5px 8px;background:var(--bg);border-radius:7px;
-                       line-height:1.5}}
-            .pop-sel,.pop-inp{{width:100%;font-family:inherit;font-size:12px;
-                               padding:5px 8px;border:1px solid var(--line);
-                               border-radius:7px;background:var(--bg);
-                               color:var(--text);margin-bottom:6px}}
-            .pop-row{{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px}}
-            .pop-btns{{display:flex;gap:6px;margin-top:8px}}
-            .btn-add-sched{{flex:1;padding:6px;background:var(--blue);color:#fff;
-                            border:none;border-radius:7px;font-size:11px;
-                            cursor:pointer;font-family:inherit;font-weight:600}}
+            .pop-sub{{font-size:11px;color:var(--faint);margin-bottom:14px}}
+            .pop-close{{cursor:pointer;color:var(--muted);font-size:22px;line-height:1}}
+            .pop-section{{border-top:1px solid var(--line);padding-top:14px;margin-top:14px}}
+            .pop-section h3{{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--faint);margin:0 0 10px}}
+            .pop-label{{display:block;font-size:10px;font-weight:800;text-transform:uppercase;
+                        letter-spacing:.03em;color:var(--faint);margin:0 0 5px}}
+            .pop-sel,.pop-inp{{width:100%;font-family:inherit;font-size:13px;
+                               padding:9px 10px;border:1px solid var(--line);
+                               border-radius:9px;background:var(--bg);
+                               color:var(--text);margin-bottom:10px;box-sizing:border-box}}
+            .pop-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:0}}
+            .pop-tri{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}}
+            .pop-choice-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}
+            .pop-choice{{border:1px solid var(--line);border-radius:10px;padding:10px;
+                         font-size:12px;font-weight:800;display:flex;gap:7px;align-items:center;background:#fff}}
+            .pop-choice input{{margin:0}}
+            .pop-summary{{background:#f8fafc;border:1px solid var(--line);border-radius:12px;
+                          padding:12px;font-size:12px;color:var(--muted);line-height:1.6}}
+            .pop-summary strong{{color:var(--text)}}
+            .pop-footer{{position:sticky;bottom:0;background:rgba(255,255,255,.96);
+                         backdrop-filter:blur(8px);border-top:1px solid var(--line);
+                         display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 18px}}
+            .btn-add-sched{{padding:12px;background:var(--blue);color:#fff;
+                            border:none;border-radius:10px;font-size:13px;
+                            cursor:pointer;font-family:inherit;font-weight:800}}
             .btn-add-sched:hover{{background:#0C447C}}
-            .btn-add-open{{flex:1;padding:6px;background:transparent;
+            .btn-add-open{{padding:12px;background:transparent;
                            border:1px solid var(--line);color:var(--muted);
-                           border-radius:7px;font-size:11px;cursor:pointer;
-                           font-family:inherit}}
+                           border-radius:10px;font-size:13px;cursor:pointer;
+                           font-family:inherit;font-weight:800}}
             .btn-add-open:hover{{background:var(--bg)}}
 
             /* ---- reschedule modal ---- */
@@ -5209,35 +5255,138 @@ def calendar():
 
     </div><!-- /cal-shell -->
 
-    <!-- Quick-add popover -->
+    <!-- Add lesson drawer -->
     <div class="popover" id="popover">
-      <div class="pop-title">
-        <span id="popTitle">Add to —</span>
-        <span class="pop-close" onclick="closePop()"><i class="ti ti-x"></i></span>
-      </div>
-      <select class="pop-sel" id="popTeacher">
-        {teacher_picker_options}
-      </select>
-      <input class="pop-sel" id="popStudent" list="popStudentList" placeholder="Search or type new student">
-      <datalist id="popStudentList">
-        {student_picker_datalist_options}
-      </datalist>
-      <select class="pop-sel" id="popLocation" onchange="updateQuickRooms()">
-        {quick_location_options}
-      </select>
-      <select class="pop-sel" id="popRoom" onchange="updateQuickRoomId()"></select>
-      <div class="pop-row">
-        <input type="time" class="pop-inp" id="popStart" value="15:00" style="margin-bottom:0">
-        <input type="time" class="pop-inp" id="popEnd"   value="15:30" style="margin-bottom:0">
-      </div>
-      <div class="pop-btns">
-        <button class="btn-add-sched" onclick="addSchedule()">
-          <i class="ti ti-plus" style="font-size:11px"></i> Add Schedule
-        </button>
-        <button class="btn-add-open" onclick="addOpenSlot()">
-          <i class="ti ti-clock" style="font-size:11px"></i> Open Slot
-        </button>
-      </div>
+      <form id="quickLessonForm" method="POST" action="/add_schedule">
+        <div class="pop-inner">
+          <div class="pop-title">
+            <span id="popTitle">Add lesson</span>
+            <span class="pop-close" onclick="closePop()"><i class="ti ti-x"></i></span>
+          </div>
+          <div class="pop-sub" id="popSub">Create a lesson, trial, makeup, or recurring schedule.</div>
+
+          <input type="hidden" name="start_date" id="popStartDate">
+          <input type="hidden" name="weekday" id="popWeekday">
+          <input type="hidden" name="location" id="popLocationName">
+          <input type="hidden" name="room_id" id="popRoomId">
+
+          <div class="pop-section">
+            <h3>Student</h3>
+            <label class="pop-label">Student</label>
+            <input class="pop-sel" id="popStudent" name="student_name" list="popStudentList" placeholder="Search existing or type new student" required>
+            <datalist id="popStudentList">
+              {student_picker_datalist_options}
+            </datalist>
+          </div>
+
+          <div class="pop-section">
+            <h3>Lesson Type</h3>
+            <div class="pop-choice-grid">
+              <label class="pop-choice"><input type="radio" name="lesson_kind" value="regular" checked onchange="updateLessonKind()"> Regular</label>
+              <label class="pop-choice"><input type="radio" name="lesson_kind" value="trial" onchange="updateLessonKind()"> Trial</label>
+              <label class="pop-choice"><input type="radio" name="lesson_kind" value="makeup" onchange="updateLessonKind()"> Makeup</label>
+              <label class="pop-choice"><input type="radio" name="lesson_kind" value="group" onchange="updateLessonKind()"> Group</label>
+            </div>
+          </div>
+
+          <div class="pop-section">
+            <h3>Course</h3>
+            <label class="pop-label">Course / Duration</label>
+            <select class="pop-sel" id="popCourse" name="course_type_id" onchange="updateQuickCourseSummary()" required>
+              {quick_course_options}
+            </select>
+            <div class="pop-row">
+              <div>
+                <label class="pop-label">Custom duration</label>
+                <input class="pop-inp" type="number" name="custom_duration" id="popCustomDuration" value="60" min="15" step="5" onchange="updateQuickCourseSummary()">
+              </div>
+              <div>
+                <label class="pop-label">Format</label>
+                <select class="pop-sel" name="lesson_format" id="popLessonFormat" onchange="updateLessonKind()">
+                  <option value="private">Private</option>
+                  <option value="group">Group</option>
+                </select>
+              </div>
+            </div>
+            <div id="popGroupFields" style="display:none">
+              <div class="pop-row">
+                <div>
+                  <label class="pop-label">Group size</label>
+                  <input class="pop-inp" type="number" name="group_size" min="2" step="1" placeholder="2">
+                </div>
+                <div>
+                  <label class="pop-label">Students</label>
+                  <input class="pop-inp" name="group_student_names" placeholder="Names, comma separated">
+                </div>
+              </div>
+            </div>
+            <div class="pop-summary" id="popPriceSummary"></div>
+          </div>
+
+          <div class="pop-section">
+            <h3>Teacher / Room</h3>
+            <label class="pop-label">Teacher</label>
+            <select class="pop-sel" id="popTeacher" name="teacher" required>
+              {teacher_picker_options}
+            </select>
+            <div class="pop-row">
+              <div>
+                <label class="pop-label">Location</label>
+                <select class="pop-sel" id="popLocation" name="location_id" onchange="updateQuickRooms()" required>
+                  {quick_location_options}
+                </select>
+              </div>
+              <div>
+                <label class="pop-label">Room</label>
+                <select class="pop-sel" id="popRoom" name="classroom" onchange="updateQuickRoomId()" required></select>
+              </div>
+            </div>
+          </div>
+
+          <div class="pop-section">
+            <h3>Time</h3>
+            <div class="pop-tri">
+              <div>
+                <label class="pop-label">Date</label>
+                <input class="pop-inp" type="date" id="popDateDisplay" onchange="syncPopDateFromInput()">
+              </div>
+              <div>
+                <label class="pop-label">Start</label>
+                <input type="time" class="pop-inp" id="popStart" name="lesson_time" value="15:00" onchange="updateQuickCourseSummary()" required>
+              </div>
+              <div>
+                <label class="pop-label">End</label>
+                <input type="time" class="pop-inp" id="popEnd" value="15:30" readonly>
+              </div>
+            </div>
+            <div class="pop-row">
+              <div>
+                <label class="pop-label">Repeat</label>
+                <select class="pop-sel" name="schedule_type" id="popScheduleType">
+                  <option value="one_time">One time</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </div>
+              <div>
+                <label class="pop-label">Package</label>
+                <select class="pop-sel" name="package_type" id="popPackageType">
+                  <option value="10">10 lessons</option>
+                  <option value="12">12 lessons</option>
+                  <option value="unlimited">Unlimited</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="pop-footer">
+          <button type="button" class="btn-add-open" onclick="addOpenSlot()">
+            <i class="ti ti-clock"></i> Open Slot
+          </button>
+          <button type="button" class="btn-add-sched" onclick="addSchedule()">
+            <i class="ti ti-plus"></i> Create lesson
+          </button>
+        </div>
+      </form>
     </div>
 
 
@@ -5573,12 +5722,80 @@ def calendar():
     // ---- quick-add popover ----
     let activePopDate = null;
     const QUICK_ROOM_DATA = {quick_room_data_json};
+    const QUICK_COURSE_DATA = {quick_course_data_json};
+    function selectedQuickCourse() {{
+      const courseSelect = document.getElementById('popCourse');
+      const id = Number(courseSelect ? courseSelect.value : 0);
+      return QUICK_COURSE_DATA.find(c => Number(c.id) === id) || QUICK_COURSE_DATA[0] || null;
+    }}
+    function minutesToTime(baseTime, minutes) {{
+      if (!baseTime) return '';
+      const parts = baseTime.split(':').map(Number);
+      const d = new Date(2000, 0, 1, parts[0] || 0, parts[1] || 0);
+      d.setMinutes(d.getMinutes() + Number(minutes || 30));
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }}
+    function quickAmount(method, price, duration) {{
+      const m = String(method || '').toLowerCase();
+      const p = Number(price || 0);
+      const d = Number(duration || 30);
+      if (m.includes('hour')) return p * d / 60;
+      return p;
+    }}
+    function updateQuickCourseSummary() {{
+      const course = selectedQuickCourse();
+      if (!course) return;
+      const customDurationInput = document.getElementById('popCustomDuration');
+      const isCustom = String(course.name || '').toLowerCase().includes('custom');
+      if (customDurationInput) {{
+        customDurationInput.disabled = !isCustom;
+        customDurationInput.style.opacity = isCustom ? '1' : '.55';
+      }}
+      const duration = isCustom ? Number(customDurationInput.value || course.duration || 60) : Number(course.duration || 30);
+      document.getElementById('popEnd').value = minutesToTime(document.getElementById('popStart').value, duration);
+      const studentCharge = quickAmount(course.student_billing_method, course.student_price, duration);
+      const teacherPay = quickAmount(course.teacher_billing_method, course.teacher_pay, duration);
+      document.getElementById('popPriceSummary').innerHTML =
+        `<strong>${{course.name || 'Course'}}</strong> · ${{duration}} min<br>` +
+        `Student charge: <strong>$${{studentCharge.toFixed(2)}}</strong> · Teacher pay: <strong>$${{teacherPay.toFixed(2)}}</strong><br>` +
+        `Billing: ${{course.student_billing_method || 'Per lesson'}}`;
+    }}
+    function updateLessonKind() {{
+      const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
+      const courseSelect = document.getElementById('popCourse');
+      const formatSelect = document.getElementById('popLessonFormat');
+      const groupFields = document.getElementById('popGroupFields');
+      if (kind === 'trial') {{
+        const trial = QUICK_COURSE_DATA.find(c => String(c.name || '').toLowerCase().includes('trial'));
+        if (trial) courseSelect.value = trial.id;
+        document.getElementById('popScheduleType').value = 'one_time';
+        document.getElementById('popPackageType').value = '10';
+      }}
+      if (kind === 'makeup') {{
+        document.getElementById('popScheduleType').value = 'one_time';
+      }}
+      if (kind === 'group') {{
+        const group = QUICK_COURSE_DATA.find(c => Number(c.is_group || 0) === 1);
+        if (group) courseSelect.value = group.id;
+        if (formatSelect) formatSelect.value = 'group';
+      }}
+      const course = selectedQuickCourse();
+      const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+      if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
+      if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
+      updateQuickCourseSummary();
+    }}
     function updateQuickRooms() {{
       const locationSelect = document.getElementById('popLocation');
       const roomSelect = document.getElementById('popRoom');
+      const locationNameInput = document.getElementById('popLocationName');
       if (!locationSelect || !roomSelect) return;
       const locationId = String(locationSelect.value || '');
       const previousValue = roomSelect.value;
+      if (locationNameInput) {{
+        const selectedLocation = locationSelect.options[locationSelect.selectedIndex];
+        locationNameInput.value = selectedLocation ? selectedLocation.textContent : '';
+      }}
       roomSelect.innerHTML = '';
       QUICK_ROOM_DATA
         .filter(room => String(room.location_id) === locationId)
@@ -5601,32 +5818,39 @@ def calendar():
     }}
     function updateQuickRoomId() {{
       const roomSelect = document.getElementById('popRoom');
+      const roomIdInput = document.getElementById('popRoomId');
       if (!roomSelect) return;
       const selected = roomSelect.options[roomSelect.selectedIndex];
       roomSelect.dataset.roomId = selected ? (selected.dataset.roomId || '') : '';
       roomSelect.dataset.locationName = selected ? (selected.dataset.locationName || '') : '';
+      if (roomIdInput) roomIdInput.value = roomSelect.dataset.roomId || '';
+    }}
+    function weekdayName(dateStr) {{
+      const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const parts = dateStr.split('-').map(Number);
+      return names[new Date(parts[0], parts[1] - 1, parts[2]).getDay()];
+    }}
+    function syncPopDateFromInput() {{
+      activePopDate = document.getElementById('popDateDisplay').value;
+      document.getElementById('popStartDate').value = activePopDate;
+      document.getElementById('popWeekday').value = activePopDate ? weekdayName(activePopDate) : '';
+      document.getElementById('popTitle').textContent = 'Add to ' + activePopDate;
     }}
     function openPop(day, dateStr, el) {{
       activePopDate = dateStr;
       document.getElementById('popTitle').textContent = 'Add to ' + dateStr;
+      document.getElementById('popSub').textContent = 'Create schedule from the owner calendar.';
+      document.getElementById('popDateDisplay').value = dateStr;
+      document.getElementById('popStartDate').value = dateStr;
+      document.getElementById('popWeekday').value = weekdayName(dateStr);
       updateQuickRooms();
       const pop = document.getElementById('popover');
-      const rect = el.getBoundingClientRect();
-      let top  = rect.bottom + window.scrollY + 4;
-      let left = rect.left  + window.scrollX;
-      if (left + 238 > window.innerWidth) left = window.innerWidth - 242;
-      pop.style.top  = top  + 'px';
-      pop.style.left = left + 'px';
       pop.classList.add('show');
-      setTimeout(() => document.addEventListener('click', outsideClick), 10);
+      updateLessonKind();
     }}
     function closePop() {{
       document.getElementById('popover').classList.remove('show');
-      document.removeEventListener('click', outsideClick);
       activePopDate = null;
-    }}
-    function outsideClick(e) {{
-      if (!document.getElementById('popover').contains(e.target)) closePop();
     }}
     function fmt12(t) {{
       if (!t) return '';
@@ -5635,16 +5859,13 @@ def calendar():
     }}
     function addSchedule() {{
       if (!activePopDate) return;
-      const teacher = document.getElementById('popTeacher').value;
-      const student = document.getElementById('popStudent').value;
-      const locationSelect = document.getElementById('popLocation');
-      const room    = document.getElementById('popRoom').value;
-      const locationId = locationSelect ? locationSelect.value : '';
-      const roomId = document.getElementById('popRoom').dataset.roomId || '';
-      const start   = document.getElementById('popStart').value;
-      const end     = document.getElementById('popEnd').value;
-      // Redirect to add_schedule with pre-filled params
-      window.location.href = `/add_schedule?prefill_date=${{activePopDate}}&prefill_teacher=${{encodeURIComponent(teacher)}}&prefill_student=${{encodeURIComponent(student)}}&prefill_location_id=${{encodeURIComponent(locationId)}}&prefill_room_id=${{encodeURIComponent(roomId)}}&prefill_room=${{encodeURIComponent(room)}}&prefill_start=${{encodeURIComponent(start)}}`;
+      syncPopDateFromInput();
+      updateQuickRooms();
+      updateQuickRoomId();
+      updateLessonKind();
+      const form = document.getElementById('quickLessonForm');
+      if (!form.reportValidity()) return;
+      form.submit();
     }}
     function addOpenSlot() {{
       if (!activePopDate) return;
