@@ -23055,7 +23055,7 @@ def v35_registration_form(error="", values=None):
                         <label>Preferred times<input name="preferred_times" value="{val('preferred_times')}" placeholder="After 4pm / weekend morning"></label>
                         <label class="full">Scheduling notes<textarea name="schedule_notes" placeholder="Teacher preference, commute limits, sibling schedule, online/in-person needs...">{val('schedule_notes')}</textarea></label>
                     </div>
-                    <div class="notice">H-Music owner will confirm teacher, package, tuition, and invoice after reviewing this registration.</div>
+                    <div class="notice">Our H-Music team will confirm teacher, package, tuition, and invoice after reviewing this registration.</div>
                 </section>
                 <section>
                     <div class="section-title">Billing contact & payment setup <span class="required">*</span></div>
@@ -23098,7 +23098,7 @@ def v35_registration_form(error="", values=None):
                         <label>Parent / guardian signature<input name="guardian_signature" value="{val('guardian_signature')}" placeholder="Type full name" required></label>
                         <label>Date<input type="date" name="signed_date" value="{val('signed_date')}" required></label>
                     </div>
-                    <div class="notice">After submission, H-Music will confirm package, tuition, teacher, schedule, invoice, and parent app login.</div>
+                    <div class="notice">After submission, our H-Music team will confirm package, tuition, teacher, schedule, invoice, and parent app login.</div>
                 </section>
                 <button class="submit" type="submit">Submit registration</button>
             </form>
