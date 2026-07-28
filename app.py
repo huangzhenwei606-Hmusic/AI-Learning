@@ -22291,14 +22291,15 @@ def parent_login_info(name):
     status = "Active" if row[8] else "No active parent account"
     parent_name = row[5] or row[1] or "H-Music family"
     email = row[6] or row[2] or ""
-    parent_action = (
+    family_action = (
         f'<a class="button secondary" href="/parent_admin/{row[4]}">Open Family Account</a>'
         if row[4]
-        else f"""
-        <form method="POST" action="/send_parent_welcome/{quote(row[0])}" style="display:inline;">
-            <button type="submit">Create + send welcome</button>
-        </form>
-        """
+        else ""
+    )
+    welcome_button_text = (
+        "Send login email + reset temporary password"
+        if row[4]
+        else "Create account + send login email"
     )
 
     return f"""
@@ -22310,8 +22311,11 @@ def parent_login_info(name):
             .card {{ max-width:760px; background:white; border:1px solid #e5e7eb; border-radius:14px; padding:24px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
             .box {{ background:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin:16px 0; }}
             pre {{ white-space:pre-wrap; font-family:inherit; font-size:16px; line-height:1.5; }}
-            a.button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; background:#1f6fb8; color:white; border:0; border-radius:10px; padding:0 14px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            a.button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; background:#1f6fb8; color:white; border:0; border-radius:10px; padding:0 14px; text-decoration:none; font-weight:800; margin-right:8px; cursor:pointer; }}
             a.secondary {{ background:white; color:#111827; border:1px solid #e5e7eb; }}
+            .actions {{ display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; }}
+            .actions form {{ margin:0; }}
+            .note {{ color:#6b7280; margin-top:10px; line-height:1.45; }}
         </style>
     </head>
     <body>
@@ -22334,8 +22338,14 @@ Email: {escape(email or '[parent email]')}
 
 If you need a new temporary password, H-Music will reset it and send a new welcome email.</pre>
             </div>
-            <a class="button" href="/student/{quote(row[0])}">Back to Student</a>
-            {parent_action}
+            <div class="actions">
+                <form method="POST" action="/send_parent_welcome/{quote(row[0])}">
+                    <button type="submit">{welcome_button_text}</button>
+                </form>
+                <a class="button secondary" href="/student/{quote(row[0])}">Back to Student</a>
+                {family_action}
+            </div>
+            <p class="note">This sends the parent app login email and creates a new temporary password. The parent will be asked to change it after logging in.</p>
         </div>
     </body>
     </html>
