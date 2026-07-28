@@ -5184,6 +5184,16 @@ def calendar():
             .panel-action{{min-height:54px;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
             .panel-action:hover{{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}}
             .panel-action.danger:hover{{background:#FEE4E2;border-color:#FDA29B;color:#B42318}}
+            .panel-details{{padding:0 28px;border-bottom:1px solid var(--line);background:#fff}}
+            .panel-details summary{{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;padding:18px 0;font-size:12px;text-transform:uppercase;color:var(--muted);font-weight:900}}
+            .panel-details summary::-webkit-details-marker{{display:none}}
+            .panel-details summary:after{{content:"+";font-size:20px;color:var(--blue);line-height:1}}
+            .panel-details[open] summary:after{{content:"-"}}
+            .detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding-bottom:18px}}
+            .detail-grid .full{{grid-column:1 / -1}}
+            .detail-label{{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:900;margin-bottom:5px}}
+            .detail-help{{font-size:12px;color:var(--muted);line-height:1.45;margin:2px 0 10px}}
+            .detail-sync{{grid-column:1 / -1;border:1px solid #B8CCE3;background:var(--blue-bg);color:#0C447C;border-radius:8px;padding:10px 12px;font-size:12px;font-weight:800;line-height:1.45}}
             .panel-footer{{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid var(--line);background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}}
             .panel-footer button{{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}}
             .panel-discard{{background:#fff;color:var(--text);border:1px solid var(--line)}} .panel-discard:hover{{background:#F3F6FA}} .panel-save{{background:var(--blue);color:#fff;border:0}} .panel-save:hover{{background:#0C447C}}
@@ -5492,6 +5502,28 @@ def calendar():
           <label class="panel-toggle"><span><strong>Practice reminder after lesson</strong><span>2h after lesson · includes homework</span></span><input type="checkbox" id="panelPracticeReminder"></label>
           <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
         </div>
+        <details class="panel-details" id="panelDetailsBilling">
+          <summary>Details & Billing</summary>
+          <div class="detail-grid">
+            <label class="full"><span class="detail-label">Student</span><input class="panel-field" id="panelDetailStudent" list="popStudentList"></label>
+            <label><span class="detail-label">Teacher</span><select class="panel-field" id="panelDetailTeacher">{teacher_picker_options}</select></label>
+            <label><span class="detail-label">Course</span><select class="panel-field" id="panelDetailCourse" onchange="updatePanelCourseBilling()">{quick_course_options}</select></label>
+            <label><span class="detail-label">Duration</span><input class="panel-field" type="number" id="panelDetailDuration" min="15" max="240" step="5" onchange="updatePanelChargePreview()"></label>
+            <label><span class="detail-label">Format</span><select class="panel-field" id="panelDetailFormat"><option value="private">Private</option><option value="group">Group</option></select></label>
+            <label><span class="detail-label">Location</span><select class="panel-field" id="panelDetailLocation" onchange="updatePanelRooms()">{quick_location_options}</select></label>
+            <label><span class="detail-label">Room</span><select class="panel-field" id="panelDetailRoom" onchange="updatePanelRoomId()"></select></label>
+            <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
+            <label><span class="detail-label">Start time</span><input class="panel-field" type="time" id="panelDetailTime" onchange="updatePanelChargePreview()"></label>
+            <label><span class="detail-label">Repeat</span><select class="panel-field" id="panelDetailScheduleType"><option value="one_time">One time</option><option value="weekly">Weekly</option></select></label>
+            <label><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
+            <label><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
+            <label><span class="detail-label">Billing basis</span><select class="panel-field" id="panelBillingBasis" onchange="updatePanelChargePreview()"><option value="hourly">Hourly</option><option value="per_class">Per class</option></select></label>
+            <label><span class="detail-label">Student rate</span><input class="panel-field" type="number" id="panelStudentRate" min="0" step="0.01" onchange="updatePanelChargePreview()"></label>
+            <label class="full"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
+            <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following" disabled>This and following lessons - coming next</option></select></label>
+            <div class="detail-sync" id="panelBillingPreview">Student app + invoice will use the saved schedule price.</div>
+          </div>
+        </details>
         <div class="panel-section"><h3>Quick actions</h3><div class="panel-actions">
           <button class="panel-action" onclick="ownerReschedule()"><i class="ti ti-calendar"></i>Reschedule</button>
           <button class="panel-action" onclick="ownerMessageParent()"><i class="ti ti-message"></i>Message parent</button>
@@ -5647,6 +5679,7 @@ def calendar():
         document.getElementById('panelNewTime').value = inputTimeValue(d.lesson.time || '');
         document.getElementById('panelNewRoom').value = d.lesson.classroom || '';
         document.getElementById('panelReason').value = '';
+        fillPanelDetails(d.lesson);
         const bal = document.getElementById('panelBalance');
         const left = Number(d.lesson.lessons_left || 0);
         bal.style.display = left <= 2 ? 'inline-flex' : 'none';
@@ -5657,8 +5690,38 @@ def calendar():
       }}).catch(e => alert(e.message));
     }}
     function closeLessonPanel() {{ document.getElementById('lessonScrim').classList.remove('show'); document.getElementById('lessonPanel').classList.remove('show'); activePanelLesson = null; }}
-    function panelSavePayload() {{ return {{action:'save', schedule_id:activePanelLesson.id, status:activePanelStatus, lesson_note:document.getElementById('panelLessonNote').value, homework:document.getElementById('panelHomework').value, parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked, practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked, low_balance_alert_enabled:document.getElementById('panelLowBalance').checked}}; }}
-    function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) showPanelToast(d.message || 'Saved.'); }}).catch(e => alert(e.message)); }}
+    function panelSavePayload() {{
+      updatePanelRoomId();
+      return {{
+        action:'save',
+        schedule_id:activePanelLesson.id,
+        status:activePanelStatus,
+        lesson_note:document.getElementById('panelLessonNote').value,
+        homework:document.getElementById('panelHomework').value,
+        parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked,
+        practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked,
+        low_balance_alert_enabled:document.getElementById('panelLowBalance').checked,
+        detail_scope:document.getElementById('panelDetailScope').value,
+        student_name:document.getElementById('panelDetailStudent').value,
+        teacher:document.getElementById('panelDetailTeacher').value,
+        course_type_id:document.getElementById('panelDetailCourse').value,
+        duration:document.getElementById('panelDetailDuration').value,
+        lesson_format:document.getElementById('panelDetailFormat').value,
+        location_id:document.getElementById('panelDetailLocation').value,
+        room_id:document.getElementById('panelDetailRoom').dataset.roomId || '',
+        location:(document.getElementById('panelDetailLocation').options[document.getElementById('panelDetailLocation').selectedIndex] || {{textContent:''}}).textContent,
+        classroom:document.getElementById('panelDetailRoom').value,
+        lesson_date:document.getElementById('panelDetailDate').value,
+        lesson_time:document.getElementById('panelDetailTime').value,
+        schedule_type:document.getElementById('panelDetailScheduleType').value,
+        package_type:document.getElementById('panelDetailPackage').value,
+        custom_lesson_count:document.getElementById('panelDetailCustomCount').value,
+        billing_basis:document.getElementById('panelBillingBasis').value,
+        student_rate:document.getElementById('panelStudentRate').value,
+        billing_decision:document.getElementById('panelBillingDecision').value
+      }};
+    }}
+    function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) {{ showPanelToast(d.message || 'Saved.'); setTimeout(() => location.reload(), 900); }} }}).catch(e => alert(e.message)); }}
     function ownerReschedule() {{ if (!activePanelLesson) return; lessonAction({{action:'reschedule', schedule_id:activePanelLesson.id, new_date:document.getElementById('panelNewDate').value, new_time:document.getElementById('panelNewTime').value, classroom:document.getElementById('panelNewRoom').value, reason:document.getElementById('panelReason').value}}).then(d => {{ showPanelToast(d.message || 'Rescheduled.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
     function ownerDuplicateLesson() {{ if (!activePanelLesson) return; lessonAction({{action:'duplicate', schedule_id:activePanelLesson.id}}).then(d => {{ showPanelToast(d.message || 'Duplicated.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
     function setDeleteScope(scope) {{
@@ -5969,6 +6032,121 @@ def calendar():
       roomSelect.dataset.roomId = selected ? (selected.dataset.roomId || '') : '';
       roomSelect.dataset.locationName = selected ? (selected.dataset.locationName || '') : '';
       if (roomIdInput) roomIdInput.value = roomSelect.dataset.roomId || '';
+    }}
+    function methodToBillingBasis(method) {{
+      const m = String(method || '').toLowerCase();
+      return m.includes('hour') ? 'hourly' : 'per_class';
+    }}
+    function billingBasisToMethod(basis) {{
+      return basis === 'hourly' ? 'Hourly' : 'Per Lesson';
+    }}
+    function updatePanelRooms(preferredRoomId, preferredRoomName) {{
+      const locationSelect = document.getElementById('panelDetailLocation');
+      const roomSelect = document.getElementById('panelDetailRoom');
+      if (!locationSelect || !roomSelect) return;
+      const locationId = String(locationSelect.value || '');
+      const previousValue = preferredRoomId ? String(preferredRoomId) : (roomSelect.dataset.roomId || '');
+      roomSelect.innerHTML = '';
+      QUICK_ROOM_DATA
+        .filter(room => String(room.location_id) === locationId)
+        .forEach(room => {{
+          const opt = document.createElement('option');
+          opt.value = room.room_name;
+          opt.textContent = room.room_name;
+          opt.dataset.roomId = room.id;
+          opt.dataset.locationName = room.location_name || '';
+          if ((previousValue && String(room.id) === previousValue) || (!previousValue && preferredRoomName && room.room_name === preferredRoomName)) opt.selected = true;
+          roomSelect.appendChild(opt);
+        }});
+      if (!roomSelect.options.length) {{
+        const opt = document.createElement('option');
+        opt.value = preferredRoomName || '';
+        opt.textContent = preferredRoomName || 'No active rooms';
+        opt.dataset.roomId = '';
+        roomSelect.appendChild(opt);
+      }}
+      updatePanelRoomId();
+    }}
+    function updatePanelRoomId() {{
+      const roomSelect = document.getElementById('panelDetailRoom');
+      if (!roomSelect) return;
+      const selected = roomSelect.options[roomSelect.selectedIndex];
+      roomSelect.dataset.roomId = selected ? (selected.dataset.roomId || '') : '';
+      roomSelect.dataset.locationName = selected ? (selected.dataset.locationName || '') : '';
+    }}
+    function selectedPanelCourse() {{
+      const courseSelect = document.getElementById('panelDetailCourse');
+      const id = Number(courseSelect ? courseSelect.value : 0);
+      return QUICK_COURSE_DATA.find(c => Number(c.id) === id) || null;
+    }}
+    function updatePanelCourseBilling() {{
+      const course = selectedPanelCourse();
+      if (!course) return;
+      const durationInput = document.getElementById('panelDetailDuration');
+      const rateInput = document.getElementById('panelStudentRate');
+      const basisSelect = document.getElementById('panelBillingBasis');
+      const formatSelect = document.getElementById('panelDetailFormat');
+      if (durationInput) durationInput.value = Number(course.duration || 30);
+      if (rateInput) rateInput.value = Number(course.student_price || 0).toFixed(2);
+      if (basisSelect) basisSelect.value = methodToBillingBasis(course.student_billing_method);
+      if (formatSelect) formatSelect.value = Number(course.is_group || 0) ? 'group' : 'private';
+      updatePanelChargePreview();
+    }}
+    function updatePanelPackageFields() {{
+      const packageSelect = document.getElementById('panelDetailPackage');
+      const customCount = document.getElementById('panelDetailCustomCount');
+      const isCustom = packageSelect && packageSelect.value === 'custom';
+      if (customCount) {{
+        customCount.disabled = !isCustom;
+        customCount.style.opacity = isCustom ? '1' : '.55';
+      }}
+      updatePanelChargePreview();
+    }}
+    function panelComputedCharge() {{
+      const basis = (document.getElementById('panelBillingBasis') || {{value:'per_class'}}).value;
+      const duration = Number((document.getElementById('panelDetailDuration') || {{value:30}}).value || 30);
+      const rate = Number((document.getElementById('panelStudentRate') || {{value:0}}).value || 0);
+      const decision = (document.getElementById('panelBillingDecision') || {{value:'existing_credits'}}).value;
+      if (['trial_free','makeup_credit','no_charge'].includes(decision)) return 0;
+      if (basis === 'hourly') return rate * duration / 60;
+      return rate;
+    }}
+    function updatePanelChargePreview() {{
+      const preview = document.getElementById('panelBillingPreview');
+      if (!preview) return;
+      const basis = (document.getElementById('panelBillingBasis') || {{value:'per_class'}}).value;
+      const rate = Number((document.getElementById('panelStudentRate') || {{value:0}}).value || 0);
+      const duration = Number((document.getElementById('panelDetailDuration') || {{value:30}}).value || 30);
+      const charge = panelComputedCharge();
+      const basisText = basis === 'hourly' ? `$${{rate.toFixed(2)}}/hour × ${{duration}} min` : `$${{rate.toFixed(2)}}/class`;
+      preview.textContent = `Student app + invoice will use $${{charge.toFixed(2)}} for this lesson. Basis: ${{basisText}}.`;
+    }}
+    function fillPanelDetails(lesson) {{
+      const setValue = (id, value) => {{ const el = document.getElementById(id); if (el) el.value = value == null ? '' : value; }};
+      setValue('panelDetailStudent', lesson.student || '');
+      setValue('panelDetailTeacher', lesson.teacher || '');
+      setValue('panelDetailCourse', lesson.course_type_id || '');
+      setValue('panelDetailDuration', lesson.duration || 30);
+      setValue('panelDetailFormat', Number(lesson.is_group || 0) ? 'group' : 'private');
+      setValue('panelDetailDate', lesson.date || '');
+      setValue('panelDetailTime', inputTimeValue(lesson.time || ''));
+      setValue('panelDetailScheduleType', lesson.schedule_type || 'one_time');
+      setValue('panelDetailPackage', lesson.package_type || '10');
+      setValue('panelDetailCustomCount', lesson.custom_lesson_count || '');
+      setValue('panelBillingBasis', methodToBillingBasis(lesson.student_billing_method));
+      setValue('panelStudentRate', Number(lesson.student_price || lesson.student_charge_amount || 0).toFixed(2));
+      setValue('panelBillingDecision', lesson.billing_decision || 'existing_credits');
+      const locationSelect = document.getElementById('panelDetailLocation');
+      if (locationSelect) {{
+        if (lesson.location_id) locationSelect.value = String(lesson.location_id);
+        if (!locationSelect.value && lesson.location) {{
+          const match = Array.from(locationSelect.options).find(o => o.textContent === lesson.location);
+          if (match) locationSelect.value = match.value;
+        }}
+      }}
+      updatePanelRooms(lesson.room_id, lesson.classroom);
+      updatePanelPackageFields();
+      updatePanelChargePreview();
     }}
     function weekdayName(dateStr) {{
       const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -8716,7 +8894,11 @@ def calendar_lesson_row(cursor, schedule_id):
         COALESCE(s.package_type, ''), COALESCE(s.duration, 30), COALESCE(st.lessons_left, 0),
         COALESCE(s.notes, ''), COALESCE(s.private_note, ''), COALESCE(s.homework_assignment, ''),
         COALESCE(s.parent_lesson_reminder_enabled, 0), COALESCE(s.practice_reminder_enabled, 0),
-        COALESCE(s.low_balance_alert_enabled, 0), COALESCE(s.is_group, 0)
+        COALESCE(s.low_balance_alert_enabled, 0), COALESCE(s.is_group, 0),
+        COALESCE(s.course_type_id, 0), COALESCE(s.location_id, 0), COALESCE(s.room_id, 0),
+        COALESCE(s.student_billing_method, ''), COALESCE(s.student_price, 0),
+        COALESCE(s.student_charge_amount, 0), COALESCE(s.billing_decision, ''),
+        COALESCE(s.custom_lesson_count, 0), COALESCE(s.location, '')
     FROM schedule s
     LEFT JOIN students st ON s.student_name = st.name
     WHERE s.id = ?
@@ -8750,6 +8932,10 @@ def calendar_lesson_detail(schedule_id):
             "homework": row[14] or "", "parent_lesson_reminder_enabled": int(row[15] or 0),
             "practice_reminder_enabled": int(row[16] or 0), "low_balance_alert_enabled": int(row[17] or 0),
             "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
+            "course_type_id": int(row[19] or 0), "location_id": int(row[20] or 0), "room_id": int(row[21] or 0),
+            "student_billing_method": row[22] or "", "student_price": float(row[23] or 0),
+            "student_charge_amount": float(row[24] or 0), "billing_decision": row[25] or "existing_credits",
+            "custom_lesson_count": int(row[26] or 0), "location": row[27] or "",
             "permissions": teacher_permissions,
         }
     }
@@ -8794,6 +8980,7 @@ def calendar_lesson_action():
         parent_reminder = 1 if data.get("parent_lesson_reminder_enabled") else 0
         practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
         low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
+        detail_update = {}
 
         if not is_owner:
             if status != row[6] and not teacher_permissions.get("attendance"):
@@ -8819,29 +9006,190 @@ def calendar_lesson_action():
             row = calendar_lesson_row(cursor, schedule_id)
 
         if is_owner:
+            if any(key in data for key in (
+                "student_name", "teacher", "course_type_id", "duration", "location_id", "room_id",
+                "classroom", "lesson_date", "lesson_time", "schedule_type", "package_type",
+                "billing_basis", "student_rate", "billing_decision"
+            )):
+                student_name_detail = (data.get("student_name") or row[1] or "").strip()
+                teacher_detail = (data.get("teacher") or row[2] or "").strip()
+                lesson_date_detail = (data.get("lesson_date") or row[3] or "").strip()
+                lesson_time_detail = (data.get("lesson_time") or row[4] or "").strip()
+                classroom_detail = (data.get("classroom") or row[5] or "").strip()
+                schedule_type_detail = (data.get("schedule_type") or row[8] or "one_time").strip()
+                package_type_detail = (data.get("package_type") or row[9] or "10").strip()
+                billing_decision_detail = (data.get("billing_decision") or "existing_credits").strip()
+                billing_basis_detail = (data.get("billing_basis") or "per_class").strip()
+                student_billing_method_detail = "Hourly" if billing_basis_detail == "hourly" else "Per Lesson"
+                lesson_format_detail = (data.get("lesson_format") or ("group" if int(row[18] or 0) else "private")).strip()
+                is_group_detail = 1 if lesson_format_detail == "group" else 0
+
+                try:
+                    lesson_date_obj = datetime.strptime(lesson_date_detail, "%Y-%m-%d").date()
+                except ValueError:
+                    conn.close()
+                    return {"ok": False, "error": "Invalid lesson date"}, 400
+                if not parse_lesson_time_value(lesson_time_detail):
+                    conn.close()
+                    return {"ok": False, "error": "Invalid lesson time"}, 400
+
+                try:
+                    course_type_id_detail = int(float(data.get("course_type_id") or row[19] or 0))
+                except:
+                    course_type_id_detail = int(row[19] or 0)
+
+                cursor.execute("""
+                SELECT id, name, duration, COALESCE(is_group, 0)
+                FROM course_types
+                WHERE id = ?
+                """, (course_type_id_detail,))
+                course_detail = cursor.fetchone()
+                if not course_detail:
+                    conn.close()
+                    return {"ok": False, "error": "Course Type not found"}, 400
+
+                try:
+                    duration_detail = int(float(data.get("duration") or course_detail[2] or row[10] or 30))
+                except:
+                    duration_detail = int(course_detail[2] or row[10] or 30)
+                duration_detail = max(1, min(duration_detail, 600))
+
+                try:
+                    student_rate_detail = max(0, float(data.get("student_rate") or 0))
+                except:
+                    student_rate_detail = 0
+                if student_rate_detail <= 0:
+                    student_rate_detail = float(row[23] or row[24] or 0)
+
+                if billing_decision_detail in ("trial_free", "makeup_credit", "no_charge"):
+                    student_charge_amount_detail = 0
+                else:
+                    student_charge_amount_detail = calculate_course_amount(
+                        student_billing_method_detail,
+                        student_rate_detail,
+                        duration_detail
+                    )
+
+                try:
+                    custom_lesson_count_detail = int(float(data.get("custom_lesson_count") or 0))
+                except:
+                    custom_lesson_count_detail = 0
+
+                try:
+                    location_id_detail = int(float(data.get("location_id") or 0)) or None
+                except:
+                    location_id_detail = None
+                try:
+                    room_id_detail = int(float(data.get("room_id") or 0)) or None
+                except:
+                    room_id_detail = None
+                location_detail = (data.get("location") or row[27] or "").strip()
+                if location_id_detail and not location_detail:
+                    cursor.execute("SELECT location_name FROM studio_locations WHERE id = ?", (location_id_detail,))
+                    location_row = cursor.fetchone()
+                    location_detail = location_row[0] if location_row else ""
+
+                auto_link_student_teacher(cursor, student_name_detail, teacher_detail)
+                detail_update = {
+                    "student_name": student_name_detail,
+                    "teacher": teacher_detail,
+                    "course_type_id": course_type_id_detail,
+                    "course_type_name": course_detail[1] or "Course",
+                    "duration": duration_detail,
+                    "is_group": is_group_detail,
+                    "location_id": location_id_detail,
+                    "room_id": room_id_detail,
+                    "location": location_detail,
+                    "classroom": classroom_detail,
+                    "lesson_date": lesson_date_detail,
+                    "weekday": lesson_date_obj.strftime("%A"),
+                    "lesson_time": lesson_time_detail,
+                    "schedule_type": schedule_type_detail,
+                    "package_type": package_type_detail,
+                    "student_billing_method": student_billing_method_detail,
+                    "student_price": student_rate_detail,
+                    "student_charge_amount": student_charge_amount_detail,
+                    "billing_decision": billing_decision_detail,
+                    "custom_lesson_count": custom_lesson_count_detail if package_type_detail == "custom" else None,
+                }
+
             cursor.execute("""
             UPDATE schedule
-            SET notes = ?, private_note = ?, homework_assignment = ?,
+            SET student_name = COALESCE(?, student_name),
+                teacher = COALESCE(?, teacher),
+                course_type_id = COALESCE(?, course_type_id),
+                course_type_name = COALESCE(?, course_type_name),
+                duration = COALESCE(?, duration),
+                is_group = COALESCE(?, is_group),
+                location_id = ?,
+                room_id = ?,
+                location = COALESCE(?, location),
+                classroom = COALESCE(?, classroom),
+                lesson_date = COALESCE(?, lesson_date),
+                weekday = COALESCE(?, weekday),
+                lesson_time = COALESCE(?, lesson_time),
+                schedule_type = COALESCE(?, schedule_type),
+                package_type = COALESCE(?, package_type),
+                student_billing_method = COALESCE(?, student_billing_method),
+                student_price = COALESCE(?, student_price),
+                student_charge_amount = COALESCE(?, student_charge_amount),
+                billing_decision = COALESCE(?, billing_decision),
+                custom_lesson_count = ?,
+                notes = ?, private_note = ?, homework_assignment = ?,
                 parent_lesson_reminder_enabled = ?, practice_reminder_enabled = ?, low_balance_alert_enabled = ?,
                 owner_calendar_updated_at = ?
             WHERE id = ?
-            """, (lesson_note, private_note, homework, parent_reminder, practice_reminder, low_balance_alert, now, schedule_id))
+            """, (
+                detail_update.get("student_name"),
+                detail_update.get("teacher"),
+                detail_update.get("course_type_id"),
+                detail_update.get("course_type_name"),
+                detail_update.get("duration"),
+                detail_update.get("is_group"),
+                detail_update.get("location_id") if detail_update else row[20] or None,
+                detail_update.get("room_id") if detail_update else row[21] or None,
+                detail_update.get("location"),
+                detail_update.get("classroom"),
+                detail_update.get("lesson_date"),
+                detail_update.get("weekday"),
+                detail_update.get("lesson_time"),
+                detail_update.get("schedule_type"),
+                detail_update.get("package_type"),
+                detail_update.get("student_billing_method"),
+                detail_update.get("student_price"),
+                detail_update.get("student_charge_amount"),
+                detail_update.get("billing_decision"),
+                detail_update.get("custom_lesson_count") if detail_update else row[26] or None,
+                lesson_note,
+                private_note,
+                homework,
+                parent_reminder,
+                practice_reminder,
+                low_balance_alert,
+                now,
+                schedule_id
+            ))
         else:
             cursor.execute("""
             UPDATE schedule
             SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
             WHERE id = ?
             """, (lesson_note, private_note, homework, practice_reminder, schedule_id))
-        upsert_calendar_lesson_record(cursor, int(schedule_id), row[1], lesson_note, homework, private_note, actor)
+        effective_student_name = detail_update.get("student_name") if detail_update else row[1]
+        effective_teacher_name = detail_update.get("teacher") if detail_update else row[2]
+        effective_lesson_date = detail_update.get("lesson_date") if detail_update else row[3]
+        effective_lesson_time = detail_update.get("lesson_time") if detail_update else row[4]
+        effective_classroom = detail_update.get("classroom") if detail_update else row[5]
+        upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, actor)
         conn.commit()
         conn.close()
         queued = 0
         if homework and (practice_reminder or data.get("send_homework_now")):
-            queued += calendar_queue_parent_notice(row[1], "Practice reminder", f"Homework for {row[1]}:\n{homework}", "homework_assignment", int(schedule_id))
+            queued += calendar_queue_parent_notice(effective_student_name, "Practice reminder", f"Homework for {effective_student_name}:\n{homework}", "homework_assignment", int(schedule_id))
         if is_owner and parent_reminder:
-            queued += calendar_queue_parent_notice(row[1], "Lesson reminder", f"{row[1]} has a lesson on {row[3]} at {row[4]} with {row[2]} in {row[5] or 'the studio'}.", "lesson_reminder", int(schedule_id))
+            queued += calendar_queue_parent_notice(effective_student_name, "Lesson reminder", f"{effective_student_name} has a lesson on {effective_lesson_date} at {effective_lesson_time} with {effective_teacher_name} in {effective_classroom or 'the studio'}.", "lesson_reminder", int(schedule_id))
         if is_owner and low_balance_alert:
-            queued += calendar_queue_parent_notice(row[1], "Low lesson balance", f"{row[1]}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
+            queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
         return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
 
     if action == "reschedule":
