@@ -22937,6 +22937,226 @@ def v35_public_trial_thank_you(inquiry_id, data):
     """
 
 
+def v35_registration_form(error="", values=None):
+    values = values or {}
+
+    def val(name):
+        return v35_safe(values.get(name, ""))
+
+    error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
+    return f"""
+    <html>
+    <head>
+        <title>H-Music New Student Registration</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            :root {{
+                --bg:#f7f7f3;
+                --panel:#ffffff;
+                --line:#dedbd3;
+                --text:#171717;
+                --muted:#6f6b63;
+                --blue:#1f6fba;
+                --blue-soft:#e4f2ff;
+                --gold:#c8962e;
+                --danger:#b91c1c;
+            }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); }}
+            .wrap {{ max-width:920px; margin:0 auto; padding:32px 24px 56px; }}
+            .brand {{ display:flex; align-items:center; gap:12px; margin-bottom:22px; }}
+            .logo {{ width:46px; height:46px; border-radius:13px; background:#030303; display:grid; place-items:center; color:var(--gold); font-family:Georgia,serif; font-size:26px; font-weight:700; }}
+            .brand-name {{ font-weight:900; letter-spacing:.04em; }}
+            h1 {{ font-size:34px; line-height:1.1; margin:0 0 8px; letter-spacing:0; }}
+            p {{ color:var(--muted); font-size:16px; line-height:1.5; margin:0; }}
+            form {{ display:grid; gap:22px; padding:28px; margin-top:22px; background:var(--panel); border:1px solid #e7e3da; border-radius:22px; box-shadow:0 18px 44px rgba(15,23,42,.07); }}
+            section {{ border-bottom:1px solid var(--line); padding-bottom:24px; }}
+            section:last-of-type {{ border-bottom:0; }}
+            .section-title {{ color:var(--muted); font-weight:900; letter-spacing:.08em; font-size:13px; margin:0 0 14px; text-transform:uppercase; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+            label {{ font-weight:800; font-size:14px; display:grid; gap:7px; color:#2f2f2b; }}
+            input, select, textarea {{ width:100%; border:1px solid var(--line); border-radius:13px; background:#fff; color:var(--text); padding:13px 14px; font-size:16px; font-family:inherit; outline:none; }}
+            input:focus, select:focus, textarea:focus {{ border-color:#55a8ff; box-shadow:0 0 0 3px rgba(85,168,255,.16); }}
+            textarea {{ min-height:104px; resize:vertical; }}
+            .full {{ grid-column:1 / -1; }}
+            .required {{ color:#ef4444; }}
+            .error {{ background:#fee2e2; color:var(--danger); border:1px solid #fecaca; border-radius:12px; padding:12px 14px; font-weight:800; }}
+            .notice {{ background:var(--blue-soft); border:1px solid #bfdbfe; border-radius:14px; padding:13px 15px; color:#174a7c; font-weight:800; }}
+            .submit {{ width:100%; border:0; border-radius:14px; background:var(--blue); color:white; padding:15px 18px; font-size:17px; font-weight:900; cursor:pointer; }}
+            .check {{ display:flex; gap:10px; align-items:flex-start; font-weight:700; color:#4b5563; }}
+            .check input {{ width:auto; margin-top:3px; }}
+            @media(max-width:720px) {{
+                .wrap {{ padding:24px 14px 48px; }}
+                h1 {{ font-size:29px; }}
+                form {{ padding:18px; border-radius:18px; }}
+                .grid {{ grid-template-columns:1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <div class="brand"><div class="logo">H</div><div class="brand-name">H-MUSIC</div></div>
+            <h1>New student registration</h1>
+            <p>Use this form after the family is ready to enroll. H-Music will review the information before activating the parent app account.</p>
+            <form method="POST">
+                {error_html}
+                <section>
+                    <div class="section-title">Student <span class="required">*</span></div>
+                    <div class="grid">
+                        <label>Student full name<input name="student_name" value="{val('student_name')}" required></label>
+                        <label>Date of birth / age<input name="age" value="{val('age')}" placeholder="DOB or age" required></label>
+                        <label>Instrument<select name="instrument" required>
+                            <option value="">Choose...</option>
+                            <option {'selected' if values.get('instrument') == 'Piano' else ''}>Piano</option>
+                            <option {'selected' if values.get('instrument') == 'Violin' else ''}>Violin</option>
+                            <option {'selected' if values.get('instrument') == 'Voice' else ''}>Voice</option>
+                            <option {'selected' if values.get('instrument') == 'Guitar' else ''}>Guitar</option>
+                            <option {'selected' if values.get('instrument') == 'Other' else ''}>Other</option>
+                        </select></label>
+                        <label>Program<select name="program_interest" required>
+                            <option {'selected' if values.get('program_interest') == 'Private Lesson' else ''}>Private Lesson</option>
+                            <option {'selected' if values.get('program_interest') == 'Group Class' else ''}>Group Class</option>
+                            <option {'selected' if values.get('program_interest') == 'Custom Program' else ''}>Custom Program</option>
+                        </select></label>
+                        <label class="full">Student notes<textarea name="student_notes" placeholder="Level, goals, allergies, learning needs, important notes...">{val('student_notes')}</textarea></label>
+                    </div>
+                </section>
+                <section>
+                    <div class="section-title">Parent / Guardians <span class="required">*</span></div>
+                    <div class="grid">
+                        <label>Primary guardian name<input name="parent_name" value="{val('parent_name')}" required></label>
+                        <label>Primary guardian phone<input name="phone" value="{val('phone')}" required></label>
+                        <label>Primary guardian email<input type="email" name="parent_email" value="{val('parent_email')}" required></label>
+                        <label>Relationship<input name="relationship" value="{val('relationship')}" placeholder="Mother / Father / Guardian"></label>
+                        <label>Second guardian name<input name="guardian_2_name" value="{val('guardian_2_name')}"></label>
+                        <label>Second guardian contact<input name="guardian_2_contact" value="{val('guardian_2_contact')}" placeholder="Email or phone"></label>
+                    </div>
+                </section>
+                <section>
+                    <div class="section-title">Address & Emergency</div>
+                    <div class="grid">
+                        <label class="full">Family address<input name="family_address" value="{val('family_address')}" placeholder="Street, city, ZIP"></label>
+                        <label>Emergency contact name<input name="emergency_name" value="{val('emergency_name')}"></label>
+                        <label>Emergency contact phone<input name="emergency_phone" value="{val('emergency_phone')}"></label>
+                    </div>
+                </section>
+                <section>
+                    <div class="section-title">Enrollment setup</div>
+                    <div class="grid">
+                        <label>Preferred teacher<input name="preferred_teacher" value="{val('preferred_teacher')}" placeholder="Optional"></label>
+                        <label>Preferred start date<input type="date" name="preferred_start_date" value="{val('preferred_start_date')}"></label>
+                        <label>Preferred days<input name="preferred_days" value="{val('preferred_days')}" placeholder="Mon / Wed / Sat"></label>
+                        <label>Preferred times<input name="preferred_times" value="{val('preferred_times')}" placeholder="After 4pm / weekend morning"></label>
+                        <label>Package<select name="package_interest">
+                            <option {'selected' if values.get('package_interest') == '10 lessons' else ''}>10 lessons</option>
+                            <option {'selected' if values.get('package_interest') == '4 lessons' else ''}>4 lessons</option>
+                            <option {'selected' if values.get('package_interest') == 'Monthly' else ''}>Monthly</option>
+                            <option {'selected' if values.get('package_interest') == 'Custom' else ''}>Custom</option>
+                        </select></label>
+                        <label>Billing preference<select name="billing_preference">
+                            <option {'selected' if values.get('billing_preference') == 'Invoice' else ''}>Invoice</option>
+                            <option {'selected' if values.get('billing_preference') == 'Use existing credits' else ''}>Use existing credits</option>
+                            <option {'selected' if values.get('billing_preference') == 'Discuss with H-Music' else ''}>Discuss with H-Music</option>
+                        </select></label>
+                    </div>
+                </section>
+                <section>
+                    <div class="section-title">Agreements</div>
+                    <label class="check"><input type="checkbox" name="policy_ack" value="1" required> I understand H-Music will review this registration before activating scheduling, billing, and parent app access.</label>
+                    <label class="check"><input type="checkbox" name="media_ok" value="1"> Photo/video permission for studio learning moments and recitals.</label>
+                    <div class="notice">After submission, H-Music will confirm package, tuition, teacher, schedule, and parent app login.</div>
+                </section>
+                <button class="submit" type="submit">Submit registration</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def v35_registration_thank_you(inquiry_id, data):
+    return f"""
+    <html>
+    <head>
+        <title>Registration Received</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f6f7fb; color:#111827; }}
+            .wrap {{ max-width:720px; margin:0 auto; padding:56px 18px; }}
+            .card {{ background:white; border-radius:18px; padding:34px; box-shadow:0 18px 44px rgba(15,23,42,.08); }}
+            .logo {{ width:62px; height:62px; border-radius:17px; background:#050505; display:grid; place-items:center; color:#d7a943; font-size:27px; font-weight:800; margin-bottom:20px; }}
+            h1 {{ font-size:36px; margin:0 0 12px; }}
+            p {{ color:#667085; font-size:17px; line-height:1.55; }}
+            .box {{ background:#eef2ff; border-radius:14px; padding:14px 16px; color:#174a7c; font-weight:900; }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap"><div class="card">
+            <div class="logo">H</div>
+            <h1>Registration received</h1>
+            <p>Thank you. H-Music received the registration for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. We will review the details and confirm schedule, package, invoice, and parent app access.</p>
+            <div class="box">Registration #{inquiry_id}</div>
+        </div></div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/registration", methods=["GET", "POST"])
+@app.route("/new_student_registration", methods=["GET", "POST"])
+def public_student_registration():
+    ensure_v17_schema()
+
+    if request.method == "POST":
+        data = {
+            "student_name": request.form.get("student_name", "").strip(),
+            "parent_name": request.form.get("parent_name", "").strip(),
+            "parent_email": request.form.get("parent_email", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "age": request.form.get("age", "").strip(),
+            "instrument": request.form.get("instrument", "").strip(),
+            "program_interest": request.form.get("program_interest", "").strip() or "Enrollment Registration",
+            "preferred_days": request.form.get("preferred_days", "").strip(),
+            "preferred_times": request.form.get("preferred_times", "").strip(),
+            "source": "Public Registration Form",
+            "lead_temperature": "Hot",
+            "trial_location": "",
+            "notes": "",
+        }
+        if not data["student_name"] or not data["parent_name"] or not data["parent_email"] or not data["phone"]:
+            return v35_registration_form("Please enter student name, primary guardian name, email, and phone.", request.form)
+        extras = [
+            ("Relationship", request.form.get("relationship", "")),
+            ("Second guardian", request.form.get("guardian_2_name", "")),
+            ("Second guardian contact", request.form.get("guardian_2_contact", "")),
+            ("Family address", request.form.get("family_address", "")),
+            ("Emergency contact", request.form.get("emergency_name", "")),
+            ("Emergency phone", request.form.get("emergency_phone", "")),
+            ("Preferred teacher", request.form.get("preferred_teacher", "")),
+            ("Preferred start date", request.form.get("preferred_start_date", "")),
+            ("Package", request.form.get("package_interest", "")),
+            ("Billing preference", request.form.get("billing_preference", "")),
+            ("Student notes", request.form.get("student_notes", "")),
+            ("Media permission", "Yes" if request.form.get("media_ok") == "1" else "No"),
+        ]
+        data["notes"] = "Formal registration submitted. " + " | ".join(
+            f"{label}: {value.strip()}" for label, value in extras if value and value.strip()
+        )
+        inquiry_id = v35_insert_trial_lead(data, public=True)
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+        UPDATE inquiries
+        SET status = ?, follow_up_status = ?, trial_status = ?, updated_at = ?
+        WHERE id = ?
+        """, ("Registration Submitted", "Ready to Enroll", "Registration", v35_now(), inquiry_id))
+        conn.commit()
+        conn.close()
+        return v35_registration_thank_you(inquiry_id, data)
+
+    return v35_registration_form()
+
+
 def v35_trial_duration_minutes(duration_text):
     match = re.search(r"\d+", duration_text or "")
     return int(match.group(0)) if match else 30
@@ -23223,7 +23443,7 @@ def inquiries():
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM inquiries ORDER BY datetime(updated_at) DESC, id DESC")
     rows = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead', 'Inquiry')")
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead', 'Inquiry', 'Registration Submitted')")
     new_count = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM inquiries WHERE ai_recommendation IS NOT NULL AND COALESCE(owner_verified, 0) = 0")
     ai_count = cursor.fetchone()[0]
@@ -23235,6 +23455,7 @@ def inquiries():
     converted_count = cursor.fetchone()[0]
     conn.close()
     public_trial_url = request.host_url.rstrip("/") + "/trial"
+    public_registration_url = request.host_url.rstrip("/") + "/registration"
     owner_intake_url = request.host_url.rstrip("/") + "/new_student_intake"
 
     cards = "".join([
@@ -23340,6 +23561,14 @@ def inquiries():
                     <code>{v35_safe(public_trial_url)}</code>
                 </div>
                 <a href="/trial" target="_blank">Open Form</a>
+            </div>
+            <div class="share">
+                <div>
+                    <b>Formal New Student Registration</b>
+                    <p>Use this after a family is ready to enroll. It collects guardian, emergency, package, billing, and parent app setup information.</p>
+                    <code>{v35_safe(public_registration_url)}</code>
+                </div>
+                <a href="/registration" target="_blank">Open Registration</a>
             </div>
             <div class="share">
                 <div>
@@ -23458,7 +23687,7 @@ def inquiry_detail(inquiry_id):
     if not inquiry:
         return "Lead not found"
 
-    status_options = ["New Lead", "AI Suggested", "Trial Proposed", "Trial Scheduled", "Trial Completed", "Follow Up", "Enrolled", "Active", "Archived"]
+    status_options = ["New Lead", "Registration Submitted", "AI Suggested", "Trial Proposed", "Trial Scheduled", "Trial Completed", "Follow Up", "Enrolled", "Active", "Archived"]
     follow_options = ["New", "Waiting Parent", "Follow Up", "Ready to Enroll", "Converted", "Closed"]
     temp_options = ["Warm", "Hot", "Cold"]
 
