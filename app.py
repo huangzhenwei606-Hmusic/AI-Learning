@@ -5502,7 +5502,7 @@ def calendar():
           <label class="panel-toggle"><span><strong>Practice reminder after lesson</strong><span>2h after lesson · includes homework</span></span><input type="checkbox" id="panelPracticeReminder"></label>
           <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
         </div>
-        <details class="panel-details" id="panelDetailsBilling">
+        <details class="panel-details" id="panelDetailsBilling" open>
           <summary>Details & Billing</summary>
           <div class="detail-grid">
             <label class="full"><span class="detail-label">Student</span><input class="panel-field" id="panelDetailStudent" list="popStudentList"></label>
@@ -5680,6 +5680,8 @@ def calendar():
         document.getElementById('panelNewRoom').value = d.lesson.classroom || '';
         document.getElementById('panelReason').value = '';
         fillPanelDetails(d.lesson);
+        const detailsBilling = document.getElementById('panelDetailsBilling');
+        if (detailsBilling) detailsBilling.open = true;
         const bal = document.getElementById('panelBalance');
         const left = Number(d.lesson.lessons_left || 0);
         bal.style.display = left <= 2 ? 'inline-flex' : 'none';
