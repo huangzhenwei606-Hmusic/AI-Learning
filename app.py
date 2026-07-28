@@ -4749,7 +4749,9 @@ def calendar():
             for value, label in options
         )
 
-    def warning_pill(lessons_left):
+    def warning_pill(lessons_left, package_type=""):
+        if str(package_type or "").lower() == "unlimited":
+            return ""
         try:
             left = int(float(lessons_left or 0))
         except (TypeError, ValueError):
@@ -4806,7 +4808,7 @@ def calendar():
                 dot_class = owner_status_dot(event_status)
                 status_label = owner_status_label(event_status)
                 time_range = owner_time_range(event[2], event[12])
-                warning = warning_pill(event[13])
+                warning = warning_pill(event[13], event[8])
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
                 event_cards += f"""
@@ -5648,7 +5650,7 @@ def calendar():
         const bal = document.getElementById('panelBalance');
         const left = Number(d.lesson.lessons_left || 0);
         bal.style.display = left <= 2 ? 'inline-flex' : 'none';
-        bal.textContent = left <= 0 ? 'Last!' : left + ' left';
+        bal.textContent = left <= 0 ? '0 left' : left + ' left';
         paintPanelStatus(d.lesson.status || 'scheduled');
         document.getElementById('lessonScrim').classList.add('show');
         document.getElementById('lessonPanel').classList.add('show');
