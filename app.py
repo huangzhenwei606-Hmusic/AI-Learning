@@ -125,12 +125,20 @@ def hmusic_inject_csrf(html):
     token = hmusic_csrf_token()
     hidden = f'\n<input type="hidden" name="_csrf_token" value="{token}">'
     html = CSRF_FORM_RE.sub(lambda match: match.group(1) + hidden, html)
+    favicon_links = (
+        '<link rel="icon" href="/favicon.ico" sizes="any">\n'
+        '<link rel="icon" href="/hmusic-icon.svg" type="image/svg+xml">\n'
+        '<link rel="apple-touch-icon" href="/hmusic-icon.png">\n'
+    )
     csrf_script = (
         f'<meta name="csrf-token" content="{token}">\n'
         f'<script>window.HMUSIC_CSRF_TOKEN = "{token}";</script>'
     )
     if "</head>" in html:
-        html = html.replace("</head>", csrf_script + "\n</head>", 1)
+        if 'rel="icon"' not in html and "rel='icon'" not in html:
+            html = html.replace("</head>", favicon_links + csrf_script + "\n</head>", 1)
+        else:
+            html = html.replace("</head>", csrf_script + "\n</head>", 1)
     return html
 
 
@@ -685,6 +693,11 @@ self.addEventListener("fetch", function(event) {
 @app.route("/hmusic-icon.png")
 def parent_app_icon_png():
     return send_from_directory("static", "hmusic-icon.png")
+
+
+@app.route("/favicon.ico")
+def hmusic_favicon():
+    return parent_app_icon()
 
 
 @app.route("/hmusic-icon.svg")
@@ -30718,6 +30731,7 @@ def prepare_database_for_request():
         maybe_run_daily_backup()
     public_paths = (
         "/static/",
+        "/favicon.ico",
         "/hmusic-icon",
         "/manifest.webmanifest",
         "/sw.js",
