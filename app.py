@@ -5184,12 +5184,13 @@ def calendar():
             .panel-action{{min-height:54px;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
             .panel-action:hover{{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}}
             .panel-action.danger:hover{{background:#FEE4E2;border-color:#FDA29B;color:#B42318}}
-            .panel-details{{padding:0 28px;border-bottom:1px solid var(--line);background:#fff}}
-            .panel-details summary{{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;padding:18px 0;font-size:12px;text-transform:uppercase;color:var(--muted);font-weight:900}}
+            .panel-details{{margin:0 28px 20px;border:1px solid #B8CCE3;border-radius:10px;background:#fff;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
+            .panel-details summary{{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;padding:15px 16px;font-size:16px;color:var(--text);font-weight:900;border-bottom:1px solid var(--line);background:#fff;text-transform:none}}
             .panel-details summary::-webkit-details-marker{{display:none}}
-            .panel-details summary:after{{content:"+";font-size:20px;color:var(--blue);line-height:1}}
+            .panel-details summary:after{{content:"+";font-size:22px;color:var(--blue);line-height:1;font-weight:900}}
             .panel-details[open] summary:after{{content:"-"}}
-            .detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding-bottom:18px}}
+            .panel-details-scope{{margin-left:auto;margin-right:8px;color:var(--muted);font-size:13px;font-weight:800}}
+            .detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px;background:#fff}}
             .detail-grid .full{{grid-column:1 / -1}}
             .detail-label{{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:900;margin-bottom:5px}}
             .detail-help{{font-size:12px;color:var(--muted);line-height:1.45;margin:2px 0 10px}}
@@ -5503,23 +5504,23 @@ def calendar():
           <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
         </div>
         <details class="panel-details" id="panelDetailsBilling" open>
-          <summary>Details & Billing</summary>
+          <summary>Edit schedule and billing <span class="panel-details-scope">applies to this lesson</span></summary>
           <div class="detail-grid">
-            <label class="full"><span class="detail-label">Student</span><input class="panel-field" id="panelDetailStudent" list="popStudentList"></label>
+            <label><span class="detail-label">Student</span><input class="panel-field" id="panelDetailStudent" list="popStudentList"></label>
             <label><span class="detail-label">Teacher</span><select class="panel-field" id="panelDetailTeacher">{teacher_picker_options}</select></label>
             <label><span class="detail-label">Course</span><select class="panel-field" id="panelDetailCourse" onchange="updatePanelCourseBilling()">{quick_course_options}</select></label>
             <label><span class="detail-label">Duration</span><input class="panel-field" type="number" id="panelDetailDuration" min="15" max="240" step="5" onchange="updatePanelChargePreview()"></label>
-            <label><span class="detail-label">Format</span><select class="panel-field" id="panelDetailFormat"><option value="private">Private</option><option value="group">Group</option></select></label>
             <label><span class="detail-label">Location</span><select class="panel-field" id="panelDetailLocation" onchange="updatePanelRooms()">{quick_location_options}</select></label>
             <label><span class="detail-label">Room</span><select class="panel-field" id="panelDetailRoom" onchange="updatePanelRoomId()"></select></label>
-            <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
-            <label><span class="detail-label">Start time</span><input class="panel-field" type="time" id="panelDetailTime" onchange="updatePanelChargePreview()"></label>
+            <label><span class="detail-label">Start</span><input class="panel-field" type="time" id="panelDetailTime" onchange="updatePanelChargePreview()"></label>
             <label><span class="detail-label">Repeat</span><select class="panel-field" id="panelDetailScheduleType"><option value="one_time">One time</option><option value="weekly">Weekly</option></select></label>
-            <label><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
-            <label><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
-            <label><span class="detail-label">Billing basis</span><select class="panel-field" id="panelBillingBasis" onchange="updatePanelChargePreview()"><option value="hourly">Hourly</option><option value="per_class">Per class</option></select></label>
+            <label><span class="detail-label">Price type</span><select class="panel-field" id="panelBillingBasis" onchange="updatePanelChargePreview()"><option value="hourly">Hourly</option><option value="per_class">Per class</option></select></label>
             <label><span class="detail-label">Student rate</span><input class="panel-field" type="number" id="panelStudentRate" min="0" step="0.01" onchange="updatePanelChargePreview()"></label>
-            <label class="full"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
+            <label><span class="detail-label">Format</span><select class="panel-field" id="panelDetailFormat"><option value="private">Private</option><option value="group">Group</option></select></label>
+            <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
+            <label class="full"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
+            <label><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
+            <label><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
             <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following" disabled>This and following lessons - coming next</option></select></label>
             <div class="detail-sync" id="panelBillingPreview">Student app + invoice will use the saved schedule price.</div>
           </div>
@@ -17916,9 +17917,11 @@ def parent_dashboard():
         s.status,
         COALESCE(c.display_color, ''),
         COALESCE(s.course_type_name, ''),
-        COALESCE(s.is_group, 0)
+        COALESCE(s.is_group, 0),
+        COALESCE(l.address, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON s.location_id = l.id
     WHERE student_name = ?
     AND lesson_date >= ?
     AND (status IS NULL OR status='scheduled')
@@ -17997,7 +18000,7 @@ def parent_dashboard():
     upcoming_cards = ""
     for l in upcoming_lessons:
         time_range = format_lesson_time_range(l[1], l[5])
-        location_room = " / ".join([part for part in [l[4], l[3]] if part])
+        location_room = " / ".join([part for part in [l[10], l[4], l[3]] if part])
         lesson_date = escape(str(l[0] or ""))
         lesson_time = escape(str(time_range or ""))
         lesson_teacher = escape(str(l[2] or ""))
@@ -18218,6 +18221,7 @@ def parent_dashboard():
     next_lesson_time = ""
     next_lesson_teacher = escape(str(student[1] or "Teacher TBD"))
     next_lesson_room = "Room TBD"
+    next_lesson_address = ""
     next_lesson_course = "Lesson"
     next_lesson_pill = ""
     if upcoming_lessons:
@@ -18226,7 +18230,8 @@ def parent_dashboard():
         next_lesson_day = parent_short_date(next_lesson[0])
         next_lesson_time = escape(str(next_time_range or ""))
         next_lesson_teacher = escape(str(next_lesson[2] or "Teacher TBD"))
-        next_lesson_room = escape(str(next_lesson[3] or next_lesson[4] or "Room TBD"))
+        next_lesson_room = escape(str(next_lesson[3] or "Room TBD"))
+        next_lesson_address = escape(str(next_lesson[10] or next_lesson[4] or "Address TBD"))
         next_lesson_course = escape(str(next_lesson[8] or "Lesson"))
         try:
             lesson_date_obj = datetime.strptime(str(next_lesson[0]), "%Y-%m-%d").date()
@@ -18307,6 +18312,7 @@ def parent_dashboard():
             .next-time {{ color:#5f5b55; font-size:17px; font-weight:800; margin-bottom:10px; }}
             .next-meta {{ display:flex; flex-wrap:wrap; gap:8px 12px; color:#6f6b65; font-size:11px; font-weight:750; }}
             .next-meta span {{ display:inline-flex; align-items:center; gap:4px; }}
+            .next-address {{ display:block; color:#5f5b55; font-size:11px; font-weight:750; line-height:1.35; margin-top:8px; }}
             .section-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
             .section-head h2 {{ margin:0; font-size:13px; line-height:1; text-transform:uppercase; letter-spacing:0; color:#3e3e3e; }}
             .section-head a {{ color:#2467b2; font-weight:800; font-size:12px; }}
@@ -18369,7 +18375,9 @@ def parent_dashboard():
                 <div class="next-body">
                     <div class="next-date">{next_lesson_day}</div>
                     <div class="next-time">{next_lesson_time}</div>
-                    <div class="next-meta"><span>Course: {next_lesson_course}</span><span>Teacher: {next_lesson_teacher}</span><span>Room: {next_lesson_room}</span></div>
+                    <div class="next-meta"><span>Course: {next_lesson_course}</span><span>Teacher: {next_lesson_teacher}</span></div>
+                    <div class="next-address">Address: {next_lesson_address}</div>
+                    <div class="next-address">Room: {next_lesson_room}</div>
                 </div>
             </section>
             {mini_calendar}
