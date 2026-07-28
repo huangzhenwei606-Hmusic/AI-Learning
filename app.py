@@ -4490,20 +4490,21 @@ def calendar():
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT DISTINCT teacher
-    FROM schedule
-    WHERE teacher IS NOT NULL
-    AND teacher != ''
-    ORDER BY teacher
+    SELECT teacher_name
+    FROM teachers
+    WHERE teacher_name IS NOT NULL
+    AND teacher_name != ''
+    AND COALESCE(active, 1) = 1
+    ORDER BY teacher_name
     """)
     teacher_options_data = cursor.fetchall()
 
     cursor.execute("""
-    SELECT DISTINCT student_name
-    FROM schedule
-    WHERE student_name IS NOT NULL
-    AND student_name != ''
-    ORDER BY student_name
+    SELECT name
+    FROM students
+    WHERE name IS NOT NULL
+    AND name != ''
+    ORDER BY name
     """)
     student_options_data = cursor.fetchall()
 
@@ -4515,8 +4516,8 @@ def calendar():
         params.append(selected_teacher)
 
     if selected_student:
-        where_clauses.append("s.student_name = ?")
-        params.append(selected_student)
+        where_clauses.append("s.student_name LIKE ?")
+        params.append(f"%{selected_student}%")
 
     if selected_status:
         if selected_status == "cancelled":
@@ -4590,10 +4591,12 @@ def calendar():
 
     student_options = '<option value="">All Students</option>'
     student_picker_options = '<option value="">Choose student</option>'
+    student_filter_options = ""
     for s in student_options_data:
         selected = "selected" if s[0] == selected_student else ""
         student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
         student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
+        student_filter_options += f'<option value="{escape(str(s[0]))}"></option>'
 
     events_by_date = {}
     for item in schedules:
@@ -4835,9 +4838,11 @@ def calendar():
             /* ---- filter bar ---- */
             .filter-bar{{display:flex;align-items:center;gap:8px;padding:8px 18px;
                          background:#FAFAFA;border-bottom:1px solid var(--line);flex-wrap:wrap}}
-            .filter-bar select{{font-family:inherit;font-size:11px;padding:4px 8px;
+            .filter-bar select,.filter-bar input[type="search"]{{font-family:inherit;font-size:11px;padding:4px 8px;
                                 border:1px solid var(--line);border-radius:7px;
-                                background:var(--surface);color:var(--text)}}
+                                background:var(--surface);color:var(--text);height:27px}}
+            .filter-bar input[type="search"]{{min-width:190px}}
+            .filter-bar input[type="search"]::placeholder{{color:var(--faint)}}
             .filter-label{{font-size:11px;color:var(--faint);font-weight:600}}
             .hint-text{{margin-left:auto;font-size:10px;color:var(--faint)}}
 
@@ -5104,7 +5109,9 @@ def calendar():
         <input type="hidden" name="month" value="{selected_month}">
         <span class="filter-label">Filter:</span>
         <select name="teacher" onchange="this.form.submit()">{teacher_options}</select>
-        <select name="student" onchange="this.form.submit()">{student_options}</select>
+        <input type="search" name="student" list="studentFilterList" value="{escape(selected_student)}" placeholder="Search or select student" onchange="this.form.submit()" onsearch="this.form.submit()">
+        <datalist id="studentFilterList">{student_filter_options}</datalist>
+        <button class="btn" type="button" onclick="this.form.student.value=''; this.form.submit()">Clear student</button>
         <select name="status_filter" onchange="this.form.submit()">
           <option value="">All Status</option>
           <option value="scheduled" {"selected" if selected_status=="scheduled" else ""}>Scheduled</option>
