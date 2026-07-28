@@ -5534,7 +5534,7 @@ def calendar():
             <label class="full"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
             <label><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
             <label><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
-            <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following" disabled>This and following lessons - coming next</option></select></label>
+            <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following">This and all following lessons</option></select></label>
             <div class="detail-sync" id="panelBillingPreview">Student app + invoice will use the saved schedule price.</div>
           </div>
         </details>
@@ -9160,6 +9160,41 @@ def calendar_lesson_action():
                     "custom_lesson_count": custom_lesson_count_detail if package_type_detail == "custom" else None,
                 }
 
+            detail_scope = (data.get("detail_scope") or "once").strip()
+            detail_scope = detail_scope if detail_scope in {"once", "following"} else "once"
+            following_ids = []
+            if detail_update and detail_scope == "following":
+                match_params = [
+                    row[1] or "",
+                    row[2] or "",
+                    row[4] or "",
+                    row[5] or "",
+                    row[7] or "",
+                    row[8] or "",
+                    row[9] or "",
+                    int(row[10] or 30),
+                    int(row[18] or 0),
+                    row[3] or "",
+                    int(schedule_id),
+                ]
+                cursor.execute("""
+                SELECT id
+                FROM schedule
+                WHERE COALESCE(student_name, '') = ?
+                  AND COALESCE(teacher, '') = ?
+                  AND COALESCE(lesson_time, '') = ?
+                  AND COALESCE(classroom, '') = ?
+                  AND COALESCE(course_type_name, '') = ?
+                  AND COALESCE(schedule_type, '') = ?
+                  AND COALESCE(package_type, '') = ?
+                  AND COALESCE(duration, 30) = ?
+                  AND COALESCE(is_group, 0) = ?
+                  AND lesson_date >= ?
+                  AND id != ?
+                ORDER BY lesson_date, lesson_time
+                """, match_params)
+                following_ids = [int(r[0]) for r in cursor.fetchall()]
+
             cursor.execute("""
             UPDATE schedule
             SET student_name = COALESCE(?, student_name),
@@ -9216,6 +9251,54 @@ def calendar_lesson_action():
                 now,
                 schedule_id
             ))
+            if detail_update and following_ids:
+                cursor.executemany("""
+                UPDATE schedule
+                SET student_name = COALESCE(?, student_name),
+                    teacher = COALESCE(?, teacher),
+                    course_type_id = COALESCE(?, course_type_id),
+                    course_type_name = COALESCE(?, course_type_name),
+                    duration = COALESCE(?, duration),
+                    is_group = COALESCE(?, is_group),
+                    location_id = ?,
+                    room_id = ?,
+                    location = COALESCE(?, location),
+                    classroom = COALESCE(?, classroom),
+                    lesson_time = COALESCE(?, lesson_time),
+                    schedule_type = COALESCE(?, schedule_type),
+                    package_type = COALESCE(?, package_type),
+                    student_billing_method = COALESCE(?, student_billing_method),
+                    student_price = COALESCE(?, student_price),
+                    student_charge_amount = COALESCE(?, student_charge_amount),
+                    billing_decision = COALESCE(?, billing_decision),
+                    custom_lesson_count = ?,
+                    owner_calendar_updated_at = ?
+                WHERE id = ?
+                """, [
+                    (
+                        detail_update.get("student_name"),
+                        detail_update.get("teacher"),
+                        detail_update.get("course_type_id"),
+                        detail_update.get("course_type_name"),
+                        detail_update.get("duration"),
+                        detail_update.get("is_group"),
+                        detail_update.get("location_id"),
+                        detail_update.get("room_id"),
+                        detail_update.get("location"),
+                        detail_update.get("classroom"),
+                        detail_update.get("lesson_time"),
+                        detail_update.get("schedule_type"),
+                        detail_update.get("package_type"),
+                        detail_update.get("student_billing_method"),
+                        detail_update.get("student_price"),
+                        detail_update.get("student_charge_amount"),
+                        detail_update.get("billing_decision"),
+                        detail_update.get("custom_lesson_count"),
+                        now,
+                        following_id,
+                    )
+                    for following_id in following_ids
+                ])
         else:
             cursor.execute("""
             UPDATE schedule
@@ -9237,6 +9320,9 @@ def calendar_lesson_action():
             queued += calendar_queue_parent_notice(effective_student_name, "Lesson reminder", f"{effective_student_name} has a lesson on {effective_lesson_date} at {effective_lesson_time} with {effective_teacher_name} in {effective_classroom or 'the studio'}.", "lesson_reminder", int(schedule_id))
         if is_owner and low_balance_alert:
             queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
+        scope_count = len(following_ids) if is_owner and detail_update else 0
+        if scope_count:
+            return {"ok": True, "message": f"Saved this lesson and {scope_count} following lesson(s)."}
         return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
 
     if action == "reschedule":
