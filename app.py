@@ -1647,6 +1647,7 @@ def teacher_dashboard_records_content(teacher_name):
 
 def teacher_dashboard_add_schedule_content(teacher_name):
     ensure_v18_schema()
+    ensure_course_duration_request_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -1675,9 +1676,11 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     student_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in students) or '<option value="">No students found</option>'
     created = request.args.get('created')
     created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
+    duration_request_html = '<div class="td-success">Duration request sent to owner.</div>' if request.args.get('duration_request') else ''
     return f"""
         <div class="schedule-head"><div class="schedule-title"><h1>Add Schedule</h1><p>Create lessons from inside the teacher portal. New/unassigned students will notify owner for review.</p></div></div>
         {created_html}
+        {duration_request_html}
         <section class="td-card">
             <form method="POST" action="/add_schedule" class="td-form td-form-grid">
                 <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
@@ -1686,12 +1689,25 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 <label>Weekday<select name="weekday"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option></select></label>
                 <label>Time<input type="time" name="lesson_time" required></label>
                 <label>Schedule Type<select name="schedule_type"><option value="weekly">Weekly</option><option value="one_time">One time</option></select></label>
-                <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option></select></label>
+                <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option></select></label>
+                <label>Custom Count<input type="number" name="custom_lesson_count" min="1" max="260" placeholder="Only if package is custom"></label>
                 <label>Start Date<input type="date" name="start_date" value="{date.today().strftime('%Y-%m-%d')}" required></label>
                 <label>Course<select name="course_type_id" required>{course_options}</select></label>
+                <input type="hidden" name="billing_decision" value="existing_credits">
                 <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
                 <label class="full">Group Students<textarea name="group_student_names" placeholder="For group classes, list names here."></textarea></label>
                 <div class="full"><button type="submit">Create Schedule</button></div>
+            </form>
+        </section>
+        <section class="td-card duration-request-card">
+            <h2>Request New Duration</h2>
+            <p class="td-note">If the duration you need is not in the course list, send it to owner for approval before it becomes a reusable option.</p>
+            <form method="POST" action="/request_course_duration" class="td-form td-form-grid">
+                <label>Base Course<select name="course_type_id" required>{course_options}</select></label>
+                <label>New Duration<input type="number" name="requested_duration" min="15" max="240" step="5" placeholder="45" required></label>
+                <label>Format<select name="lesson_format"><option value="private">Private</option><option value="group">Group</option></select></label>
+                <label class="full">Reason<textarea name="reason" placeholder="Example: Parent requested a 45-minute make-up lesson."></textarea></label>
+                <div class="full"><button type="submit">Send to Owner</button></div>
             </form>
         </section>
         <style>
@@ -1700,6 +1716,9 @@ def teacher_dashboard_add_schedule_content(teacher_name):
             .td-form label {{ display:block; color:var(--td-muted); font-weight:600; }}
             .td-form input,.td-form select,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
             .td-form textarea {{ min-height:90px; resize:vertical; }} .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
+            .duration-request-card {{ margin-top:14px; }}
+            .duration-request-card h2 {{ margin:0 0 6px; font-size:18px; }}
+            .td-note {{ color:var(--td-muted); margin:0 0 14px; line-height:1.45; }}
         </style>
     """
 
@@ -4667,8 +4686,6 @@ def calendar():
             "duration": c[2] or 30,
             "student_billing_method": c[3],
             "student_price": c[4] or 0,
-            "teacher_billing_method": c[5],
-            "teacher_pay": c[6] or 0,
             "is_group": c[7] or 0,
         }
         for c in quick_course_rows
@@ -5045,6 +5062,14 @@ def calendar():
             .pop-summary{{background:#f8fafc;border:1px solid var(--line);border-radius:12px;
                           padding:12px;font-size:12px;color:var(--muted);line-height:1.6}}
             .pop-summary strong{{color:var(--text)}}
+            .pop-mini-action{{border:1px dashed #B8CCE3;background:#F8FBFF;color:var(--blue);
+                              border-radius:10px;padding:9px 10px;font-size:12px;font-weight:900;
+                              cursor:pointer;font-family:inherit;margin:0 0 10px;width:100%;text-align:left}}
+            .pop-mini-action:hover{{background:var(--blue-bg)}}
+            .pop-inline-box{{display:none;background:#F8FAFC;border:1px solid var(--line);
+                             border-radius:12px;padding:10px;margin-bottom:10px}}
+            .pop-inline-box.show{{display:block}}
+            .pop-help{{font-size:11px;color:var(--muted);line-height:1.45;margin:-3px 0 10px}}
             .pop-footer{{position:sticky;bottom:0;background:rgba(255,255,255,.96);
                          backdrop-filter:blur(8px);border-top:1px solid var(--line);
                          display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 18px}}
@@ -5295,6 +5320,27 @@ def calendar():
             <select class="pop-sel" id="popCourse" name="course_type_id" onchange="updateQuickCourseSummary()" required>
               {quick_course_options}
             </select>
+            <button class="pop-mini-action" type="button" onclick="toggleOwnerDurationBox()">
+              <i class="ti ti-plus"></i> Add a new duration to this course
+            </button>
+            <div class="pop-inline-box" id="popDurationBox">
+              <div class="pop-row">
+                <div>
+                  <label class="pop-label">New duration</label>
+                  <input class="pop-inp" type="number" id="popNewDuration" min="15" max="240" step="5" placeholder="45">
+                </div>
+                <div>
+                  <label class="pop-label">Format</label>
+                  <select class="pop-sel" id="popNewDurationFormat">
+                    <option value="private">Private</option>
+                    <option value="group">Group</option>
+                  </select>
+                </div>
+              </div>
+              <button class="btn-add-open" type="button" onclick="ownerAddDuration()" style="width:100%">
+                Add to course catalog
+              </button>
+            </div>
             <div class="pop-row">
               <div>
                 <label class="pop-label">Custom duration</label>
@@ -5321,6 +5367,39 @@ def calendar():
               </div>
             </div>
             <div class="pop-summary" id="popPriceSummary"></div>
+          </div>
+
+          <div class="pop-section">
+            <h3>Billing</h3>
+            <label class="pop-label">Billing decision</label>
+            <select class="pop-sel" name="billing_decision" id="popBillingDecision" onchange="updateBillingControls()">
+              <option value="existing_credits">Use existing credits</option>
+              <option value="new_package">Create new package</option>
+              <option value="trial_free">Free trial</option>
+              <option value="makeup_credit">Use makeup credit</option>
+              <option value="no_charge">No charge</option>
+              <option value="invoice_later">Invoice later</option>
+              <option value="custom_price">Custom price</option>
+            </select>
+            <div class="pop-row">
+              <div>
+                <label class="pop-label">Package / lesson count</label>
+                <select class="pop-sel" name="package_type" id="popPackageType" onchange="updateBillingControls()">
+                  <option value="10">10 lessons</option>
+                  <option value="12">12 lessons</option>
+                  <option value="24">24 lessons</option>
+                  <option value="custom">Custom count</option>
+                  <option value="unlimited">Ongoing weekly</option>
+                </select>
+              </div>
+              <div>
+                <label class="pop-label">Custom count</label>
+                <input class="pop-inp" type="number" name="custom_lesson_count" id="popCustomLessonCount" min="1" max="260" step="1" placeholder="8" disabled onchange="updateQuickCourseSummary()">
+              </div>
+            </div>
+            <label class="pop-label" id="popCustomPriceLabel" style="display:none">Custom student price</label>
+            <input class="pop-inp" type="number" name="custom_student_price" id="popCustomStudentPrice" min="0" step="0.01" placeholder="0.00" style="display:none" onchange="updateQuickCourseSummary()">
+            <p class="pop-help">Instructor compensation is managed only in owner pricing settings, not inside schedule creation.</p>
           </div>
 
           <div class="pop-section">
@@ -5365,14 +5444,6 @@ def calendar():
                 <select class="pop-sel" name="schedule_type" id="popScheduleType">
                   <option value="one_time">One time</option>
                   <option value="weekly">Weekly</option>
-                </select>
-              </div>
-              <div>
-                <label class="pop-label">Package</label>
-                <select class="pop-sel" name="package_type" id="popPackageType">
-                  <option value="10">10 lessons</option>
-                  <option value="12">12 lessons</option>
-                  <option value="unlimited">Unlimited</option>
                 </select>
               </div>
             </div>
@@ -5742,6 +5813,37 @@ def calendar():
       if (m.includes('hour')) return p * d / 60;
       return p;
     }}
+    function billingLabel(value) {{
+      return {{
+        existing_credits: 'Use existing credits',
+        new_package: 'Create new package',
+        trial_free: 'Free trial',
+        makeup_credit: 'Use makeup credit',
+        no_charge: 'No charge',
+        invoice_later: 'Invoice later',
+        custom_price: 'Custom price'
+      }}[value] || value || 'Use existing credits';
+    }}
+    function updateBillingControls() {{
+      const packageSelect = document.getElementById('popPackageType');
+      const customCount = document.getElementById('popCustomLessonCount');
+      const billingDecision = document.getElementById('popBillingDecision');
+      const customPrice = document.getElementById('popCustomStudentPrice');
+      const customPriceLabel = document.getElementById('popCustomPriceLabel');
+      const isCustomCount = packageSelect && packageSelect.value === 'custom';
+      if (customCount) {{
+        customCount.disabled = !isCustomCount;
+        customCount.required = !!isCustomCount;
+        customCount.style.opacity = isCustomCount ? '1' : '.55';
+      }}
+      const isCustomPrice = billingDecision && billingDecision.value === 'custom_price';
+      if (customPrice) {{
+        customPrice.style.display = isCustomPrice ? 'block' : 'none';
+        customPrice.required = !!isCustomPrice;
+      }}
+      if (customPriceLabel) customPriceLabel.style.display = isCustomPrice ? 'block' : 'none';
+      updateQuickCourseSummary();
+    }}
     function updateQuickCourseSummary() {{
       const course = selectedQuickCourse();
       if (!course) return;
@@ -5753,12 +5855,51 @@ def calendar():
       }}
       const duration = isCustom ? Number(customDurationInput.value || course.duration || 60) : Number(course.duration || 30);
       document.getElementById('popEnd').value = minutesToTime(document.getElementById('popStart').value, duration);
-      const studentCharge = quickAmount(course.student_billing_method, course.student_price, duration);
-      const teacherPay = quickAmount(course.teacher_billing_method, course.teacher_pay, duration);
+      const billingDecision = (document.getElementById('popBillingDecision') || {{value:'existing_credits'}}).value;
+      let studentCharge = quickAmount(course.student_billing_method, course.student_price, duration);
+      if (['trial_free','makeup_credit','no_charge'].includes(billingDecision)) studentCharge = 0;
+      if (billingDecision === 'custom_price') {{
+        studentCharge = Number((document.getElementById('popCustomStudentPrice') || {{value:0}}).value || 0);
+      }}
+      const packageSelect = document.getElementById('popPackageType');
+      const customCount = document.getElementById('popCustomLessonCount');
+      const packageLabel = packageSelect ? packageSelect.options[packageSelect.selectedIndex].textContent : '10 lessons';
+      const countLabel = packageSelect && packageSelect.value === 'custom' && customCount && customCount.value
+        ? `${{customCount.value}} lessons`
+        : packageLabel;
       document.getElementById('popPriceSummary').innerHTML =
         `<strong>${{course.name || 'Course'}}</strong> · ${{duration}} min<br>` +
-        `Student charge: <strong>$${{studentCharge.toFixed(2)}}</strong> · Teacher pay: <strong>$${{teacherPay.toFixed(2)}}</strong><br>` +
-        `Billing: ${{course.student_billing_method || 'Per lesson'}}`;
+        `Student charge: <strong>$${{studentCharge.toFixed(2)}}</strong><br>` +
+        `Billing: ${{billingLabel(billingDecision)}} · ${{countLabel}}<br>` +
+        `Pricing basis: ${{course.student_billing_method || 'Per lesson'}}`;
+    }}
+    function toggleOwnerDurationBox() {{
+      const box = document.getElementById('popDurationBox');
+      if (box) box.classList.toggle('show');
+    }}
+    function ownerAddDuration() {{
+      const course = selectedQuickCourse();
+      const duration = Number((document.getElementById('popNewDuration') || {{value:0}}).value || 0);
+      const lessonFormat = (document.getElementById('popNewDurationFormat') || {{value:'private'}}).value;
+      if (!course || !duration) {{
+        alert('Choose a course and enter the new duration.');
+        return;
+      }}
+      fetch('/add_course_duration_quick', {{
+        method:'POST',
+        headers: {{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
+        body: JSON.stringify({{course_type_id: course.id, duration: duration, lesson_format: lessonFormat}})
+      }})
+      .then(r => r.json())
+      .then(d => {{
+        if (!d.ok) {{
+          alert(d.error || 'Could not add duration.');
+          return;
+        }}
+        showSuccess(`Added ${{d.label}} to course catalog.`);
+        setTimeout(() => location.reload(), 900);
+      }})
+      .catch(() => alert('Network error while adding duration.'));
     }}
     function updateLessonKind() {{
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
@@ -5770,9 +5911,11 @@ def calendar():
         if (trial) courseSelect.value = trial.id;
         document.getElementById('popScheduleType').value = 'one_time';
         document.getElementById('popPackageType').value = '10';
+        document.getElementById('popBillingDecision').value = 'trial_free';
       }}
       if (kind === 'makeup') {{
         document.getElementById('popScheduleType').value = 'one_time';
+        document.getElementById('popBillingDecision').value = 'makeup_credit';
       }}
       if (kind === 'group') {{
         const group = QUICK_COURSE_DATA.find(c => Number(c.is_group || 0) === 1);
@@ -5783,7 +5926,7 @@ def calendar():
       const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
       if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
-      updateQuickCourseSummary();
+      updateBillingControls();
     }}
     function updateQuickRooms() {{
       const locationSelect = document.getElementById('popLocation');
@@ -6073,6 +6216,9 @@ def add_schedule():
                     "lesson_time": request.form.get("lesson_time"),
                     "schedule_type": request.form.get("schedule_type"),
                     "package_type": request.form.get("package_type"),
+                    "custom_lesson_count": request.form.get("custom_lesson_count"),
+                    "billing_decision": request.form.get("billing_decision"),
+                    "custom_student_price": request.form.get("custom_student_price"),
                     "start_date": request.form.get("start_date"),
                     "course_type_id": request.form.get("course_type_id")
                 }
@@ -6126,7 +6272,10 @@ def add_schedule():
         weekday = request.form.get("weekday")
         lesson_time = request.form.get("lesson_time")
         schedule_type = request.form.get("schedule_type")
-        package_type = request.form.get("package_type")
+        package_type = request.form.get("package_type") or "10"
+        billing_decision = request.form.get("billing_decision") or "existing_credits"
+        custom_lesson_count = request.form.get("custom_lesson_count")
+        custom_student_price = request.form.get("custom_student_price")
         start_date = request.form.get("start_date")
         course_type_id = request.form.get("course_type_id")
         custom_duration = request.form.get("custom_duration")
@@ -6210,14 +6359,45 @@ def add_schedule():
                 custom_note += f" Group size: {group_size or ''}. Students: {group_student_names or student_name}."
             schedule_note = (schedule_note + " " + custom_note).strip()
 
+        if billing_decision in ("trial_free", "makeup_credit", "no_charge"):
+            student_charge_amount = 0
+        elif billing_decision == "custom_price" and custom_student_price:
+            try:
+                custom_student_price_value = max(0, float(custom_student_price))
+            except:
+                custom_student_price_value = 0
+            student_price = custom_student_price_value
+            student_billing_method = "Custom Price"
+            student_charge_amount = custom_student_price_value
+
+        billing_labels = {
+            "existing_credits": "Use existing credits",
+            "new_package": "Create new package",
+            "trial_free": "Free trial",
+            "makeup_credit": "Use makeup credit",
+            "no_charge": "No charge",
+            "invoice_later": "Invoice later",
+            "custom_price": "Custom price",
+        }
+        billing_note = f"Billing decision: {billing_labels.get(billing_decision, billing_decision)}."
+        if package_type == "custom" and custom_lesson_count:
+            billing_note += f" Lesson count: {custom_lesson_count}."
+        schedule_note = (schedule_note + " " + billing_note).strip()
+
         if schedule_type == "one_time":
             number_of_lessons = 1
         elif package_type == "10":
             number_of_lessons = 10
         elif package_type == "12":
             number_of_lessons = 12
+        elif package_type == "custom":
+            try:
+                number_of_lessons = int(float(custom_lesson_count or 1))
+            except:
+                number_of_lessons = 1
         else:
             number_of_lessons = 24
+        number_of_lessons = max(1, min(number_of_lessons, 260))
 
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         generated_count = 0
@@ -6258,9 +6438,11 @@ def add_schedule():
                 notes,
                 group_size,
                 group_student_names,
+                billing_decision,
+                custom_lesson_count,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
@@ -6287,6 +6469,8 @@ def add_schedule():
                 schedule_note,
                 int(group_size or 0) if is_group else None,
                 group_student_names if is_group else None,
+                billing_decision,
+                int(float(custom_lesson_count or 0)) if package_type == "custom" else None,
                 "scheduled"
             ))
 
@@ -23302,6 +23486,8 @@ def ensure_v18_schema():
     add_column_if_missing("schedule", "notes", "notes TEXT")
     add_column_if_missing("schedule", "group_size", "group_size INTEGER")
     add_column_if_missing("schedule", "group_student_names", "group_student_names TEXT")
+    add_column_if_missing("schedule", "billing_decision", "billing_decision TEXT")
+    add_column_if_missing("schedule", "custom_lesson_count", "custom_lesson_count INTEGER")
     add_column_if_missing("course_types", "display_color", "display_color TEXT")
 
     cursor.execute("SELECT COUNT(*) FROM course_types")
@@ -23368,7 +23554,229 @@ def ensure_v18_schema():
 
     conn.commit()
     conn.close()
-    ensure_location_room_schema()
+
+
+def ensure_course_duration_request_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS course_duration_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        requester_role TEXT,
+        requester_name TEXT,
+        course_type_id INTEGER,
+        course_name TEXT,
+        requested_duration INTEGER,
+        lesson_format TEXT,
+        reason TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        updated_at TEXT,
+        resolved_by TEXT,
+        resolved_at TEXT,
+        owner_note TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def create_course_duration_from_base(cursor, course_type_id, requested_duration, lesson_format=None):
+    cursor.execute("""
+    SELECT
+        name,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group,
+        COALESCE(display_color, '')
+    FROM course_types
+    WHERE id = ?
+    """, (course_type_id,))
+    base_course = cursor.fetchone()
+    if not base_course:
+        return None
+
+    try:
+        duration = int(float(requested_duration or 0))
+    except:
+        duration = 0
+    if duration <= 0:
+        return None
+
+    base_name = base_course[0] or "Course"
+    is_group = 1 if (lesson_format == "group" or base_course[5]) else 0
+
+    cursor.execute("""
+    SELECT id
+    FROM course_types
+    WHERE active = 1
+    AND name = ?
+    AND duration = ?
+    AND COALESCE(is_group, 0) = ?
+    LIMIT 1
+    """, (base_name, duration, is_group))
+    existing = cursor.fetchone()
+    if existing:
+        return existing[0]
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO course_types (
+        name,
+        duration,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group,
+        active,
+        created_at,
+        updated_at,
+        display_color
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    """, (
+        base_name,
+        duration,
+        base_course[1],
+        base_course[2],
+        base_course[3],
+        base_course[4],
+        is_group,
+        now,
+        now,
+        base_course[6],
+    ))
+    return cursor.lastrowid
+
+
+@app.route("/add_course_duration_quick", methods=["POST"])
+def add_course_duration_quick():
+    if not require_owner():
+        return {"ok": False, "error": "Owner login required."}, 403
+
+    ensure_v18_schema()
+    data = request.get_json(silent=True) or {}
+    course_type_id = data.get("course_type_id")
+    requested_duration = data.get("duration")
+    lesson_format = data.get("lesson_format") or "private"
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    new_course_id = create_course_duration_from_base(
+        cursor,
+        course_type_id,
+        requested_duration,
+        lesson_format
+    )
+    if not new_course_id:
+        conn.close()
+        return {"ok": False, "error": "Could not create duration from selected course."}, 400
+
+    cursor.execute("""
+    SELECT name, duration, COALESCE(is_group, 0)
+    FROM course_types
+    WHERE id = ?
+    """, (new_course_id,))
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    group_label = "Group" if row and row[2] else "Private"
+    return {
+        "ok": True,
+        "course_id": new_course_id,
+        "label": f"{row[0]} · {int(row[1] or 0)}m · {group_label}" if row else "New duration"
+    }
+
+
+@app.route("/request_course_duration", methods=["POST"])
+def request_course_duration():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    ensure_v18_schema()
+    ensure_course_duration_request_schema()
+    teacher_name = session.get("teacher_name") or "Teacher"
+    course_type_id = request.form.get("course_type_id")
+    requested_duration = request.form.get("requested_duration")
+    lesson_format = request.form.get("lesson_format") or "private"
+    reason = (request.form.get("reason") or "").strip()
+
+    try:
+        duration_int = int(float(requested_duration or 0))
+    except:
+        duration_int = 0
+    if duration_int <= 0:
+        return "<h1>Please enter a valid duration.</h1><p><a href='/teacher_dashboard?view=add_schedule'>Back</a></p>", 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM course_types WHERE id = ?", (course_type_id,))
+    course_row = cursor.fetchone()
+    if not course_row:
+        conn.close()
+        return "<h1>Course Type not found.</h1><p><a href='/teacher_dashboard?view=add_schedule'>Back</a></p>", 404
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO course_duration_requests (
+        requester_role,
+        requester_name,
+        course_type_id,
+        course_name,
+        requested_duration,
+        lesson_format,
+        reason,
+        status,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    """, (
+        "teacher",
+        teacher_name,
+        course_type_id,
+        course_row[0],
+        duration_int,
+        lesson_format,
+        reason,
+        now,
+        now
+    ))
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    subject = f"Course duration request - {teacher_name}"
+    body = (
+        f"{teacher_name} requested a new course duration.\n\n"
+        f"Course: {course_row[0]}\n"
+        f"Duration: {duration_int} minutes\n"
+        f"Format: {lesson_format}\n"
+        f"Reason: {reason or 'N/A'}"
+    )
+    thread_id = get_or_create_message_thread(
+        subject,
+        teacher_name=teacher_name,
+        thread_type="teacher_duration_request",
+        related_type="course_duration_request",
+        related_id=request_id
+    )
+    add_message(thread_id, "teacher", teacher_name, "owner", body)
+    create_notification(
+        "owner",
+        "owner",
+        "Teacher duration request",
+        f"{teacher_name} requested {duration_int} min for {course_row[0]}.",
+        f"/message_thread/{thread_id}",
+        related_type="course_duration_request",
+        related_id=request_id
+    )
+
+    return redirect("/teacher_dashboard?view=add_schedule&duration_request=1")
 
 
 def ensure_location_room_schema():
