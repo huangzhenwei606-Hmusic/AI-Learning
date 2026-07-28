@@ -22985,6 +22985,13 @@ def v35_registration_form(error="", values=None):
             .submit {{ width:100%; border:0; border-radius:14px; background:var(--blue); color:white; padding:15px 18px; font-size:17px; font-weight:900; cursor:pointer; }}
             .check {{ display:flex; gap:10px; align-items:flex-start; font-weight:700; color:#4b5563; }}
             .check input {{ width:auto; margin-top:3px; }}
+            details.policy {{ border:1px solid var(--line); border-radius:14px; background:#fbfaf7; padding:0; overflow:hidden; }}
+            details.policy summary {{ cursor:pointer; list-style:none; padding:15px 16px; font-weight:900; display:flex; justify-content:space-between; gap:12px; align-items:center; }}
+            details.policy summary::-webkit-details-marker {{ display:none; }}
+            details.policy summary span {{ color:var(--blue); font-size:14px; }}
+            .policy-body {{ border-top:1px solid var(--line); padding:16px; color:#4b5563; font-size:14px; line-height:1.55; }}
+            .policy-body h3 {{ color:#111827; margin:0 0 8px; font-size:16px; }}
+            .policy-body p {{ color:#4b5563; font-size:14px; margin:0 0 10px; }}
             @media(max-width:720px) {{
                 .wrap {{ padding:24px 14px 48px; }}
                 h1 {{ font-size:29px; }}
@@ -23041,30 +23048,57 @@ def v35_registration_form(error="", values=None):
                     </div>
                 </section>
                 <section>
-                    <div class="section-title">Enrollment setup</div>
+                    <div class="section-title">Schedule preference</div>
                     <div class="grid">
-                        <label>Preferred teacher<input name="preferred_teacher" value="{val('preferred_teacher')}" placeholder="Optional"></label>
                         <label>Preferred start date<input type="date" name="preferred_start_date" value="{val('preferred_start_date')}"></label>
                         <label>Preferred days<input name="preferred_days" value="{val('preferred_days')}" placeholder="Mon / Wed / Sat"></label>
                         <label>Preferred times<input name="preferred_times" value="{val('preferred_times')}" placeholder="After 4pm / weekend morning"></label>
-                        <label>Package<select name="package_interest">
-                            <option {'selected' if values.get('package_interest') == '10 lessons' else ''}>10 lessons</option>
-                            <option {'selected' if values.get('package_interest') == '4 lessons' else ''}>4 lessons</option>
-                            <option {'selected' if values.get('package_interest') == 'Monthly' else ''}>Monthly</option>
-                            <option {'selected' if values.get('package_interest') == 'Custom' else ''}>Custom</option>
-                        </select></label>
-                        <label>Billing preference<select name="billing_preference">
-                            <option {'selected' if values.get('billing_preference') == 'Invoice' else ''}>Invoice</option>
-                            <option {'selected' if values.get('billing_preference') == 'Use existing credits' else ''}>Use existing credits</option>
-                            <option {'selected' if values.get('billing_preference') == 'Discuss with H-Music' else ''}>Discuss with H-Music</option>
-                        </select></label>
+                        <label class="full">Scheduling notes<textarea name="schedule_notes" placeholder="Teacher preference, commute limits, sibling schedule, online/in-person needs...">{val('schedule_notes')}</textarea></label>
                     </div>
+                    <div class="notice">H-Music owner will confirm teacher, package, tuition, and invoice after reviewing this registration.</div>
+                </section>
+                <section>
+                    <div class="section-title">Billing contact & payment setup <span class="required">*</span></div>
+                    <div class="grid">
+                        <label>Billing contact name<input name="billing_name" value="{val('billing_name')}" placeholder="Same as primary guardian" required></label>
+                        <label>Billing phone<input name="billing_phone" value="{val('billing_phone')}" placeholder="Same as primary phone" required></label>
+                        <label>Billing email<input type="email" name="billing_email" value="{val('billing_email')}" placeholder="Same as primary email" required></label>
+                        <label>Preferred payment setup<select name="payment_setup" required>
+                            <option value="">Choose...</option>
+                            <option {'selected' if values.get('payment_setup') == 'ACH bank transfer through Square' else ''}>ACH bank transfer through Square</option>
+                            <option {'selected' if values.get('payment_setup') == 'Card through Square' else ''}>Card through Square</option>
+                            <option {'selected' if values.get('payment_setup') == 'Other, approved by H-Music' else ''}>Other, approved by H-Music</option>
+                        </select></label>
+                        <label class="full">Billing address<input name="billing_address" value="{val('billing_address')}" placeholder="Street, city, ZIP"></label>
+                    </div>
+                    <div class="notice">Do not enter bank account numbers here. H-Music will send a secure invoice/payment setup link through Square or the parent app.</div>
                 </section>
                 <section>
                     <div class="section-title">Agreements</div>
-                    <label class="check"><input type="checkbox" name="policy_ack" value="1" required> I understand H-Music will review this registration before activating scheduling, billing, and parent app access.</label>
+                    <details class="policy">
+                        <summary>H-Music lesson, makeup, cancellation, and billing policy <span>Tap to view</span></summary>
+                        <div class="policy-body">
+                            <h3>Term and makeup policy</h3>
+                            <p>A standard term is 10 lessons. Each student receives one emergency makeup credit per 10-lesson term for a short-notice absence.</p>
+                            <p>This emergency makeup credit may be used once per term for a cancellation made within 24 hours before the lesson, as long as the cancellation is not within 2 hours of the lesson start time.</p>
+                            <h3>Late cancellation fees</h3>
+                            <p>After the emergency makeup credit has been used, cancellations made within 24 hours of the lesson will be charged a late cancellation fee of $30 per 30 minutes.</p>
+                            <p>Cancellations made within 2 hours of the lesson start time will be charged the full lesson tuition and may not be eligible for makeup, unless approved by H-Music management.</p>
+                            <p>Cancellations made more than 24 hours before the lesson may be rescheduled based on teacher and room availability.</p>
+                            <h3>Teacher time and reporting</h3>
+                            <p>If a teacher is late, ends early, or misses lesson time, please report it to H-Music management. The missed time will be made up or credited after review.</p>
+                            <h3>Billing</h3>
+                            <p>Invoices and account balances will be shown in the H-Music Parent App. Tuition, package, and billing setup are confirmed by H-Music owner/management.</p>
+                        </div>
+                    </details>
+                    <label class="check"><input type="checkbox" name="policy_ack" value="1" required> I have reviewed and agree to the H-Music lesson, cancellation, makeup, and billing policy.</label>
+                    <label class="check"><input type="checkbox" name="billing_ack" value="1" required> I authorize H-Music to send invoices and secure payment setup links through the parent app, email, or Square.</label>
                     <label class="check"><input type="checkbox" name="media_ok" value="1"> Photo/video permission for studio learning moments and recitals.</label>
-                    <div class="notice">After submission, H-Music will confirm package, tuition, teacher, schedule, and parent app login.</div>
+                    <div class="grid" style="margin-top:14px;">
+                        <label>Parent / guardian signature<input name="guardian_signature" value="{val('guardian_signature')}" placeholder="Type full name" required></label>
+                        <label>Date<input type="date" name="signed_date" value="{val('signed_date')}" required></label>
+                    </div>
+                    <div class="notice">After submission, H-Music will confirm package, tuition, teacher, schedule, invoice, and parent app login.</div>
                 </section>
                 <button class="submit" type="submit">Submit registration</button>
             </form>
@@ -23125,6 +23159,14 @@ def public_student_registration():
         }
         if not data["student_name"] or not data["parent_name"] or not data["parent_email"] or not data["phone"]:
             return v35_registration_form("Please enter student name, primary guardian name, email, and phone.", request.form)
+        if not request.form.get("billing_name", "").strip() or not request.form.get("billing_email", "").strip() or not request.form.get("billing_phone", "").strip():
+            return v35_registration_form("Please enter billing contact name, email, and phone.", request.form)
+        if not request.form.get("payment_setup", "").strip():
+            return v35_registration_form("Please choose a preferred payment setup.", request.form)
+        if request.form.get("policy_ack") != "1" or request.form.get("billing_ack") != "1":
+            return v35_registration_form("Please review and agree to the policy and billing authorization.", request.form)
+        if not request.form.get("guardian_signature", "").strip() or not request.form.get("signed_date", "").strip():
+            return v35_registration_form("Please sign and date the registration.", request.form)
         extras = [
             ("Relationship", request.form.get("relationship", "")),
             ("Second guardian", request.form.get("guardian_2_name", "")),
@@ -23132,11 +23174,18 @@ def public_student_registration():
             ("Family address", request.form.get("family_address", "")),
             ("Emergency contact", request.form.get("emergency_name", "")),
             ("Emergency phone", request.form.get("emergency_phone", "")),
-            ("Preferred teacher", request.form.get("preferred_teacher", "")),
             ("Preferred start date", request.form.get("preferred_start_date", "")),
-            ("Package", request.form.get("package_interest", "")),
-            ("Billing preference", request.form.get("billing_preference", "")),
+            ("Schedule notes", request.form.get("schedule_notes", "")),
+            ("Billing contact", request.form.get("billing_name", "")),
+            ("Billing email", request.form.get("billing_email", "")),
+            ("Billing phone", request.form.get("billing_phone", "")),
+            ("Billing address", request.form.get("billing_address", "")),
+            ("Preferred payment setup", request.form.get("payment_setup", "")),
             ("Student notes", request.form.get("student_notes", "")),
+            ("Policy agreement", "Agreed"),
+            ("Billing authorization", "Agreed"),
+            ("Guardian signature", request.form.get("guardian_signature", "")),
+            ("Signed date", request.form.get("signed_date", "")),
             ("Media permission", "Yes" if request.form.get("media_ok") == "1" else "No"),
         ]
         data["notes"] = "Formal registration submitted. " + " | ".join(
