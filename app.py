@@ -3836,6 +3836,7 @@ def student_detail(name):
         owner_actions = f"""
         <div class="button-grid">
             <a class="button primary" href="/calendar">Create schedule</a>
+            <a class="button primary" href="/create_package_invoice/{student_url_name}">Create package invoice</a>
             <a class="button" href="/add_lesson/{student_url_name}">Add lesson note</a>
             <a class="button" href="/payment/{student_url_name}">Receive payment</a>
             <a class="button" href="/student_ledger/{student_url_name}">Student ledger</a>
@@ -9719,6 +9720,217 @@ def calendar_lesson_action():
     conn.close()
     return {"ok": False, "error": "Unknown action"}, 400
 
+@app.route("/create_package_invoice/<name>", methods=["GET", "POST"])
+def create_package_invoice(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT name, parent_email, parent_phone, COALESCE(parent_name, ''), COALESCE(lessons_left, 0)
+    FROM students
+    WHERE name = ?
+    """, (name,))
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    parent_id = get_primary_parent_for_student(cursor, student[0])
+    default_due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    def money_value(raw, default=0):
+        try:
+            return round(float(raw or default), 2)
+        except Exception:
+            return round(float(default or 0), 2)
+
+    if request.method == "POST":
+        package_type = (request.form.get("package_type") or "10").strip()
+        custom_lessons = money_value(request.form.get("custom_lessons"), 10)
+        charge_lessons = 10 if package_type == "10" else custom_lessons
+        subtotal_amount = money_value(request.form.get("subtotal_amount"), 650)
+        discount_code = (request.form.get("discount_code") or "").strip().upper()
+        discount_amount = money_value(request.form.get("discount_amount"), 0)
+        amount_due = max(round(subtotal_amount - discount_amount, 2), 0)
+        due_date = request.form.get("due_date") or default_due_date
+        payment_methods = ",".join(request.form.getlist("payment_methods")) or "ach,zelle,paypal"
+        notes = (request.form.get("notes") or "").strip()
+
+        if charge_lessons <= 0 or amount_due < 0:
+            conn.close()
+            return redirect(f"/create_package_invoice/{quote(student[0])}?error=1")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        invoice_notes = notes or f"Package invoice for {charge_lessons:g} lesson(s)."
+        if discount_code and discount_amount:
+            invoice_notes += f" Discount code {discount_code} applied: -${hmusic_money(discount_amount)}."
+
+        cursor.execute("""
+        INSERT INTO invoices (
+            student_name,
+            schedule_id,
+            charge_lessons,
+            amount,
+            status,
+            invoice_type,
+            created_at,
+            due_date,
+            notes,
+            subtotal_amount,
+            discount_code,
+            discount_amount,
+            payment_methods,
+            manual_payment_status
+        )
+        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, NULL)
+        """, (
+            student[0],
+            charge_lessons,
+            amount_due,
+            now,
+            due_date,
+            invoice_notes,
+            subtotal_amount,
+            discount_code,
+            discount_amount,
+            payment_methods
+        ))
+        invoice_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        if parent_id:
+            notify_parent_tuition_due(
+                student[0],
+                parent_id,
+                invoice_id,
+                hmusic_money(amount_due),
+                "New package invoice"
+            )
+            create_invoice_message_event(
+                invoice_id,
+                "created",
+                f"Hi, {student[0]}'s package invoice is ready. Amount due: ${hmusic_money(amount_due)}.",
+                parent_id=parent_id,
+                student_name=student[0],
+                amount=amount_due
+            )
+
+        return redirect(f"/parent_invoice/{invoice_id}" if request.form.get("preview_parent") == "1" else f"/student/{quote(student[0])}")
+
+    error_html = ""
+    if request.args.get("error") == "1":
+        error_html = "<div class='alert danger'>Please enter a valid package and amount.</div>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Create Package Invoice</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:32px; }}
+            .card {{ max-width:880px; background:white; border:1px solid #e5e7eb; border-radius:18px; padding:28px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; border-bottom:1px solid #e5e7eb; padding-bottom:18px; margin-bottom:22px; }}
+            h1 {{ margin:0; font-size:32px; }}
+            .muted {{ color:#6b7280; line-height:1.45; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+            label {{ display:block; color:#6b7280; text-transform:uppercase; letter-spacing:.02em; font-size:12px; font-weight:900; margin-bottom:7px; }}
+            input, select, textarea {{ width:100%; min-height:48px; border:1px solid #d1d5db; border-radius:12px; padding:12px 14px; font-size:16px; background:#fff; }}
+            textarea {{ min-height:92px; resize:vertical; }}
+            .span-2 {{ grid-column:1 / -1; }}
+            .summary {{ border:1px solid #bfdbfe; background:#eff6ff; color:#164e85; border-radius:14px; padding:15px; font-weight:850; line-height:1.45; margin:18px 0; }}
+            .methods {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
+            .method {{ border:1px solid #d1d5db; border-radius:12px; padding:12px; display:flex; align-items:center; gap:8px; font-weight:850; }}
+            .method input {{ width:auto; min-height:auto; }}
+            .actions {{ display:flex; gap:12px; margin-top:22px; }}
+            button, .button {{ border:0; border-radius:12px; padding:13px 18px; font-size:15px; font-weight:900; text-decoration:none; background:#1d65ad; color:white; cursor:pointer; }}
+            .button.secondary {{ background:white; color:#111827; border:1px solid #d1d5db; }}
+            .alert.danger {{ background:#fef2f2; border:1px solid #fecaca; color:#991b1b; border-radius:12px; padding:12px; margin-bottom:16px; font-weight:850; }}
+            @media(max-width:760px) {{ body {{ padding:16px; }} .grid,.methods {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
+        </style>
+        <script>
+            function syncInvoicePreview() {{
+                const type = document.querySelector('[name="package_type"]').value;
+                const lessons = type === '10' ? 10 : parseFloat(document.querySelector('[name="custom_lessons"]').value || '0');
+                const subtotal = parseFloat(document.querySelector('[name="subtotal_amount"]').value || '0');
+                const discount = parseFloat(document.querySelector('[name="discount_amount"]').value || '0');
+                const total = Math.max(subtotal - discount, 0);
+                document.getElementById('invoicePreview').textContent =
+                    `Parent app will show ${{lessons || 0}} lesson(s), subtotal $${{subtotal.toFixed(2)}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
+            }}
+            window.addEventListener('DOMContentLoaded', syncInvoicePreview);
+        </script>
+    </head>
+    <body>
+        <div class="card">
+            <div class="top">
+                <div>
+                    <h1>Create Package Invoice</h1>
+                    <p class="muted">Student: <b>{escape(student[0])}</b> · Parent: {escape(student[3] or student[1] or 'No parent account yet')}</p>
+                </div>
+                <a class="button secondary" href="/student/{quote(student[0])}">Back to student</a>
+            </div>
+            {error_html}
+            <form method="POST">
+                <div class="grid">
+                    <div>
+                        <label>Package</label>
+                        <select name="package_type" onchange="syncInvoicePreview()">
+                            <option value="10">10 lessons</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>Custom lessons</label>
+                        <input name="custom_lessons" type="number" step="0.5" value="10" oninput="syncInvoicePreview()">
+                    </div>
+                    <div>
+                        <label>Subtotal amount</label>
+                        <input name="subtotal_amount" type="number" step="0.01" value="650.00" oninput="syncInvoicePreview()">
+                    </div>
+                    <div>
+                        <label>Due date</label>
+                        <input name="due_date" type="date" value="{default_due_date}">
+                    </div>
+                    <div>
+                        <label>Discount code</label>
+                        <input name="discount_code" placeholder="WELCOME50" oninput="syncInvoicePreview()">
+                    </div>
+                    <div>
+                        <label>Discount amount</label>
+                        <input name="discount_amount" type="number" step="0.01" value="0.00" oninput="syncInvoicePreview()">
+                    </div>
+                    <div class="span-2">
+                        <label>Payment methods shown to parent</label>
+                        <div class="methods">
+                            <label class="method"><input type="checkbox" name="payment_methods" value="ach" checked> ACH / bank</label>
+                            <label class="method"><input type="checkbox" name="payment_methods" value="zelle" checked> Zelle</label>
+                            <label class="method"><input type="checkbox" name="payment_methods" value="paypal" checked> PayPal</label>
+                        </div>
+                    </div>
+                    <div class="span-2">
+                        <label>Owner note</label>
+                        <textarea name="notes" placeholder="Optional internal / invoice note"></textarea>
+                    </div>
+                </div>
+                <div class="summary" id="invoicePreview"></div>
+                <div class="actions">
+                    <button type="submit">Create invoice</button>
+                    <button type="submit" name="preview_parent" value="1">Create + preview parent page</button>
+                    <a class="button secondary" href="/student/{quote(student[0])}">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.route("/invoices")
 def invoices():
 
@@ -9889,6 +10101,7 @@ def pay_invoice(invoice_id):
         student_name = invoice[1]
         amount = invoice[3]
         enrollment_id = invoice[7]
+        lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
 
         cursor.execute("""
         INSERT INTO payments
@@ -9907,7 +10120,7 @@ def pay_invoice(invoice_id):
         """, (
             student_name,
             amount,
-            0,
+            lessons_added,
             payment_method,
             payment_date,
             enrollment_id,
@@ -9917,6 +10130,13 @@ def pay_invoice(invoice_id):
         ))
 
         payment_id = cursor.lastrowid
+
+        if lessons_added:
+            cursor.execute("""
+            UPDATE students
+            SET lessons_left = COALESCE(lessons_left, 0) + ?
+            WHERE name = ?
+            """, (lessons_added, student_name))
 
         cursor.execute("""
         UPDATE invoices
@@ -14298,6 +14518,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
 
     student_name = invoice[1]
     amount = invoice[3] or 0
+    lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
     enrollment_id = invoice[7]
     checkout_session_id = checkout_session_id or invoice[8]
     payment_intent_id = payment_intent_id or invoice[9]
@@ -14319,7 +14540,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     """, (
         student_name,
         amount,
-        0,
+        lessons_added,
         "Stripe Test Mode",
         payment_date,
         enrollment_id,
@@ -14329,6 +14550,13 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     ))
 
     payment_id = cursor.lastrowid
+
+    if lessons_added:
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = COALESCE(lessons_left, 0) + ?
+        WHERE name = ?
+        """, (lessons_added, student_name))
 
     cursor.execute("""
     UPDATE invoices
@@ -14472,6 +14700,7 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
 
     student_name = invoice[1]
     amount = invoice[3] or 0
+    lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
     enrollment_id = invoice[6]
     square_order_id = square_order_id or invoice[8]
     square_payment_id = square_payment_id or invoice[9]
@@ -14493,7 +14722,7 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
     """, (
         student_name,
         amount,
-        0,
+        lessons_added,
         "Square Card",
         payment_date,
         enrollment_id,
@@ -14503,6 +14732,13 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
     ))
 
     payment_id = cursor.lastrowid
+
+    if lessons_added:
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = COALESCE(lessons_left, 0) + ?
+        WHERE name = ?
+        """, (lessons_added, student_name))
 
     cursor.execute("""
     UPDATE invoices
@@ -20558,7 +20794,12 @@ def parent_invoice(invoice_id):
         i.due_date,
         i.notes,
         e.auto_renew_enabled,
-        e.auto_renew_lessons
+        e.auto_renew_lessons,
+        COALESCE(i.subtotal_amount, i.amount),
+        COALESCE(i.discount_code, ''),
+        COALESCE(i.discount_amount, 0),
+        COALESCE(i.payment_methods, ''),
+        COALESCE(i.manual_payment_status, '')
     FROM invoices i
     LEFT JOIN enrollments e
         ON i.enrollment_id = e.id
@@ -20598,10 +20839,22 @@ def parent_invoice(invoice_id):
 
         if action == "notify_paid":
             payment_note = (request.form.get("payment_note") or "").strip()
+            payment_method = (request.form.get("payment_method") or "Manual").strip()
+            cursor.execute("""
+            UPDATE invoices
+            SET status = CASE WHEN status = 'unpaid' THEN 'pending_confirmation' ELSE status END,
+                manual_payment_status = ?
+            WHERE id = ?
+            AND status != 'paid'
+            """, (
+                f"{payment_method} notice sent",
+                invoice_id
+            ))
+            conn.commit()
             conn.close()
             message_body = (
                 f"{session.get('parent_name', 'Parent')} marked invoice #{invoice_id} for {invoice[1]} as paid / ready for confirmation. "
-                f"Amount: ${invoice[3]}. Owner confirmation: /pay_invoice/{invoice_id}"
+                f"Amount: ${invoice[3]}. Method: {payment_method}. Owner confirmation: /pay_invoice/{invoice_id}"
             )
             if payment_note:
                 message_body += f"\n\nParent note: {payment_note}"
@@ -20620,6 +20873,12 @@ def parent_invoice(invoice_id):
     checked_yes = "selected" if invoice[10] == 1 else ""
     checked_no = "" if invoice[10] == 1 else "selected"
     auto_lessons = invoice[11] or invoice[2] or 10
+    subtotal_amount = invoice[12] if invoice[12] not in (None, 0) else invoice[3]
+    discount_code = invoice[13] or ""
+    discount_amount = invoice[14] or 0
+    allowed_methods = {m.strip().lower() for m in (invoice[15] or "ach,zelle,paypal").split(",") if m.strip()}
+    if not allowed_methods:
+        allowed_methods = {"ach", "zelle", "paypal"}
     online_payment_html = ""
     payment_status_alert = ""
     if request.args.get("square_missing") == "1":
@@ -20661,7 +20920,7 @@ def parent_invoice(invoice_id):
                 </div>
             """)
 
-        if stripe_is_configured():
+        if "ach" in allowed_methods and stripe_is_configured():
             payment_choices.append(f"""
                 <div class="payment-choice">
                     <div class="choice-kicker">Bank option</div>
@@ -20673,6 +20932,46 @@ def parent_invoice(invoice_id):
                         <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
                     </div>
                     <a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
+                </div>
+            """)
+        elif "ach" in allowed_methods:
+            payment_choices.append("""
+                <div class="payment-choice disabled">
+                    <div class="choice-kicker">Bank option</div>
+                    <h3>ACH / Bank</h3>
+                    <p>Secure bank payment setup is being prepared. Please use Zelle, PayPal, or contact H-Music for now.</p>
+                </div>
+            """)
+
+        if "zelle" in allowed_methods:
+            payment_choices.append("""
+                <div class="payment-choice manual-pay">
+                    <div class="choice-kicker">Manual transfer</div>
+                    <h3>Zelle</h3>
+                    <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
+                    <div class="account-box">hmusicjustplay@gmail.com</div>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="notify_paid">
+                        <input type="hidden" name="payment_method" value="Zelle">
+                        <textarea name="payment_note" rows="2" placeholder="Optional: confirmation name or screenshot note"></textarea>
+                        <button type="submit">I Paid by Zelle</button>
+                    </form>
+                </div>
+            """)
+
+        if "paypal" in allowed_methods:
+            payment_choices.append("""
+                <div class="payment-choice manual-pay">
+                    <div class="choice-kicker">Manual transfer</div>
+                    <h3>PayPal</h3>
+                    <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
+                    <div class="account-box">hmusicjustplay@gmail.com</div>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="notify_paid">
+                        <input type="hidden" name="payment_method" value="PayPal">
+                        <textarea name="payment_note" rows="2" placeholder="Optional: PayPal name or transaction note"></textarea>
+                        <button type="submit">I Paid by PayPal</button>
+                    </form>
                 </div>
             """)
 
@@ -20715,6 +21014,9 @@ def parent_invoice(invoice_id):
             .payment-choice.disabled {{ opacity:.72; }}
             .payment-choice h3 {{ margin:4px 0 8px; }}
             .payment-choice p {{ color:#6b7280; line-height:1.45; }}
+            .account-box {{ background:#f8fafc; border:1px dashed #94a3b8; border-radius:10px; padding:10px; font-weight:900; margin:10px 0; word-break:break-all; }}
+            .invoice-breakdown .line {{ display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:#4b5563; font-size:16px; }}
+            .invoice-breakdown .total {{ border-top:1px solid #d1d5db; padding-top:10px; color:#111827; font-size:18px; }}
             .choice-kicker {{ color:#047857; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
             .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f8fafc; border-radius:10px; padding:10px; margin:10px 0 12px; }}
             .pay-summary span {{ color:#6b7280; }}
@@ -20734,12 +21036,14 @@ def parent_invoice(invoice_id):
                 <div class="label">Student</div>
                 <div class="value">{invoice[1]}</div>
             </div>
-            <div class="card">
-                <div class="label">Amount Due</div>
-                <div class="value">${invoice[3]}</div>
+            <div class="card invoice-breakdown">
+                <div class="label">Package</div>
+                <div class="value">{invoice[2]:g} lessons</div>
+                <div class="line"><span>Subtotal</span><b>${hmusic_money(subtotal_amount)}</b></div>
+                <div class="line"><span>Discount {escape(discount_code)}</span><b>-${hmusic_money(discount_amount)}</b></div>
+                <div class="line total"><span>Amount Due</span><b>${hmusic_money(invoice[3])}</b></div>
             </div>
             <p><b>Status:</b> {invoice[4]}</p>
-            <p><b>Lessons:</b> {invoice[2]}</p>
             <p><b>Due Date:</b> {invoice[8] or ''}</p>
             <p>{invoice[9] or ''}</p>
 
@@ -29182,6 +29486,11 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "square_order_id", "square_order_id TEXT")
     add_column_if_missing("invoices", "square_payment_id", "square_payment_id TEXT")
     add_column_if_missing("invoices", "autopay_status", "autopay_status TEXT")
+    add_column_if_missing("invoices", "subtotal_amount", "subtotal_amount REAL DEFAULT 0")
+    add_column_if_missing("invoices", "discount_code", "discount_code TEXT")
+    add_column_if_missing("invoices", "discount_amount", "discount_amount REAL DEFAULT 0")
+    add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
+    add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
 
     conn.commit()
