@@ -4945,7 +4945,7 @@ def calendar():
             .legend{{display:flex;gap:10px;align-items:center;padding:6px 18px;
                      border-bottom:1px solid var(--line);flex-wrap:wrap}}
             .leg{{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted)}}
-            .leg-bar{{width:12px;height:8px;border-radius:1px;border-left:3px solid transparent}}
+            .leg-bar{{width:20px;height:10px;border-radius:4px;border-left:5px solid transparent}}
             .leg-dot{{width:11px;height:11px;border-radius:50%;
                       box-shadow:0 0 0 2px rgba(255,255,255,.95),0 1px 3px rgba(0,0,0,.18)}}
             .leg-sep{{width:1px;height:12px;background:var(--line)}}
@@ -23821,8 +23821,8 @@ COURSE_COLOR_PRESETS = [
     ("#8b5cf6", "Group Piano - Purple"),
     ("#c4b5fd", "Piano Group - Light Purple"),
     ("#93c5fd", "Private 30m - Light Blue"),
-    ("#3b82f6", "Private 45m - Blue"),
-    ("#1e3a8a", "Private 60m - Dark Blue"),
+    ("#1d4ed8", "Private 45m - Deep Blue"),
+    ("#db2777", "Private 60m - Deep Pink"),
     ("#facc15", "Trial - Yellow"),
     ("#64748b", "Other - Slate"),
 ]
@@ -23842,9 +23842,9 @@ def course_color_from_rules(name="", duration=None, is_group=0):
         if duration_text == "30":
             return "#93c5fd"
         if duration_text == "45":
-            return "#3b82f6"
+            return "#1d4ed8"
         if duration_text == "60":
-            return "#1e3a8a"
+            return "#db2777"
     if is_group or "group" in course_name:
         return "#8b5cf6"
     return None
