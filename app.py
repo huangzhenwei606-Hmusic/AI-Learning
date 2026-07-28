@@ -2289,6 +2289,10 @@ def home():
                         <strong>Add Schedule</strong>
                         <span>Add a lesson to calendar</span>
                     </a>
+                    <a class="primary-action" href="/locations_rooms">
+                        <strong>Locations & Rooms</strong>
+                        <span>Manage teaching addresses and classrooms</span>
+                    </a>
                     <a class="primary-action" href="/messages">
                         <strong>Messages{message_badge}</strong>
                         <span>Parent and teacher communication</span>
@@ -2355,6 +2359,7 @@ def home():
         <a href="/missing_homework">Missing Homework{homework_badge}</a>
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
+        <a href="/locations_rooms">Locations & Rooms</a>
         <a href="/calendar">Calendar</a>
         <a href="/calendar/today">Today</a>
         <a href="/students">Students</a>
@@ -5099,7 +5104,8 @@ def calendar():
         <div class="top-btns">
           <a class="btn" href="/">Home</a>
           <a class="btn" href="/add_schedule">+ Add Schedule</a>
-          <a class="btn" href="/room_schedule">Rooms</a>
+          <a class="btn" href="/locations_rooms">Locations & Rooms</a>
+          <a class="btn" href="/room_schedule">Room Schedule</a>
           <a class="btn btn-primary" href="/owner_dashboard">Dashboard</a>
         </div>
       </div>
@@ -5758,6 +5764,9 @@ def add_schedule():
                     "action": "create_unassigned_teacher_schedule",
                     "student_name": student_name,
                     "teacher": teacher,
+                    "location_id": request.form.get("location_id"),
+                    "location": request.form.get("location"),
+                    "room_id": request.form.get("room_id"),
                     "classroom": request.form.get("classroom"),
                     "weekday": request.form.get("weekday"),
                     "lesson_time": request.form.get("lesson_time"),
@@ -5805,7 +5814,14 @@ def add_schedule():
                 conn.close()
                 return "<h1>Temporary schedule note is required.</h1><p><a href='/add_schedule'>Back</a></p>"
 
-        classroom = request.form.get("classroom")
+        location_id = (request.form.get("location_id") or "").strip()
+        room_id = (request.form.get("room_id") or "").strip()
+        location = (request.form.get("location") or "").strip()
+        classroom = (request.form.get("classroom") or "").strip()
+        if location_id and not location:
+            cursor.execute("SELECT location_name FROM studio_locations WHERE id = ?", (location_id,))
+            location_row = cursor.fetchone()
+            location = location_row[0] if location_row else ""
         weekday = request.form.get("weekday")
         lesson_time = request.form.get("lesson_time")
         schedule_type = request.form.get("schedule_type")
@@ -5918,6 +5934,9 @@ def add_schedule():
             INSERT INTO schedule (
                 student_name,
                 teacher,
+                location_id,
+                room_id,
+                location,
                 classroom,
                 weekday,
                 lesson_time,
@@ -5940,10 +5959,13 @@ def add_schedule():
                 group_student_names,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
+                int(location_id) if location_id else None,
+                int(room_id) if room_id else None,
+                location,
                 classroom,
                 weekday,
                 lesson_time,
@@ -6012,6 +6034,7 @@ def add_schedule():
 
         <p>{generated_count} lesson(s) created for {student_name}.</p>
         <p>Teacher: {teacher}</p>
+        <p>Location: {location or 'TBD'}</p>
         <p>Room: {classroom}</p>
         <p>Course: {course_name}</p>
         <p>Duration: {duration} mins</p>
@@ -6035,11 +6058,27 @@ def add_schedule():
         teachers = cursor.fetchall()
 
     cursor.execute("""
-    SELECT room_name
-    FROM classrooms
-    ORDER BY room_name
+    SELECT id, location_name
+    FROM studio_locations
+    WHERE active = 1
+    ORDER BY sort_order, location_name
     """)
-    classrooms = cursor.fetchall()
+    location_rows = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        r.id,
+        r.location_id,
+        r.room_name,
+        l.location_name,
+        COALESCE(l.address, '')
+    FROM studio_rooms r
+    JOIN studio_locations l ON l.id = r.location_id
+    WHERE r.active = 1
+    AND l.active = 1
+    ORDER BY l.sort_order, l.location_name, r.sort_order, r.room_name
+    """)
+    room_rows = cursor.fetchall()
 
     cursor.execute("""
     SELECT
@@ -6108,12 +6147,32 @@ def add_schedule():
         <option value="{teacher[0]}" {selected}>{teacher[0]}</option>
         """
 
-    classroom_options = ""
-    for classroom in classrooms:
-        selected = "selected" if prefill_room and classroom[0] == prefill_room else ""
-        classroom_options += f"""
-        <option value="{classroom[0]}" {selected}>{classroom[0]}</option>
+    selected_location = ""
+    if prefill_room:
+        for room in room_rows:
+            if room[2] == prefill_room:
+                selected_location = str(room[1])
+                break
+    if not selected_location and location_rows:
+        selected_location = str(location_rows[0][0])
+
+    location_options = ""
+    for location in location_rows:
+        selected = "selected" if selected_location and str(location[0]) == selected_location else ""
+        location_options += f"""
+        <option value="{location[0]}" {selected}>{escape(location[1])}</option>
         """
+
+    room_data_json = json.dumps([
+        {
+            "id": room[0],
+            "location_id": room[1],
+            "room_name": room[2],
+            "location_name": room[3],
+            "address": room[4],
+        }
+        for room in room_rows
+    ])
 
     course_options = ""
     for c in course_types:
@@ -6135,6 +6194,7 @@ def add_schedule():
 
     back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
     teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
+    locations_manage_link = ' | <a href="/locations_rooms">Manage Locations & Rooms</a>' if require_owner() else ""
     teacher_student_mode_html = ""
     existing_student_input = f'<input name="student_name" value="{escape(prefill_student)}" required>'
     new_student_request_html = ""
@@ -6242,6 +6302,7 @@ def add_schedule():
             <p>
                 <a href="{back_href}">Back</a> |
                 <a href="/course_types">Manage Course Types</a>
+                {locations_manage_link}
             </p>
 
             <form method="POST">
@@ -6259,10 +6320,15 @@ def add_schedule():
                     {teacher_options}
                 </select>
 
-                Room:<br>
-                <select name="classroom">
-                    {classroom_options}
+                Location:<br>
+                <select name="location_id" id="schedule_location" onchange="updateRoomOptions()" required>
+                    {location_options}
                 </select>
+                <input type="hidden" name="location" id="schedule_location_name">
+
+                Room:<br>
+                <select name="classroom" id="schedule_room" onchange="updateSelectedRoomId()" required></select>
+                <input type="hidden" name="room_id" id="schedule_room_id">
 
                 Course Type:<br>
                 <select name="course_type_id" id="course_type_id" onchange="toggleCustomProgram()">
@@ -6326,6 +6392,46 @@ def add_schedule():
 
         </div>
         <script>
+            const ROOM_DATA = {room_data_json};
+            const PREFILL_ROOM = "{escape(prefill_room)}";
+            function updateRoomOptions() {{
+                const locationSelect = document.getElementById("schedule_location");
+                const roomSelect = document.getElementById("schedule_room");
+                const locationNameInput = document.getElementById("schedule_location_name");
+                const roomIdInput = document.getElementById("schedule_room_id");
+                if (!locationSelect || !roomSelect) return;
+                const locationId = String(locationSelect.value || "");
+                const previousValue = roomSelect.value || PREFILL_ROOM;
+                if (locationNameInput) {{
+                    const selectedLocation = locationSelect.options[locationSelect.selectedIndex];
+                    locationNameInput.value = selectedLocation ? selectedLocation.textContent : "";
+                }}
+                roomSelect.innerHTML = "";
+                ROOM_DATA
+                    .filter(room => String(room.location_id) === locationId)
+                    .forEach(room => {{
+                        const option = document.createElement("option");
+                        option.value = room.room_name;
+                        option.textContent = room.room_name;
+                        option.dataset.roomId = room.id;
+                        if (previousValue && room.room_name === previousValue) option.selected = true;
+                        roomSelect.appendChild(option);
+                    }});
+                if (!roomSelect.options.length) {{
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "No active rooms for this location";
+                    roomSelect.appendChild(option);
+                }}
+                updateSelectedRoomId();
+            }}
+            function updateSelectedRoomId() {{
+                const roomSelect = document.getElementById("schedule_room");
+                const roomIdInput = document.getElementById("schedule_room_id");
+                if (!roomSelect || !roomIdInput) return;
+                const selectedRoom = roomSelect.options[roomSelect.selectedIndex];
+                roomIdInput.value = selectedRoom ? (selectedRoom.dataset.roomId || "") : "";
+            }}
             function selectedCourseText() {{
                 const select = document.getElementById("course_type_id");
                 return select && select.options[select.selectedIndex] ? select.options[select.selectedIndex].text.toLowerCase() : "";
@@ -6373,6 +6479,7 @@ def add_schedule():
                     submitButton.textContent = "Generate Schedule";
                 }}
             }}
+            updateRoomOptions();
             toggleCustomProgram();
             toggleStudentMode();
         </script>
@@ -6437,6 +6544,223 @@ def room_schedule():
 
     <a href="/calendar">Back to Calendar</a>
     """
+
+
+@app.route("/locations_rooms", methods=["GET", "POST"])
+def locations_rooms():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_location_room_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    message = ""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add_location":
+            location_name = (request.form.get("location_name") or "").strip()
+            address = (request.form.get("address") or "").strip()
+            notes = (request.form.get("notes") or "").strip()
+            if location_name:
+                cursor.execute("""
+                INSERT OR IGNORE INTO studio_locations (
+                    location_name, address, notes, active, sort_order, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                """, (location_name, address, notes, int(request.form.get("sort_order") or 0), now, now))
+                message = "Location saved."
+        elif action == "update_location":
+            location_id = request.form.get("location_id")
+            location_name = (request.form.get("location_name") or "").strip()
+            address = (request.form.get("address") or "").strip()
+            notes = (request.form.get("notes") or "").strip()
+            active = 1 if request.form.get("active") == "1" else 0
+            if location_id and location_name:
+                cursor.execute("""
+                UPDATE studio_locations
+                SET location_name = ?, address = ?, notes = ?, active = ?, sort_order = ?, updated_at = ?
+                WHERE id = ?
+                """, (location_name, address, notes, active, int(request.form.get("sort_order") or 0), now, location_id))
+                message = "Location updated."
+        elif action == "add_room":
+            location_id = request.form.get("location_id")
+            room_name = (request.form.get("room_name") or "").strip()
+            notes = (request.form.get("notes") or "").strip()
+            if location_id and room_name:
+                cursor.execute("""
+                INSERT OR IGNORE INTO studio_rooms (
+                    location_id, room_name, notes, active, sort_order, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                """, (location_id, room_name, notes, int(request.form.get("sort_order") or 0), now, now))
+                cursor.execute("INSERT OR IGNORE INTO classrooms (room_name) VALUES (?)", (room_name,))
+                message = "Room saved."
+        elif action == "update_room":
+            room_id = request.form.get("room_id")
+            location_id = request.form.get("location_id")
+            room_name = (request.form.get("room_name") or "").strip()
+            notes = (request.form.get("notes") or "").strip()
+            active = 1 if request.form.get("active") == "1" else 0
+            if room_id and location_id and room_name:
+                cursor.execute("""
+                UPDATE studio_rooms
+                SET location_id = ?, room_name = ?, notes = ?, active = ?, sort_order = ?, updated_at = ?
+                WHERE id = ?
+                """, (location_id, room_name, notes, active, int(request.form.get("sort_order") or 0), now, room_id))
+                cursor.execute("INSERT OR IGNORE INTO classrooms (room_name) VALUES (?)", (room_name,))
+                message = "Room updated."
+        conn.commit()
+
+    cursor.execute("""
+    SELECT id, location_name, COALESCE(address, ''), COALESCE(notes, ''), active, COALESCE(sort_order, 0)
+    FROM studio_locations
+    ORDER BY active DESC, sort_order, location_name
+    """)
+    locations = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        r.id,
+        r.location_id,
+        r.room_name,
+        COALESCE(r.notes, ''),
+        r.active,
+        COALESCE(r.sort_order, 0),
+        l.location_name
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON l.id = r.location_id
+    ORDER BY COALESCE(l.active, 0) DESC, l.sort_order, l.location_name, r.active DESC, r.sort_order, r.room_name
+    """)
+    rooms = cursor.fetchall()
+    conn.close()
+
+    location_options = "".join([
+        f'<option value="{l[0]}">{escape(l[1])}</option>'
+        for l in locations
+    ])
+
+    location_rows = ""
+    for l in locations:
+        checked = "checked" if l[4] == 1 else ""
+        status = "Active" if l[4] == 1 else "Inactive"
+        location_rows += f"""
+        <form method="POST" class="row-form">
+            <input type="hidden" name="action" value="update_location">
+            <input type="hidden" name="location_id" value="{l[0]}">
+            <div class="field name"><label>Location</label><input name="location_name" value="{escape(l[1])}" required></div>
+            <div class="field"><label>Address</label><input name="address" value="{escape(l[2])}" placeholder="Full address or online link"></div>
+            <div class="field"><label>Notes</label><input name="notes" value="{escape(l[3])}" placeholder="Parking, gate code, etc."></div>
+            <div class="field small"><label>Sort</label><input name="sort_order" type="number" value="{l[5]}"></div>
+            <label class="check"><input type="checkbox" name="active" value="1" {checked}> {status}</label>
+            <button type="submit">Save</button>
+        </form>
+        """
+
+    room_rows = ""
+    for r in rooms:
+        checked = "checked" if r[4] == 1 else ""
+        status = "Active" if r[4] == 1 else "Inactive"
+        room_location_options = "".join([
+            f'<option value="{l[0]}" {"selected" if l[0] == r[1] else ""}>{escape(l[1])}</option>'
+            for l in locations
+        ])
+        room_rows += f"""
+        <form method="POST" class="row-form">
+            <input type="hidden" name="action" value="update_room">
+            <input type="hidden" name="room_id" value="{r[0]}">
+            <div class="field"><label>Location</label><select name="location_id">{room_location_options}</select></div>
+            <div class="field name"><label>Room</label><input name="room_name" value="{escape(r[2])}" required></div>
+            <div class="field"><label>Notes</label><input name="notes" value="{escape(r[3])}" placeholder="Piano, capacity, online, etc."></div>
+            <div class="field small"><label>Sort</label><input name="sort_order" type="number" value="{r[5]}"></div>
+            <label class="check"><input type="checkbox" name="active" value="1" {checked}> {status}</label>
+            <button type="submit">Save</button>
+        </form>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Locations & Rooms</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; color:#111827; padding:32px; }}
+            .shell {{ max-width:1180px; margin:0 auto; }}
+            .top {{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }}
+            h1 {{ margin:0; font-size:30px; }}
+            h2 {{ margin:0 0 14px; font-size:20px; }}
+            .muted {{ color:#6b7280; margin:6px 0 0; }}
+            .nav a, button, .button {{ display:inline-block; border:none; border-radius:10px; padding:10px 14px; font-weight:800; text-decoration:none; background:#2563eb; color:white; cursor:pointer; }}
+            .nav a.secondary, .button.secondary {{ background:white; color:#111827; border:1px solid #d7dce5; }}
+            .grid {{ display:grid; grid-template-columns:1fr; gap:18px; }}
+            .card {{ background:white; border:1px solid #e5e7eb; border-radius:14px; padding:20px; box-shadow:0 8px 24px rgba(15,23,42,.05); }}
+            .row-form {{ display:grid; grid-template-columns:1.1fr 1.5fr 1.3fr 80px 110px 90px; gap:12px; align-items:end; padding:12px 0; border-top:1px solid #edf0f5; }}
+            .row-form:first-of-type {{ border-top:none; }}
+            label {{ display:block; font-size:12px; font-weight:800; color:#6b7280; text-transform:uppercase; letter-spacing:.02em; margin-bottom:6px; }}
+            input, select {{ width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; font-size:14px; background:white; }}
+            .field.small input {{ text-align:center; }}
+            .check {{ display:flex; align-items:center; gap:8px; margin-bottom:10px; color:#374151; text-transform:none; letter-spacing:0; font-size:14px; }}
+            .check input {{ width:auto; }}
+            .add-form {{ display:grid; grid-template-columns:1fr 1.4fr 1.2fr 80px 100px; gap:12px; align-items:end; padding:14px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px; margin-bottom:12px; }}
+            .notice {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; padding:12px 14px; border-radius:12px; margin-bottom:14px; font-weight:800; }}
+            .hint {{ background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; padding:12px 14px; border-radius:12px; margin-bottom:18px; }}
+            @media (max-width:900px) {{
+                body {{ padding:18px; }}
+                .top, .row-form, .add-form {{ display:block; }}
+                .field, .check, button {{ margin-top:10px; }}
+                .nav {{ margin-top:12px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="shell">
+            <div class="top">
+                <div>
+                    <h1>Locations & Rooms</h1>
+                    <p class="muted">Manage teaching addresses and the rooms available under each location.</p>
+                </div>
+                <div class="nav">
+                    <a class="secondary" href="/calendar">Calendar</a>
+                    <a class="secondary" href="/room_schedule">Room Schedule</a>
+                    <a href="/add_schedule">Add Schedule</a>
+                </div>
+            </div>
+            {f'<div class="notice">{escape(message)}</div>' if message else ''}
+            <div class="hint">Use Active/Inactive instead of deleting locations or rooms, so old lesson records remain readable.</div>
+
+            <div class="grid">
+                <section class="card">
+                    <h2>Locations</h2>
+                    <form method="POST" class="add-form">
+                        <input type="hidden" name="action" value="add_location">
+                        <div class="field"><label>Location</label><input name="location_name" placeholder="H-Music Cupertino" required></div>
+                        <div class="field"><label>Address</label><input name="address" placeholder="123 Main St, Cupertino, CA"></div>
+                        <div class="field"><label>Notes</label><input name="notes" placeholder="Parking, entry, online link"></div>
+                        <div class="field small"><label>Sort</label><input name="sort_order" type="number" value="0"></div>
+                        <button type="submit">Add</button>
+                    </form>
+                    {location_rows or '<p class="muted">No locations yet.</p>'}
+                </section>
+
+                <section class="card">
+                    <h2>Rooms</h2>
+                    <form method="POST" class="add-form">
+                        <input type="hidden" name="action" value="add_room">
+                        <div class="field"><label>Location</label><select name="location_id">{location_options}</select></div>
+                        <div class="field"><label>Room</label><input name="room_name" placeholder="Room 1 / Piano Room / Online" required></div>
+                        <div class="field"><label>Notes</label><input name="notes" placeholder="Piano, capacity, camera setup"></div>
+                        <div class="field small"><label>Sort</label><input name="sort_order" type="number" value="0"></div>
+                        <button type="submit">Add</button>
+                    </form>
+                    {room_rows or '<p class="muted">No rooms yet.</p>'}
+                </section>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
 
 @app.route("/room_availability", methods=["GET", "POST"])
 def room_availability():
@@ -22732,6 +23056,93 @@ def ensure_v18_schema():
             SET display_color = ?
             WHERE id = ?
             """, (rule_color, course[0]))
+
+    conn.commit()
+    conn.close()
+    ensure_location_room_schema()
+
+
+def ensure_location_room_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classrooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_name TEXT UNIQUE
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS studio_locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        location_name TEXT UNIQUE,
+        address TEXT,
+        notes TEXT,
+        active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS studio_rooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        location_id INTEGER,
+        room_name TEXT,
+        notes TEXT,
+        active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        UNIQUE(location_id, room_name)
+    )
+    """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("schedule", "location_id", "location_id INTEGER")
+    add_column_if_missing("schedule", "room_id", "room_id INTEGER")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("SELECT COUNT(*) FROM studio_locations")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+        INSERT INTO studio_locations (location_name, address, notes, active, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, 1, 1, ?, ?)
+        """, ("H-Music Studio", "", "Default teaching location", now, now))
+
+    cursor.execute("SELECT id FROM studio_locations ORDER BY sort_order, id LIMIT 1")
+    default_location = cursor.fetchone()
+    default_location_id = default_location[0] if default_location else None
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO classrooms (room_name)
+    VALUES (?)
+    """, [
+        ("Room 1",),
+        ("Room 2",),
+        ("Room 3",),
+        ("Trial Room",)
+    ])
+
+    if default_location_id:
+        cursor.execute("SELECT COUNT(*) FROM studio_rooms")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
+            classroom_rows = cursor.fetchall()
+            for index, row in enumerate(classroom_rows, start=1):
+                cursor.execute("""
+                INSERT OR IGNORE INTO studio_rooms (
+                    location_id, room_name, notes, active, sort_order, created_at, updated_at
+                )
+                VALUES (?, ?, '', 1, ?, ?, ?)
+                """, (default_location_id, row[0], index, now, now))
 
     conn.commit()
     conn.close()
