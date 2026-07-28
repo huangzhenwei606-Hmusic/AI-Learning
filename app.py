@@ -4620,11 +4620,13 @@ def calendar():
     student_options = '<option value="">All Students</option>'
     student_picker_options = '<option value="">Choose student</option>'
     student_filter_options = ""
+    student_picker_datalist_options = ""
     for s in student_options_data:
         selected = "selected" if s[0] == selected_student else ""
         student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
         student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
         student_filter_options += f'<option value="{escape(str(s[0]))}"></option>'
+        student_picker_datalist_options += f'<option value="{escape(str(s[0]))}"></option>'
 
     quick_location_options = ""
     for location in quick_location_rows:
@@ -5216,9 +5218,10 @@ def calendar():
       <select class="pop-sel" id="popTeacher">
         {teacher_picker_options}
       </select>
-      <select class="pop-sel" id="popStudent">
-        {student_picker_options}
-      </select>
+      <input class="pop-sel" id="popStudent" list="popStudentList" placeholder="Search or type new student">
+      <datalist id="popStudentList">
+        {student_picker_datalist_options}
+      </datalist>
       <select class="pop-sel" id="popLocation" onchange="updateQuickRooms()">
         {quick_location_options}
       </select>
