@@ -4472,6 +4472,7 @@ H-Music
 def calendar():
     ensure_v321_schema()
     ensure_calendar_lesson_panel_schema()
+    ensure_location_room_schema()
     if not require_owner():
         return redirect("/owner_login")
 
@@ -4512,6 +4513,28 @@ def calendar():
     ORDER BY name
     """)
     student_options_data = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, location_name
+    FROM studio_locations
+    WHERE active = 1
+    ORDER BY sort_order, location_name
+    """)
+    quick_location_rows = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        r.id,
+        r.location_id,
+        r.room_name,
+        l.location_name
+    FROM studio_rooms r
+    JOIN studio_locations l ON l.id = r.location_id
+    WHERE r.active = 1
+    AND l.active = 1
+    ORDER BY l.sort_order, l.location_name, r.sort_order, r.room_name
+    """)
+    quick_room_rows = cursor.fetchall()
 
     where_clauses = ["s.lesson_date BETWEEN ? AND ?"]
     params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
@@ -4602,6 +4625,19 @@ def calendar():
         student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
         student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
         student_filter_options += f'<option value="{escape(str(s[0]))}"></option>'
+
+    quick_location_options = ""
+    for location in quick_location_rows:
+        quick_location_options += f'<option value="{location[0]}">{escape(str(location[1] or ""))}</option>'
+    quick_room_data_json = json.dumps([
+        {
+            "id": row[0],
+            "location_id": row[1],
+            "room_name": row[2],
+            "location_name": row[3],
+        }
+        for row in quick_room_rows
+    ])
 
     events_by_date = {}
     for item in schedules:
@@ -5183,9 +5219,10 @@ def calendar():
       <select class="pop-sel" id="popStudent">
         {student_picker_options}
       </select>
-      <select class="pop-sel" id="popRoom">
-        <option>Room 1</option><option>Room 2</option><option>Room 3</option>
+      <select class="pop-sel" id="popLocation" onchange="updateQuickRooms()">
+        {quick_location_options}
       </select>
+      <select class="pop-sel" id="popRoom" onchange="updateQuickRoomId()"></select>
       <div class="pop-row">
         <input type="time" class="pop-inp" id="popStart" value="15:00" style="margin-bottom:0">
         <input type="time" class="pop-inp" id="popEnd"   value="15:30" style="margin-bottom:0">
@@ -5532,9 +5569,44 @@ def calendar():
 
     // ---- quick-add popover ----
     let activePopDate = null;
+    const QUICK_ROOM_DATA = {quick_room_data_json};
+    function updateQuickRooms() {{
+      const locationSelect = document.getElementById('popLocation');
+      const roomSelect = document.getElementById('popRoom');
+      if (!locationSelect || !roomSelect) return;
+      const locationId = String(locationSelect.value || '');
+      const previousValue = roomSelect.value;
+      roomSelect.innerHTML = '';
+      QUICK_ROOM_DATA
+        .filter(room => String(room.location_id) === locationId)
+        .forEach(room => {{
+          const opt = document.createElement('option');
+          opt.value = room.room_name;
+          opt.textContent = room.room_name;
+          opt.dataset.roomId = room.id;
+          opt.dataset.locationName = room.location_name || '';
+          if (previousValue && previousValue === room.room_name) opt.selected = true;
+          roomSelect.appendChild(opt);
+        }});
+      if (!roomSelect.options.length) {{
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No active rooms';
+        roomSelect.appendChild(opt);
+      }}
+      updateQuickRoomId();
+    }}
+    function updateQuickRoomId() {{
+      const roomSelect = document.getElementById('popRoom');
+      if (!roomSelect) return;
+      const selected = roomSelect.options[roomSelect.selectedIndex];
+      roomSelect.dataset.roomId = selected ? (selected.dataset.roomId || '') : '';
+      roomSelect.dataset.locationName = selected ? (selected.dataset.locationName || '') : '';
+    }}
     function openPop(day, dateStr, el) {{
       activePopDate = dateStr;
       document.getElementById('popTitle').textContent = 'Add to ' + dateStr;
+      updateQuickRooms();
       const pop = document.getElementById('popover');
       const rect = el.getBoundingClientRect();
       let top  = rect.bottom + window.scrollY + 4;
@@ -5562,21 +5634,25 @@ def calendar():
       if (!activePopDate) return;
       const teacher = document.getElementById('popTeacher').value;
       const student = document.getElementById('popStudent').value;
+      const locationSelect = document.getElementById('popLocation');
       const room    = document.getElementById('popRoom').value;
+      const locationId = locationSelect ? locationSelect.value : '';
+      const roomId = document.getElementById('popRoom').dataset.roomId || '';
       const start   = document.getElementById('popStart').value;
       const end     = document.getElementById('popEnd').value;
       // Redirect to add_schedule with pre-filled params
-      window.location.href = `/add_schedule?prefill_date=${{activePopDate}}&prefill_teacher=${{encodeURIComponent(teacher)}}&prefill_student=${{encodeURIComponent(student)}}&prefill_room=${{encodeURIComponent(room)}}&prefill_start=${{encodeURIComponent(start)}}`;
+      window.location.href = `/add_schedule?prefill_date=${{activePopDate}}&prefill_teacher=${{encodeURIComponent(teacher)}}&prefill_student=${{encodeURIComponent(student)}}&prefill_location_id=${{encodeURIComponent(locationId)}}&prefill_room_id=${{encodeURIComponent(roomId)}}&prefill_room=${{encodeURIComponent(room)}}&prefill_start=${{encodeURIComponent(start)}}`;
     }}
     function addOpenSlot() {{
       if (!activePopDate) return;
       const teacher = document.getElementById('popTeacher').value;
+      const room    = document.getElementById('popRoom').value;
       const start   = document.getElementById('popStart').value;
       const end     = document.getElementById('popEnd').value;
       fetch('/add_open_slot_quick', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
-        body: JSON.stringify({{ teacher, date: activePopDate,
+        body: JSON.stringify({{ teacher, date: activePopDate, classroom: room,
                                 start_time: start, end_time: end }})
       }})
       .then(r => r.json())
@@ -5588,6 +5664,7 @@ def calendar():
         }}
       }});
     }}
+    updateQuickRooms();
     function showSuccess(msg) {{
       const s = document.getElementById('successStrip');
       document.getElementById('successMsg').textContent = msg;
@@ -6131,6 +6208,8 @@ def add_schedule():
     prefill_date = (request.args.get("prefill_date") or "").strip()
     prefill_teacher = (request.args.get("prefill_teacher") or "").strip()
     prefill_student = (request.args.get("prefill_student") or "").strip()
+    prefill_location_id = (request.args.get("prefill_location_id") or "").strip()
+    prefill_room_id = (request.args.get("prefill_room_id") or "").strip()
     prefill_room = (request.args.get("prefill_room") or "").strip()
     prefill_start = (request.args.get("prefill_start") or "").strip()
     prefill_weekday = ""
@@ -6147,8 +6226,14 @@ def add_schedule():
         <option value="{teacher[0]}" {selected}>{teacher[0]}</option>
         """
 
-    selected_location = ""
-    if prefill_room:
+    selected_location = prefill_location_id
+    if not selected_location and prefill_room_id:
+        for room in room_rows:
+            if str(room[0]) == prefill_room_id:
+                selected_location = str(room[1])
+                prefill_room = prefill_room or room[2]
+                break
+    if not selected_location and prefill_room:
         for room in room_rows:
             if room[2] == prefill_room:
                 selected_location = str(room[1])
@@ -29392,6 +29477,7 @@ def add_open_slot_quick():
     slot_date  = data.get("date")
     start_time = data.get("start_time")
     end_time   = data.get("end_time")
+    classroom  = (data.get("classroom") or "").strip()
 
     if not teacher or not slot_date or not start_time:
         return {"ok": False, "error": "teacher, date and start_time required"}, 400
@@ -29401,9 +29487,10 @@ def add_open_slot_quick():
     now    = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("""
         INSERT INTO teacher_open_slots
-            (teacher, slot_date, slot_time, source, active, notes, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, 'manual', 1, ?, ?, ?, ?)
+            (teacher, slot_date, slot_time, classroom, source, active, notes, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'manual', 1, ?, ?, ?, ?)
     """, (teacher, slot_date, start_time,
+          classroom,
           f"end_time={end_time}" if end_time else "",
           session.get("teacher_name") or "owner", now, now))
     conn.commit()
