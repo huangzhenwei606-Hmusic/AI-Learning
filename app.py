@@ -1938,7 +1938,7 @@ def home():
         <div class="task-row high">
             <div>
                 <span class="task-badge">Trial</span>
-                <a href="/trial_leads">{pending_trial_count} trial request(s) need review</a>
+                <a href="/new_students">{pending_trial_count} new student intake request(s) need review</a>
             </div>
             <span>Open lead intake</span>
         </div>
@@ -2296,9 +2296,9 @@ def home():
                         <strong>New Enrollment</strong>
                         <span>Create package and tuition invoice</span>
                     </a>
-                    <a class="primary-action" href="/trial_leads">
-                        <strong>Trial Leads{trial_red_badge}</strong>
-                        <span>AI intake, trial scheduling, follow-up, convert to enrollment</span>
+                    <a class="primary-action" href="/new_students">
+                        <strong>New Students / Intake{trial_red_badge}</strong>
+                        <span>Family form, trial scheduling, parent account setup</span>
                     </a>
                     <a class="primary-action" href="/missing_homework">
                         <strong>Missing Homework{homework_red_badge}</strong>
@@ -2344,8 +2344,8 @@ def home():
                         <div class="label">Low Lessons</div>
                         <div class="value">{renewal_count}</div>
                     </a>
-                    <a class="attention-card {'alert' if pending_trial_count else ''}" href="/trial_leads">
-                        <div class="label">Trial Requests</div>
+                    <a class="attention-card {'alert' if pending_trial_count else ''}" href="/new_students">
+                        <div class="label">New Student Intake</div>
                         <div class="value">{pending_trial_count}</div>
                     </a>
                     <a class="attention-card {'alert' if missing_homework_count else ''}" href="/missing_homework">
@@ -2373,8 +2373,8 @@ def home():
     <div class="action-group">
         <a href="/enrollments">Enrollment Detail</a>
         <a href="/add_enrollment">New Enrollment</a>
-        <a href="/trial_leads">Trial Leads{trial_badge}</a>
-        <a href="/add_trial_lead">Add Trial Lead</a>
+        <a href="/new_students">New Students / Intake{trial_badge}</a>
+        <a href="/new_student_intake">Add New Student Lead</a>
         <a href="/missing_homework">Missing Homework{homework_badge}</a>
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
@@ -2407,8 +2407,8 @@ def home():
             <a href="/teacher_dashboard">Teacher Dashboard</a>
             <a href="/parent_portal">Parent Portal</a>
             <a href="/renewal_emails">Renewal Emails</a>
-            <a href="/trial_leads">Lead / Trial Intake</a>
-            <a href="/add_trial_lead">Add Trial Lead</a>
+            <a href="/new_students">New Students / Intake</a>
+            <a href="/new_student_intake">Add New Student Lead</a>
             <a href="/owner_settings">Owner Settings</a>
             <a href="/notification_queue">Notification Queue</a>
             <a href="/billing_settings">Billing Settings</a>
@@ -13336,7 +13336,7 @@ def notification_queue():
             </div>
 
             <a class="button" href="/">Home</a>
-            <a class="button" href="/trial_leads">Trial Leads</a>
+            <a class="button" href="/new_students">New Students / Intake</a>
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
 
@@ -22566,7 +22566,7 @@ def v35_insert_trial_lead(data, public=False):
     conn.close()
 
     try:
-        subject = "New Public Trial Request" if public else "New Trial Lead"
+        subject = "New Family Intake Request" if public else "New Student Intake Lead"
         create_notification(
             "owner",
             "owner",
@@ -23178,6 +23178,8 @@ def public_trial_request():
 
 @app.route("/trial_form")
 @app.route("/trial_request")
+@app.route("/new_family_intake")
+@app.route("/family_intake")
 def public_trial_alias():
     return redirect("/trial")
 
@@ -23186,7 +23188,7 @@ def public_trial_alias():
 def v17_setup():
     ensure_owner()
     ensure_v17_schema()
-    return "Lead / Trial Intake setup complete."
+    return "New Students / Intake setup complete."
 
 
 @app.route("/trial_leads")
@@ -23194,8 +23196,20 @@ def trial_leads():
     return inquiries()
 
 
+@app.route("/new_students")
+@app.route("/new_student_leads")
+def new_students():
+    return inquiries()
+
+
 @app.route("/add_trial_lead", methods=["GET", "POST"])
 def add_trial_lead():
+    return add_inquiry()
+
+
+@app.route("/new_student_intake", methods=["GET", "POST"])
+@app.route("/add_new_student_lead", methods=["GET", "POST"])
+def new_student_intake():
     return add_inquiry()
 
 
@@ -23217,17 +23231,18 @@ def inquiries():
     scheduled_count = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Trial Completed', 'Follow Up') OR follow_up_status='Follow Up'")
     follow_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Active Student', 'Converted')")
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Active', 'Active Student', 'Converted')")
     converted_count = cursor.fetchone()[0]
     conn.close()
     public_trial_url = request.host_url.rstrip("/") + "/trial"
+    owner_intake_url = request.host_url.rstrip("/") + "/new_student_intake"
 
     cards = "".join([
         f"<div class='metric'><span>New Leads</span><b>{new_count}</b></div>",
         f"<div class='metric'><span>AI Suggested</span><b>{ai_count}</b></div>",
         f"<div class='metric'><span>Trial Scheduled</span><b>{scheduled_count}</b></div>",
         f"<div class='metric'><span>Follow Up</span><b>{follow_count}</b></div>",
-        f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
+        f"<div class='metric'><span>Active</span><b>{converted_count}</b></div>",
     ])
 
     body = ""
@@ -23257,7 +23272,7 @@ def inquiries():
             <td>{preferred}</td>
             <td><span class="pill {verify_class}">{verified}</span><br><small>{latest}</small></td>
             <td>{trial}</td>
-            <td><span class="pill">{v35_safe(r['status'], 'New Lead')}</span></td>
+            <td><span class="pill">{v35_safe(r['status'], 'New Lead').replace('Active Student', 'Active')}</span></td>
             <td>{v35_safe(r['next_follow_up_at'], '-')}<br><small>{v35_safe(r['follow_up_status'], 'New')}</small></td>
             <td>{v35_safe(r['updated_at'], '-')}</td>
         </tr>
@@ -23269,7 +23284,7 @@ def inquiries():
     return f"""
     <html>
     <head>
-        <title>Lead / Trial Intake</title>
+        <title>New Students / Intake</title>
         <style>
             body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
@@ -23284,6 +23299,10 @@ def inquiries():
             .metric {{ background:#f2f2ff; border:1px solid #e0e0ff; border-radius:10px; padding:14px; }}
             .metric span {{ display:block; color:#6b7280; font-size:13px; }}
             .metric b {{ font-size:28px; }}
+            .steps {{ display:grid; grid-template-columns:repeat(6, 1fr); gap:10px; margin:18px 0; }}
+            .step {{ border:1px solid #e5e7eb; background:#f9fafb; border-radius:12px; padding:12px; }}
+            .step b {{ display:block; font-size:14px; }}
+            .step span {{ color:#6b7280; font-size:12px; }}
             table {{ width:100%; border-collapse:collapse; background:white; }}
             th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; vertical-align:top; text-align:left; }}
             th {{ background:#ececff; }}
@@ -23297,22 +23316,38 @@ def inquiries():
         <div class="panel">
             <div class="top">
                 <div>
-                    <h1>Lead / Trial Intake</h1>
-                    <p>New leads, AI trial suggestions, owner verification, trial scheduling, follow-up, and conversion.</p>
+                    <h1>New Students / Intake</h1>
+                    <p>Register new families, schedule trial lessons, convert to student records, and activate the parent app when information is correct.</p>
                 </div>
                 <div class="actions">
                     <a class="secondary" href="/">Home</a>
-                    <a href="/add_trial_lead">Add Trial Lead</a>
+                    <a href="/new_student_intake">Add New Student Lead</a>
                 </div>
             </div>
             <div class="metrics">{cards}</div>
+            <div class="steps">
+                <div class="step"><b>1. Lead</b><span>Family submits form or owner enters lead.</span></div>
+                <div class="step"><b>2. Review</b><span>Owner checks student, parent, goal, schedule.</span></div>
+                <div class="step"><b>3. Trial</b><span>Confirm teacher, room, fee, time.</span></div>
+                <div class="step"><b>4. Follow up</b><span>Mark completed and decide next step.</span></div>
+                <div class="step"><b>5. Convert</b><span>Create student + family account.</span></div>
+                <div class="step"><b>6. Active</b><span>Set package, schedule, invoice, parent app.</span></div>
+            </div>
             <div class="share">
                 <div>
-                    <b>Public Trial Form</b>
-                    <p>Send this link to new families. Submitted forms create a lead, AI trial plan, and owner notification.</p>
+                    <b>Public New Family / Trial Form</b>
+                    <p>Send this link to new families. Submitted forms create an intake lead, trial plan, and owner notification.</p>
                     <code>{v35_safe(public_trial_url)}</code>
                 </div>
                 <a href="/trial" target="_blank">Open Form</a>
+            </div>
+            <div class="share">
+                <div>
+                    <b>Owner Manual Entry</b>
+                    <p>Use this when a new student contacts you by text, WeChat, phone, or referral.</p>
+                    <code>{v35_safe(owner_intake_url)}</code>
+                </div>
+                <a href="/new_student_intake">Add Lead</a>
             </div>
             <table>
                 <tr>
@@ -23363,7 +23398,7 @@ def add_inquiry():
     return f"""
     <html>
     <head>
-        <title>Add Trial Lead</title>
+        <title>Add New Student Lead</title>
         <style>
             body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .panel {{ max-width:900px; background:white; border-radius:16px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
@@ -23377,8 +23412,8 @@ def add_inquiry():
     </head>
     <body>
         <div class="panel">
-            <h1>Add Trial Lead</h1>
-            <p>Create the lead first. The system will draft an AI trial plan and follow-up message for owner verification.</p>
+            <h1>Add New Student Lead</h1>
+            <p>Create the intake record first. The system drafts a trial plan and follow-up message for owner verification.</p>
             <form method="POST">
                 <div class="grid">
                     <div><label>Student Name</label><input name="student_name" required></div>
@@ -23397,8 +23432,8 @@ def add_inquiry():
                     <div><label>Preferred Trial Location / Room</label><input name="trial_location" placeholder="Room 1 / Online / Cupertino"></div>
                 </div>
                 <label>Notes</label><textarea name="notes" placeholder="Parent goals, student level, availability, questions..."></textarea>
-                <button type="submit">Create Lead + AI Trial Plan</button>
-                <a class="btn secondary" href="/trial_leads">Back</a>
+                <button type="submit">Create Intake Lead</button>
+                <a class="btn secondary" href="/new_students">Back</a>
             </form>
         </div>
     </body>
@@ -23423,7 +23458,7 @@ def inquiry_detail(inquiry_id):
     if not inquiry:
         return "Lead not found"
 
-    status_options = ["New Lead", "AI Suggested", "Trial Proposed", "Trial Scheduled", "Trial Completed", "Follow Up", "Active Student", "Inactive"]
+    status_options = ["New Lead", "AI Suggested", "Trial Proposed", "Trial Scheduled", "Trial Completed", "Follow Up", "Enrolled", "Active", "Archived"]
     follow_options = ["New", "Waiting Parent", "Follow Up", "Ready to Enroll", "Converted", "Closed"]
     temp_options = ["Warm", "Hot", "Cold"]
 
@@ -23444,14 +23479,14 @@ def inquiry_detail(inquiry_id):
         ] if x
     ]) or "-"
     convert_button = ""
-    if inquiry["status"] != "Active Student":
-        convert_button = f"<form method='POST' action='/convert_inquiry_to_student/{inquiry_id}'><button class='success' type='submit'>Convert to Student</button></form>"
+    if inquiry["status"] not in ("Active", "Active Student"):
+        convert_button = f"<form method='POST' action='/convert_inquiry_to_student/{inquiry_id}'><button class='success' type='submit'>Create Student + Family Account</button></form>"
     open_slot_options = v35_trial_open_slot_options()
 
     return f"""
     <html>
     <head>
-        <title>Trial Lead Detail</title>
+        <title>New Student Intake Detail</title>
         <style>
             body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .wrap {{ max-width:1120px; margin:0 auto; }}
@@ -23468,6 +23503,10 @@ def inquiry_detail(inquiry_id):
             input, select, textarea {{ width:100%; padding:12px; border:1px solid #d1d5db; border-radius:8px; font-size:16px; box-sizing:border-box; }}
             textarea {{ min-height:120px; }}
             .ai {{ background:#fffbeb; border:1px solid #fde68a; border-radius:12px; padding:18px; }}
+            .process {{ display:grid; grid-template-columns:repeat(5,1fr); gap:10px; }}
+            .process div {{ border:1px solid #e5e7eb; border-radius:10px; padding:12px; background:#f9fafb; }}
+            .process b {{ display:block; font-size:14px; }}
+            .process span {{ color:#6b7280; font-size:12px; }}
             .inline-check {{ display:flex; align-items:center; gap:8px; margin-top:14px; font-weight:700; }}
             .inline-check input {{ width:auto; }}
         </style>
@@ -23476,16 +23515,23 @@ def inquiry_detail(inquiry_id):
     <div class="wrap">
         <div class="panel top">
             <div>
-                <h1>{v35_safe(inquiry['student_name'], 'Trial Lead')}</h1>
-                <p>Lead / Trial Intake #{inquiry_id}</p>
+                <h1>{v35_safe(inquiry['student_name'], 'New Student Lead')}</h1>
+                <p>New Student Intake #{inquiry_id}</p>
             </div>
             <div>
-                <a class="btn secondary" href="/trial_leads">Back to Leads</a>
-                <a class="btn" href="/add_trial_lead">Add Lead</a>
+                <a class="btn secondary" href="/new_students">Back to Intake</a>
+                <a class="btn" href="/new_student_intake">Add Lead</a>
             </div>
         </div>
 
         <div class="panel">
+            <div class="process">
+                <div><b>Review</b><span>Confirm parent, student, program and availability.</span></div>
+                <div><b>Trial</b><span>Choose teacher, room, time and trial fee.</span></div>
+                <div><b>Complete</b><span>Mark result after trial lesson.</span></div>
+                <div><b>Convert</b><span>Create student record and family account.</span></div>
+                <div><b>Activate</b><span>Set package, schedule, invoice and parent access.</span></div>
+            </div>
             <div class="cards">
                 <div class="card"><span>Parent</span><b>{v35_safe(inquiry['parent_name'], '-')}</b></div>
                 <div class="card"><span>Email</span><b>{v35_safe(inquiry['parent_email'], '-')}</b></div>
@@ -23496,7 +23542,7 @@ def inquiry_detail(inquiry_id):
         </div>
 
         <div class="panel ai">
-            <h2>AI Trial Plan - Owner Verification Required</h2>
+            <h2>Intake Plan - Owner Verification Required</h2>
             <p><b>Summary:</b> {v35_safe(inquiry['ai_summary'], 'No AI summary yet.')}</p>
             <p><b>Recommendation:</b> {v35_safe(inquiry['ai_recommendation'], 'No AI recommendation yet.')}</p>
             <p><b>Follow-up Draft:</b> {v35_safe(inquiry['ai_follow_up_draft'], 'No follow-up draft yet.')}</p>
@@ -23756,7 +23802,7 @@ def convert_inquiry_to_student(inquiry_id):
     UPDATE inquiries
     SET status=?, converted_student_name=?, follow_up_status=?, updated_at=?
     WHERE id=?
-    """, ("Active Student", student_name, "Converted", v35_now(), inquiry_id))
+    """, ("Active", student_name, "Converted", v35_now(), inquiry_id))
     conn.commit()
     conn.close()
 
