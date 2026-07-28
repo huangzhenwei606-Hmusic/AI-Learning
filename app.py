@@ -3621,11 +3621,12 @@ def edit_student(name):
 
 @app.route("/student/<name>")
 def student_detail(name):
+    ensure_v27_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT name, teacher, parent_email, parent_phone, lessons_left
+    SELECT name, teacher, parent_email, parent_phone, lessons_left, COALESCE(parent_name, '')
     FROM students
     WHERE name = ?
     """, (name,))
@@ -3636,13 +3637,15 @@ def student_detail(name):
         conn.close()
         return "<h1>Student not found</h1>"
 
+    today_str = date.today().strftime("%Y-%m-%d")
+
     cursor.execute("""
     SELECT lesson_date, lesson_content, performance, homework
     FROM lessons
     WHERE student_name = ?
     ORDER BY id DESC
+    LIMIT 8
     """, (name,))
-
     lessons = cursor.fetchall()
 
     cursor.execute("""
@@ -3650,9 +3653,40 @@ def student_detail(name):
     FROM payments
     WHERE student_name = ?
     ORDER BY id DESC
+    LIMIT 8
     """, (name,))
-
     payments = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_time, teacher, classroom, status, duration, schedule_type
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    AND COALESCE(status, '') NOT IN ('cancelled', 'canceled')
+    ORDER BY lesson_date, lesson_time
+    LIMIT 1
+    """, (name, today_str))
+    next_lesson = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT id, parent_name, email, phone, active, must_change_password
+    FROM parent_profiles
+    WHERE email = ?
+    LIMIT 1
+    """, (student[2] or "",))
+    parent_account = cursor.fetchone() if student[2] else None
+
+    if not parent_account:
+        cursor.execute("""
+        SELECT p.id, p.parent_name, p.email, p.phone, p.active, p.must_change_password
+        FROM parent_profiles p
+        JOIN parent_students ps ON ps.parent_id = p.id
+        WHERE ps.student_name = ?
+        AND ps.active = 1
+        ORDER BY p.active DESC, p.id DESC
+        LIMIT 1
+        """, (student[0],))
+        parent_account = cursor.fetchone()
 
     teacher_links = []
     if student[1]:
@@ -3705,91 +3739,289 @@ def student_detail(name):
         selected = "selected" if t[0] == student[1] else ""
         teacher_options += f'<option value="{escape(t[0])}" {selected}>{escape(t[0])}</option>'
 
+    student_url_name = quote(student[0])
     teacher_link_form = ""
     if require_owner():
         teacher_link_form = f"""
-        <h2>Teacher Links</h2>
-        <ul>{teacher_link_html}</ul>
-        <form method="POST" action="/link_student_teacher/{escape(student[0])}" style="margin:14px 0;">
-            Primary Teacher:<br>
-            <select name="teacher" style="padding:8px; min-width:260px;">{teacher_options}</select>
-            <button type="submit" style="padding:8px 12px;">Save Teacher Link</button>
+        <form method="POST" action="/link_student_teacher/{student_url_name}" class="inline-form">
+            <label>Primary teacher</label>
+            <div class="inline-row">
+                <select name="teacher">{teacher_options}</select>
+                <button type="submit">Save</button>
+            </div>
         </form>
-        <p style="color:#6b7280;">Teacher access is automatic when a student has this Primary Teacher, an active enrollment with the teacher, or a scheduled lesson with the teacher.</p>
         """
 
     lesson_html = ""
     if lessons:
         for lesson in lessons:
             lesson_html += f"""
-            <hr>
-            <p>
-            <strong>{lesson[0]}</strong><br>
-            Lesson: {lesson[1]}<br>
-            Performance: {lesson[2]}<br>
-            Homework: {lesson[3]}
-            </p>
+            <div class="timeline-item">
+                <div class="timeline-date">{escape(lesson[0] or '')}</div>
+                <div>
+                    <b>{escape(lesson[2] or 'Lesson note')}</b>
+                    <p>{escape(lesson[1] or '')}</p>
+                    <p class="muted"><b>Homework:</b> {escape(lesson[3] or 'No homework recorded.')}</p>
+                </div>
+                <span class="pill">Lesson</span>
+            </div>
             """
     else:
-        lesson_html = "<p>No lesson history found.</p>"
+        lesson_html = "<div class='empty'>No lesson history yet.</div>"
 
     payment_html = ""
     if payments:
         for payment in payments:
             payment_html += f"""
-            <hr>
-            <p>
-            <strong>{payment[0]}</strong><br>
-            Amount: ${payment[1]}<br>
-            Lessons Added: {payment[2]}<br>
-            Method: {payment[3]}
-            </p>
+            <div class="timeline-item billing">
+                <div class="timeline-date">{escape(payment[0] or '')}</div>
+                <div>
+                    <b>${escape(str(payment[1] or '0'))}</b>
+                    <p>{escape(str(payment[2] or 0))} lesson(s) added · {escape(payment[3] or 'Payment')}</p>
+                </div>
+                <span class="pill amber">Payment</span>
+            </div>
             """
     else:
-        payment_html = "<p>No payment history found.</p>"
+        payment_html = "<div class='empty'>No payment history yet.</div>"
 
-    renewal_status = ""
-    if student[4] <= 2:
-        renewal_status = "<h3 style='color:red;'>⚠ Renewal Needed</h3>"
+    balance_class = "danger" if (student[4] or 0) <= 2 else "ok"
+    balance_text = "Renewal needed" if (student[4] or 0) <= 2 else "Good standing"
+    next_lesson_label = "Not scheduled"
+    next_lesson_meta = "Create a recurring lesson before activating parent app use."
+    if next_lesson:
+        next_lesson_label = f"{next_lesson[0]} · {next_lesson[1] or ''}".strip()
+        next_lesson_meta = " · ".join([x for x in [next_lesson[2], next_lesson[3], f"{next_lesson[5] or ''} min".strip()] if x])
 
-    action_links = ""
+    parent_status = "No parent app account yet"
+    parent_status_class = "danger"
+    parent_account_html = f"""
+        <div class="account-box warning">
+            <div class="info-line"><span>Login email</span><b>{escape(student[2] or 'Missing parent email')}</b></div>
+            <div class="info-line"><span>Status</span><b>No parent app account connected</b></div>
+            <p class="muted">Create the family account after contact information is correct.</p>
+            <div class="button-grid">
+                <form method="POST" action="/send_parent_welcome/{student_url_name}">
+                    <button class="primary" type="submit">Create + send welcome</button>
+                </form>
+                <a class="button" href="/edit_student/{student_url_name}">Edit student contact</a>
+            </div>
+        </div>
+    """
+    if parent_account:
+        parent_status = "Active parent app account" if parent_account[4] else "Parent account inactive"
+        parent_status_class = "ok" if parent_account[4] else "danger"
+        must_change = "Must change password" if parent_account[5] else "Password set"
+        parent_account_html = f"""
+        <div class="account-box">
+            <div class="info-line"><span>Guardian</span><b>{escape(parent_account[1] or student[5] or 'Parent')}</b></div>
+            <div class="info-line"><span>Login email</span><b>{escape(parent_account[2] or student[2] or '')}</b></div>
+            <div class="info-line"><span>Phone</span><b>{escape(parent_account[3] or student[3] or '')}</b></div>
+            <div class="info-line"><span>Password</span><b>{must_change}</b></div>
+            <div class="button-grid">
+                <form method="POST" action="/send_parent_welcome/{student_url_name}">
+                    <button class="primary" type="submit">Send welcome email</button>
+                </form>
+                <form method="POST" action="/reset_parent_password/{parent_account[0]}">
+                    <button type="submit">Reset password</button>
+                </form>
+                <a class="button" href="/parent_login_info/{student_url_name}">Copy login info</a>
+                <a class="button" href="/parent_admin/{parent_account[0]}">Edit family account</a>
+            </div>
+        </div>
+        """
+
+    owner_actions = ""
     if require_owner():
-        action_links = f"""
-        <p><a href="/add_lesson/{student[0]}">Add Lesson / Homework</a></p>
-        <p><a href="/payment/{student[0]}">Receive Payment</a></p>
-        <p><a href="/edit_student/{student[0]}">Edit Student / Teacher Link</a></p>
-        <p><a href="/generate_parent_email/{student[0]}">Generate Parent Email</a></p>
-        <p><a href="/send_parent_email/{student[0]}">Send Parent Email</a></p>
-        <p><a href="/students">Back to Students</a></p>
-        <p><a href="/student_ledger/{student[0]}">Student Ledger</a></p>
+        owner_actions = f"""
+        <div class="button-grid">
+            <a class="button primary" href="/calendar">Create schedule</a>
+            <a class="button" href="/add_lesson/{student_url_name}">Add lesson note</a>
+            <a class="button" href="/payment/{student_url_name}">Receive payment</a>
+            <a class="button" href="/student_ledger/{student_url_name}">Student ledger</a>
+            <a class="button" href="/generate_parent_email/{student_url_name}">Generate lesson email</a>
+            <a class="button" href="/send_parent_email/{student_url_name}">Send lesson email</a>
+        </div>
         """
     elif teacher_has_access:
-        action_links = f"""
-        <p><a href="/add_lesson/{student[0]}">Add Lesson Notes / Homework</a></p>
-        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        owner_actions = f"""
+        <div class="button-grid">
+            <a class="button primary" href="/add_lesson/{student_url_name}">Add lesson note</a>
+            <a class="button" href="/teacher_dashboard">Teacher dashboard</a>
+        </div>
         """
     elif require_parent():
-        action_links = '<p><a href="/parent_dashboard">Back to Parent App</a></p>'
+        owner_actions = '<div class="button-grid"><a class="button primary" href="/parent_dashboard">Back to Parent App</a></div>'
+
+    teacher_list_html = f"<ul class='teacher-list'>{teacher_link_html}</ul>"
 
     return f"""
-    <h1>{student[0]}</h1>
+    <html>
+    <head>
+        <title>{escape(student[0])} · Student Profile</title>
+        <style>
+            :root {{
+                --bg:#f6f7fb; --card:#ffffff; --text:#111827; --muted:#6b7280; --border:#e5e7eb;
+                --blue:#1f6fb8; --blue-soft:#eaf4ff; --green:#2f855a; --green-soft:#e8f5ee;
+                --amber:#9a6700; --amber-soft:#fff4d6; --red:#dc2626; --red-soft:#fee2e2;
+            }}
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }}
+            .page {{ padding:24px; }}
+            .topbar {{ display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:16px; }}
+            .crumb {{ color:var(--muted); font-size:13px; margin-bottom:4px; }}
+            h1, h2, h3, p {{ margin:0; }}
+            h1 {{ font-size:28px; }}
+            h2 {{ font-size:18px; margin-bottom:12px; }}
+            h3 {{ font-size:16px; }}
+            .layout {{ display:grid; grid-template-columns:minmax(300px, 420px) minmax(480px, 1fr); gap:16px; align-items:start; }}
+            .card {{ background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); overflow:hidden; }}
+            .section {{ padding:18px; border-bottom:1px solid var(--border); }}
+            .section:last-child {{ border-bottom:0; }}
+            .student-head {{ display:flex; gap:14px; align-items:flex-start; }}
+            .avatar {{ width:52px; height:52px; border-radius:12px; background:var(--blue); color:white; display:grid; place-items:center; font-weight:800; font-size:18px; flex:0 0 auto; }}
+            .name-row {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }}
+            .muted {{ color:var(--muted); font-size:14px; line-height:1.45; }}
+            .pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:4px 9px; background:#f3f4f6; color:#374151; font-size:12px; font-weight:800; }}
+            .pill.ok {{ background:var(--green-soft); color:var(--green); }}
+            .pill.danger {{ background:var(--red-soft); color:var(--red); }}
+            .pill.amber {{ background:var(--amber-soft); color:var(--amber); }}
+            .kpis {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:16px; }}
+            .kpi {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; }}
+            .kpi span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
+            .kpi b {{ display:block; font-size:24px; margin-top:4px; }}
+            .info-list {{ display:grid; gap:10px; margin-top:12px; }}
+            .info-line {{ display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:start; }}
+            .info-line span {{ color:var(--muted); font-size:13px; }}
+            .info-line b {{ font-size:14px; word-break:break-word; }}
+            .account-box {{ border:1px solid #bfdbfe; background:var(--blue-soft); border-radius:12px; padding:14px; display:grid; gap:8px; }}
+            .account-box.warning {{ border-color:#fecaca; background:#fff7f7; }}
+            .button-grid {{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; margin-top:12px; }}
+            a.button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); background:white; text-decoration:none; font-weight:800; font-size:14px; box-sizing:border-box; width:100%; cursor:pointer; }}
+            a.button.primary, button.primary {{ background:var(--blue); border-color:var(--blue); color:white; }}
+            .tabs {{ display:flex; gap:8px; padding:14px 18px 0; flex-wrap:wrap; }}
+            .tab {{ border:1px solid var(--border); border-radius:999px; padding:7px 10px; color:var(--muted); font-size:13px; font-weight:800; }}
+            .tab.active {{ background:var(--blue-soft); border-color:#bfdbfe; color:var(--blue); }}
+            .setup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            .setup-card {{ border:1px solid var(--border); border-radius:12px; padding:14px; background:#fbfdff; }}
+            .timeline {{ display:grid; gap:10px; }}
+            .timeline-item {{ display:grid; grid-template-columns:96px 1fr auto; gap:12px; border:1px solid var(--border); border-radius:12px; padding:12px; align-items:start; background:white; }}
+            .timeline-item.billing {{ background:#fffdf6; }}
+            .timeline-date {{ color:var(--muted); font-weight:800; font-size:13px; }}
+            .timeline-item p {{ margin-top:4px; line-height:1.45; }}
+            .empty {{ border:1px dashed var(--border); border-radius:12px; padding:16px; color:var(--muted); background:#fafafa; }}
+            .teacher-list {{ margin:10px 0 0; padding-left:18px; color:var(--text); }}
+            .teacher-list li {{ margin-bottom:6px; }}
+            .inline-form label {{ display:block; color:var(--muted); font-size:13px; font-weight:800; margin-bottom:8px; }}
+            .inline-row {{ display:grid; grid-template-columns:1fr 96px; gap:8px; }}
+            select {{ width:100%; border:1px solid var(--border); border-radius:10px; min-height:42px; padding:0 10px; font-size:14px; background:white; }}
+            .top-actions {{ display:flex; gap:8px; flex-wrap:wrap; min-width:300px; }}
+            .top-actions a {{ width:auto; min-height:38px; }}
+            @media (max-width:900px) {{
+                .layout, .setup-grid {{ grid-template-columns:1fr; }}
+                .button-grid {{ grid-template-columns:1fr; }}
+                .kpis {{ grid-template-columns:1fr; }}
+                .timeline-item {{ grid-template-columns:1fr; }}
+                .topbar {{ align-items:flex-start; flex-direction:column; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <div class="topbar">
+                <div>
+                    <div class="crumb">Owner / Students / {escape(student[0])}</div>
+                    <h1>Student Profile</h1>
+                </div>
+                <div class="top-actions">
+                    <a class="button" href="/students">Back to Students</a>
+                    <a class="button primary" href="/edit_student/{student_url_name}">Edit Student</a>
+                </div>
+            </div>
 
-    <p>Teacher: {student[1]}</p>
-    <p>Parent Email: {student[2]}</p>
-    <p>Parent Phone: {student[3] or ''}</p>
-    <p>Lessons Left: {student[4]}</p>
+            <div class="layout">
+                <div class="card">
+                    <div class="section">
+                        <div class="student-head">
+                            <div class="avatar">{escape(''.join([part[:1] for part in student[0].split()[:2]]).upper() or 'ST')}</div>
+                            <div>
+                                <div class="name-row">
+                                    <h2>{escape(student[0])}</h2>
+                                    <span class="pill {balance_class}">{escape(str(student[4] or 0))} left</span>
+                                    <span class="pill {parent_status_class}">{parent_status}</span>
+                                </div>
+                                <p class="muted">Primary teacher: {escape(student[1] or 'Unassigned')}</p>
+                            </div>
+                        </div>
+                        <div class="kpis">
+                            <div class="kpi"><span>Credits</span><b>{escape(str(student[4] or 0))}</b></div>
+                            <div class="kpi"><span>Balance</span><b>{balance_text}</b></div>
+                            <div class="kpi"><span>Next</span><b>{'Set' if next_lesson else 'None'}</b></div>
+                        </div>
+                    </div>
 
-    {renewal_status}
+                    <div class="section">
+                        <h2>Family</h2>
+                        <div class="info-list">
+                            <div class="info-line"><span>Guardian</span><b>{escape(student[5] or (parent_account[1] if parent_account else '') or 'Not set')}</b></div>
+                            <div class="info-line"><span>Email</span><b>{escape(student[2] or (parent_account[2] if parent_account else '') or 'Not set')}</b></div>
+                            <div class="info-line"><span>Phone</span><b>{escape(student[3] or (parent_account[3] if parent_account else '') or 'Not set')}</b></div>
+                        </div>
+                    </div>
 
-    {action_links}
+                    <div class="section">
+                        <h2>Parent App Access</h2>
+                        {parent_account_html}
+                    </div>
 
-    {teacher_link_form}
+                    <div class="section">
+                        <h2>Teacher Access</h2>
+                        {teacher_list_html}
+                        {teacher_link_form}
+                        <p class="muted" style="margin-top:10px;">Teacher access is automatic through primary teacher, active enrollment, or scheduled lessons.</p>
+                    </div>
+                </div>
 
-    <h2>Lesson History</h2>
-    {lesson_html}
+                <div class="card">
+                    <div class="tabs">
+                        <span class="tab active">Overview</span>
+                        <span class="tab">Lessons</span>
+                        <span class="tab">Billing</span>
+                        <span class="tab">Messages</span>
+                    </div>
 
-    <h2>Payment History</h2>
-    {payment_html}
+                    <div class="section">
+                        <div class="setup-grid">
+                            <div class="setup-card">
+                                <h2>Next Lesson</h2>
+                                <p><b>{escape(next_lesson_label)}</b></p>
+                                <p class="muted">{escape(next_lesson_meta)}</p>
+                            </div>
+                            <div class="setup-card">
+                                <h2>Setup Checklist</h2>
+                                <p class="muted">Confirm schedule, package, invoice, parent app access, and policy before family starts using the app.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h2>Quick Actions</h2>
+                        {owner_actions}
+                    </div>
+
+                    <div class="section">
+                        <h2>Lesson History</h2>
+                        <div class="timeline">{lesson_html}</div>
+                    </div>
+
+                    <div class="section">
+                        <h2>Payment History</h2>
+                        <div class="timeline">{payment_html}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
     """
 
 
@@ -21923,6 +22155,190 @@ def reset_parent_password(parent_id):
     <p>Temporary password: <strong>{escape(temp_password)}</strong></p>
     <p>The parent will be asked to change this password after login.</p>
     <p><a href="/parent_admin/{parent_id}">Back to Parent Profile</a></p>
+    """
+
+
+@app.route("/send_parent_welcome/<name>", methods=["POST"])
+def send_parent_welcome(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT name, COALESCE(parent_name, ''), parent_email, parent_phone
+    FROM students
+    WHERE name = ?
+    """, (name,))
+    student = cursor.fetchone()
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    parent_email = (student[2] or "").strip()
+    parent_phone = (student[3] or "").strip()
+    if not parent_email and not parent_phone:
+        conn.close()
+        return f"""
+        <h1>Missing parent contact</h1>
+        <p>Add a parent email or phone before creating parent app access.</p>
+        <p><a href="/edit_student/{quote(name)}">Edit Student</a></p>
+        <p><a href="/student/{quote(name)}">Back to Student</a></p>
+        """
+
+    sync_parent_profile_for_student(cursor, student[0], student[1], parent_email, parent_phone)
+    email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
+    cursor.execute("SELECT id, parent_name, email, phone FROM parent_profiles WHERE email = ?", (email_key,))
+    parent = cursor.fetchone()
+    if not parent:
+        conn.close()
+        return "<h1>Could not create parent account</h1>"
+
+    temp_password = hmusic_temp_password()
+    set_password_columns(cursor, "parent_profiles", parent[0], temp_password, must_change=True)
+    conn.commit()
+    conn.close()
+
+    login_url = "https://hmusic-crm.onrender.com/parent_login"
+    parent_name = parent[1] or student[1] or "H-Music family"
+    email_body = (
+        f"Hi {parent_name},\n\n"
+        f"Your H-Music parent app account is ready for {student[0]}.\n\n"
+        f"Login: {login_url}\n"
+        f"Email: {parent[2]}\n"
+        f"Temporary password: {temp_password}\n\n"
+        f"Please change your password after logging in. You can use the parent app to view lessons, notes, homework, messages, billing, and schedule updates.\n\n"
+        f"H-Music"
+    )
+
+    if parent_email:
+        queue_direct_delivery("email", parent_email, "H-Music Parent App Login", email_body, "/parent_login", "parent_welcome", None)
+    if parent_phone:
+        queue_direct_delivery(
+            "sms",
+            parent_phone,
+            "H-Music Parent App Login",
+            f"H-Music parent app is ready for {student[0]}. Login: hmusic-crm.onrender.com/parent_login Email: {parent[2]} Temp password: {temp_password}",
+            "/parent_login",
+            "parent_welcome",
+            None
+        )
+    create_notification(
+        "owner",
+        "owner",
+        "Parent app welcome queued",
+        f"Welcome login info was generated for {student[0]} and queued for {parent_email or parent_phone}.",
+        f"/student/{quote(student[0])}",
+        "parent_welcome",
+        parent[0]
+    )
+
+    return f"""
+    <html>
+    <head>
+        <title>Parent Welcome Ready</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f6f7fb; padding:32px; color:#111827; }}
+            .card {{ max-width:720px; background:white; border:1px solid #e5e7eb; border-radius:14px; padding:24px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            .login {{ background:#eaf4ff; border:1px solid #bfdbfe; border-radius:12px; padding:16px; margin:16px 0; }}
+            p {{ line-height:1.5; }}
+            a.button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; background:#1f6fb8; color:white; border-radius:10px; padding:0 14px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            a.secondary {{ background:white; color:#111827; border:1px solid #e5e7eb; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>Parent App Login Ready</h1>
+            <p>The welcome login email/SMS has been queued. Keep this temporary password only if you need to send it manually.</p>
+            <div class="login">
+                <p><b>Parent:</b> {escape(parent_name)}</p>
+                <p><b>Login:</b> {escape(login_url)}</p>
+                <p><b>Email:</b> {escape(parent[2] or '')}</p>
+                <p><b>Temporary password:</b> {escape(temp_password)}</p>
+            </div>
+            <a class="button" href="/student/{quote(student[0])}">Back to Student</a>
+            <a class="button secondary" href="/parent_admin/{parent[0]}">Open Family Account</a>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_login_info/<name>")
+def parent_login_info(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT s.name, COALESCE(s.parent_name, ''), s.parent_email, s.parent_phone,
+           p.id, p.parent_name, p.email, p.phone, p.active
+    FROM students s
+    LEFT JOIN parent_profiles p ON p.email = s.parent_email
+    WHERE s.name = ?
+    LIMIT 1
+    """, (name,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return "<h1>Student not found</h1>"
+
+    login_url = "https://hmusic-crm.onrender.com/parent_login"
+    status = "Active" if row[8] else "No active parent account"
+    parent_name = row[5] or row[1] or "H-Music family"
+    email = row[6] or row[2] or ""
+    parent_action = (
+        f'<a class="button secondary" href="/parent_admin/{row[4]}">Open Family Account</a>'
+        if row[4]
+        else f"""
+        <form method="POST" action="/send_parent_welcome/{quote(row[0])}" style="display:inline;">
+            <button type="submit">Create + send welcome</button>
+        </form>
+        """
+    )
+
+    return f"""
+    <html>
+    <head>
+        <title>Parent Login Info</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f6f7fb; padding:32px; color:#111827; }}
+            .card {{ max-width:760px; background:white; border:1px solid #e5e7eb; border-radius:14px; padding:24px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            .box {{ background:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin:16px 0; }}
+            pre {{ white-space:pre-wrap; font-family:inherit; font-size:16px; line-height:1.5; }}
+            a.button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; background:#1f6fb8; color:white; border:0; border-radius:10px; padding:0 14px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            a.secondary {{ background:white; color:#111827; border:1px solid #e5e7eb; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>Parent Login Info</h1>
+            <div class="box">
+                <p><b>Student:</b> {escape(row[0])}</p>
+                <p><b>Parent:</b> {escape(parent_name)}</p>
+                <p><b>Status:</b> {escape(status)}</p>
+                <p><b>Login URL:</b> {escape(login_url)}</p>
+                <p><b>Login email:</b> {escape(email or 'Missing email')}</p>
+            </div>
+            <div class="box">
+                <pre>Hi {escape(parent_name)},
+
+Your H-Music parent app login is:
+{escape(login_url)}
+
+Email: {escape(email or '[parent email]')}
+
+If you need a new temporary password, H-Music will reset it and send a new welcome email.</pre>
+            </div>
+            <a class="button" href="/student/{quote(row[0])}">Back to Student</a>
+            {parent_action}
+        </div>
+    </body>
+    </html>
     """
 
 def ensure_v145_schema():
