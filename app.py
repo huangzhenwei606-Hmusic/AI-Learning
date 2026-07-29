@@ -20949,7 +20949,10 @@ def parent_invoice(invoice_id):
                     <div class="choice-kicker">Manual transfer</div>
                     <h3>Zelle</h3>
                     <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
-                    <div class="account-box">hmusicjustplay@gmail.com</div>
+                    <div class="account-box">
+                        <span class="copy-account-text">hmusicjustplay@gmail.com</span>
+                        <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
+                    </div>
                     <form method="POST">
                         <input type="hidden" name="action" value="notify_paid">
                         <input type="hidden" name="payment_method" value="Zelle">
@@ -20965,7 +20968,10 @@ def parent_invoice(invoice_id):
                     <div class="choice-kicker">Manual transfer</div>
                     <h3>PayPal</h3>
                     <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
-                    <div class="account-box">hmusicjustplay@gmail.com</div>
+                    <div class="account-box">
+                        <span class="copy-account-text">hmusicjustplay@gmail.com</span>
+                        <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
+                    </div>
                     <form method="POST">
                         <input type="hidden" name="action" value="notify_paid">
                         <input type="hidden" name="payment_method" value="PayPal">
@@ -21014,7 +21020,9 @@ def parent_invoice(invoice_id):
             .payment-choice.disabled {{ opacity:.72; }}
             .payment-choice h3 {{ margin:4px 0 8px; }}
             .payment-choice p {{ color:#6b7280; line-height:1.45; }}
-            .account-box {{ background:#f8fafc; border:1px dashed #94a3b8; border-radius:10px; padding:10px; font-weight:900; margin:10px 0; word-break:break-all; }}
+            .account-box {{ background:#f8fafc; border:1px dashed #94a3b8; border-radius:10px; padding:10px; font-weight:900; margin:10px 0; display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; }}
+            .copy-account-text {{ word-break:break-all; }}
+            .copy-account-button {{ min-height:38px; margin:0; padding:8px 12px; border-radius:8px; background:#1d65ad; font-size:14px; }}
             .invoice-breakdown .line {{ display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:#4b5563; font-size:16px; }}
             .invoice-breakdown .total {{ border-top:1px solid #d1d5db; padding-top:10px; color:#111827; font-size:18px; }}
             .choice-kicker {{ color:#047857; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
@@ -21027,6 +21035,44 @@ def parent_invoice(invoice_id):
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
             @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
+        <script>
+            function copyParentPaymentAccount(button) {{
+                const value = button.getAttribute("data-copy-value") || "";
+                const originalText = button.textContent;
+                function showCopied() {{
+                    button.textContent = "Copied";
+                    setTimeout(function() {{
+                        button.textContent = originalText;
+                    }}, 1600);
+                }}
+                if (navigator.clipboard && window.isSecureContext) {{
+                    navigator.clipboard.writeText(value).then(showCopied).catch(function() {{
+                        fallbackCopy(value, showCopied);
+                    }});
+                }} else {{
+                    fallbackCopy(value, showCopied);
+                }}
+            }}
+            function fallbackCopy(value, onDone) {{
+                const input = document.createElement("textarea");
+                input.value = value;
+                input.setAttribute("readonly", "");
+                input.style.position = "fixed";
+                input.style.opacity = "0";
+                document.body.appendChild(input);
+                input.select();
+                try {{ document.execCommand("copy"); }} catch (error) {{}}
+                document.body.removeChild(input);
+                onDone();
+            }}
+            window.addEventListener("DOMContentLoaded", function() {{
+                document.querySelectorAll(".copy-account-button").forEach(function(button) {{
+                    button.addEventListener("click", function() {{
+                        copyParentPaymentAccount(button);
+                    }});
+                }});
+            }});
+        </script>
     </head>
     <body>
         <div class="container">
