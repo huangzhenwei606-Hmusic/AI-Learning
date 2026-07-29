@@ -1,14 +1,19 @@
 {
-  "name": "hmusic-parent-ios",
+  "name": "hmusic-parent-app",
   "version": "1.0.0",
   "private": true,
-  "description": "H-Music parent iOS wrapper for App Store distribution.",
+  "description": "H-Music parent mobile wrapper for App Store and Google Play distribution.",
   "scripts": {
-    "sync": "cap sync ios",
+    "sync": "cap sync",
+    "sync:ios": "cap sync ios",
+    "sync:android": "cap sync android",
     "open:ios": "cap open ios",
-    "build:ios": "cap sync ios && cap open ios"
+    "open:android": "cap open android",
+    "build:ios": "cap sync ios && cap open ios",
+    "build:android": "cap sync android && cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^7.6.8",
     "@capacitor/core": "^7.4.3",
     "@capacitor/ios": "^7.4.3"
   },

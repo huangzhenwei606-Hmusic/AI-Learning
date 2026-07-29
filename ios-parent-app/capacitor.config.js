@@ -1,9 +1,9 @@
 /** @type {import('@capacitor/cli').CapacitorConfig} */
 const config = {
   appId: "com.hmusicandarts.parent",
-  appName: "H-Music Parent AI",
+  appName: "H-Music Parent",
   webDir: "www",
-  appendUserAgent: "HMusicParentIOS",
+  appendUserAgent: "HMusicParentApp",
   server: {
     url: "https://hmusic-crm.onrender.com/parent_login?native_app=1",
     cleartext: false,
@@ -11,7 +11,13 @@ const config = {
       "hmusic-crm.onrender.com",
       "checkout.stripe.com",
       "*.stripe.com",
-      "*.link.com"
+      "*.link.com",
+      "connect.squareup.com",
+      "connect.squareupsandbox.com",
+      "*.squareup.com",
+      "square.link",
+      "*.square.link",
+      "*.square.site"
     ]
   },
   ios: {
