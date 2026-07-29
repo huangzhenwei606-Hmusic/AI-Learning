@@ -18296,6 +18296,7 @@ def parent_login():
                 <h1>Login failed</h1>
                 <p>Please check the parent email and password, then try again.</p>
                 <a class="button" href="/parent_login">Back to Login</a>
+                <p><a href="/parent_forgot_password">Forgot password?</a></p>
             </div>
         </body>
         </html>
@@ -18408,6 +18409,11 @@ def parent_login():
                 color: #4f46e5;
                 font-weight: bold;
             }
+            .forgot-link {
+                display: inline-block;
+                margin: 12px 0 0;
+                font-size: 14px;
+            }
             @media (min-width: 760px) {
                 body {
                     padding: 40px;
@@ -18442,6 +18448,7 @@ def parent_login():
                 <input type="password" name="password" required>
 
                 <button type="submit">Login</button>
+                <a class="forgot-link" href="/parent_forgot_password">Forgot password?</a>
             </form>
 
             <details class="section">
@@ -18458,6 +18465,163 @@ def parent_login():
             </details>
 
             <br>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_forgot_password", methods=["GET", "POST"])
+def parent_forgot_password():
+    ensure_v33_schema()
+
+    submitted = request.method == "POST"
+    email = (request.form.get("parent_email") or "").strip()
+
+    if submitted and email:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id, COALESCE(parent_name, ''), email
+        FROM parent_profiles
+        WHERE lower(email) = lower(?)
+        AND active = 1
+        """, (email,))
+        parent = cursor.fetchone()
+
+        if parent:
+            temp_password = hmusic_temp_password()
+            set_password_columns(cursor, "parent_profiles", parent[0], temp_password, must_change=True)
+            conn.commit()
+            parent_name = parent[1] or "H-Music family"
+            login_url = "https://hmusic-crm.onrender.com/parent_login"
+            email_body = (
+                f"Hi {parent_name},\n\n"
+                f"We received a request to reset your H-Music parent app password.\n\n"
+                f"Login: {login_url}\n"
+                f"Email: {parent[2]}\n"
+                f"Temporary password: {temp_password}\n\n"
+                f"Please log in and choose a new password. If you did not request this, please contact H-Music.\n\n"
+                f"H-Music"
+            )
+            queue_id = queue_direct_delivery(
+                "email",
+                parent[2],
+                "H-Music Parent App Password Reset",
+                email_body,
+                "/parent_login",
+                "parent_password_reset",
+                int(datetime.now().timestamp()),
+            )
+            if queue_id:
+                send_queued_email_now(queue_id)
+            create_notification(
+                "owner",
+                "owner",
+                "Parent password reset requested",
+                f"A password reset was requested for {parent[2]}.",
+                f"/parent_admin/{parent[0]}",
+                "parent_password_reset",
+                parent[0],
+            )
+        conn.close()
+
+    success_html = ""
+    if submitted:
+        success_html = """
+            <div class="success">
+                If an active parent account matches that email, we sent a temporary password.
+                Please check your email, then log in and choose a new password.
+            </div>
+        """
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Reset Parent Password")}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                background: #f7f7fb;
+                color: #111827;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }}
+            .container {{
+                background: white;
+                min-height: 100vh;
+                padding: max(28px, env(safe-area-inset-top)) 22px max(28px, env(safe-area-inset-bottom));
+                max-width: 520px;
+                margin: 0 auto;
+            }}
+            .brand-mark {{
+                width: 56px;
+                height: 56px;
+                border-radius: 16px;
+                margin: 30px 0 18px;
+                background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                color: transparent;
+            }}
+            h1 {{ font-size: 32px; line-height: 1.08; margin: 0 0 12px; }}
+            p {{ color: #6b7280; line-height: 1.5; }}
+            label {{ display:block; font-weight:800; margin-top:22px; }}
+            input {{
+                width: 100%;
+                min-height: 48px;
+                padding: 12px 14px;
+                margin: 8px 0 18px;
+                font-size: 16px;
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+            }}
+            button, a.button {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                background: #4f46e5;
+                color: white;
+                border: none;
+                min-height: 48px;
+                padding: 12px 18px;
+                border-radius: 10px;
+                font-weight: bold;
+                font-size: 16px;
+                text-decoration: none;
+            }}
+            .secondary {{ background:#111827 !important; margin-left:8px; }}
+            .success {{
+                background:#ecfdf5;
+                color:#166534;
+                border:1px solid #bbf7d0;
+                border-radius:12px;
+                padding:14px;
+                margin:18px 0;
+                line-height:1.45;
+                font-weight:800;
+            }}
+            @media (min-width: 760px) {{
+                body {{ padding: 40px; }}
+                .container {{
+                    min-height: auto;
+                    padding: 34px;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="brand-mark">Hf</div>
+            <h1>Reset password</h1>
+            <p>Enter the email used for your H-Music parent app. We will send a temporary password if the account is active.</p>
+            {success_html}
+            <form method="POST">
+                <label>Parent email</label>
+                <input name="parent_email" type="email" value="{escape(email)}" required>
+                <button type="submit">Send temporary password</button>
+                <a class="button secondary" href="/parent_login">Back</a>
+            </form>
         </div>
     </body>
     </html>
