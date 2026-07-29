@@ -20882,7 +20882,7 @@ def parent_invoice(invoice_id):
     online_payment_html = ""
     payment_status_alert = ""
     if request.args.get("square_missing") == "1":
-        payment_status_alert = "<div class='warn'>Square card payment is not configured yet. Please add SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID in Render.</div>"
+        payment_status_alert = "<div class='warn'>Online card payment is not available yet. Please use ACH, Zelle, PayPal, or contact H-Music for help.</div>"
     elif request.args.get("square_invalid_amount") == "1":
         payment_status_alert = "<div class='warn'>This invoice needs a valid amount before Square checkout can start.</div>"
     elif request.args.get("square_processing") == "1" or invoice[4] == "square_processing":
@@ -20908,15 +20908,15 @@ def parent_invoice(invoice_id):
                         <span>Invoice</span><b>${hmusic_money(invoice[3])}</b>
                         <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
                     </div>
-                    <a class="button square-button" href="/square/invoice/{invoice_id}/checkout">Pay by Square Card</a>
+                    <a class="button square-button" href="/square/invoice/{invoice_id}/checkout">Pay by card</a>
                 </div>
             """)
         else:
             payment_choices.append("""
                 <div class="payment-choice disabled">
                     <div class="choice-kicker">Card payment</div>
-                    <h3>Square Card</h3>
-                    <p>Square card checkout will appear here after SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID are added in Render.</p>
+                    <h3>Pay by card</h3>
+                    <p>Online card payment is not available yet. Please use ACH, Zelle, PayPal, or contact H-Music for help.</p>
                 </div>
             """)
 
@@ -21049,7 +21049,7 @@ def parent_invoice(invoice_id):
 
             <h2>Payment</h2>
             {online_payment_html}
-            <p class="hint">Card payments open Square secure checkout. Bank/ACH remains available when Stripe ACH is configured.</p>
+            <p class="hint">Card payments open a secure checkout when available. Bank/ACH, Zelle, and PayPal may also be offered by H-Music.</p>
             <p>Please use the manual confirmation below only if you paid outside the online payment flow.</p>
             <form method="POST">
                 <input type="hidden" name="action" value="notify_paid">
