@@ -2962,20 +2962,27 @@ h1 { margin:0; font-size:34px; line-height:1.1; letter-spacing:0; }
 .toolbar { display:grid; grid-template-columns:minmax(260px,1fr) 190px 160px 150px; gap:12px; padding:16px 20px; border-bottom:1px solid var(--line); background:#fbfcff; }
 input, select { width:100%; border:1px solid #d9dee8; background:#fff; border-radius:10px; padding:11px 12px; font:inherit; color:var(--ink); }
 .table-wrap { overflow:auto; }
-.students-table { width:100%; border-collapse:collapse; min-width:900px; }
-.students-table th, .students-table td { padding:15px 20px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
-.students-table th { color:#6b7280; font-size:12px; text-transform:uppercase; letter-spacing:.05em; background:#fff; }
+.students-table { width:100%; border-collapse:collapse; min-width:1040px; table-layout:fixed; }
+.students-table th, .students-table td { padding:8px 16px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+.students-table th { height:40px; color:#6b7280; font-size:11px; text-transform:uppercase; letter-spacing:.05em; background:#fff; }
+.students-table td { height:60px; }
+.students-table th:nth-child(1), .students-table td:nth-child(1) { width:25%; }
+.students-table th:nth-child(2), .students-table td:nth-child(2) { width:28%; }
+.students-table th:nth-child(3), .students-table td:nth-child(3) { width:10%; }
+.students-table th:nth-child(4), .students-table td:nth-child(4) { width:12%; }
+.students-table th:nth-child(5), .students-table td:nth-child(5) { width:10%; }
+.students-table th:nth-child(6), .students-table td:nth-child(6) { width:15%; }
 .student-name { color:#0f172a; font-weight:800; text-decoration:none; }
 .student-name:hover { color:var(--blue); }
-.student-meta { margin-top:4px; color:var(--muted); font-size:13px; }
-.lesson-count { font-weight:800; font-size:18px; }
-.status-pill { display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:800; white-space:nowrap; }
+.student-meta { margin-top:2px; color:var(--muted); font-size:12px; line-height:1.2; }
+.lesson-count { font-weight:800; font-size:16px; }
+.status-pill { display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; font-size:11px; font-weight:800; white-space:nowrap; }
 .status-pill.ok { background:#e7f7ee; color:var(--green); }
 .status-pill.low { background:#fff4dc; color:var(--amber); }
 .status-pill.no-lessons { background:#fee2e2; color:var(--red); }
 .status-pill.neutral { background:#eef2f7; color:#475569; }
-.actions { display:flex; gap:8px; flex-wrap:wrap; }
-.actions a { border:1px solid var(--line); border-radius:9px; padding:8px 10px; color:#1f6fb2; text-decoration:none; font-weight:800; font-size:13px; background:#fff; }
+.actions { display:flex; gap:6px; flex-wrap:nowrap; align-items:center; }
+.actions a { border:1px solid var(--line); border-radius:8px; padding:6px 8px; color:#1f6fb2; text-decoration:none; font-weight:800; font-size:12px; line-height:1; background:#fff; white-space:nowrap; }
 .empty-row td { color:var(--muted); text-align:center; padding:36px; }
 @media (max-width: 900px) {
   .owner-wrap { padding: 22px 16px 40px; }
