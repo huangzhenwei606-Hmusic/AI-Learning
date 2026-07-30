@@ -1995,80 +1995,104 @@ def home():
         <style>
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #f6f8fa;
+                background: #f5f7fb;
                 margin: 0;
                 color: #111827;
+                font-size: 14px;
             }}
             .container {{
-                max-width: 1100px;
-                margin: 40px auto;
-                padding: 0 24px;
+                max-width: 1260px;
+                margin: 0 auto;
+                padding: 28px 34px 42px;
             }}
             .header {{
                 display: flex;
                 justify-content: space-between;
-                align-items: center;
-                margin-bottom: 32px;
+                align-items: flex-end;
+                gap: 20px;
+                margin-bottom: 22px;
             }}
             .title h1 {{
                 margin: 0;
                 font-size: 32px;
+                line-height: 1.1;
+                letter-spacing: 0;
             }}
             .title p {{
-                margin: 8px 0 0;
+                margin: 6px 0 0;
                 color: #6b7280;
+                font-size: 15px;
+            }}
+            .nav {{
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-wrap: wrap;
+                justify-content: flex-end;
             }}
             .nav a {{
-                margin-left: 16px;
+                display: inline-flex;
+                align-items: center;
+                min-height: 32px;
+                padding: 0 10px;
+                border-radius: 8px;
                 text-decoration: none;
                 color: #635bff;
-                font-weight: 600;
+                font-weight: 700;
+                font-size: 14px;
+            }}
+            .nav a:hover {{
+                background: #eef4ff;
             }}
             .cards {{
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
-                gap: 16px;
-                margin-bottom: 24px;
+                gap: 12px;
+                margin-bottom: 18px;
             }}
             .attention-cards {{
                 display: grid;
-                grid-template-columns: repeat(6, 1fr);
-                gap: 12px;
-                margin-bottom: 20px;
+                grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+                gap: 10px;
+                margin: 16px 0 16px;
             }}
             .card {{
                 background: white;
                 border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                padding: 22px;
-                box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-                margin-bottom: 20px;
+                border-radius: 10px;
+                padding: 16px 18px;
+                box-shadow: 0 8px 24px rgba(15,23,42,0.04);
+                min-height: 92px;
             }}
             .card .label {{
                 color: #6b7280;
-                font-size: 14px;
-                margin-bottom: 10px;
+                font-size: 13px;
+                font-weight: 700;
+                margin-bottom: 12px;
             }}
             .card .value {{
                 font-size: 30px;
-                font-weight: 700;
+                line-height: 1;
+                font-weight: 800;
             }}
             .attention-card {{
                 background: white;
                 border: 1px solid #e5e7eb;
-                border-radius: 12px;
-                padding: 16px;
+                border-radius: 10px;
+                padding: 12px 14px;
                 text-decoration: none;
                 color: #111827;
-                box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+                box-shadow: 0 6px 18px rgba(15,23,42,0.035);
             }}
             .attention-card .label {{
                 color: #6b7280;
                 font-size: 12px;
+                font-weight: 700;
                 margin-bottom: 8px;
             }}
             .attention-card .value {{
                 font-size: 24px;
+                line-height: 1;
                 font-weight: 800;
             }}
             .attention-card.alert .value {{
@@ -2077,18 +2101,21 @@ def home():
             .section {{
                 background: white;
                 border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                padding: 22px;
-                margin-bottom: 20px;
+                border-radius: 10px;
+                padding: 18px;
+                margin-bottom: 18px;
+                box-shadow: 0 8px 24px rgba(15,23,42,0.04);
             }}
             .section h2 {{
-                margin-top: 0;
+                margin: 0 0 14px;
                 font-size: 20px;
+                line-height: 1.2;
             }}
             .row {{
                 display: flex;
                 justify-content: space-between;
-                padding: 12px 0;
+                gap: 12px;
+                padding: 10px 0;
                 border-top: 1px solid #f0f0f0;
             }}
             .row a {{
@@ -2104,7 +2131,7 @@ def home():
                 justify-content: space-between;
                 align-items: center;
                 gap: 14px;
-                padding: 12px 0 12px 12px;
+                padding: 10px 0 10px 12px;
                 border-top: 1px solid #f0f0f0;
                 border-left: 4px solid #d1d5db;
             }}
@@ -2154,10 +2181,9 @@ def home():
             }}
 
             .actions h3 {{
-                margin-top: 22px;
-                margin-bottom: 10px;
+                margin: 10px 0 8px;
                 color: #374151;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 700;
             }}
 
@@ -2165,12 +2191,13 @@ def home():
                 display: inline-block;
                 margin-right: 10px;
                 margin-bottom: 10px;
-                padding: 10px 14px;
-                border-radius: 10px;
-                background: #635bff;
+                padding: 9px 12px;
+                border-radius: 8px;
+                background: #1f6fb8;
                 color: white;
                 text-decoration: none;
                 font-weight: 600;
+                font-size: 13px;
             }}
 
             .actions {{
@@ -2180,40 +2207,42 @@ def home():
             }}
 
             .action-group {{
-                margin-bottom: 15px;
+                margin-bottom: 8px;
             }}
 
             .primary-actions {{
                 display: grid;
                 grid-template-columns: repeat(4, 1fr);
-                gap: 12px;
-                margin-top: 14px;
+                gap: 10px;
+                margin-top: 4px;
             }}
 
             .primary-action {{
                 display: block;
                 border: 1px solid #e5e7eb;
-                border-radius: 12px;
-                padding: 18px;
+                border-radius: 10px;
+                padding: 14px 16px;
                 text-decoration: none;
                 color: #111827;
                 background: #fbfbff;
+                min-height: 82px;
             }}
 
             .primary-action strong {{
                 display: block;
                 font-size: 16px;
-                margin-bottom: 8px;
+                margin-bottom: 7px;
             }}
 
             .primary-action span {{
                 color: #6b7280;
                 font-size: 13px;
+                line-height: 1.3;
             }}
 
             .primary-action.main {{
-                background: #eef2ff;
-                border-color: #c7d2fe;
+                background: #eef4ff;
+                border-color: #b6d5ff;
             }}
 
             details.tool-drawer {{
@@ -2233,8 +2262,7 @@ def home():
             }}
             @media (max-width: 760px) {{
                 .container {{
-                    margin: 20px auto;
-                    padding: 0 14px;
+                    padding: 18px 14px 30px;
                 }}
                 .header {{
                     display: block;
