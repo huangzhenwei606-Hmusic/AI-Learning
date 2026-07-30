@@ -25118,31 +25118,31 @@ def inquiries():
             * {{ box-sizing:border-box; }}
             body {{ margin:0; font-family: Arial, Helvetica, sans-serif; background:#f7f7fb; color:#202428; }}
             .panel {{ max-width:1420px; margin:0 auto; background:white; border:1px solid #e3e3e3; border-radius:16px; overflow:hidden; }}
-            .hero {{ padding:24px 36px 16px; border-bottom:1px solid #e3e3e3; }}
-            h1 {{ margin:0; font-size:42px; line-height:1.1; font-weight:500; letter-spacing:0; }}
-            .subtitle {{ margin:14px 0 24px; color:#888; font-size:24px; line-height:1.3; }}
-            .actions {{ display:flex; gap:12px; flex-wrap:wrap; }}
-            .actions a {{ display:inline-flex; align-items:center; justify-content:center; min-height:58px; padding:0 20px; border-radius:12px; border:1px solid #d9d9d9; background:#f0f0f0; color:#202428; text-decoration:none; font-size:24px; }}
+            .hero {{ padding:18px 28px 14px; border-bottom:1px solid #e3e3e3; }}
+            h1 {{ margin:0; font-size:30px; line-height:1.1; font-weight:600; letter-spacing:0; }}
+            .subtitle {{ margin:8px 0 16px; color:#888; font-size:15px; line-height:1.35; }}
+            .actions {{ display:flex; gap:8px; flex-wrap:wrap; }}
+            .actions a {{ display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 14px; border-radius:9px; border:1px solid #d9d9d9; background:#f0f0f0; color:#202428; text-decoration:none; font-size:15px; font-weight:600; }}
             .actions a.primary {{ border-color:#3395ee; background:#3395ee; color:white; }}
-            .metrics {{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; padding:20px 36px 8px; }}
-            .metric {{ min-height:86px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:#f3f3f3; border:1px solid #dedede; border-radius:12px; }}
-            .metric span {{ min-width:0; color:#8b8b8b; font-size:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-            .metric b {{ font-size:36px; font-weight:500; color:#202428; }}
-            .list-card {{ margin:12px 36px 36px; overflow:hidden; border:1px solid #dcdcdc; border-radius:12px; background:#f1f2f2; }}
-            .tabs {{ display:flex; align-items:center; gap:8px; padding:0 20px; min-height:76px; }}
-            .tab {{ display:inline-flex; align-items:center; min-height:56px; padding:0 18px; border-radius:10px; color:#858585; text-decoration:none; font-size:24px; }}
+            .metrics {{ display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px; padding:14px 28px 8px; }}
+            .metric {{ min-height:58px; display:flex; align-items:center; justify-content:space-between; padding:0 14px; background:#f3f3f3; border:1px solid #dedede; border-radius:10px; }}
+            .metric span {{ min-width:0; color:#8b8b8b; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .metric b {{ font-size:24px; font-weight:600; color:#202428; }}
+            .list-card {{ margin:10px 28px 28px; overflow:hidden; border:1px solid #dcdcdc; border-radius:10px; background:#f1f2f2; }}
+            .tabs {{ display:flex; align-items:center; gap:6px; padding:0 14px; min-height:48px; }}
+            .tab {{ display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border-radius:8px; color:#858585; text-decoration:none; font-size:15px; font-weight:600; }}
             .tab.active {{ color:#2f98ff; background:#dfecfa; }}
-            .filters {{ display:flex; gap:12px; padding:0 20px; min-height:62px; align-items:center; }}
-            .filter {{ display:inline-flex; align-items:center; min-height:58px; padding:0 20px; border:1px solid #d6dada; border-radius:12px; background:#eef0f0; color:#202428; text-decoration:none; font-size:24px; }}
+            .filters {{ display:flex; gap:8px; padding:0 14px 10px; min-height:44px; align-items:center; }}
+            .filter {{ display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border:1px solid #d6dada; border-radius:8px; background:#eef0f0; color:#202428; text-decoration:none; font-size:15px; font-weight:600; }}
             .table-wrap {{ overflow-x:auto; }}
-            table {{ width:100%; min-width:980px; border-collapse:collapse; table-layout:fixed; background:#f7f7f7; }}
-            th {{ height:64px; padding:0 20px; text-align:left; background:#e5e9e9; color:#858a8c; font-size:19px; font-weight:500; text-transform:uppercase; letter-spacing:.04em; }}
-            td {{ height:102px; padding:16px 20px; border-top:1px solid #dddddd; vertical-align:middle; font-size:24px; }}
+            table {{ width:100%; min-width:900px; border-collapse:collapse; table-layout:fixed; background:#f7f7f7; }}
+            th {{ height:38px; padding:0 14px; text-align:left; background:#e5e9e9; color:#858a8c; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }}
+            td {{ height:58px; padding:9px 14px; border-top:1px solid #dddddd; vertical-align:middle; font-size:16px; }}
             tr.selected td {{ background:#eaf4ff; }}
-            .row-link, .main {{ display:block; min-width:0; color:#202428; font-weight:500; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .row-link, .main {{ display:block; min-width:0; color:#202428; font-weight:600; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
             .row-link:hover {{ color:#2478c7; }}
-            .sub {{ display:block; margin-top:10px; min-width:0; color:#888; font-size:21px; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-            .pill {{ display:inline-flex; align-items:center; justify-content:center; min-width:104px; min-height:44px; padding:0 16px; border-radius:999px; font-size:22px; white-space:nowrap; }}
+            .sub {{ display:block; margin-top:4px; min-width:0; color:#888; font-size:13px; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .pill {{ display:inline-flex; align-items:center; justify-content:center; min-width:72px; min-height:28px; padding:0 10px; border-radius:999px; font-size:13px; font-weight:700; white-space:nowrap; }}
             .pill.review {{ background:#f5ded7; color:#df4b11; }}
             .pill.verified {{ background:#f2f7f8; color:#202428; }}
             .pill.trial {{ background:#ddeafb; color:#2167b2; }}
@@ -25155,10 +25155,10 @@ def inquiries():
             col.stage {{ width:17%; }}
             @media (max-width: 900px) {{
                 .panel {{ border-radius:0; border-left:0; border-right:0; }}
-                .hero, .metrics {{ padding-left:18px; padding-right:18px; }}
-                .list-card {{ margin-left:18px; margin-right:18px; }}
-                h1 {{ font-size:34px; }}
-                .subtitle, .actions a, .tab, .filter {{ font-size:20px; }}
+                .hero, .metrics {{ padding-left:16px; padding-right:16px; }}
+                .list-card {{ margin-left:16px; margin-right:16px; }}
+                h1 {{ font-size:28px; }}
+                .subtitle, .actions a, .tab, .filter {{ font-size:14px; }}
                 .metrics {{ grid-template-columns:1fr; }}
             }}
         </style>
