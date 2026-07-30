@@ -2415,7 +2415,7 @@ def home():
         <a href="/enrollments">Enrollment Detail</a>
         <a href="/add_enrollment">New Enrollment</a>
         <a href="/new_students">New Students / Intake{trial_badge}</a>
-        <a href="/new_student_intake">Add New Student Lead</a>
+        <a href="/new_student_intake">Manual Entry</a>
         <a href="/missing_homework">Missing Homework{homework_badge}</a>
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
@@ -2449,7 +2449,7 @@ def home():
             <a href="/parent_portal">Parent Portal</a>
             <a href="/renewal_emails">Renewal Emails</a>
             <a href="/new_students">New Students / Intake</a>
-            <a href="/new_student_intake">Add New Student Lead</a>
+            <a href="/new_student_intake">Manual Entry</a>
             <a href="/owner_settings">Owner Settings</a>
             <a href="/notification_queue">Notification Queue</a>
             <a href="/billing_settings">Billing Settings</a>
@@ -25105,7 +25105,7 @@ def inquiries():
                 </div>
                 <div class="actions">
                     <a class="secondary" href="/">Home</a>
-                    <a href="/new_student_intake">Add New Student Lead</a>
+                    <a href="/new_student_intake">Manual Entry</a>
                 </div>
             </div>
             <div class="metrics">{cards}</div>
@@ -25139,7 +25139,7 @@ def inquiries():
                     <p>Use this when a new student contacts you by text, WeChat, phone, or referral.</p>
                     <code>{v35_safe(owner_intake_url)}</code>
                 </div>
-                <a href="/new_student_intake">Add Lead</a>
+                <a href="/new_student_intake">Manual Entry</a>
             </div>
             <table>
                 <tr>
@@ -25190,7 +25190,7 @@ def add_inquiry():
     return f"""
     <html>
     <head>
-        <title>Add New Student Lead</title>
+        <title>Manual Entry</title>
         <style>
             body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .panel {{ max-width:900px; background:white; border-radius:16px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
@@ -25204,7 +25204,7 @@ def add_inquiry():
     </head>
     <body>
         <div class="panel">
-            <h1>Add New Student Lead</h1>
+            <h1>Manual Entry</h1>
             <p>Create the intake record first. The system drafts a trial plan and follow-up message for owner verification.</p>
             <form method="POST">
                 <div class="grid">
@@ -25312,7 +25312,7 @@ def inquiry_detail(inquiry_id):
             </div>
             <div>
                 <a class="btn secondary" href="/new_students">Back to Intake</a>
-                <a class="btn" href="/new_student_intake">Add Lead</a>
+                <a class="btn" href="/new_student_intake">Manual Entry</a>
             </div>
         </div>
 
