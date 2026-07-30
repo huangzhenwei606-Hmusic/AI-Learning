@@ -2834,36 +2834,238 @@ def owner_import_students_csv():
 
 @app.route("/students")
 def students():
+    ensure_owner()
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(students)").fetchall()}
+    select_cols = ["name", "teacher", "lessons_left"]
+    for optional_col in ("parent_name", "parent_email", "parent_phone", "status", "active"):
+        if optional_col in columns:
+            select_cols.append(optional_col)
 
-    cursor.execute("""
-    SELECT name, teacher, lessons_left
-    FROM students
-    ORDER BY name
-    """)
-
-    students = cursor.fetchall()
+    cursor.execute(f"SELECT {', '.join(select_cols)} FROM students ORDER BY lower(name)")
+    records = [dict(zip(select_cols, row)) for row in cursor.fetchall()]
     conn.close()
 
-    html = "<h1>Students</h1>"
-    html += '<p><a href="/">Back to Dashboard</a></p>'
-    if require_owner():
-        html += '<p><a href="/owner_import_students_csv">Import students CSV</a></p>'
+    def lesson_count(value):
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
 
-    for student in students:
-        html += f"""
-        <p>
-        <a href="/student/{student[0]}">
-            <strong>{student[0]}</strong>
-        </a>
-        | Teacher: {student[1]}
-        | Lessons Left: {student[2]}
-        </p>
+    def clean(value, fallback="-"):
+        text = str(value or "").strip()
+        return text if text else fallback
+
+    teacher_names = sorted({clean(record.get("teacher"), "Unassigned") for record in records})
+    need_renewal = sum(1 for record in records if lesson_count(record.get("lessons_left")) <= 2)
+    zero_balance = sum(1 for record in records if lesson_count(record.get("lessons_left")) <= 0)
+    active_teachers = len([teacher for teacher in teacher_names if teacher != "Unassigned"])
+
+    teacher_options = '<option value="all">All teachers</option>'
+    for teacher in teacher_names:
+        teacher_options += f'<option value="{escape(teacher, quote=True)}">{escape(teacher)}</option>'
+
+    rows_html = ""
+    for record in records:
+        name = clean(record.get("name"), "Unnamed student")
+        teacher = clean(record.get("teacher"), "Unassigned")
+        lessons_left = lesson_count(record.get("lessons_left"))
+        parent_email = clean(record.get("parent_email"), "")
+        parent_phone = clean(record.get("parent_phone"), "")
+        parent_name = clean(record.get("parent_name"), "")
+        raw_status = str(record.get("status") or "").strip()
+        active_value = str(record.get("active", "1")).strip().lower()
+        is_inactive = raw_status.lower() == "inactive" or active_value in ("0", "false", "no", "inactive")
+        status_label = "Inactive" if is_inactive else "Active"
+        balance_label = "no-lessons" if lessons_left <= 0 else ("low" if lessons_left <= 2 else "ok")
+        balance_text = "No lessons" if lessons_left <= 0 else ("Low" if lessons_left <= 2 else "OK")
+        encoded_name = quote(name)
+        search_blob = " ".join([name, teacher, parent_name, parent_email, parent_phone, str(lessons_left), status_label]).lower()
+        parent_line = parent_email or parent_phone or "No parent contact on file"
+
+        rows_html += f"""
+          <tr class="student-row" data-search="{escape(search_blob, quote=True)}" data-teacher="{escape(teacher, quote=True)}" data-balance="{balance_label}" data-status="{status_label.lower()}">
+            <td>
+              <a class="student-name" href="/student/{encoded_name}">{escape(name)}</a>
+              <div class="student-meta">{escape(parent_line)}</div>
+            </td>
+            <td>{escape(teacher)}</td>
+            <td><span class="lesson-count">{lessons_left}</span></td>
+            <td><span class="status-pill {balance_label}">{balance_text}</span></td>
+            <td><span class="status-pill neutral">{status_label}</span></td>
+            <td class="actions">
+              <a href="/student/{encoded_name}">Open</a>
+              <a href="/calendar?student={encoded_name}">Schedule</a>
+              <a href="/parent_login_info/{encoded_name}">Login info</a>
+            </td>
+          </tr>
         """
+    if not rows_html:
+        rows_html = '<tr class="empty-row"><td colspan="6">No students found yet.</td></tr>'
 
-    return html
+    page = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Students - H-Music CRM</title>
+<style>
+:root { --blue:#1f6fb2; --blue-soft:#e8f2ff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#f6f7fb; --card:#fff; --red:#dc2626; --amber:#b7791f; --green:#16794c; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+.owner-wrap { max-width: 1280px; margin: 0 auto; padding: 32px 28px 56px; }
+.topbar { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; margin-bottom:24px; }
+.eyebrow { display:inline-flex; align-items:center; border-radius:999px; background:#fff3d7; color:#7c4a03; padding:5px 12px; font-size:13px; font-weight:700; margin-bottom:10px; }
+h1 { margin:0; font-size:34px; line-height:1.1; letter-spacing:0; }
+.subtitle { margin:8px 0 0; color:var(--muted); font-size:16px; }
+.nav-actions { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
+.btn { border:1px solid var(--line); color:#374151; background:#fff; border-radius:10px; padding:10px 14px; text-decoration:none; font-weight:700; font-size:14px; }
+.btn.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+.stats { display:grid; grid-template-columns:repeat(4,minmax(160px,1fr)); gap:14px; margin-bottom:18px; }
+.stat-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 8px 20px rgba(17,24,39,.04); }
+.stat-label { color:var(--muted); font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+.stat-value { margin-top:8px; font-size:32px; font-weight:800; }
+.panel { background:var(--card); border:1px solid var(--line); border-radius:16px; box-shadow:0 8px 20px rgba(17,24,39,.04); overflow:hidden; }
+.panel-head { padding:18px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.panel-title { font-size:20px; font-weight:800; }
+.visible-count { color:var(--muted); font-size:14px; }
+.toolbar { display:grid; grid-template-columns:minmax(260px,1fr) 190px 160px 150px; gap:12px; padding:16px 20px; border-bottom:1px solid var(--line); background:#fbfcff; }
+input, select { width:100%; border:1px solid #d9dee8; background:#fff; border-radius:10px; padding:11px 12px; font:inherit; color:var(--ink); }
+.table-wrap { overflow:auto; }
+.students-table { width:100%; border-collapse:collapse; min-width:900px; }
+.students-table th, .students-table td { padding:15px 20px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+.students-table th { color:#6b7280; font-size:12px; text-transform:uppercase; letter-spacing:.05em; background:#fff; }
+.student-name { color:#0f172a; font-weight:800; text-decoration:none; }
+.student-name:hover { color:var(--blue); }
+.student-meta { margin-top:4px; color:var(--muted); font-size:13px; }
+.lesson-count { font-weight:800; font-size:18px; }
+.status-pill { display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:800; white-space:nowrap; }
+.status-pill.ok { background:#e7f7ee; color:var(--green); }
+.status-pill.low { background:#fff4dc; color:var(--amber); }
+.status-pill.no-lessons { background:#fee2e2; color:var(--red); }
+.status-pill.neutral { background:#eef2f7; color:#475569; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; }
+.actions a { border:1px solid var(--line); border-radius:9px; padding:8px 10px; color:#1f6fb2; text-decoration:none; font-weight:800; font-size:13px; background:#fff; }
+.empty-row td { color:var(--muted); text-align:center; padding:36px; }
+@media (max-width: 900px) {
+  .owner-wrap { padding: 22px 16px 40px; }
+  .topbar { flex-direction:column; }
+  .nav-actions { justify-content:flex-start; }
+  .stats { grid-template-columns:repeat(2,1fr); }
+  .toolbar { grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+<main class="owner-wrap">
+  <div class="topbar">
+    <div>
+      <span class="eyebrow">Owner</span>
+      <h1>Students</h1>
+      <p class="subtitle">Search, filter, and open each student's profile, schedule, or parent login info.</p>
+    </div>
+    <div class="nav-actions">
+      <a class="btn" href="/">Dashboard</a>
+      <a class="btn" href="/owner_import_students_csv">Import CSV</a>
+      <a class="btn primary" href="/add_student">Add student</a>
+    </div>
+  </div>
 
+  <section class="stats">
+    <div class="stat-card"><div class="stat-label">Students</div><div class="stat-value">__TOTAL__</div></div>
+    <div class="stat-card"><div class="stat-label">Need renewal</div><div class="stat-value">__NEED_RENEWAL__</div></div>
+    <div class="stat-card"><div class="stat-label">No lessons</div><div class="stat-value">__ZERO_BALANCE__</div></div>
+    <div class="stat-card"><div class="stat-label">Teachers</div><div class="stat-value">__ACTIVE_TEACHERS__</div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div class="panel-title">Student Directory</div>
+      <div class="visible-count"><strong id="visibleCount">__TOTAL__</strong> visible</div>
+    </div>
+    <div class="toolbar">
+      <input id="studentSearch" type="search" placeholder="Search student, parent, email, phone, teacher">
+      <select id="teacherFilter">__TEACHER_OPTIONS__</select>
+      <select id="balanceFilter">
+        <option value="all">All balances</option>
+        <option value="no-lessons">No lessons</option>
+        <option value="low">Low lessons</option>
+        <option value="ok">OK balance</option>
+      </select>
+      <select id="statusFilter">
+        <option value="all">All status</option>
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table class="students-table">
+        <thead>
+          <tr>
+            <th>Student</th>
+            <th>Teacher</th>
+            <th>Lessons left</th>
+            <th>Balance</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          __ROWS__
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+const searchInput = document.getElementById("studentSearch");
+const teacherFilter = document.getElementById("teacherFilter");
+const balanceFilter = document.getElementById("balanceFilter");
+const statusFilter = document.getElementById("statusFilter");
+const rows = Array.from(document.querySelectorAll(".student-row"));
+const visibleCount = document.getElementById("visibleCount");
+
+function applyFilters() {
+  const query = (searchInput.value || "").toLowerCase().trim();
+  const teacher = teacherFilter.value;
+  const balance = balanceFilter.value;
+  const status = statusFilter.value;
+  let visible = 0;
+
+  rows.forEach((row) => {
+    const matchesSearch = !query || row.dataset.search.includes(query);
+    const matchesTeacher = teacher === "all" || row.dataset.teacher === teacher;
+    const matchesBalance = balance === "all" || row.dataset.balance === balance;
+    const matchesStatus = status === "all" || row.dataset.status === status;
+    const shouldShow = matchesSearch && matchesTeacher && matchesBalance && matchesStatus;
+    row.style.display = shouldShow ? "" : "none";
+    if (shouldShow) visible += 1;
+  });
+
+  visibleCount.textContent = visible;
+}
+
+[searchInput, teacherFilter, balanceFilter, statusFilter].forEach((control) => {
+  control.addEventListener("input", applyFilters);
+  control.addEventListener("change", applyFilters);
+});
+
+applyFilters();
+</script>
+</body>
+</html>"""
+
+    return (
+        page
+        .replace("__TOTAL__", str(len(records)))
+        .replace("__NEED_RENEWAL__", str(need_renewal))
+        .replace("__ZERO_BALANCE__", str(zero_balance))
+        .replace("__ACTIVE_TEACHERS__", str(active_teachers))
+        .replace("__TEACHER_OPTIONS__", teacher_options)
+        .replace("__ROWS__", rows_html)
+    )
 
 @app.route("/missing_homework")
 def missing_homework():
