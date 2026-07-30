@@ -3732,6 +3732,14 @@ def edit_student(name):
     ensure_teacher_management_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    for column_name, column_sql in [
+        ("status", "status TEXT DEFAULT 'Active'"),
+        ("program", "program TEXT DEFAULT 'Piano private lesson'"),
+        ("lesson_length", "lesson_length TEXT DEFAULT '30 minutes'"),
+        ("internal_note", "internal_note TEXT")
+    ]:
+        add_column_if_missing(cursor, "students", column_name, column_sql)
+    conn.commit()
 
     if request.method == "POST":
         teacher = request.form.get("teacher")
@@ -3739,6 +3747,10 @@ def edit_student(name):
         parent_email = request.form.get("parent_email")
         parent_phone = request.form.get("parent_phone")
         lessons_left = request.form.get("lessons_left") or 0
+        status = request.form.get("status") or "Active"
+        program = request.form.get("program") or "Piano private lesson"
+        lesson_length = request.form.get("lesson_length") or "30 minutes"
+        internal_note = request.form.get("internal_note") or ""
 
         cursor.execute("""
         UPDATE students
@@ -3746,7 +3758,11 @@ def edit_student(name):
             parent_name = ?,
             parent_email = ?,
             parent_phone = ?,
-            lessons_left = ?
+            lessons_left = ?,
+            status = ?,
+            program = ?,
+            lesson_length = ?,
+            internal_note = ?
         WHERE name = ?
         """, (
             teacher,
@@ -3754,6 +3770,10 @@ def edit_student(name):
             parent_email,
             parent_phone,
             int(float(lessons_left or 0)),
+            status,
+            program,
+            lesson_length,
+            internal_note,
             name
         ))
 
@@ -3764,7 +3784,9 @@ def edit_student(name):
         return redirect(f"/student/{quote(name)}")
 
     cursor.execute("""
-    SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left
+    SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left,
+           COALESCE(status, 'Active'), COALESCE(program, 'Piano private lesson'),
+           COALESCE(lesson_length, '30 minutes'), COALESCE(internal_note, '')
     FROM students
     WHERE name = ?
     """, (name,))
@@ -3842,6 +3864,20 @@ def edit_student(name):
 
     lesson_badge_class = "danger" if lessons_left <= 0 else "amber" if lessons_left <= 2 else "ok"
     lesson_badge_text = "No lessons" if lessons_left <= 0 else "Low lessons" if lessons_left <= 2 else "Lessons available"
+    name_parts = str(student_name).split()
+    first_name = name_parts[0] if name_parts else ""
+    last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+    status_value = student[6] or "Active"
+    program_value = student[7] or "Piano private lesson"
+    lesson_length_value = student[8] or "30 minutes"
+    internal_note_value = student[9] or ""
+
+    def options(values, current):
+        html = ""
+        for value in values:
+            selected = "selected" if value == current else ""
+            html += f'<option value="{escape(value, quote=True)}" {selected}>{escape(value)}</option>'
+        return html
 
     teacher_options = '<option value="">Unassigned</option>'
     seen_teachers = set()
@@ -3894,64 +3930,68 @@ def edit_student(name):
         <title>Edit {escape(str(student_name))} · H-Music CRM</title>
         <style>
             :root {{
-                --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#667085; --border:#e5e7eb;
-                --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#eaf4ff;
-                --red:#dc2626; --red-soft:#fee2e2; --amber:#9a6700; --amber-soft:#fff4d6;
-                --green:#166534; --green-soft:#dcfce7; --shadow:0 12px 32px rgba(15,23,42,.07);
+                --bg:#ffffff; --card:#f1f1f1; --text:#202124; --muted:#868686; --border:#dddddd;
+                --blue:#3399f6; --blue-dark:#2188eb; --blue-soft:#dcecff;
+                --red:#e34b10; --red-soft:#ffe2d7; --green:#1f2937; --green-soft:#e8f2ff;
             }}
             * {{ box-sizing:border-box; }}
             body {{ margin:0; font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }}
             a {{ color:inherit; text-decoration:none; }}
-            .shell {{ min-height:100vh; }}
+            .shell {{ min-height:100vh; border:1px solid #e5e5e5; border-radius:16px; overflow:hidden; }}
             .topbar {{
-                height:48px; display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:18px;
-                padding:0 24px; background:#fff; border-bottom:1px solid var(--border);
+                height:86px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:28px;
+                padding:0 42px; background:#f7f7f7; border-bottom:1px solid var(--border);
             }}
-            .brand {{ font-size:16px; font-weight:850; }}
-            .nav {{ display:flex; gap:6px; overflow:hidden; }}
-            .nav a {{ min-height:30px; display:inline-flex; align-items:center; padding:0 10px; border-radius:8px; color:var(--muted); font-size:13px; font-weight:800; white-space:nowrap; }}
+            .brand {{ font-size:30px; font-weight:500; letter-spacing:0; white-space:nowrap; }}
+            .nav {{ display:flex; gap:26px; overflow:hidden; align-items:center; }}
+            .nav a {{ min-height:56px; display:inline-flex; align-items:center; padding:0 18px; border-radius:12px; color:#868686; font-size:25px; font-weight:400; white-space:nowrap; }}
             .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
-            .savebar {{ display:flex; gap:8px; justify-content:flex-end; }}
-            .page {{ max-width:1260px; margin:0 auto; padding:18px 24px 28px; }}
-            .header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:start; margin-bottom:14px; }}
-            .crumbs {{ display:flex; gap:7px; align-items:center; color:var(--muted); font-size:12px; margin-bottom:6px; }}
+            .savebar {{ display:flex; gap:16px; justify-content:flex-end; }}
+            .page {{ max-width:1440px; margin:0 auto; padding:34px 42px 40px; }}
+            .header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:24px; align-items:start; margin-bottom:24px; }}
+            .crumbs {{ display:flex; gap:7px; align-items:center; color:#8b8b8b; font-size:25px; margin-bottom:16px; }}
             h1, h2, p {{ margin:0; }}
-            h1 {{ font-size:25px; line-height:1.12; }}
-            h2 {{ font-size:15px; }}
-            .subline {{ margin-top:7px; display:flex; gap:7px; flex-wrap:wrap; align-items:center; color:var(--muted); font-size:12px; }}
-            .quick {{ display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }}
+            h1 {{ font-size:46px; line-height:1.08; font-weight:500; letter-spacing:0; }}
+            h2 {{ font-size:30px; font-weight:500; }}
+            .subline {{ margin-top:20px; display:flex; gap:14px; flex-wrap:wrap; align-items:center; color:#8b8b8b; font-size:24px; }}
+            .quick {{ display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap; padding-top:28px; }}
             .button, button {{
-                min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--border);
-                border-radius:8px; background:#fff; color:var(--text); padding:8px 12px; font:inherit; font-size:13px; font-weight:850; cursor:pointer;
+                min-height:58px; display:inline-flex; align-items:center; justify-content:center; border:2px solid var(--border);
+                border-radius:11px; background:#f1f1f1; color:var(--text); padding:0 22px; font:inherit; font-size:24px; font-weight:400; cursor:pointer;
             }}
             .primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
-            .layout {{ display:grid; grid-template-columns:220px minmax(0,1fr) 300px; gap:12px; align-items:start; }}
-            .side, .panel {{ background:#fff; border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }}
-            .side {{ padding:8px; }}
-            .side a {{ min-height:32px; display:flex; align-items:center; padding:0 10px; border-radius:8px; color:var(--muted); font-size:13px; font-weight:850; }}
+            .layout {{ display:grid; grid-template-columns:360px minmax(0,1fr); gap:24px; align-items:start; }}
+            .side, .panel {{ background:#f1f1f1; border:2px solid var(--border); border-radius:14px; overflow:hidden; }}
+            .side {{ padding:16px; min-height:356px; }}
+            .side a {{ min-height:60px; display:flex; align-items:center; padding:0 22px; border-radius:10px; color:#858585; font-size:26px; font-weight:400; }}
             .side a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
-            .panel-head {{ min-height:42px; padding:0 14px; border-bottom:1px solid var(--border); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:10px; }}
-            .panel-body {{ padding:14px; }}
-            .form-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }}
+            .profile-panel {{ grid-column:2; }}
+            .panel-head {{ min-height:76px; padding:0 24px; border-bottom:2px solid var(--border); background:#f1f1f1; display:flex; align-items:center; justify-content:space-between; gap:10px; color:#8b8b8b; font-size:24px; }}
+            .panel-head h2 {{ color:var(--text); }}
+            .panel-body {{ padding:30px 24px 26px; }}
+            .form-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:28px 22px; }}
             .span {{ grid-column:1 / -1; }}
-            label {{ display:block; color:var(--muted); font-size:12px; font-weight:850; margin-bottom:5px; }}
-            input, select, .readonly {{ width:100%; min-height:36px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:8px 10px; font:inherit; font-size:13px; }}
-            .readonly {{ display:flex; align-items:center; background:#f8fafc; color:var(--muted); }}
-            .teacher-field {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }}
-            .teacher-link {{ min-height:36px; display:inline-flex; align-items:center; justify-content:center; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--blue-dark); font-size:13px; font-weight:850; }}
-            .stack {{ display:grid; gap:12px; }}
-            .mini-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border); font-size:12px; }}
+            label {{ display:block; color:#8b8b8b; font-size:24px; font-weight:400; margin-bottom:14px; }}
+            input, select, textarea, .readonly {{ width:100%; min-height:64px; border:2px solid var(--border); border-radius:11px; background:#fff; color:var(--text); padding:0 20px; font:inherit; font-size:25px; font-weight:400; }}
+            textarea {{ min-height:118px; padding-top:22px; resize:vertical; }}
+            .readonly {{ display:flex; align-items:center; }}
+            .teacher-field {{ display:grid; grid-template-columns:minmax(0,1fr) 128px; gap:14px; }}
+            .teacher-link {{ min-height:60px; display:inline-flex; align-items:center; justify-content:center; padding:0 20px; border:0; border-radius:10px; background:#fff; color:var(--blue-dark); font-size:24px; font-weight:400; }}
+            .stack {{ grid-column:1 / -1; display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:0; }}
+            .stack .panel {{ min-height:480px; }}
+            .mini-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:26px 0; border-bottom:2px solid var(--border); font-size:22px; }}
             .mini-row:last-child {{ border-bottom:0; }}
-            .mini-row strong {{ display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-            .mini-row span {{ color:var(--muted); font-size:12px; }}
-            .badge {{ display:inline-flex; align-items:center; min-height:22px; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:850; white-space:nowrap; }}
-            .badge.ok {{ background:var(--green-soft); color:var(--green); }}
+            .mini-row strong {{ display:block; font-size:25px; font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .mini-row span {{ color:#8b8b8b; font-size:23px; display:block; margin-top:14px; }}
+            .badge {{ display:inline-flex; align-items:center; min-height:44px; padding:0 16px; border-radius:999px; font-size:22px; font-weight:400; white-space:nowrap; }}
+            .badge.ok {{ background:var(--green-soft); color:var(--text); }}
             .badge.danger {{ background:var(--red-soft); color:var(--red); }}
-            .badge.amber {{ background:var(--amber-soft); color:var(--amber); }}
-            .badge.neutral {{ background:#eef2f7; color:#475467; }}
+            .badge.amber {{ background:var(--red-soft); color:var(--red); }}
+            .badge.neutral {{ background:#e7f1ff; color:#858585; }}
             @media (max-width:1050px) {{
-                .layout {{ grid-template-columns:190px minmax(0,1fr); }}
-                .stack {{ grid-column:1 / -1; grid-template-columns:repeat(2,minmax(0,1fr)); }}
+                .layout {{ grid-template-columns:1fr; }}
+                .profile-panel {{ grid-column:auto; }}
+                .stack {{ grid-template-columns:1fr; }}
             }}
             @media (max-width:760px) {{
                 .topbar, .header, .layout, .form-grid, .stack {{ grid-template-columns:1fr; }}
@@ -3986,18 +4026,18 @@ def edit_student(name):
                             <a href="/student/{student_url_name}">{escape(str(student_name))}</a>
                             <span>/ Edit</span>
                         </div>
-                        <h1>{escape(str(student_name))}</h1>
+                        <h1>Edit student</h1>
                         <div class="subline">
+                            <span>{escape(str(student_name))}</span>
                             <span class="badge ok">Active</span>
                             <span class="badge {lesson_badge_class}">{lesson_badge_text}</span>
-                            <span>{lessons_left} lessons left</span>
-                            <span>Next lesson: {next_lesson_text}</span>
+                            <span>Last updated Jul 30</span>
                         </div>
                     </div>
                     <div class="quick">
                         <a class="button" href="/calendar?{urlencode({'student': student_name})}">Open schedule</a>
                         <a class="button" href="/parent_login_info/{student_url_name}">Parent login</a>
-                        <a class="button" href="/payment/{student_url_name}">New payment</a>
+                        <a class="button" href="/create_package_invoice/{student_url_name}">New invoice</a>
                     </div>
                 </section>
 
@@ -4008,54 +4048,59 @@ def edit_student(name):
                             <a href="#teacher-lessons">Teacher & lessons</a>
                             <a href="#parent-contact">Parent / contact</a>
                             <a href="/student_ledger/{student_url_name}">Billing</a>
-                            <a href="/student/{student_url_name}">Student record</a>
+                            <a href="#notes">Notes</a>
                         </nav>
 
-                        <div class="panel">
+                        <div class="panel profile-panel">
                             <div class="panel-head" id="profile">
                                 <h2>Profile</h2>
-                                <span class="mini-row-note">Student name is the record key today</span>
+                                <span>Required fields marked by label</span>
                             </div>
                             <div class="panel-body">
                                 <div class="form-grid">
                                     <div>
-                                        <label>Student</label>
-                                        <div class="readonly">{escape(str(student_name))}</div>
+                                        <label>Student first name</label>
+                                        <input name="first_name_display" value="{escape(first_name, quote=True)}" readonly>
+                                    </div>
+                                    <div>
+                                        <label>Student last name</label>
+                                        <input name="last_name_display" value="{escape(last_name, quote=True)}" readonly>
                                     </div>
                                     <div>
                                         <label>Status</label>
-                                        <div class="readonly">Active</div>
+                                        <select name="status">
+                                            {options(['Active', 'Paused', 'Inactive'], status_value)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label>Program</label>
+                                        <select name="program">
+                                            {options(['Piano private lesson', 'Voice private lesson', 'Guitar private lesson', 'Group class', 'Custom program'], program_value)}
+                                        </select>
                                     </div>
                                     <div class="span" id="teacher-lessons">
-                                        <label>Primary teacher</label>
+                                        <label>Teacher</label>
                                         <div class="teacher-field">
                                             <select name="teacher">{teacher_options}</select>
                                             <a class="teacher-link" href="{current_teacher_edit_url}">Edit</a>
                                         </div>
                                     </div>
                                     <div>
+                                        <label>Lesson length</label>
+                                        <select name="lesson_length">
+                                            {options(['30 minutes', '45 minutes', '60 minutes', '90 minutes'], lesson_length_value)}
+                                        </select>
+                                    </div>
+                                    <div>
                                         <label>Lessons left</label>
                                         <input type="number" name="lessons_left" value="{lessons_left}">
                                     </div>
-                                    <div>
-                                        <label>Scheduled lessons</label>
-                                        <div class="readonly">{schedule_count}</div>
-                                    </div>
-                                    <div id="parent-contact">
-                                        <label>Parent name</label>
-                                        <input name="parent_name" value="{escape(str(student[2] or ''), quote=True)}">
-                                    </div>
-                                    <div>
-                                        <label>Parent email</label>
-                                        <input type="email" name="parent_email" value="{escape(str(student[3] or ''), quote=True)}">
-                                    </div>
-                                    <div>
-                                        <label>Parent phone</label>
-                                        <input name="parent_phone" value="{escape(str(student[4] or ''), quote=True)}">
-                                    </div>
-                                    <div>
-                                        <label>Total payments</label>
-                                        <div class="readonly">{money(payment_total)}</div>
+                                    <input type="hidden" name="parent_name" value="{escape(str(student[2] or ''), quote=True)}">
+                                    <input type="hidden" name="parent_email" value="{escape(str(student[3] or ''), quote=True)}">
+                                    <input type="hidden" name="parent_phone" value="{escape(str(student[4] or ''), quote=True)}">
+                                    <div class="span" id="notes">
+                                        <label>Internal note</label>
+                                        <textarea name="internal_note">{escape(str(internal_note_value))}</textarea>
                                     </div>
                                 </div>
                             </div>
@@ -4079,20 +4124,20 @@ def edit_student(name):
                                 <div class="panel-body">
                                     <div class="mini-row">
                                         <div>
-                                            <strong>Parent login</strong>
+                                            <strong>Parent</strong>
                                             <span>{escape(str(student[3] or student[4] or 'No parent contact'))}</span>
+                                        </div>
+                                    </div>
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Balance</strong>
+                                            <span>$0 outstanding</span>
                                         </div>
                                     </div>
                                     <div class="mini-row">
                                         <div>
                                             <strong>Next lesson</strong>
                                             <span>{next_lesson_text}</span>
-                                        </div>
-                                    </div>
-                                    <div class="mini-row">
-                                        <div>
-                                            <strong>Lesson balance</strong>
-                                            <span>{lessons_left} lessons left</span>
                                         </div>
                                     </div>
                                 </div>
