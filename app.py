@@ -3729,6 +3729,7 @@ def edit_student(name):
         return redirect("/owner_login")
 
     ensure_v27_schema()
+    ensure_teacher_management_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -3760,7 +3761,7 @@ def edit_student(name):
         conn.commit()
         conn.close()
 
-        return redirect(f"/student/{name}")
+        return redirect(f"/student/{quote(name)}")
 
     cursor.execute("""
     SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left
@@ -3773,48 +3774,333 @@ def edit_student(name):
         conn.close()
         return "<h1>Student not found</h1>"
 
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT id, teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
     teachers = cursor.fetchall()
+
+    cursor.execute("SELECT id FROM teachers WHERE teacher_name = ? LIMIT 1", (student[1],))
+    current_teacher = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT DISTINCT teacher_name
+    FROM enrollments
+    WHERE student_name = ?
+    AND status = 'active'
+    AND teacher_name IS NOT NULL
+    AND teacher_name != ''
+    ORDER BY teacher_name
+    """, (student[0],))
+    enrollment_teachers = [row[0] for row in cursor.fetchall()]
+
+    cursor.execute("""
+    SELECT DISTINCT teacher
+    FROM schedule
+    WHERE student_name = ?
+    AND teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher
+    """, (student[0],))
+    schedule_teachers = [row[0] for row in cursor.fetchall()]
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_time, teacher, classroom
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    ORDER BY lesson_date, lesson_time
+    LIMIT 1
+    """, (student[0], date.today().isoformat()))
+    next_lesson = cursor.fetchone()
+
+    cursor.execute("SELECT COUNT(*) FROM schedule WHERE student_name = ?", (student[0],))
+    schedule_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE student_name = ?", (student[0],))
+    payment_total = cursor.fetchone()[0] or 0
     conn.close()
 
-    teacher_options = ""
-    for t in teachers:
-        selected = "selected" if t[0] == student[1] else ""
-        teacher_options += f'<option value="{t[0]}" {selected}>{t[0]}</option>'
+    def money(value):
+        try:
+            return f"${float(value or 0):,.2f}"
+        except (TypeError, ValueError):
+            return "$0.00"
+
+    def lesson_count(value):
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    student_name = student[0] or name
+    student_url_name = quote(student_name)
+    lessons_left = lesson_count(student[5])
+    current_teacher_edit_url = f"/edit_teacher/{current_teacher[0]}" if current_teacher else "/teachers"
+    next_lesson_text = (
+        f"{escape(str(next_lesson[0]))} {escape(str(next_lesson[1] or ''))}"
+        if next_lesson
+        else "Not scheduled"
+    )
+
+    lesson_badge_class = "danger" if lessons_left <= 0 else "amber" if lessons_left <= 2 else "ok"
+    lesson_badge_text = "No lessons" if lessons_left <= 0 else "Low lessons" if lessons_left <= 2 else "Lessons available"
+
+    teacher_options = '<option value="">Unassigned</option>'
+    seen_teachers = set()
+    if student[1] and all(t[1] != student[1] for t in teachers):
+        teachers = [(None, student[1])] + teachers
+    for teacher_id, teacher_name in teachers:
+        if not teacher_name or teacher_name in seen_teachers:
+            continue
+        seen_teachers.add(teacher_name)
+        selected = "selected" if teacher_name == student[1] else ""
+        teacher_options += (
+            f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
+            f'{escape(str(teacher_name))}</option>'
+        )
+
+    teacher_history = []
+    if student[1]:
+        teacher_history.append((student[1], "Current primary teacher", "Now"))
+    for teacher_name in enrollment_teachers:
+        if teacher_name != student[1]:
+            teacher_history.append((teacher_name, "Active enrollment", "Linked"))
+    for teacher_name in schedule_teachers:
+        if teacher_name != student[1] and teacher_name not in [row[0] for row in teacher_history]:
+            teacher_history.append((teacher_name, "Scheduled lesson history", "Past"))
+
+    teacher_history_html = ""
+    for teacher_name, source, label in teacher_history[:5]:
+        teacher_history_html += f"""
+        <div class="mini-row">
+            <div>
+                <strong>{escape(str(teacher_name))}</strong>
+                <span>{escape(str(source))}</span>
+            </div>
+            <span class="badge neutral">{escape(str(label))}</span>
+        </div>
+        """
+    if not teacher_history_html:
+        teacher_history_html = """
+        <div class="mini-row">
+            <div>
+                <strong>No teacher linked</strong>
+                <span>Choose a primary teacher to grant teacher access.</span>
+            </div>
+        </div>
+        """
 
     return f"""
     <html>
     <head>
-        <title>Edit Student</title>
+        <title>Edit {escape(str(student_name))} · H-Music CRM</title>
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
-            .container {{ background:white; padding:30px; border-radius:12px; max-width:720px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
-            input, select {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
-            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            :root {{
+                --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#667085; --border:#e5e7eb;
+                --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#eaf4ff;
+                --red:#dc2626; --red-soft:#fee2e2; --amber:#9a6700; --amber-soft:#fff4d6;
+                --green:#166534; --green-soft:#dcfce7; --shadow:0 12px 32px rgba(15,23,42,.07);
+            }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }}
+            a {{ color:inherit; text-decoration:none; }}
+            .shell {{ min-height:100vh; }}
+            .topbar {{
+                height:48px; display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:18px;
+                padding:0 24px; background:#fff; border-bottom:1px solid var(--border);
+            }}
+            .brand {{ font-size:16px; font-weight:850; }}
+            .nav {{ display:flex; gap:6px; overflow:hidden; }}
+            .nav a {{ min-height:30px; display:inline-flex; align-items:center; padding:0 10px; border-radius:8px; color:var(--muted); font-size:13px; font-weight:800; white-space:nowrap; }}
+            .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
+            .savebar {{ display:flex; gap:8px; justify-content:flex-end; }}
+            .page {{ max-width:1260px; margin:0 auto; padding:18px 24px 28px; }}
+            .header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:start; margin-bottom:14px; }}
+            .crumbs {{ display:flex; gap:7px; align-items:center; color:var(--muted); font-size:12px; margin-bottom:6px; }}
+            h1, h2, p {{ margin:0; }}
+            h1 {{ font-size:25px; line-height:1.12; }}
+            h2 {{ font-size:15px; }}
+            .subline {{ margin-top:7px; display:flex; gap:7px; flex-wrap:wrap; align-items:center; color:var(--muted); font-size:12px; }}
+            .quick {{ display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }}
+            .button, button {{
+                min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--border);
+                border-radius:8px; background:#fff; color:var(--text); padding:8px 12px; font:inherit; font-size:13px; font-weight:850; cursor:pointer;
+            }}
+            .primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
+            .layout {{ display:grid; grid-template-columns:220px minmax(0,1fr) 300px; gap:12px; align-items:start; }}
+            .side, .panel {{ background:#fff; border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }}
+            .side {{ padding:8px; }}
+            .side a {{ min-height:32px; display:flex; align-items:center; padding:0 10px; border-radius:8px; color:var(--muted); font-size:13px; font-weight:850; }}
+            .side a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
+            .panel-head {{ min-height:42px; padding:0 14px; border-bottom:1px solid var(--border); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:10px; }}
+            .panel-body {{ padding:14px; }}
+            .form-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }}
+            .span {{ grid-column:1 / -1; }}
+            label {{ display:block; color:var(--muted); font-size:12px; font-weight:850; margin-bottom:5px; }}
+            input, select, .readonly {{ width:100%; min-height:36px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:8px 10px; font:inherit; font-size:13px; }}
+            .readonly {{ display:flex; align-items:center; background:#f8fafc; color:var(--muted); }}
+            .teacher-field {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }}
+            .teacher-link {{ min-height:36px; display:inline-flex; align-items:center; justify-content:center; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--blue-dark); font-size:13px; font-weight:850; }}
+            .stack {{ display:grid; gap:12px; }}
+            .mini-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border); font-size:12px; }}
+            .mini-row:last-child {{ border-bottom:0; }}
+            .mini-row strong {{ display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .mini-row span {{ color:var(--muted); font-size:12px; }}
+            .badge {{ display:inline-flex; align-items:center; min-height:22px; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:850; white-space:nowrap; }}
+            .badge.ok {{ background:var(--green-soft); color:var(--green); }}
+            .badge.danger {{ background:var(--red-soft); color:var(--red); }}
+            .badge.amber {{ background:var(--amber-soft); color:var(--amber); }}
+            .badge.neutral {{ background:#eef2f7; color:#475467; }}
+            @media (max-width:1050px) {{
+                .layout {{ grid-template-columns:190px minmax(0,1fr); }}
+                .stack {{ grid-column:1 / -1; grid-template-columns:repeat(2,minmax(0,1fr)); }}
+            }}
+            @media (max-width:760px) {{
+                .topbar, .header, .layout, .form-grid, .stack {{ grid-template-columns:1fr; }}
+                .topbar {{ height:auto; padding-top:10px; padding-bottom:10px; }}
+                .quick, .savebar {{ justify-content:flex-start; }}
+            }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1>Edit Student - {student[0]}</h1>
-            <form method="POST">
-                Primary Teacher:<br>
-                <select name="teacher">{teacher_options}</select>
+        <div class="shell">
+            <div class="topbar">
+                <div class="brand">H-Music CRM</div>
+                <div class="nav">
+                    <a class="active" href="/students">Students</a>
+                    <a href="/renewal_emails">Renewals</a>
+                    <a href="/calendar">Calendar</a>
+                    <a href="/teacher_dashboard">Teacher Dashboard</a>
+                    <a href="/teachers">Teacher Management</a>
+                </div>
+                <div class="savebar">
+                    <a class="button" href="/student/{student_url_name}">Cancel</a>
+                    <button class="primary" type="submit" form="editStudentForm">Save changes</button>
+                </div>
+            </div>
 
-                Parent Name:<br>
-                <input name="parent_name" value="{student[2] or ''}">
+            <main class="page">
+                <section class="header">
+                    <div>
+                        <div class="crumbs">
+                            <a href="/students">Students</a>
+                            <span>/</span>
+                            <a href="/student/{student_url_name}">{escape(str(student_name))}</a>
+                            <span>/ Edit</span>
+                        </div>
+                        <h1>{escape(str(student_name))}</h1>
+                        <div class="subline">
+                            <span class="badge ok">Active</span>
+                            <span class="badge {lesson_badge_class}">{lesson_badge_text}</span>
+                            <span>{lessons_left} lessons left</span>
+                            <span>Next lesson: {next_lesson_text}</span>
+                        </div>
+                    </div>
+                    <div class="quick">
+                        <a class="button" href="/calendar?{urlencode({'student': student_name})}">Open schedule</a>
+                        <a class="button" href="/parent_login_info/{student_url_name}">Parent login</a>
+                        <a class="button" href="/payment/{student_url_name}">New payment</a>
+                    </div>
+                </section>
 
-                Parent Email:<br>
-                <input type="email" name="parent_email" value="{student[3] or ''}">
+                <form id="editStudentForm" method="POST">
+                    <section class="layout">
+                        <nav class="side" aria-label="Student edit sections">
+                            <a class="active" href="#profile">Profile</a>
+                            <a href="#teacher-lessons">Teacher & lessons</a>
+                            <a href="#parent-contact">Parent / contact</a>
+                            <a href="/student_ledger/{student_url_name}">Billing</a>
+                            <a href="/student/{student_url_name}">Student record</a>
+                        </nav>
 
-                Parent Phone:<br>
-                <input name="parent_phone" value="{student[4] or ''}">
+                        <div class="panel">
+                            <div class="panel-head" id="profile">
+                                <h2>Profile</h2>
+                                <span class="mini-row-note">Student name is the record key today</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="form-grid">
+                                    <div>
+                                        <label>Student</label>
+                                        <div class="readonly">{escape(str(student_name))}</div>
+                                    </div>
+                                    <div>
+                                        <label>Status</label>
+                                        <div class="readonly">Active</div>
+                                    </div>
+                                    <div class="span" id="teacher-lessons">
+                                        <label>Primary teacher</label>
+                                        <div class="teacher-field">
+                                            <select name="teacher">{teacher_options}</select>
+                                            <a class="teacher-link" href="{current_teacher_edit_url}">Edit</a>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label>Lessons left</label>
+                                        <input type="number" name="lessons_left" value="{lessons_left}">
+                                    </div>
+                                    <div>
+                                        <label>Scheduled lessons</label>
+                                        <div class="readonly">{schedule_count}</div>
+                                    </div>
+                                    <div id="parent-contact">
+                                        <label>Parent name</label>
+                                        <input name="parent_name" value="{escape(str(student[2] or ''), quote=True)}">
+                                    </div>
+                                    <div>
+                                        <label>Parent email</label>
+                                        <input type="email" name="parent_email" value="{escape(str(student[3] or ''), quote=True)}">
+                                    </div>
+                                    <div>
+                                        <label>Parent phone</label>
+                                        <input name="parent_phone" value="{escape(str(student[4] or ''), quote=True)}">
+                                    </div>
+                                    <div>
+                                        <label>Total payments</label>
+                                        <div class="readonly">{money(payment_total)}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
 
-                Lessons Left:<br>
-                <input type="number" name="lessons_left" value="{student[5] or 0}">
+                        <aside class="stack">
+                            <div class="panel">
+                                <div class="panel-head">
+                                    <h2>Teacher history</h2>
+                                    <a class="teacher-link" href="/teachers">Manage</a>
+                                </div>
+                                <div class="panel-body">
+                                    {teacher_history_html}
+                                </div>
+                            </div>
 
-                <button type="submit">Save Student</button>
-                <a class="button" href="/student/{student[0]}">Back</a>
-            </form>
+                            <div class="panel">
+                                <div class="panel-head">
+                                    <h2>At a glance</h2>
+                                </div>
+                                <div class="panel-body">
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Parent login</strong>
+                                            <span>{escape(str(student[3] or student[4] or 'No parent contact'))}</span>
+                                        </div>
+                                    </div>
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Next lesson</strong>
+                                            <span>{next_lesson_text}</span>
+                                        </div>
+                                    </div>
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Lesson balance</strong>
+                                            <span>{lessons_left} lessons left</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </aside>
+                    </section>
+                </form>
+            </main>
         </div>
     </body>
     </html>
