@@ -25019,134 +25019,191 @@ def inquiries():
     conn.close()
     public_trial_url = request.host_url.rstrip("/") + "/trial"
     public_registration_url = request.host_url.rstrip("/") + "/registration"
-    owner_intake_url = request.host_url.rstrip("/") + "/new_student_intake"
+
+    def field(row, key, default=""):
+        if key in row.keys() and row[key] is not None:
+            return str(row[key]).strip()
+        return default
+
+    active_count = len(rows)
+    missing_info_count = 0
+    for r in rows:
+        has_parent = bool(field(r, "parent_name"))
+        has_contact = bool(field(r, "parent_email") or field(r, "phone"))
+        has_student = bool(field(r, "student_name"))
+        if not (has_parent and has_contact and has_student):
+            missing_info_count += 1
 
     cards = "".join([
-        f"<div class='metric'><span>New Leads</span><b>{new_count}</b></div>",
-        f"<div class='metric'><span>AI Suggested</span><b>{ai_count}</b></div>",
-        f"<div class='metric'><span>Trial Scheduled</span><b>{scheduled_count}</b></div>",
-        f"<div class='metric'><span>Follow Up</span><b>{follow_count}</b></div>",
-        f"<div class='metric'><span>Active</span><b>{converted_count}</b></div>",
+        f"<div class='metric'><span>Active</span><b>{active_count}</b></div>",
+        f"<div class='metric'><span>Needs review</span><b>{ai_count}</b></div>",
+        f"<div class='metric'><span>Trial scheduled</span><b>{scheduled_count}</b></div>",
+        f"<div class='metric'><span>Missing info</span><b>{missing_info_count}</b></div>",
+        f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
     ])
 
     body = ""
-    for r in rows:
-        verified = "Verified" if r["owner_verified"] else "Needs Review"
-        verify_class = "ok" if r["owner_verified"] else "warn"
-        contact = "<br>".join([x for x in [v35_safe(r["parent_email"]), v35_safe(r["phone"])] if x]) or "-"
-        trial_bits = [v35_safe(r["trial_date"]), v35_safe(r["trial_time"]), v35_safe(r["trial_teacher"]), v35_safe(r["trial_location"])]
-        trial = "<br>".join([x for x in trial_bits if x]) or v35_safe(r["trial_status"], "Needs Review")
-        program = v35_safe(r["program_interest"] or r["instrument"], "-")
+    for index, r in enumerate(rows):
+        status = field(r, "status", "New Lead")
+        follow_status = field(r, "follow_up_status", "New")
+        converted = status in ("Active", "Active Student", "Converted", "Enrolled") or follow_status == "Converted"
+        owner_verified = bool(r["owner_verified"]) if "owner_verified" in r.keys() else False
+        if not owner_verified:
+            stage_label = "Review"
+            stage_class = "review"
+        elif status in ("Trial Scheduled", "Trial Proposed") or field(r, "trial_status") == "Scheduled":
+            stage_label = "Trial"
+            stage_class = "trial"
+        elif status in ("Trial Completed", "Follow Up") or follow_status == "Follow Up":
+            stage_label = "Follow up"
+            stage_class = "follow"
+        elif converted:
+            stage_label = "Verified"
+            stage_class = "verified"
+        else:
+            stage_label = "Verified"
+            stage_class = "verified"
+
+        parent_contact = field(r, "phone") or field(r, "parent_email") or "Contact pending"
+        program = field(r, "program_interest") or field(r, "instrument") or "-"
         fee_bits = [
-            v35_safe(r["trial_duration"]),
-            v35_safe(r["trial_fee"]),
-            v35_safe(r["payment_method"]),
+            field(r, "trial_duration"),
+            field(r, "trial_fee"),
+            field(r, "payment_method"),
         ]
-        fee_line = " / ".join([x for x in fee_bits if x]) or "-"
-        preferred = "<br>".join([x for x in [v35_safe(r["preferred_days"]), v35_safe(r["preferred_times"])] if x]) or "-"
-        latest = v35_safe(r["ai_summary"] or r["notes"], "-")
-        family_line = ""
+        program_meta = " / ".join([x for x in fee_bits if x]) or field(r, "instrument") or "Program details pending"
+        preferred_primary = " ".join([x for x in [field(r, "preferred_days"), field(r, "preferred_times")] if x]).strip()
+        if not preferred_primary:
+            preferred_primary = " ".join([x for x in [field(r, "trial_date"), field(r, "trial_time")] if x]).strip()
+        if not preferred_primary:
+            preferred_primary = "-"
+        preferred_meta = field(r, "trial_status") or field(r, "source") or "Availability"
+        student_meta_bits = [f"#{r['id']} {field(r, 'lead_temperature', 'Warm')}"]
+        age = field(r, "age")
+        if age:
+            student_meta_bits.append(f"age {age}")
         if "existing_family" in r.keys() and r["existing_family"]:
-            family_line = f"<br><small>Existing family · {v35_safe(r['request_type'] or '')} {v35_safe(r['existing_student_name'] or '')}</small>"
+            student_meta_bits.append("existing family")
+        selected = " selected" if index == 0 else ""
         body += f"""
-        <tr>
-            <td><a href="/inquiry/{r['id']}"><b>{v35_safe(r['student_name'], 'Unnamed')}</b></a><br><small>#{r['id']} {v35_safe(r['lead_temperature'], 'Warm')}</small>{family_line}</td>
-            <td>{v35_safe(r['parent_name'], '-')}<br><small>{contact}</small></td>
-            <td>{program}<br><small>{fee_line}</small></td>
-            <td>{preferred}</td>
-            <td><span class="pill {verify_class}">{verified}</span><br><small>{latest}</small></td>
-            <td>{trial}</td>
-            <td><span class="pill">{v35_safe(r['status'], 'New Lead').replace('Active Student', 'Active')}</span></td>
-            <td>{v35_safe(r['next_follow_up_at'], '-')}<br><small>{v35_safe(r['follow_up_status'], 'New')}</small></td>
-            <td>{v35_safe(r['updated_at'], '-')}</td>
+        <tr class="{selected}">
+            <td>
+                <a class="row-link" href="/inquiry/{r['id']}">{v35_safe(field(r, 'student_name'), 'Unnamed')}</a>
+                <span class="sub">{v35_safe(' · '.join(student_meta_bits))}</span>
+            </td>
+            <td>
+                <span class="main">{v35_safe(field(r, 'parent_name'), '-')}</span>
+                <span class="sub">{v35_safe(parent_contact)}</span>
+            </td>
+            <td>
+                <span class="main">{v35_safe(program)}</span>
+                <span class="sub">{v35_safe(program_meta)}</span>
+            </td>
+            <td>
+                <span class="main">{v35_safe(preferred_primary)}</span>
+                <span class="sub">{v35_safe(preferred_meta)}</span>
+            </td>
+            <td><span class="pill {stage_class}">{stage_label}</span></td>
         </tr>
         """
 
     if not body:
-        body = "<tr><td colspan='9'>No trial leads yet.</td></tr>"
+        body = "<tr><td colspan='5' class='empty'>No intake records yet.</td></tr>"
 
     return f"""
     <html>
     <head>
         <title>New Students / Intake</title>
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
-            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
-            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
-            .actions a {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border-radius:8px; text-decoration:none; font-weight:700; margin-left:8px; }}
-            .actions a.secondary {{ background:#111827; }}
-            .metrics {{ display:grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap:12px; margin:22px 0; }}
-            .share {{ display:flex; justify-content:space-between; gap:16px; align-items:center; border:1px solid #dbeafe; background:#eff6ff; border-radius:12px; padding:16px; margin:18px 0 24px; }}
-            .share p {{ margin:6px 0 10px; color:#4b5563; }}
-            .share code {{ display:block; background:white; border:1px solid #bfdbfe; border-radius:8px; padding:10px; color:#1d4ed8; font-weight:700; word-break:break-all; }}
-            .share a {{ flex:0 0 auto; display:inline-block; padding:11px 16px; border-radius:8px; background:#111827; color:white; text-decoration:none; font-weight:700; }}
-            .metric {{ background:#f2f2ff; border:1px solid #e0e0ff; border-radius:10px; padding:14px; }}
-            .metric span {{ display:block; color:#6b7280; font-size:13px; }}
-            .metric b {{ font-size:28px; }}
-            .steps {{ display:grid; grid-template-columns:repeat(6, 1fr); gap:10px; margin:18px 0; }}
-            .step {{ border:1px solid #e5e7eb; background:#f9fafb; border-radius:12px; padding:12px; }}
-            .step b {{ display:block; font-size:14px; }}
-            .step span {{ color:#6b7280; font-size:12px; }}
-            table {{ width:100%; border-collapse:collapse; background:white; }}
-            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; vertical-align:top; text-align:left; }}
-            th {{ background:#ececff; }}
-            small {{ color:#6b7280; }}
-            .pill {{ display:inline-block; padding:5px 9px; border-radius:999px; background:#eef2ff; color:#3730a3; font-weight:700; font-size:12px; }}
-            .pill.ok {{ background:#dcfce7; color:#166534; }}
-            .pill.warn {{ background:#fef3c7; color:#92400e; }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; font-family: Arial, Helvetica, sans-serif; background:#f7f7fb; color:#202428; }}
+            .panel {{ max-width:1420px; margin:0 auto; background:white; border:1px solid #e3e3e3; border-radius:16px; overflow:hidden; }}
+            .hero {{ padding:24px 36px 16px; border-bottom:1px solid #e3e3e3; }}
+            h1 {{ margin:0; font-size:42px; line-height:1.1; font-weight:500; letter-spacing:0; }}
+            .subtitle {{ margin:14px 0 24px; color:#888; font-size:24px; line-height:1.3; }}
+            .actions {{ display:flex; gap:12px; flex-wrap:wrap; }}
+            .actions a {{ display:inline-flex; align-items:center; justify-content:center; min-height:58px; padding:0 20px; border-radius:12px; border:1px solid #d9d9d9; background:#f0f0f0; color:#202428; text-decoration:none; font-size:24px; }}
+            .actions a.primary {{ border-color:#3395ee; background:#3395ee; color:white; }}
+            .metrics {{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; padding:20px 36px 8px; }}
+            .metric {{ min-height:86px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:#f3f3f3; border:1px solid #dedede; border-radius:12px; }}
+            .metric span {{ min-width:0; color:#8b8b8b; font-size:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .metric b {{ font-size:36px; font-weight:500; color:#202428; }}
+            .list-card {{ margin:12px 36px 36px; overflow:hidden; border:1px solid #dcdcdc; border-radius:12px; background:#f1f2f2; }}
+            .tabs {{ display:flex; align-items:center; gap:8px; padding:0 20px; min-height:76px; }}
+            .tab {{ display:inline-flex; align-items:center; min-height:56px; padding:0 18px; border-radius:10px; color:#858585; text-decoration:none; font-size:24px; }}
+            .tab.active {{ color:#2f98ff; background:#dfecfa; }}
+            .filters {{ display:flex; gap:12px; padding:0 20px; min-height:62px; align-items:center; }}
+            .filter {{ display:inline-flex; align-items:center; min-height:58px; padding:0 20px; border:1px solid #d6dada; border-radius:12px; background:#eef0f0; color:#202428; text-decoration:none; font-size:24px; }}
+            .table-wrap {{ overflow-x:auto; }}
+            table {{ width:100%; min-width:980px; border-collapse:collapse; table-layout:fixed; background:#f7f7f7; }}
+            th {{ height:64px; padding:0 20px; text-align:left; background:#e5e9e9; color:#858a8c; font-size:19px; font-weight:500; text-transform:uppercase; letter-spacing:.04em; }}
+            td {{ height:102px; padding:16px 20px; border-top:1px solid #dddddd; vertical-align:middle; font-size:24px; }}
+            tr.selected td {{ background:#eaf4ff; }}
+            .row-link, .main {{ display:block; min-width:0; color:#202428; font-weight:500; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .row-link:hover {{ color:#2478c7; }}
+            .sub {{ display:block; margin-top:10px; min-width:0; color:#888; font-size:21px; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .pill {{ display:inline-flex; align-items:center; justify-content:center; min-width:104px; min-height:44px; padding:0 16px; border-radius:999px; font-size:22px; white-space:nowrap; }}
+            .pill.review {{ background:#f5ded7; color:#df4b11; }}
+            .pill.verified {{ background:#f2f7f8; color:#202428; }}
+            .pill.trial {{ background:#ddeafb; color:#2167b2; }}
+            .pill.follow {{ background:#f8ecd3; color:#202428; }}
+            .empty {{ color:#888; text-align:center; }}
+            col.student {{ width:25%; }}
+            col.parent {{ width:22%; }}
+            col.program {{ width:18%; }}
+            col.preferred {{ width:18%; }}
+            col.stage {{ width:17%; }}
+            @media (max-width: 900px) {{
+                .panel {{ border-radius:0; border-left:0; border-right:0; }}
+                .hero, .metrics {{ padding-left:18px; padding-right:18px; }}
+                .list-card {{ margin-left:18px; margin-right:18px; }}
+                h1 {{ font-size:34px; }}
+                .subtitle, .actions a, .tab, .filter {{ font-size:20px; }}
+                .metrics {{ grid-template-columns:1fr; }}
+            }}
         </style>
     </head>
     <body>
         <div class="panel">
-            <div class="top">
-                <div>
-                    <h1>New Students / Intake</h1>
-                    <p>Register new families, schedule trial lessons, convert to student records, and activate the parent app when information is correct.</p>
-                </div>
+            <div class="hero">
+                <h1>New Students / Intake</h1>
+                <p class="subtitle">Dense list view for fast owner review. Expand a row only when detail is needed.</p>
                 <div class="actions">
-                    <a class="secondary" href="/">Home</a>
-                    <a href="/new_student_intake">Manual Entry</a>
+                    <a href="/trial" target="_blank">Trial link</a>
+                    <a href="/registration" target="_blank">Registration</a>
+                    <a class="primary" href="/new_student_intake">Manual Entry</a>
                 </div>
             </div>
             <div class="metrics">{cards}</div>
-            <div class="steps">
-                <div class="step"><b>1. Lead</b><span>Family submits form or owner enters lead.</span></div>
-                <div class="step"><b>2. Review</b><span>Owner checks student, parent, goal, schedule.</span></div>
-                <div class="step"><b>3. Trial</b><span>Confirm teacher, room, fee, time.</span></div>
-                <div class="step"><b>4. Follow up</b><span>Mark completed and decide next step.</span></div>
-                <div class="step"><b>5. Convert</b><span>Create student + family account.</span></div>
-                <div class="step"><b>6. Active</b><span>Set package, schedule, invoice, parent app.</span></div>
-            </div>
-            <div class="share">
-                <div>
-                    <b>Public New Family / Trial Form</b>
-                    <p>Send this link to new families. Submitted forms create an intake lead, trial plan, and owner notification.</p>
-                    <code>{v35_safe(public_trial_url)}</code>
+            <div class="list-card">
+                <div class="tabs">
+                    <a class="tab active" href="/new_students">All active</a>
+                    <a class="tab" href="/new_students">Hot</a>
+                    <a class="tab" href="/new_students">Trial</a>
+                    <a class="tab" href="/new_students">Registration</a>
+                    <a class="tab" href="/new_students">Converted</a>
                 </div>
-                <a href="/trial" target="_blank">Open Form</a>
-            </div>
-            <div class="share">
-                <div>
-                    <b>Formal New Student Registration</b>
-                    <p>Use this after a family is ready to enroll. It collects guardian, emergency, package, billing, and parent app setup information.</p>
-                    <code>{v35_safe(public_registration_url)}</code>
+                <div class="filters">
+                    <a class="filter" href="/new_students">Search</a>
+                    <a class="filter" href="/new_students">Program</a>
+                    <a class="filter" href="/new_students">Priority first</a>
                 </div>
-                <a href="/registration" target="_blank">Open Registration</a>
-            </div>
-            <div class="share">
-                <div>
-                    <b>Owner Manual Entry</b>
-                    <p>Use this when a new student contacts you by text, WeChat, phone, or referral.</p>
-                    <code>{v35_safe(owner_intake_url)}</code>
+                <div class="table-wrap">
+                    <table>
+                        <colgroup>
+                            <col class="student">
+                            <col class="parent">
+                            <col class="program">
+                            <col class="preferred">
+                            <col class="stage">
+                        </colgroup>
+                        <tr>
+                            <th>Student</th><th>Parent</th><th>Program</th><th>Preferred</th><th>Stage</th>
+                        </tr>
+                        {body}
+                    </table>
                 </div>
-                <a href="/new_student_intake">Manual Entry</a>
             </div>
-            <table>
-                <tr>
-                    <th>Student</th><th>Parent / Contact</th><th>Program</th><th>Preferred</th><th>AI / Verify</th><th>Trial</th><th>Status</th><th>Follow Up</th><th>Updated</th>
-                </tr>
-                {body}
-            </table>
         </div>
     </body>
     </html>
