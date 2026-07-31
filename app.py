@@ -25048,6 +25048,17 @@ def inquiries():
         f"<div class='metric'><span>Missing info</span><b>{missing_info_count}</b></div>",
         f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
     ])
+    hot_count = sum(1 for r in rows if field(r, "lead_temperature").lower() == "hot")
+    registration_count = sum(1 for r in rows if field(r, "status") == "Registration Submitted")
+    program_names = sorted({
+        field(r, "program_interest") or field(r, "instrument")
+        for r in rows
+        if field(r, "program_interest") or field(r, "instrument")
+    })
+    program_options = '<option value="all">All programs</option>' + "".join(
+        f'<option value="{escape(program.lower(), quote=True)}">{v35_safe(program)}</option>'
+        for program in program_names
+    )
 
     body = ""
     for index, r in enumerate(rows):
@@ -25092,8 +25103,19 @@ def inquiries():
         if "existing_family" in r.keys() and r["existing_family"]:
             student_meta_bits.append("existing family")
         selected = " selected" if index == 0 else ""
+        search_blob = " ".join([
+            field(r, "student_name"),
+            field(r, "parent_name"),
+            field(r, "parent_email"),
+            field(r, "phone"),
+            program,
+            preferred_primary,
+            stage_label,
+            field(r, "notes"),
+        ]).lower()
+        stage_key = stage_label.lower().replace(" ", "-")
         body += f"""
-        <tr class="{selected}">
+        <tr class="{selected}" data-search="{escape(search_blob, quote=True)}" data-program="{escape(program.lower(), quote=True)}" data-stage="{stage_key}" data-temp="{escape(field(r, 'lead_temperature').lower(), quote=True)}" data-status="{escape(status.lower(), quote=True)}" data-converted="{'true' if converted else 'false'}" data-updated="{escape(field(r, 'updated_at'), quote=True)}" data-name="{escape(field(r, 'student_name').lower(), quote=True)}">
             <td>
                 <a class="row-link" href="/inquiry/{r['id']}">{v35_safe(field(r, 'student_name'), 'Unnamed')}</a>
                 <span class="sub">{v35_safe(' · '.join(student_meta_bits))}</span>
@@ -25136,11 +25158,18 @@ def inquiries():
             .metric span {{ min-width:0; color:#8b8b8b; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
             .metric b {{ font-size:24px; font-weight:600; color:#202428; }}
             .list-card {{ margin:10px 28px 28px; overflow:hidden; border:1px solid #dcdcdc; border-radius:10px; background:#f1f2f2; }}
-            .tabs {{ display:flex; align-items:center; gap:6px; padding:0 14px; min-height:48px; }}
-            .tab {{ display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border-radius:8px; color:#858585; text-decoration:none; font-size:15px; font-weight:600; }}
+            .queue-row, .filters {{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 14px 0; }}
+            .filters {{ padding-bottom:10px; }}
+            .control-label {{ color:#858585; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; min-width:46px; }}
+            .segmented {{ display:flex; flex-wrap:wrap; gap:4px; padding:4px; background:white; border:1px solid #d8dddd; border-radius:10px; }}
+            .tab {{ border:0; display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:0 10px; border-radius:7px; color:#777; background:transparent; font-size:14px; font-weight:700; cursor:pointer; }}
             .tab.active {{ color:#2f98ff; background:#dfecfa; }}
-            .filters {{ display:flex; gap:8px; padding:0 14px 10px; min-height:44px; align-items:center; }}
-            .filter {{ display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border:1px solid #d6dada; border-radius:8px; background:#eef0f0; color:#202428; text-decoration:none; font-size:15px; font-weight:600; }}
+            .count-badge {{ min-width:20px; padding:2px 6px; border-radius:999px; background:#eef0f0; color:#667085; font-size:11px; text-align:center; }}
+            .tab.active .count-badge {{ background:white; color:#2f98ff; }}
+            .control {{ display:grid; gap:4px; min-width:150px; }}
+            .control.search {{ flex:1 1 300px; }}
+            label.control span {{ color:#858585; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }}
+            .control input, .control select {{ width:100%; min-height:34px; border:1px solid #d6dada; border-radius:8px; background:white; color:#202428; padding:0 10px; font-size:14px; font-weight:600; }}
             .table-wrap {{ overflow-x:auto; }}
             table {{ width:100%; min-width:900px; border-collapse:collapse; table-layout:fixed; background:#f7f7f7; }}
             th {{ height:38px; padding:0 14px; text-align:left; background:#e5e9e9; color:#858a8c; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }}
@@ -25165,7 +25194,7 @@ def inquiries():
                 .hero, .metrics {{ padding-left:16px; padding-right:16px; }}
                 .list-card {{ margin-left:16px; margin-right:16px; }}
                 h1 {{ font-size:28px; }}
-                .subtitle, .actions a, .tab, .filter {{ font-size:14px; }}
+                .subtitle, .actions a, .tab, .control input, .control select {{ font-size:14px; }}
                 .metrics {{ grid-template-columns:1fr; }}
             }}
         </style>
@@ -25183,20 +25212,27 @@ def inquiries():
             </div>
             <div class="metrics">{cards}</div>
             <div class="list-card">
-                <div class="tabs">
-                    <a class="tab active" href="/new_students">All active</a>
-                    <a class="tab" href="/new_students">Hot</a>
-                    <a class="tab" href="/new_students">Trial</a>
-                    <a class="tab" href="/new_students">Registration</a>
-                    <a class="tab" href="/new_students">Converted</a>
+                <div class="queue-row">
+                    <span class="control-label">Queue</span>
+                    <div class="segmented" role="tablist" aria-label="Lead queue">
+                        <button class="tab active" type="button" data-queue="all" role="tab" aria-selected="true">All active <span class="count-badge">{active_count}</span></button>
+                        <button class="tab" type="button" data-queue="hot" role="tab" aria-selected="false">Hot <span class="count-badge">{hot_count}</span></button>
+                        <button class="tab" type="button" data-queue="trial" role="tab" aria-selected="false">Trial <span class="count-badge">{scheduled_count}</span></button>
+                        <button class="tab" type="button" data-queue="registration" role="tab" aria-selected="false">Registration <span class="count-badge">{registration_count}</span></button>
+                        <button class="tab" type="button" data-queue="converted" role="tab" aria-selected="false">Converted <span class="count-badge">{converted_count}</span></button>
+                    </div>
                 </div>
                 <div class="filters">
-                    <a class="filter" href="/new_students">Search</a>
-                    <a class="filter" href="/new_students">Program</a>
-                    <a class="filter" href="/new_students">Priority first</a>
+                    <label class="control search"><span>Search</span><input id="intakeSearch" type="search" placeholder="Student, parent, phone, note"></label>
+                    <label class="control"><span>Program</span><select id="programFilter">{program_options}</select></label>
+                    <label class="control"><span>Sort</span><select id="sortFilter">
+                        <option value="priority">Priority first</option>
+                        <option value="newest">Newest first</option>
+                        <option value="name">Student name</option>
+                    </select></label>
                 </div>
                 <div class="table-wrap">
-                    <table>
+                    <table id="intakeTable">
                         <colgroup>
                             <col class="student">
                             <col class="parent">
@@ -25204,14 +25240,76 @@ def inquiries():
                             <col class="preferred">
                             <col class="stage">
                         </colgroup>
-                        <tr>
-                            <th>Student</th><th>Parent</th><th>Program</th><th>Preferred</th><th>Stage</th>
-                        </tr>
-                        {body}
+                        <thead>
+                            <tr>
+                                <th>Student</th><th>Parent</th><th>Program</th><th>Preferred</th><th>Stage</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {body}
+                        </tbody>
                     </table>
                 </div>
             </div>
         </div>
+        <script>
+            const queueButtons = Array.from(document.querySelectorAll("[data-queue]"));
+            const searchInput = document.getElementById("intakeSearch");
+            const programFilter = document.getElementById("programFilter");
+            const sortFilter = document.getElementById("sortFilter");
+            const tbody = document.querySelector("#intakeTable tbody");
+            const rows = Array.from(document.querySelectorAll("#intakeTable tr[data-search]"));
+            let activeQueue = "all";
+
+            function rowMatchesQueue(row) {{
+                if (activeQueue === "all") return true;
+                if (activeQueue === "hot") return row.dataset.temp === "hot";
+                if (activeQueue === "trial") return row.dataset.stage === "trial";
+                if (activeQueue === "registration") return row.dataset.status === "registration submitted";
+                if (activeQueue === "converted") return row.dataset.converted === "true";
+                return true;
+            }}
+
+            function sortRows(visibleRows) {{
+                const priority = {{ "review": 0, "follow-up": 1, "trial": 2, "verified": 3 }};
+                visibleRows.sort((a, b) => {{
+                    if (sortFilter.value === "name") return a.dataset.name.localeCompare(b.dataset.name);
+                    if (sortFilter.value === "newest") return (b.dataset.updated || "").localeCompare(a.dataset.updated || "");
+                    return (priority[a.dataset.stage] ?? 9) - (priority[b.dataset.stage] ?? 9);
+                }});
+                visibleRows.forEach(row => tbody.appendChild(row));
+            }}
+
+            function applyFilters() {{
+                const query = searchInput.value.trim().toLowerCase();
+                const program = programFilter.value;
+                const visibleRows = [];
+                rows.forEach(row => {{
+                    const searchOk = !query || row.dataset.search.includes(query);
+                    const programOk = program === "all" || row.dataset.program === program;
+                    const queueOk = rowMatchesQueue(row);
+                    const visible = searchOk && programOk && queueOk;
+                    row.style.display = visible ? "" : "none";
+                    if (visible) visibleRows.push(row);
+                }});
+                sortRows(visibleRows);
+            }}
+
+            queueButtons.forEach(button => {{
+                button.addEventListener("click", () => {{
+                    activeQueue = button.dataset.queue;
+                    queueButtons.forEach(item => {{
+                        const active = item === button;
+                        item.classList.toggle("active", active);
+                        item.setAttribute("aria-selected", active ? "true" : "false");
+                    }});
+                    applyFilters();
+                }});
+            }});
+            searchInput.addEventListener("input", applyFilters);
+            programFilter.addEventListener("change", applyFilters);
+            sortFilter.addEventListener("change", applyFilters);
+        </script>
     </body>
     </html>
     """
