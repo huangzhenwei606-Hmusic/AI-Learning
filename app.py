@@ -2911,18 +2911,25 @@ def students():
         balance_text = "No lessons" if lessons_left <= 0 else ("Low" if lessons_left <= 2 else "OK")
         encoded_name = quote(name)
         search_blob = " ".join([name, teacher, parent_name, parent_email, parent_phone, str(lessons_left), status_label]).lower()
-        parent_line = parent_email or parent_phone or "No parent contact on file"
+        parent_display = parent_name or "No parent"
+        parent_line = " | ".join(part for part in (parent_email, parent_phone) if part) or "No parent contact"
+        student_line = f"{teacher} | {lessons_left} lesson{'s' if lessons_left != 1 else ''} left"
 
         rows_html += f"""
           <tr class="student-row" data-search="{escape(search_blob, quote=True)}" data-teacher="{escape(teacher, quote=True)}" data-balance="{balance_label}" data-status="{status_label.lower()}">
             <td>
-              <a class="student-name" href="/student/{encoded_name}">{escape(name)}</a>
-              <div class="student-meta">{escape(parent_line)}</div>
+              <div class="student-primary-cell">
+                <a class="cell-primary student-name" href="/student/{encoded_name}">{escape(name)}</a>
+                <span class="cell-secondary">{escape(student_line)}</span>
+              </div>
+            </td>
+            <td>
+              <span class="cell-primary">{escape(parent_display)}</span>
+              <span class="cell-secondary">{escape(parent_line)}</span>
             </td>
             <td>{escape(teacher)}</td>
             <td><span class="lesson-count">{lessons_left}</span></td>
-            <td><span class="status-pill {balance_label}">{balance_text}</span></td>
-            <td><span class="status-pill neutral">{status_label}</span></td>
+            <td><span class="status-pill {balance_label}">{balance_text}</span> <span class="status-pill neutral">{status_label}</span></td>
             <td class="actions">
               <a href="/student/{encoded_name}">Open</a>
               <a href="/calendar?student={encoded_name}">Schedule</a>
@@ -2984,6 +2991,31 @@ input, select { width:100%; border:1px solid #d9dee8; background:#fff; border-ra
 .actions { display:flex; gap:6px; flex-wrap:nowrap; align-items:center; }
 .actions a { border:1px solid var(--line); border-radius:8px; padding:6px 8px; color:#1f6fb2; text-decoration:none; font-weight:800; font-size:12px; line-height:1; background:#fff; white-space:nowrap; }
 .empty-row td { color:var(--muted); text-align:center; padding:36px; }
+
+/* Compact student directory */
+.panel-head { padding:12px 14px; gap:12px; }
+.panel-title { font-size:17px; }
+.visible-count { font-size:12px; }
+.toolbar { grid-template-columns:minmax(220px,1fr) 170px 150px 140px; gap:8px; padding:10px 14px; }
+input, select { min-height:34px; border-radius:8px; padding:7px 10px; font-size:12px; }
+.students-table { min-width:980px; font-size:12px; }
+.students-table th, .students-table td { padding:7px 10px; }
+.students-table th { height:30px; font-size:11px; text-transform:none; letter-spacing:0; }
+.students-table td { height:46px; }
+.students-table th:nth-child(1), .students-table td:nth-child(1) { width:27%; }
+.students-table th:nth-child(2), .students-table td:nth-child(2) { width:23%; }
+.students-table th:nth-child(3), .students-table td:nth-child(3) { width:13%; }
+.students-table th:nth-child(4), .students-table td:nth-child(4) { width:9%; }
+.students-table th:nth-child(5), .students-table td:nth-child(5) { width:13%; }
+.students-table th:nth-child(6), .students-table td:nth-child(6) { width:15%; }
+.student-primary-cell { border-left:3px solid var(--blue); padding-left:8px; }
+.cell-primary { display:block; color:#111827; font-size:13px; font-weight:800; line-height:1.18; text-decoration:none; }
+.cell-secondary { display:block; color:var(--muted); font-size:11px; line-height:1.2; margin-top:2px; }
+.student-name:hover { color:var(--blue); }
+.lesson-count { font-size:13px; }
+.status-pill { min-height:18px; padding:2px 7px; font-size:11px; }
+.actions { gap:5px; }
+.actions a { border-radius:7px; padding:4px 7px; font-size:11px; }
 @media (max-width: 900px) {
   .owner-wrap { padding: 22px 16px 40px; }
   .topbar { flex-direction:column; }
@@ -3040,9 +3072,9 @@ input, select { width:100%; border:1px solid #d9dee8; background:#fff; border-ra
         <thead>
           <tr>
             <th>Student</th>
+            <th>Parent</th>
             <th>Teacher</th>
-            <th>Lessons left</th>
-            <th>Balance</th>
+            <th>Lessons</th>
             <th>Status</th>
             <th>Actions</th>
           </tr>
