@@ -3821,6 +3821,9 @@ def edit_student(name):
     conn.commit()
 
     if request.method == "POST":
+        first_name_input = (request.form.get("first_name") or "").strip()
+        last_name_input = (request.form.get("last_name") or "").strip()
+        updated_name = " ".join([part for part in [first_name_input, last_name_input] if part]).strip() or name
         teacher = request.form.get("teacher")
         parent_name = request.form.get("parent_name")
         parent_email = request.form.get("parent_email")
@@ -3831,9 +3834,40 @@ def edit_student(name):
         lesson_length = request.form.get("lesson_length") or "30 minutes"
         internal_note = request.form.get("internal_note") or ""
 
+        if updated_name != name:
+            cursor.execute(
+                "SELECT 1 FROM students WHERE name = ? AND name != ? LIMIT 1",
+                (updated_name, name)
+            )
+            if cursor.fetchone():
+                conn.close()
+                return f"""
+                <h1>Student name already exists</h1>
+                <p>{escape(updated_name)} already exists. If this is a duplicate, delete the duplicate record first or use a different name.</p>
+                <p><a href="/edit_student/{quote(name)}">Back to edit student</a></p>
+                """, 409
+
+        def table_has_column(table_name, column_name):
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,)
+            )
+            if not cursor.fetchone():
+                return False
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            return column_name in [row[1] for row in cursor.fetchall()]
+
+        def update_student_name(table_name, column_name="student_name"):
+            if table_has_column(table_name, column_name):
+                cursor.execute(
+                    f"UPDATE {table_name} SET {column_name} = ? WHERE {column_name} = ?",
+                    (updated_name, name)
+                )
+
         cursor.execute("""
         UPDATE students
-        SET teacher = ?,
+        SET name = ?,
+            teacher = ?,
             parent_name = ?,
             parent_email = ?,
             parent_phone = ?,
@@ -3844,6 +3878,7 @@ def edit_student(name):
             internal_note = ?
         WHERE name = ?
         """, (
+            updated_name,
             teacher,
             parent_name,
             parent_email,
@@ -3856,11 +3891,29 @@ def edit_student(name):
             name
         ))
 
-        sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
+        for table_name in [
+            "schedule",
+            "payments",
+            "invoices",
+            "lessons",
+            "student_ledger",
+            "parent_students",
+            "enrollments",
+            "student_course_rates",
+            "student_credit_wallets",
+            "parent_booking_requests",
+            "event_rsvps",
+            "reschedule_requests",
+            "child_os_requests",
+            "message_threads",
+        ]:
+            update_student_name(table_name)
+
+        sync_parent_profile_for_student(cursor, updated_name, parent_name, parent_email, parent_phone)
         conn.commit()
         conn.close()
 
-        return redirect(f"/student/{quote(name)}")
+        return redirect(f"/student/{quote(updated_name)}")
 
     cursor.execute("""
     SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left,
@@ -4200,11 +4253,11 @@ def edit_student(name):
                                 <div class="form-grid">
                                     <div>
                                         <label>Student first name</label>
-                                        <input name="first_name_display" value="{escape(first_name, quote=True)}" readonly>
+                                        <input name="first_name" value="{escape(first_name, quote=True)}">
                                     </div>
                                     <div>
                                         <label>Student last name</label>
-                                        <input name="last_name_display" value="{escape(last_name, quote=True)}" readonly>
+                                        <input name="last_name" value="{escape(last_name, quote=True)}">
                                     </div>
                                     <div>
                                         <label>Status</label>
