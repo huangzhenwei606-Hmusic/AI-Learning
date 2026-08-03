@@ -3331,6 +3331,9 @@ def add_teacher():
         return redirect("/owner_login")
 
     ensure_teacher_management_schema()
+    return_to = (request.form.get("return_to") or request.args.get("return_to") or "").strip()
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = ""
 
     def render_add_teacher_form(error="", values=None):
         values = values or {}
@@ -3344,6 +3347,9 @@ def add_teacher():
             "0": "selected" if active_value == "0" else ""
         }
         error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+        return_to_input = f'<input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">' if return_to else ""
+        back_href = escape(return_to or "/teachers", quote=True)
+        back_label = "Back to student edit" if return_to else "Back"
 
         return f"""
         <html>
@@ -3367,6 +3373,7 @@ def add_teacher():
             <h1>Add Teacher</h1>
             {error_html}
             <form method="POST">
+                {return_to_input}
                 <label>Teacher Name</label>
                 <input name="teacher_name" required value="{field_value('teacher_name')}">
 
@@ -3396,7 +3403,7 @@ def add_teacher():
                 <textarea name="notes" rows="4">{field_value('notes')}</textarea>
 
                 <button type="submit">Create Teacher</button>
-                <a class="button secondary" href="/teachers">Back</a>
+                <a class="button secondary" href="{back_href}">{back_label}</a>
             </form>
         </div>
         </body>
@@ -3471,6 +3478,11 @@ def add_teacher():
             return render_add_teacher_form("The teacher database was just updated. Please click Create Teacher again.", request.form)
 
         conn.close()
+        return_link_html = (
+            f'<p><a href="{escape(return_to, quote=True)}">Back to student edit</a> | <a href="/teachers">Back to Teachers</a></p>'
+            if return_to
+            else '<p><a href="/teachers">Back to Teachers</a></p>'
+        )
         return f"""
         <html>
         <head>
@@ -3491,7 +3503,7 @@ def add_teacher():
                 <p><strong>Temporary password:</strong> {escape(password)}</p>
                 <p>The teacher will be asked to change this password after login.</p>
             </div>
-            <p><a href="/teachers">Back to Teachers</a></p>
+            {return_link_html}
         </div>
         </body>
         </html>
@@ -3923,6 +3935,7 @@ def edit_student(name):
     student_url_name = quote(student_name)
     lessons_left = lesson_count(student[5])
     current_teacher_edit_url = f"/edit_teacher/{current_teacher[0]}" if current_teacher else "/teachers"
+    add_teacher_url = f"/add_teacher?{urlencode({'return_to': f'/edit_student/{student_url_name}#teacher-lessons'})}"
     next_lesson_text = (
         f"{escape(str(next_lesson[0]))} {escape(str(next_lesson[1] or ''))}"
         if next_lesson
@@ -4055,6 +4068,41 @@ def edit_student(name):
             .badge.danger {{ background:var(--red-soft); color:var(--red); }}
             .badge.amber {{ background:var(--red-soft); color:var(--red); }}
             .badge.neutral {{ background:#e7f1ff; color:#858585; }}
+            /* Compact edit student page */
+            .topbar {{ height:46px; gap:12px; padding:0 18px; }}
+            .brand {{ font-size:17px; }}
+            .nav {{ gap:5px; }}
+            .nav a {{ min-height:30px; padding:0 9px; border-radius:6px; font-size:12px; }}
+            .savebar {{ gap:6px; }}
+            .page {{ max-width:1180px; padding:14px 16px 22px; }}
+            .header {{ gap:10px; margin-bottom:10px; align-items:end; }}
+            .crumbs {{ font-size:12px; margin-bottom:4px; }}
+            h1 {{ font-size:18px; line-height:1.15; }}
+            h2 {{ font-size:13px; }}
+            .subline {{ margin-top:5px; gap:6px; font-size:12px; }}
+            .quick {{ gap:6px; padding-top:0; }}
+            .button, button {{ min-height:30px; border-width:1px; border-radius:6px; padding:0 9px; font-size:12px; font-weight:500; }}
+            .layout {{ grid-template-columns:160px minmax(0,1fr) 240px; gap:10px; }}
+            .side, .panel {{ border-width:1px; border-radius:7px; }}
+            .side {{ padding:6px; min-height:0; }}
+            .side a {{ min-height:30px; padding:0 8px; border-radius:5px; font-size:12px; }}
+            .profile-panel {{ grid-column:auto; }}
+            .panel-head {{ min-height:34px; padding:0 10px; border-bottom-width:1px; font-size:12px; }}
+            .panel-body {{ padding:10px; }}
+            .form-grid {{ grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }}
+            .span {{ grid-column:span 2; }}
+            #notes {{ grid-column:1 / -1; }}
+            label {{ font-size:11px; margin-bottom:3px; font-weight:500; }}
+            input, select, textarea, .readonly {{ min-height:30px; border-width:1px; border-radius:6px; padding:0 8px; font-size:12px; }}
+            textarea {{ min-height:54px; padding-top:7px; }}
+            .teacher-field {{ grid-template-columns:minmax(0,1fr) auto auto; gap:6px; }}
+            .teacher-link {{ min-height:30px; border:1px solid var(--border); border-radius:6px; padding:0 9px; font-size:12px; font-weight:500; }}
+            .stack {{ grid-column:auto; grid-template-columns:1fr; gap:10px; margin-top:0; }}
+            .stack .panel {{ min-height:0; }}
+            .mini-row {{ gap:6px; padding:7px 0; border-bottom-width:1px; font-size:12px; }}
+            .mini-row strong {{ font-size:12px; font-weight:500; }}
+            .mini-row span {{ font-size:11px; margin-top:2px; }}
+            .badge {{ min-height:18px; padding:0 7px; font-size:11px; font-weight:500; }}
             @media (max-width:1050px) {{
                 .layout {{ grid-template-columns:1fr; }}
                 .profile-panel {{ grid-column:auto; }}
@@ -4150,6 +4198,7 @@ def edit_student(name):
                                         <div class="teacher-field">
                                             <select name="teacher">{teacher_options}</select>
                                             <a class="teacher-link" href="{current_teacher_edit_url}">Edit</a>
+                                            <a class="teacher-link" href="{add_teacher_url}">Add</a>
                                         </div>
                                     </div>
                                     <div>
@@ -4177,10 +4226,19 @@ def edit_student(name):
                             <div class="panel">
                                 <div class="panel-head">
                                     <h2>Teacher history</h2>
-                                    <a class="teacher-link" href="/teachers">Manage</a>
+                                    <span>
+                                        <a class="teacher-link" href="/teachers">Manage</a>
+                                        <a class="teacher-link" href="{add_teacher_url}">Add</a>
+                                    </span>
                                 </div>
                                 <div class="panel-body">
                                     {teacher_history_html}
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Teacher change note</strong>
+                                            <span>Primary teacher changes profile access. Update future scheduled lessons in Schedule if class times should move to another teacher.</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
