@@ -1001,7 +1001,7 @@ def hstudio_badge(count):
 
 
 def get_missing_homework_lessons(limit=None, teacher_name=None):
-    ensure_v321_schema()
+    ensure_calendar_lesson_panel_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -1031,9 +1031,18 @@ def get_missing_homework_lessons(limit=None, teacher_name=None):
         SELECT 1
         FROM lessons l
         WHERE l.student_name = s.student_name
-        AND l.lesson_date = s.lesson_date
         AND TRIM(COALESCE(l.homework, '')) != ''
+        AND (
+            COALESCE(l.schedule_id, 0) = s.id
+            OR l.lesson_date = s.lesson_date
+            OR (
+                l.lesson_date >= s.lesson_date
+                AND l.lesson_date <= date(s.lesson_date, '+14 days')
+                AND COALESCE(l.created_by, '') IN ('', 'teacher:' || COALESCE(s.teacher, ''))
+            )
+        )
     )
+    AND TRIM(COALESCE(s.homework_assignment, '')) = ''
     ORDER BY s.lesson_date DESC, s.lesson_time DESC, s.id DESC
     {limit_sql}
     """, params)
@@ -1043,7 +1052,7 @@ def get_missing_homework_lessons(limit=None, teacher_name=None):
 
 
 def get_missing_homework_count(teacher_name=None):
-    ensure_v321_schema()
+    ensure_calendar_lesson_panel_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -1062,9 +1071,18 @@ def get_missing_homework_count(teacher_name=None):
         SELECT 1
         FROM lessons l
         WHERE l.student_name = s.student_name
-        AND l.lesson_date = s.lesson_date
         AND TRIM(COALESCE(l.homework, '')) != ''
+        AND (
+            COALESCE(l.schedule_id, 0) = s.id
+            OR l.lesson_date = s.lesson_date
+            OR (
+                l.lesson_date >= s.lesson_date
+                AND l.lesson_date <= date(s.lesson_date, '+14 days')
+                AND COALESCE(l.created_by, '') IN ('', 'teacher:' || COALESCE(s.teacher, ''))
+            )
+        )
     )
+    AND TRIM(COALESCE(s.homework_assignment, '')) = ''
     """, params)
     count = cursor.fetchone()[0] or 0
     conn.close()
@@ -5021,6 +5039,7 @@ def teacher_lesson_notes():
     if not require_teacher():
         return redirect("/teacher_login")
 
+    ensure_calendar_lesson_panel_schema()
     teacher_name = session.get("teacher_name")
     selected_date = request.values.get("lesson_date") or date.today().strftime("%Y-%m-%d")
 
@@ -5045,6 +5064,19 @@ def teacher_lesson_notes():
         lesson_content = request.form.get("lesson_content") or "Lesson note"
         performance = request.form.get("performance", "")
         homework = request.form.get("homework", "")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        SELECT id
+        FROM schedule
+        WHERE teacher = ?
+        AND student_name = ?
+        AND lesson_date = ?
+        ORDER BY lesson_time, id
+        LIMIT 1
+        """, (teacher_name, selected_student, selected_date))
+        schedule_row = cursor.fetchone()
+        schedule_id = schedule_row[0] if schedule_row else None
 
         cursor.execute("""
         INSERT INTO lessons
@@ -5053,10 +5085,33 @@ def teacher_lesson_notes():
             lesson_content,
             performance,
             homework,
-            lesson_date
+            lesson_date,
+            schedule_id,
+            created_by,
+            created_at,
+            updated_at
         )
-        VALUES (?, ?, ?, ?, ?)
-        """, (selected_student, lesson_content, performance, homework, selected_date))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            selected_student,
+            lesson_content,
+            performance,
+            homework,
+            selected_date,
+            schedule_id,
+            f"teacher:{teacher_name}",
+            now,
+            now
+        ))
+
+        if schedule_id:
+            cursor.execute("""
+            UPDATE schedule
+            SET notes = ?,
+                homework_assignment = ?,
+                owner_calendar_updated_at = ?
+            WHERE id = ?
+            """, (lesson_content, homework, now, schedule_id))
 
         cursor.execute("""
         UPDATE students
@@ -5157,8 +5212,27 @@ def add_lesson(name):
         performance = request.form.get("performance", "")
         homework = request.form.get("homework", "")
 
+        ensure_calendar_lesson_panel_schema()
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
+        schedule_params = [name, lesson_date]
+        schedule_teacher_filter = ""
+        if require_teacher() and not require_owner():
+            schedule_teacher_filter = "AND teacher = ?"
+            schedule_params.append(session.get("teacher_name"))
+        cursor.execute(f"""
+        SELECT id
+        FROM schedule
+        WHERE student_name = ?
+        AND lesson_date = ?
+        {schedule_teacher_filter}
+        ORDER BY lesson_time, id
+        LIMIT 1
+        """, schedule_params)
+        schedule_row = cursor.fetchone()
+        schedule_id = schedule_row[0] if schedule_row else None
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        actor = f"teacher:{session.get('teacher_name')}" if require_teacher() and not require_owner() else "owner"
 
         cursor.execute("""
         INSERT INTO lessons
@@ -5167,17 +5241,34 @@ def add_lesson(name):
             lesson_content,
             performance,
             homework,
-            lesson_date
+            lesson_date,
+            schedule_id,
+            created_by,
+            created_at,
+            updated_at
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
             lesson_content,
             performance,
             homework,
-            lesson_date
+            lesson_date,
+            schedule_id,
+            actor,
+            now,
+            now
         ))
+
+        if schedule_id:
+            cursor.execute("""
+            UPDATE schedule
+            SET notes = ?,
+                homework_assignment = ?,
+                owner_calendar_updated_at = ?
+            WHERE id = ?
+            """, (lesson_content, homework, now, schedule_id))
 
         cursor.execute("""
         UPDATE students
@@ -9856,13 +9947,14 @@ def teacher_missing_homework():
 
     rows = ""
     for lesson in lessons:
+        homework_href = f"/teacher_dashboard?view=records&lesson_date={quote(str(lesson[3] or ''))}&student_name={quote(str(lesson[1] or ''))}"
         rows += f"""
         <tr>
             <td>{lesson[3]}</td>
             <td>{lesson[4] or '-'}</td>
             <td>{escape(lesson[1] or '-')}</td>
             <td>{escape(lesson[5] or '-')}</td>
-            <td><a class="mini-button" href="/add_lesson/{lesson[1]}">Add Homework</a></td>
+            <td><a class="mini-button" href="{homework_href}">Add Homework</a></td>
         </tr>
         """
 
