@@ -6125,6 +6125,7 @@ def calendar():
                 warning = warning_pill(event[13], event[8])
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
+                student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
                 event_cards += f"""
                 <div class="ev" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
@@ -6132,7 +6133,7 @@ def calendar():
                      data-student="{escape(str(event[3] or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
                     <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span><span class="ev-icon-stack">{status_icons}</span></span>
-                    <span class="ev-name">{escape(str(event[3] or ""))}</span>
+                    <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event[3] or ""))}</a>
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
                     {warning}
@@ -6307,7 +6308,10 @@ def calendar():
                  cursor:grab;user-select:none}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
-            .ev-name{{font-weight:600;display:block;color:inherit}}
+            .ev-name{{font-weight:600;display:block;color:inherit;text-decoration:none;border-radius:3px;
+                      width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis}}
+            .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
+            .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
             .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:2px}}
             .ev-time{{font-size:9px;opacity:.75;display:block}}
             .ev-sub{{font-size:9px;opacity:.6;display:block}}
