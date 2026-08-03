@@ -4068,7 +4068,7 @@ def edit_student(name):
             .badge.danger {{ background:var(--red-soft); color:var(--red); }}
             .badge.amber {{ background:var(--red-soft); color:var(--red); }}
             .badge.neutral {{ background:#e7f1ff; color:#858585; }}
-            /* Light single-column edit student page */
+            /* Light compact wide edit student page */
             :root {{
                 --bg:#f5f7fb; --card:#ffffff; --text:#111827; --muted:#667085; --border:#e4e8f0;
                 --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff;
@@ -4076,57 +4076,62 @@ def edit_student(name):
             }}
             body {{ background:var(--bg); color:var(--text); }}
             .shell {{ min-height:100vh; border:0; border-radius:0; background:var(--bg); }}
-            .topbar {{ height:64px; grid-template-columns:auto minmax(0,1fr) auto; gap:20px; padding:0 28px; background:#fff; border-bottom:1px solid var(--border); }}
-            .brand {{ font-size:22px; color:var(--text); font-weight:850; }}
+            .topbar {{ height:60px; grid-template-columns:auto minmax(0,1fr) auto; gap:20px; padding:0 28px; background:#fff; border-bottom:1px solid var(--border); }}
+            .brand {{ font-size:21px; color:var(--text); font-weight:850; }}
             .nav {{ gap:8px; }}
-            .nav a {{ min-height:40px; padding:0 13px; border-radius:9px; color:var(--muted); font-size:14px; font-weight:800; }}
+            .nav a {{ min-height:38px; padding:0 13px; border-radius:8px; color:var(--muted); font-size:14px; font-weight:800; }}
             .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
             .savebar {{ gap:8px; }}
-            .page {{ max-width:none; padding:22px 28px 42px; }}
-            .header {{ display:block; margin-bottom:14px; }}
-            .crumbs {{ font-size:13px; margin-bottom:8px; color:var(--muted); }}
-            h1 {{ font-size:26px; line-height:1.12; color:var(--text); font-weight:850; }}
-            h2 {{ font-size:16px; color:var(--text); font-weight:850; }}
-            .subline {{ margin-top:9px; gap:8px; font-size:13px; color:var(--muted); }}
-            .quick {{ justify-content:flex-start; gap:8px; padding-top:14px; }}
-            .button, button {{ min-height:38px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:0 13px; font-size:13px; font-weight:800; }}
+            .page {{ max-width:none; padding:18px 28px 34px; }}
+            .header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:end; margin-bottom:12px; }}
+            .crumbs {{ font-size:12px; margin-bottom:5px; color:var(--muted); }}
+            h1 {{ font-size:24px; line-height:1.12; color:var(--text); font-weight:850; }}
+            h2 {{ font-size:15px; color:var(--text); font-weight:850; }}
+            .subline {{ margin-top:8px; gap:8px; font-size:12px; color:var(--muted); }}
+            .quick {{ justify-content:flex-end; gap:8px; padding-top:0; }}
+            .button, button {{ min-height:36px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:0 12px; font-size:13px; font-weight:800; }}
             .primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
-            .layout {{ display:grid; grid-template-columns:1fr; gap:14px; }}
+            .layout {{ display:grid; grid-template-columns:176px minmax(560px,1fr) 292px; gap:12px; align-items:start; }}
             .side, .panel {{ background:var(--card); border:1px solid var(--border); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.05); }}
-            .side {{ padding:8px; min-height:0; }}
-            .side a {{ min-height:40px; padding:0 12px; border-radius:8px; color:var(--muted); font-size:13px; font-weight:800; }}
+            .side {{ padding:6px; min-height:0; position:sticky; top:12px; }}
+            .side a {{ min-height:34px; padding:0 10px; border-radius:7px; color:var(--muted); font-size:12px; font-weight:800; }}
             .side a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
             .profile-panel {{ grid-column:auto; }}
-            .panel-head {{ min-height:46px; padding:0 14px; border-bottom:1px solid var(--border); background:#f8fafc; color:var(--muted); font-size:13px; }}
+            .panel-head {{ min-height:42px; padding:0 13px; border-bottom:1px solid var(--border); background:#f8fafc; color:var(--muted); font-size:12px; }}
             .panel-body {{ padding:14px; }}
-            .form-grid {{ display:grid; grid-template-columns:1fr; gap:11px; }}
-            .span {{ grid-column:auto; }}
-            #notes {{ grid-column:auto; }}
-            label {{ color:var(--muted); font-size:12px; margin-bottom:5px; font-weight:800; }}
-            input, select, textarea, .readonly {{ min-height:38px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:0 10px; font-size:13px; font-weight:600; }}
-            textarea {{ min-height:64px; padding-top:9px; }}
-            .teacher-field {{ grid-template-columns:minmax(0,1fr) 72px; gap:8px; }}
-            .teacher-field .teacher-link[href*="add_teacher"] {{ display:none; }}
-            .teacher-link {{ min-height:38px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--blue-dark); padding:0 12px; font-size:13px; font-weight:800; }}
-            .stack {{ grid-column:auto; grid-template-columns:1fr; gap:14px; margin-top:0; }}
+            .form-grid {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px 12px; }}
+            .form-grid > div {{ grid-column:span 2; min-width:0; }}
+            .form-grid > div:nth-child(4), .form-grid > div.teacher-span {{ grid-column:span 3; }}
+            .form-grid > div:nth-child(9) {{ grid-column:span 4; }}
+            .form-grid > div.span, #notes {{ grid-column:1 / -1; }}
+            label {{ color:var(--muted); font-size:11px; margin-bottom:4px; font-weight:800; }}
+            input, select, textarea, .readonly {{ min-height:34px; border:1px solid var(--border); border-radius:7px; background:#fff; color:var(--text); padding:0 9px; font-size:13px; font-weight:600; }}
+            textarea {{ min-height:58px; padding-top:8px; }}
+            .teacher-field {{ display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; }}
+            .teacher-link {{ min-height:34px; border:1px solid var(--border); border-radius:7px; background:#fff; color:var(--blue-dark); padding:0 12px; font-size:13px; font-weight:800; }}
+            .stack {{ grid-column:auto; grid-template-columns:1fr; gap:12px; margin-top:0; }}
             .stack .panel {{ min-height:0; }}
-            .mini-row {{ gap:8px; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }}
+            .mini-row {{ gap:8px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; }}
             .mini-row strong {{ color:var(--text); font-size:13px; font-weight:850; }}
             .mini-row span {{ color:var(--muted); font-size:12px; margin-top:3px; }}
             .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
             .badge.neutral {{ background:#eef2f7; color:#475467; }}
+            .inactive-row {{ margin-top:10px; padding-top:10px; border-top:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px; }}
+            .inactive-row span {{ color:var(--muted); font-size:12px; font-weight:700; }}
+            .inactive-row button {{ color:var(--red); background:#fff; border-color:#fecaca; }}
             .deploy-stamp {{ display:none; }}
             @media (max-width:1050px) {{
-                .layout {{ grid-template-columns:1fr; }}
+                .layout {{ grid-template-columns:160px minmax(0,1fr); }}
                 .profile-panel {{ grid-column:auto; }}
-                .stack {{ grid-template-columns:1fr; }}
+                .stack {{ grid-column:1 / -1; grid-template-columns:repeat(2,minmax(0,1fr)); }}
             }}
             @media (max-width:760px) {{
                 .topbar, .header, .layout, .form-grid, .stack {{ grid-template-columns:1fr; }}
                 .topbar {{ height:auto; padding-top:10px; padding-bottom:10px; }}
                 .quick, .savebar {{ justify-content:flex-start; }}
+                .form-grid > div, .form-grid > div:nth-child(4), .form-grid > div.teacher-span, .form-grid > div:nth-child(9), .form-grid > div.span, #notes {{ grid-column:auto; }}
             }}
         </style>
     </head>
@@ -4197,7 +4202,7 @@ def edit_student(name):
                                     </div>
                                     <div>
                                         <label>Status</label>
-                                        <select name="status">
+                                        <select name="status" id="studentStatusSelect">
                                             {options(['Active', 'Paused', 'Inactive'], status_value)}
                                         </select>
                                     </div>
@@ -4207,7 +4212,7 @@ def edit_student(name):
                                             {options(['Piano private lesson', 'Voice private lesson', 'Guitar private lesson', 'Group class', 'Custom program'], program_value)}
                                         </select>
                                     </div>
-                                    <div class="span" id="teacher-lessons">
+                                    <div class="teacher-span" id="teacher-lessons">
                                         <label>Teacher</label>
                                         <div class="teacher-field">
                                             <select name="teacher">{teacher_options}</select>
@@ -4241,6 +4246,10 @@ def edit_student(name):
                                         <label>Internal note</label>
                                         <textarea name="internal_note">{escape(str(internal_note_value))}</textarea>
                                     </div>
+                                </div>
+                                <div class="inactive-row">
+                                    <span>Student stopped lessons? Set inactive to keep history while hiding from active lists.</span>
+                                    <button type="button" onclick="document.getElementById('studentStatusSelect').value='Inactive';">Set inactive</button>
                                 </div>
                             </div>
                         </div>
