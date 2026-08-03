@@ -12506,10 +12506,12 @@ def parent_admin(parent_id):
         return "<h1>Parent not found</h1>"
 
     cursor.execute("""
-    SELECT id, student_name, relationship, active, created_at
-    FROM parent_students
-    WHERE parent_id = ?
-    ORDER BY active DESC, student_name
+    SELECT ps.id, ps.student_name, ps.relationship, ps.active, ps.created_at,
+           COALESCE(s.teacher, ''), COALESCE(s.parent_email, '')
+    FROM parent_students ps
+    LEFT JOIN students s ON s.name = ps.student_name
+    WHERE ps.parent_id = ?
+    ORDER BY ps.active DESC, ps.student_name
     """, (parent_id,))
     linked_students = cursor.fetchall()
 
@@ -12539,32 +12541,44 @@ def parent_admin(parent_id):
 
     linked_rows = ""
     for s in linked_students:
-        status = "Active" if s[3] == 1 else "Inactive"
+        status = "Active" if s[3] == 1 else "Hidden"
+        status_class = "good" if s[3] == 1 else "neutral"
         unlink_action = ""
         if s[3] == 1:
             unlink_action = f"""
-            <form method="POST" action="/unlink_parent_student/{s[0]}" style="display:inline;">
-                <button type="submit">Unlink</button>
+            <form method="POST" action="/unlink_parent_student/{s[0]}" class="inline-form">
+                <button class="button danger" type="submit">Remove access</button>
             </form>
             """
 
         linked_rows += f"""
         <tr>
-            <td>{s[1]}</td>
-            <td>{s[2]}</td>
-            <td>{status}</td>
-            <td>{s[4]}</td>
+            <td>
+                <div class="child-cell">
+                    <a href="/student/{quote(str(s[1] or ''))}">{escape(str(s[1] or '-'))}</a>
+                    <span>{escape(str(s[6] or 'Student record'))}</span>
+                </div>
+            </td>
+            <td>{escape(str(s[5] or 'Unassigned'))}</td>
+            <td>{escape(str(s[2] or 'Parent'))}</td>
+            <td>
+                <div class="access-pills">
+                    <span>Schedule</span><span>Homework</span><span>Invoices</span><span>Messages</span>
+                </div>
+            </td>
+            <td><span class="pill {status_class}">{status}</span></td>
             <td>{unlink_action}</td>
         </tr>
         """
 
     if not linked_rows:
-        linked_rows = "<tr><td colspan='5'>No linked students.</td></tr>"
+        linked_rows = "<tr><td colspan='6' class='empty'>No children are visible in this parent app yet.</td></tr>"
 
     student_options = ""
     for s in available_students:
-        label = f"{s[0]} | Teacher: {s[1] or ''} | Current Email: {s[2] or ''}"
-        student_options += f'<option value="{s[0]}">{label}</option>'
+        match_label = "safe match" if (s[2] or "").strip().lower() == (parent[2] or "").strip().lower() else "different email"
+        label = f"{s[0]} | Teacher: {s[1] or 'Unassigned'} | {match_label}"
+        student_options += f'<option value="{escape(str(s[0]), quote=True)}">{escape(label)}</option>'
 
     if not student_options:
         student_options = '<option value="">No available students</option>'
@@ -12573,10 +12587,10 @@ def parent_admin(parent_id):
     for a in activities:
         activity_rows += f"""
         <tr>
-            <td>{a[3]}</td>
-            <td>{a[0] or ''}</td>
-            <td>{a[1]}</td>
-            <td>{a[2]}</td>
+            <td>{escape(str(a[3] or ''))}</td>
+            <td>{escape(str(a[0] or ''))}</td>
+            <td>{escape(str(a[1] or ''))}</td>
+            <td>{escape(str(a[2] or ''))}</td>
         </tr>
         """
 
@@ -12584,142 +12598,235 @@ def parent_admin(parent_id):
         activity_rows = "<tr><td colspan='4'>No activity yet.</td></tr>"
 
     status = "Active" if parent[5] == 1 else "Inactive"
+    status_class = "good" if parent[5] == 1 else "neutral"
+    active_link_count = sum(1 for row in linked_students if row[3] == 1)
+    try:
+        unread_count = get_unread_notification_count("parent", str(parent[0]))
+    except Exception:
+        unread_count = 0
+    open_invoice_count = 0
+    open_invoice_total = 0
+    try:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT COUNT(*), COALESCE(SUM(amount), 0)
+        FROM invoices
+        WHERE student_name IN (
+            SELECT student_name
+            FROM parent_students
+            WHERE parent_id = ?
+            AND active = 1
+        )
+        AND COALESCE(status, 'unpaid') != 'paid'
+        """, (parent[0],))
+        invoice_summary = cursor.fetchone()
+        open_invoice_count = invoice_summary[0] or 0
+        open_invoice_total = invoice_summary[1] or 0
+        conn.close()
+    except Exception:
+        open_invoice_count = 0
+        open_invoice_total = 0
 
     return f"""
+    <!doctype html>
     <html>
     <head>
-        <title>Parent Detail</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Parent Child Access</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #f7f7fb;
-                padding: 40px;
-            }}
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            }}
-            .cards {{
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 14px;
-                margin: 20px 0;
-            }}
-            .card {{
-                background: #f5f5ff;
-                padding: 16px;
-                border-radius: 10px;
-                border: 1px solid #ddd;
-            }}
-            .label {{
-                color: #6b7280;
-                font-size: 13px;
-            }}
-            .value {{
-                font-size: 20px;
-                font-weight: bold;
-                margin-top: 6px;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 14px 0 28px;
-            }}
-            th, td {{
-                padding: 10px;
-                border-bottom: 1px solid #eee;
-                text-align: left;
-            }}
-            th {{
-                background: #eeeeff;
-            }}
-            select, input {{
-                padding: 9px;
-                font-size: 14px;
-                margin-right: 8px;
-            }}
-            a.button, button {{
-                display: inline-block;
-                background: #5b5cff;
-                color: white;
-                border: none;
-                padding: 9px 13px;
-                border-radius: 7px;
-                text-decoration: none;
-                font-weight: bold;
-                margin-right: 7px;
-                cursor: pointer;
-            }}
-            .danger {{
-                background: #dc2626;
+            :root {{ --bg:#f5f7fb; --card:#fff; --text:#111827; --muted:#667085; --line:#e4e8f0; --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff; --green:#166534; --green-soft:#dcfce7; --red:#b42318; --red-soft:#fee2e2; }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:var(--bg); color:var(--text); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            a {{ color:inherit; text-decoration:none; }}
+            .topbar {{ height:60px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:20px; padding:0 28px; background:#fff; border-bottom:1px solid var(--line); }}
+            .brand {{ font-size:21px; font-weight:850; white-space:nowrap; }}
+            .nav {{ display:flex; gap:8px; overflow:hidden; }}
+            .nav a {{ min-height:38px; display:inline-flex; align-items:center; padding:0 13px; border-radius:8px; color:var(--muted); font-size:14px; font-weight:800; white-space:nowrap; }}
+            .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
+            .top-actions {{ display:flex; gap:8px; justify-content:flex-end; }}
+            .page {{ max-width:none; padding:18px 28px 34px; }}
+            .head {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:end; margin-bottom:12px; }}
+            .crumbs {{ color:var(--muted); font-size:12px; font-weight:700; margin-bottom:5px; }}
+            h1, h2, p {{ margin:0; }}
+            h1 {{ font-size:24px; line-height:1.12; font-weight:850; }}
+            h2 {{ font-size:15px; font-weight:850; }}
+            .subline {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; font-weight:700; align-items:center; }}
+            .tabs {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
+            .tab {{ min-height:32px; padding:0 11px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:#fff; font-size:12px; font-weight:850; }}
+            .tab.active {{ background:var(--blue-soft); border-color:#bfdbfe; color:var(--blue-dark); }}
+            .layout {{ display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; align-items:start; }}
+            .panel {{ background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.05); overflow:hidden; }}
+            .panel-head {{ min-height:40px; padding:0 13px; border-bottom:1px solid var(--line); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; font-weight:700; }}
+            .panel-head h2 {{ color:var(--text); }}
+            .panel-body {{ padding:14px; }}
+            .parent-card {{ display:grid; grid-template-columns:42px minmax(0,1fr); gap:10px; align-items:center; padding-bottom:12px; border-bottom:1px solid var(--line); }}
+            .avatar {{ width:42px; height:42px; border-radius:9px; background:var(--blue); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:900; }}
+            .primary {{ color:var(--text); font-size:14px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .muted {{ color:var(--muted); font-size:12px; font-weight:650; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .metrics {{ margin-top:10px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
+            .metric {{ border:1px solid var(--line); border-radius:8px; padding:8px; min-width:0; }}
+            .metric span {{ display:block; color:var(--muted); font-size:11px; font-weight:850; }}
+            .metric strong {{ display:block; margin-top:3px; font-size:15px; font-weight:900; }}
+            .explain {{ margin-top:10px; padding:9px 10px; border-radius:8px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:12px; font-weight:750; line-height:1.35; }}
+            .stack {{ display:grid; gap:12px; }}
+            .add-grid {{ display:grid; grid-template-columns:minmax(260px,1fr) 160px auto; gap:8px; align-items:end; }}
+            label {{ display:block; color:var(--muted); font-size:11px; font-weight:850; margin-bottom:4px; }}
+            select, input {{ width:100%; min-height:34px; border:1px solid #d9dee8; border-radius:8px; background:#fff; color:var(--text); padding:0 9px; font:inherit; font-size:12px; font-weight:700; }}
+            .button, button {{ min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); padding:0 11px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }}
+            .button.primary, button.primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
+            .button.danger, button.danger {{ color:var(--red); border-color:#fecaca; background:#fff; }}
+            .inline-form {{ display:inline; margin:0; }}
+            .hint-line {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }}
+            .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
+            .pill.good {{ background:var(--green-soft); color:var(--green); }}
+            .pill.neutral {{ background:#eef2f7; color:#475467; }}
+            .table-wrap {{ overflow:auto; }}
+            table {{ width:100%; border-collapse:collapse; min-width:880px; font-size:12px; }}
+            th, td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }}
+            th {{ color:var(--muted); font-size:11px; font-weight:850; background:#fff; }}
+            .child-cell {{ border-left:3px solid var(--blue); padding-left:8px; }}
+            .child-cell a {{ color:var(--text); font-weight:900; display:block; }}
+            .child-cell a:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
+            .child-cell span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
+            .access-pills {{ display:flex; gap:4px; flex-wrap:wrap; }}
+            .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
+            .empty {{ color:var(--muted); text-align:center; padding:28px; }}
+            .activity-table {{ min-width:760px; }}
+            @media (max-width:900px) {{
+                .topbar, .head, .layout, .add-grid {{ grid-template-columns:1fr; }}
+                .tabs, .top-actions {{ justify-content:flex-start; }}
             }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1>{parent[1] or 'Parent Detail'}</h1>
-
-            <a class="button" href="/parents">Back</a>
-            <a class="button" href="/edit_parent_admin/{parent[0]}">Edit Parent</a>
-            <a class="button" href="/parent_login">Parent Login</a>
-            <form method="POST" action="/reset_parent_password/{parent[0]}" style="display:inline;">
-                <button type="submit">Reset Password</button>
-            </form>
-
-            <div class="cards">
-                <div class="card">
-                    <div class="label">Email</div>
-                    <div class="value" style="font-size:15px;">{parent[2] or ''}</div>
-                </div>
-                <div class="card">
-                    <div class="label">Phone</div>
-                    <div class="value">{parent[3] or ''}</div>
-                </div>
-                <div class="card">
-                    <div class="label">Password</div>
-                    <div class="value">Hidden</div>
-                </div>
-                <div class="card">
-                    <div class="label">Status</div>
-                    <div class="value">{status}</div>
-                </div>
+        <div class="topbar">
+            <div class="brand">H-Music CRM</div>
+            <nav class="nav" aria-label="Main navigation">
+                <a href="/students">Students</a>
+                <a class="active" href="/parents">Parents</a>
+                <a href="/calendar">Calendar</a>
+                <a href="/invoices">Billing</a>
+                <a href="/teachers">Teachers</a>
+            </nav>
+            <div class="top-actions">
+                <a class="button" href="/parents">Back</a>
+                <a class="button primary" href="/edit_parent_admin/{parent[0]}">Edit parent</a>
             </div>
-
-            <h2>Link Student</h2>
-            <form method="POST" action="/link_parent_student/{parent[0]}">
-                <select name="student_name">
-                    {student_options}
-                </select>
-                Relationship:
-                <input name="relationship" value="Parent">
-                <button type="submit">Link Student</button>
-            </form>
-
-            <h2>Linked Students</h2>
-            <table>
-                <tr>
-                    <th>Student</th>
-                    <th>Relationship</th>
-                    <th>Status</th>
-                    <th>Linked At</th>
-                    <th>Action</th>
-                </tr>
-                {linked_rows}
-            </table>
-
-            <h2>Parent Activity</h2>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Student</th>
-                    <th>Action</th>
-                    <th>Description</th>
-                </tr>
-                {activity_rows}
-            </table>
         </div>
+        <main class="page">
+            <section class="head">
+                <div>
+                    <div class="crumbs">Parents / {escape(str(parent[1] or parent[2] or 'Parent'))} / Child access</div>
+                    <h1>{escape(str(parent[1] or 'Parent Account'))}</h1>
+                    <div class="subline">
+                        <span class="pill {status_class}">Parent login {status}</span>
+                        <span>{escape(str(parent[2] or 'No email'))}</span>
+                        <span>{active_link_count} linked child(ren)</span>
+                    </div>
+                </div>
+                <div class="tabs">
+                    <a class="tab" href="/edit_parent_admin/{parent[0]}">Profile</a>
+                    <span class="tab active">Child access</span>
+                    <a class="tab" href="/parent_login">Parent app</a>
+                </div>
+            </section>
+
+            <section class="layout">
+                <aside class="panel">
+                    <div class="panel-head"><h2>Parent account</h2><span>What this login controls</span></div>
+                    <div class="panel-body">
+                        <div class="parent-card">
+                            <div class="avatar">{escape(str((parent[1] or parent[2] or 'P')[:2]).upper())}</div>
+                            <div>
+                                <div class="primary">{escape(str(parent[1] or 'Parent'))}</div>
+                                <div class="muted">{escape(str(parent[2] or 'No email'))}</div>
+                                <div class="muted">{escape(str(parent[3] or 'No phone'))}</div>
+                            </div>
+                        </div>
+                        <div class="metrics">
+                            <div class="metric"><span>Children</span><strong>{active_link_count}</strong></div>
+                            <div class="metric"><span>Unread</span><strong>{unread_count}</strong></div>
+                            <div class="metric"><span>Open invoices</span><strong>{open_invoice_count}</strong></div>
+                            <div class="metric"><span>Amount due</span><strong>${hmusic_money(open_invoice_total)}</strong></div>
+                        </div>
+                        <div class="explain">Use this page to control which children this parent can see in the parent app. Removing access hides a child from the parent app; it does not delete the student.</div>
+                        <div class="top-actions" style="justify-content:flex-start;margin-top:10px;">
+                            <form method="POST" action="/reset_parent_password/{parent[0]}" class="inline-form">
+                                <button type="submit">Reset password</button>
+                            </form>
+                        </div>
+                    </div>
+                </aside>
+
+                <div class="stack">
+                    <section class="panel">
+                        <div class="panel-head"><h2>Add existing student to this parent</h2><span>Fast link</span></div>
+                        <div class="panel-body">
+                            <form method="POST" action="/link_parent_student/{parent[0]}">
+                                <div class="add-grid">
+                                    <div>
+                                        <label>Student</label>
+                                        <select name="student_name" required>{student_options}</select>
+                                    </div>
+                                    <div>
+                                        <label>Relationship</label>
+                                        <select name="relationship">
+                                            <option value="Parent">Parent</option>
+                                            <option value="Mother">Mother</option>
+                                            <option value="Father">Father</option>
+                                            <option value="Guardian">Guardian</option>
+                                            <option value="Emergency contact">Emergency contact</option>
+                                        </select>
+                                    </div>
+                                    <button class="primary" type="submit">Add child</button>
+                                </div>
+                                <div class="hint-line">
+                                    <span>Parent app will show:</span>
+                                    <span class="pill">Schedule</span>
+                                    <span class="pill">Homework</span>
+                                    <span class="pill">Invoices</span>
+                                    <span class="pill">Messages</span>
+                                </div>
+                            </form>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Children visible in this parent app</h2><span>Current access</span></div>
+                        <div class="table-wrap">
+                            <table>
+                                <tr>
+                                    <th>Child</th>
+                                    <th>Teacher</th>
+                                    <th>Relationship</th>
+                                    <th>Parent app can see</th>
+                                    <th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                                {linked_rows}
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Parent activity</h2><span>Latest 20</span></div>
+                        <div class="table-wrap">
+                            <table class="activity-table">
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Student</th>
+                                    <th>Action</th>
+                                    <th>Description</th>
+                                </tr>
+                                {activity_rows}
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </section>
+        </main>
     </body>
     </html>
     """
