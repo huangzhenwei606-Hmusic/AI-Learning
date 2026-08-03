@@ -296,7 +296,25 @@ def get_parent_unread_notification_count():
         return 0
 
     try:
-        return get_unread_notification_count("parent", str(parent_id))
+        ensure_v29_schema()
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT title, body, link_url, COALESCE(related_type, ''), COALESCE(related_id, 0)
+        FROM notifications
+        WHERE user_role = 'parent'
+        AND user_key = ?
+        AND read_at IS NULL
+        ORDER BY id DESC
+        LIMIT 200
+        """, (str(parent_id),))
+        rows = cursor.fetchall()
+        conn.close()
+        deduped = set()
+        for row in rows:
+            key = (row[3], row[4], row[0]) if row[3] and row[4] else (row[0], row[1], row[2])
+            deduped.add(key)
+        return len(deduped)
     except Exception:
         return 0
 
@@ -9448,7 +9466,7 @@ def teacher_dashboard():
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
     .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
-    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="late"].active{background:#D99019}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
+    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="late"].active{background:#D99019}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
     </style>
     """
@@ -9532,7 +9550,7 @@ def teacher_dashboard():
         )
 
     if view in ("schedule", "week"):
-        schedule_mode = request.args.get("mode", "week")
+        schedule_mode = request.args.get("mode", "month")
         if schedule_mode not in ("week", "month"):
             schedule_mode = "week"
 
@@ -9637,7 +9655,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
             <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
-          </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" onclick="saveTeacherLessonPanel()">Save changes</button></div>
+          </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel()">Save changes</button></div>
         </aside>
         <div class="teacher-rs-overlay" id="teacherRsOverlay">
             <div class="teacher-rs-modal">
@@ -9663,17 +9681,19 @@ def teacher_dashboard():
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
+        let teacherPanelSaving = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
-        function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed'); return d; }}); }}
+        function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
         function openTeacherLessonPanel(scheduleId) {{ fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
         function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
-        function saveTeacherLessonPanel(quiet) {{ if (!activeTeacherLesson) return; teacherLessonAction(teacherPayload()).then(d => {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); }}).catch(e => alert(e.message)); }}
-        function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true); }}
+        function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
+        function saveTeacherLessonPanel(quiet) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!quiet) teacherPanelToast(d.message || 'Saved.'); return d; }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? 'Cancel this lesson now?' : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
@@ -10393,10 +10413,24 @@ def calendar_queue_parent_notice(student_name, title, body, related_type, relate
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     parent_ids = calendar_parent_ids(cursor, student_name)
+    new_count = 0
+    for parent_id in parent_ids:
+        cursor.execute("""
+        SELECT id
+        FROM notifications
+        WHERE user_role = 'parent'
+        AND user_key = ?
+        AND title = ?
+        AND related_type = ?
+        AND related_id = ?
+        LIMIT 1
+        """, (str(parent_id), title, related_type, related_id))
+        if not cursor.fetchone():
+            new_count += 1
     conn.close()
     for parent_id in parent_ids:
         create_notification("parent", str(parent_id), title, body, "/parent_dashboard", related_type=related_type, related_id=related_id)
-    return len(parent_ids)
+    return new_count
 
 
 def upsert_calendar_lesson_record(cursor, schedule_id, student_name, lesson_note, homework, private_note, actor):
@@ -13268,6 +13302,8 @@ def ensure_v29_schema():
         created_at TEXT
     )
     """)
+    add_column_if_missing(cursor, "notifications", "related_type", "related_type TEXT")
+    add_column_if_missing(cursor, "notifications", "related_id", "related_id INTEGER")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS message_attachments (
@@ -14065,6 +14101,45 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    existing_id = None
+    if related_type and related_id is not None:
+        cursor.execute("""
+        SELECT id
+        FROM notifications
+        WHERE user_role = ?
+        AND user_key = ?
+        AND title = ?
+        AND related_type = ?
+        AND related_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (
+            user_role,
+            str(user_key),
+            title,
+            related_type,
+            int(related_id)
+        ))
+        existing = cursor.fetchone()
+        existing_id = existing[0] if existing else None
+
+    if existing_id:
+        cursor.execute("""
+        UPDATE notifications
+        SET body = ?,
+            link_url = ?,
+            read_at = NULL,
+            created_at = ?
+        WHERE id = ?
+        """, (
+            body,
+            link_url,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            existing_id
+        ))
+        conn.commit()
+        conn.close()
+        return existing_id
 
     cursor.execute("""
     INSERT INTO notifications (
@@ -14073,17 +14148,22 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
         title,
         body,
         link_url,
+        related_type,
+        related_id,
         created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_role,
-        user_key,
+        str(user_key),
         title,
         body,
         link_url,
+        related_type,
+        related_id,
         datetime.now().strftime("%Y-%m-%d %H:%M")
     ))
+    notification_id = cursor.lastrowid
 
     conn.commit()
     conn.close()
@@ -14118,6 +14198,7 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
             related_type=related_type,
             related_id=related_id
         )
+    return notification_id
 
 
 def ensure_v33_schema():
@@ -14154,6 +14235,7 @@ def should_queue_sms_notification(title):
     important_keywords = [
         "message",
         "lesson reminder",
+        "practice reminder",
         "payment",
         "invoice",
         "reschedule",
@@ -21282,27 +21364,40 @@ def parent_notifications():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT id, title, body, link_url, read_at, created_at
+    SELECT id, title, body, link_url, read_at, created_at,
+           COALESCE(related_type, ''), COALESCE(related_id, 0)
     FROM notifications
     WHERE user_role = 'parent'
     AND user_key = ?
     ORDER BY id DESC
-    LIMIT 50
+    LIMIT 200
     """, (str(parent_id),))
-    rows_data = cursor.fetchall()
+    raw_rows = cursor.fetchall()
     conn.close()
+
+    rows_data = []
+    seen_notices = set()
+    for item in raw_rows:
+        key = (item[6], item[7], item[1]) if item[6] and item[7] else (item[1], item[2], item[3])
+        if key in seen_notices:
+            continue
+        seen_notices.add(key)
+        rows_data.append(item)
+        if len(rows_data) >= 50:
+            break
 
     rows = ""
     for item in rows_data:
         status = "Unread" if not item[4] else "Read"
+        notice_link = item[3] or "/parent_dashboard"
         rows += f"""
         <div class="notice {'unread' if not item[4] else ''}">
             <div class="notice-top">
-                <strong>{item[1]}</strong>
-                <span>{status} · {item[5]}</span>
+                <strong>{escape(str(item[1] or 'Notification'))}</strong>
+                <span>{status} · {escape(str(item[5] or ''))}</span>
             </div>
-            <p>{item[2] or ''}</p>
-            <a href="{item[3] or '/parent_dashboard'}">Open</a>
+            <p>{escape(str(item[2] or ''))}</p>
+            <a href="{escape(str(notice_link), quote=True)}">Open</a>
         </div>
         """
 
