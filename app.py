@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, Response, send_from_directory, abort
+from flask import Flask, request, redirect, session, Response, send_from_directory, abort, make_response
 import sqlite3
 import os
 import smtplib
@@ -4004,7 +4004,7 @@ def edit_student(name):
         </div>
         """
 
-    return f"""
+    page_html = f"""
     <html>
     <head>
         <title>Edit {escape(str(student_name))} · H-Music CRM</title>
@@ -4117,6 +4117,7 @@ def edit_student(name):
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
             .badge.neutral {{ background:#273446; color:var(--muted); }}
+            .deploy-stamp {{ margin-top:10px; color:#5f6b7d; font-size:12px; }}
             @media (max-width:1050px) {{
                 .layout {{ grid-template-columns:1fr; }}
                 .profile-panel {{ grid-column:auto; }}
@@ -4167,6 +4168,7 @@ def edit_student(name):
                         <a class="button" href="/parent_login_info/{student_url_name}">Parent login</a>
                         <a class="button" href="/create_package_invoice/{student_url_name}">Invoice</a>
                     </div>
+                    <div class="deploy-stamp">Edit layout v2026-08-02 dark</div>
                 </section>
 
                 <form id="editStudentForm" method="POST">
@@ -4297,6 +4299,10 @@ def edit_student(name):
     </body>
     </html>
     """
+    response = make_response(page_html)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/student/<name>")
