@@ -84,6 +84,22 @@ def hmusic_temp_password():
     return "HMusic-" + secrets.token_urlsafe(6)
 
 
+def hmusic_student_parent_label(student_name, parent_name=None):
+    name = str(student_name or "").strip()
+    parent = str(parent_name or "").strip()
+    if parent:
+        return f"{name} · Parent: {parent}"
+    return f"{name} · Parent: No parent"
+
+
+def hmusic_clean_student_picker_value(value):
+    text = str(value or "").strip()
+    for separator in (" · Parent:", " • Parent:", " | Parent:"):
+        if separator in text:
+            return text.split(separator, 1)[0].strip()
+    return text
+
+
 def hmusic_csrf_token():
     token = session.get("_csrf_token")
     if not token:
@@ -1687,6 +1703,7 @@ def teacher_dashboard_records_content(teacher_name):
         <style>
             .td-form label {{ display:block; color:var(--td-muted); font-weight:600; margin-bottom:12px; }}
             .td-form input,.td-form select,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
+            .td-form .student-picker-compact {{ font-size:12px; font-weight:750; letter-spacing:0; }}
             .td-form textarea {{ min-height:160px; resize:vertical; }}
             .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
             .td-table {{ width:100%; border-collapse:collapse; }} .td-table th,.td-table td {{ border-bottom:1px solid var(--td-line); padding:10px; text-align:left; vertical-align:top; }} .td-table th {{ color:var(--td-muted); font-size:12px; background:#F8FAFC; }}
@@ -1712,17 +1729,24 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
     course_types = cursor.fetchall()
     cursor.execute("""
-    SELECT DISTINCT student_name FROM (
+    SELECT base.student_name, COALESCE(st.parent_name, '')
+    FROM (
         SELECT student_name FROM enrollments WHERE teacher_name = ? AND status = 'active'
         UNION SELECT name FROM students WHERE teacher = ?
         UNION SELECT student_name FROM schedule WHERE teacher = ?
-    ) WHERE student_name IS NOT NULL AND student_name != '' ORDER BY student_name
+    ) base
+    LEFT JOIN students st ON st.name = base.student_name
+    WHERE base.student_name IS NOT NULL AND base.student_name != ''
+    ORDER BY base.student_name
     """, (teacher_name, teacher_name, teacher_name))
     students = cursor.fetchall()
     conn.close()
     room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in classrooms)
     course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {int(c[2] or 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
-    student_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in students) or '<option value="">No students found</option>'
+    student_options = ''.join(
+        f'<option value="{escape(str(r[0]))}">{escape(hmusic_student_parent_label(r[0], r[1]))}</option>'
+        for r in students
+    ) or '<option value="">No students found</option>'
     created = request.args.get('created')
     created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
     duration_request_html = '<div class="td-success">Duration request sent to owner.</div>' if request.args.get('duration_request') else ''
@@ -1733,7 +1757,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
         <section class="td-card">
             <form method="POST" action="/add_schedule" class="td-form td-form-grid">
                 <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
-                <label>Student<select id="student_name" name="student_name" required>{student_options}</select></label>
+                <label>Student<select class="student-picker-compact" id="student_name" name="student_name" required>{student_options}</select></label>
                 <label>Room<select name="classroom" required>{room_options}</select></label>
                 <label>Weekday<select name="weekday"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option></select></label>
                 <label>Time<input type="time" name="lesson_time" required></label>
@@ -5905,7 +5929,7 @@ def calendar():
 
     selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
     selected_teacher = (request.args.get("teacher") or "").strip()
-    selected_student = (request.args.get("student") or "").strip()
+    selected_student = hmusic_clean_student_picker_value(request.args.get("student") or "")
     selected_status = (request.args.get("status_filter") or "").strip()
 
     try:
@@ -5933,7 +5957,7 @@ def calendar():
     teacher_options_data = cursor.fetchall()
 
     cursor.execute("""
-    SELECT name
+    SELECT name, COALESCE(parent_name, '')
     FROM students
     WHERE name IS NOT NULL
     AND name != ''
@@ -6066,10 +6090,11 @@ def calendar():
     student_picker_datalist_options = ""
     for s in student_options_data:
         selected = "selected" if s[0] == selected_student else ""
-        student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
-        student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
-        student_filter_options += f'<option value="{escape(str(s[0]))}"></option>'
-        student_picker_datalist_options += f'<option value="{escape(str(s[0]))}"></option>'
+        student_label = hmusic_student_parent_label(s[0], s[1])
+        student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(student_label)}</option>'
+        student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(student_label)}</option>'
+        student_filter_options += f'<option value="{escape(student_label)}"></option>'
+        student_picker_datalist_options += f'<option value="{escape(student_label)}"></option>'
 
     quick_location_options = ""
     for location in quick_location_rows:
@@ -6493,6 +6518,7 @@ def calendar():
                                padding:9px 10px;border:1px solid var(--line);
                                border-radius:9px;background:var(--bg);
                                color:var(--text);margin-bottom:10px;box-sizing:border-box}}
+            .student-picker-compact{{font-size:12px;font-weight:750;letter-spacing:0}}
             .pop-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:0}}
             .pop-tri{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}}
             .pop-choice-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}
@@ -6749,7 +6775,7 @@ def calendar():
           <div class="pop-section">
             <h3>Student</h3>
             <label class="pop-label">Student</label>
-            <input class="pop-sel" id="popStudent" name="student_name" list="popStudentList" placeholder="Search existing or type new student" required>
+            <input class="pop-sel student-picker-compact" id="popStudent" name="student_name" list="popStudentList" placeholder="Search existing or type new student" required>
             <datalist id="popStudentList">
               {student_picker_datalist_options}
             </datalist>
@@ -6957,7 +6983,7 @@ def calendar():
         <details class="panel-details" id="panelDetailsBilling" open>
           <summary>Edit schedule and billing <span class="panel-details-scope">applies to this lesson</span></summary>
           <div class="detail-grid">
-            <label><span class="detail-label">Student</span><input class="panel-field" id="panelDetailStudent" list="popStudentList"></label>
+            <label><span class="detail-label">Student</span><input class="panel-field student-picker-compact" id="panelDetailStudent" list="popStudentList"></label>
             <label><span class="detail-label">Teacher</span><select class="panel-field" id="panelDetailTeacher">{teacher_picker_options}</select></label>
             <label><span class="detail-label">Course</span><select class="panel-field" id="panelDetailCourse" onchange="updatePanelCourseBilling()">{quick_course_options}</select></label>
             <label><span class="detail-label">Duration</span><input class="panel-field" type="number" id="panelDetailDuration" min="15" max="240" step="5" onchange="updatePanelChargePreview()"></label>
@@ -7850,7 +7876,7 @@ def add_schedule():
             <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
             """
 
-        student_name = request.form.get("student_name")
+        student_name = hmusic_clean_student_picker_value(request.form.get("student_name"))
         teacher = request.form.get("teacher")
         if require_teacher() and not require_owner():
             teacher = session.get("teacher_name")
@@ -8403,7 +8429,7 @@ def add_schedule():
 
     if require_teacher() and not require_owner():
         cursor.execute("""
-        SELECT DISTINCT student_name
+        SELECT base.student_name, COALESCE(st.parent_name, '')
         FROM (
             SELECT student_name
             FROM enrollments
@@ -8417,10 +8443,11 @@ def add_schedule():
             SELECT student_name
             FROM schedule
             WHERE teacher = ?
-        )
-        WHERE student_name IS NOT NULL
-        AND student_name != ''
-        ORDER BY student_name
+        ) base
+        LEFT JOIN students st ON st.name = base.student_name
+        WHERE base.student_name IS NOT NULL
+        AND base.student_name != ''
+        ORDER BY base.student_name
         """, (
             session.get("teacher_name"),
             session.get("teacher_name"),
@@ -8428,14 +8455,14 @@ def add_schedule():
         ))
         student_rows = cursor.fetchall()
     else:
-        cursor.execute("SELECT name FROM students ORDER BY name")
+        cursor.execute("SELECT name, COALESCE(parent_name, '') FROM students ORDER BY name")
         student_rows = cursor.fetchall()
 
     conn.close()
 
     prefill_date = (request.args.get("prefill_date") or "").strip()
     prefill_teacher = (request.args.get("prefill_teacher") or "").strip()
-    prefill_student = (request.args.get("prefill_student") or "").strip()
+    prefill_student = hmusic_clean_student_picker_value(request.args.get("prefill_student") or "")
     prefill_location_id = (request.args.get("prefill_location_id") or "").strip()
     prefill_room_id = (request.args.get("prefill_room_id") or "").strip()
     prefill_room = (request.args.get("prefill_room") or "").strip()
@@ -8501,20 +8528,25 @@ def add_schedule():
         course_options = '<option value="">No active course types found</option>'
 
     student_options = "".join([
-        f'<option value="{escape(s[0])}" {"selected" if prefill_student and s[0] == prefill_student else ""}>{escape(s[0])}</option>'
+        f'<option value="{escape(str(s[0]))}" {"selected" if prefill_student and s[0] == prefill_student else ""}>{escape(hmusic_student_parent_label(s[0], s[1]))}</option>'
         for s in student_rows
     ]) or '<option value="">No students found</option>'
+    student_datalist_options = "".join([
+        f'<option value="{escape(hmusic_student_parent_label(s[0], s[1]))}"></option>'
+        for s in student_rows
+    ])
 
     back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
     teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
     locations_manage_link = ' | <a href="/locations_rooms">Manage Locations & Rooms</a>' if require_owner() else ""
     teacher_student_mode_html = ""
-    existing_student_input = f'<input name="student_name" value="{escape(prefill_student)}" required>'
+    existing_student_value = escape(prefill_student)
+    existing_student_input = f'<input class="student-picker-compact" name="student_name" list="scheduleStudentList" value="{existing_student_value}" placeholder="Search student · Parent" required><datalist id="scheduleStudentList">{student_datalist_options}</datalist>'
     new_student_request_html = ""
     submit_label = "Generate Schedule"
 
     if require_teacher() and not require_owner():
-        existing_student_input = f'<select id="student_name" name="student_name">{student_options}</select>'
+        existing_student_input = f'<select class="student-picker-compact" id="student_name" name="student_name">{student_options}</select>'
         teacher_student_mode_html = """
                 <div class="student-mode">
                     <label><input type="radio" name="student_mode" value="existing" checked onchange="toggleStudentMode()"> Existing student</label>
@@ -8563,6 +8595,11 @@ def add_schedule():
                 margin-top: 6px;
                 margin-bottom: 16px;
                 font-size: 14px;
+            }}
+            .student-picker-compact {{
+                font-size: 12px;
+                font-weight: 750;
+                letter-spacing: 0;
             }}
             .student-mode {{
                 display: grid;
@@ -10668,7 +10705,7 @@ def calendar_lesson_action():
                 "classroom", "lesson_date", "lesson_time", "schedule_type", "package_type",
                 "billing_basis", "student_rate", "billing_decision"
             )):
-                student_name_detail = (data.get("student_name") or row[1] or "").strip()
+                student_name_detail = hmusic_clean_student_picker_value(data.get("student_name") or row[1] or "")
                 teacher_detail = (data.get("teacher") or row[2] or "").strip()
                 lesson_date_detail = (data.get("lesson_date") or row[3] or "").strip()
                 lesson_time_detail = (data.get("lesson_time") or row[4] or "").strip()
