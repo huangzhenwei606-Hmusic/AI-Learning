@@ -4501,6 +4501,15 @@ def student_detail(name):
     payments = cursor.fetchall()
 
     cursor.execute("""
+    SELECT id, charge_lessons, amount, status, invoice_type, created_at
+    FROM invoices
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 8
+    """, (name,))
+    invoices = cursor.fetchall()
+
+    cursor.execute("""
     SELECT lesson_date, lesson_time, teacher, classroom, status, duration, schedule_type
     FROM schedule
     WHERE student_name = ?
@@ -4613,6 +4622,32 @@ def student_detail(name):
         lesson_html = "<div class='empty'>No lesson history yet.</div>"
 
     payment_html = ""
+    for invoice in invoices:
+        invoice_id, charge_lessons, amount, status, invoice_type, created_at = invoice
+        status_text = status or "unpaid"
+        action_html = ""
+        if require_owner() and status_text != "paid":
+            action_html = f"""
+            <form class="inline-pay-form" method="POST" action="/pay_invoice/{invoice_id}">
+                <input type="hidden" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}">
+                <input type="hidden" name="payment_method" value="Owner marked paid">
+                <button type="submit">Mark paid</button>
+            </form>
+            """
+        payment_html += f"""
+            <div class="timeline-item billing">
+                <div class="timeline-date">{escape(str(created_at or 'Invoice'))}</div>
+                <div>
+                    <b>Invoice #{invoice_id} · ${escape(str(amount or '0'))}</b>
+                    <p>{escape(str(charge_lessons or 0))} lesson(s) · {escape(str(invoice_type or 'invoice'))}</p>
+                </div>
+                <div class="payment-actions">
+                    <span class="pill {'ok' if status_text == 'paid' else 'amber'}">{escape(str(status_text).title())}</span>
+                    {action_html}
+                </div>
+            </div>
+        """
+
     if payments:
         for payment in payments:
             payment_html += f"""
@@ -4625,8 +4660,17 @@ def student_detail(name):
                 <span class="pill amber">Payment</span>
             </div>
             """
-    else:
+    if not payment_html:
         payment_html = "<div class='empty'>No payment history yet.</div>"
+    if require_owner():
+        payment_html = f"""
+        <div class="payment-toolbar">
+            <a class="button primary" href="/payment/{student_url_name}">Record payment</a>
+            <a class="button" href="/create_package_invoice/{student_url_name}">Create invoice</a>
+            <a class="button" href="/student_ledger/{student_url_name}">Student ledger</a>
+        </div>
+        {payment_html}
+        """
 
     balance_class = "danger" if (student[4] or 0) <= 2 else "ok"
     balance_text = "Renewal needed" if (student[4] or 0) <= 2 else "Good standing"
@@ -4750,6 +4794,10 @@ def student_detail(name):
             .timeline {{ display:grid; gap:10px; }}
             .timeline-item {{ display:grid; grid-template-columns:96px 1fr auto; gap:12px; border:1px solid var(--border); border-radius:12px; padding:12px; align-items:start; background:white; }}
             .timeline-item.billing {{ background:#fffdf6; }}
+            .payment-toolbar {{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin-bottom:10px; }}
+            .payment-actions {{ display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }}
+            .inline-pay-form {{ margin:0; }}
+            .inline-pay-form button {{ width:auto; min-height:30px; padding:6px 10px; border-radius:8px; font-size:12px; background:var(--blue); color:white; border-color:var(--blue); }}
             .timeline-date {{ color:var(--muted); font-weight:800; font-size:13px; }}
             .timeline-item p {{ margin-top:4px; line-height:1.45; }}
             .empty {{ border:1px dashed var(--border); border-radius:12px; padding:16px; color:var(--muted); background:#fafafa; }}
@@ -4765,6 +4813,7 @@ def student_detail(name):
                 .button-grid {{ grid-template-columns:1fr; }}
                 .kpis {{ grid-template-columns:1fr; }}
                 .timeline-item {{ grid-template-columns:1fr; }}
+                .payment-toolbar {{ grid-template-columns:1fr; }}
                 .topbar {{ align-items:flex-start; flex-direction:column; }}
             }}
         </style>
@@ -5130,6 +5179,9 @@ def add_lesson(name):
 
 @app.route("/payment/<name>", methods=["GET", "POST"])
 def payment(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
     if request.method == "POST":
         amount = float(request.form["amount"])
         lessons_added = int(request.form["lessons_added"])
