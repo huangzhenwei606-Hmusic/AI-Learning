@@ -4180,6 +4180,8 @@ def edit_student(name):
             .danger-actions {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }}
             .inactive-row button {{ color:var(--red); background:#fff; border-color:#fecaca; }}
             .inactive-row .delete-student-btn {{ background:var(--red); border-color:var(--red); color:#fff; }}
+            #profile, #teacher-lessons, #parent-contact, #notes {{ scroll-margin-top:80px; }}
+            .section-focus {{ outline:2px solid #bfdbfe; outline-offset:3px; border-radius:8px; }}
             .deploy-stamp {{ display:none; }}
             @media (max-width:1050px) {{
                 .layout {{ grid-template-columns:160px minmax(0,1fr); }}
@@ -4372,6 +4374,22 @@ def edit_student(name):
                 </form>
             </main>
         </div>
+        <script>
+            document.querySelectorAll('.side a[href^="#"]').forEach((link) => {{
+                link.addEventListener('click', (event) => {{
+                    const target = document.querySelector(link.getAttribute('href'));
+                    if (!target) return;
+                    event.preventDefault();
+                    document.querySelectorAll('.side a').forEach((item) => item.classList.remove('active'));
+                    link.classList.add('active');
+                    target.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                    target.classList.add('section-focus');
+                    const field = target.querySelector('input, select, textarea') || target.closest('.form-grid')?.querySelector('input, select, textarea');
+                    if (field) setTimeout(() => field.focus({{ preventScroll: true }}), 250);
+                    setTimeout(() => target.classList.remove('section-focus'), 1400);
+                }});
+            }});
+        </script>
     </body>
     </html>
     """
@@ -4492,7 +4510,7 @@ def student_detail(name):
     lessons = cursor.fetchall()
 
     cursor.execute("""
-    SELECT payment_date, amount, lessons_added, payment_method
+    SELECT id, payment_date, amount, lessons_added, payment_method
     FROM payments
     WHERE student_name = ?
     ORDER BY id DESC
@@ -4650,14 +4668,34 @@ def student_detail(name):
 
     if payments:
         for payment in payments:
+            payment_id, payment_date, amount, lessons_added, payment_method = payment
             payment_html += f"""
             <div class="timeline-item billing">
-                <div class="timeline-date">{escape(payment[0] or '')}</div>
+                <div class="timeline-date">{escape(payment_date or '')}</div>
                 <div>
-                    <b>${escape(str(payment[1] or '0'))}</b>
-                    <p>{escape(str(payment[2] or 0))} lesson(s) added · {escape(payment[3] or 'Payment')}</p>
+                    <b>${escape(str(amount or '0'))}</b>
+                    <p>{escape(str(lessons_added or 0))} lesson(s) added · {escape(payment_method or 'Payment')}</p>
                 </div>
-                <span class="pill amber">Payment</span>
+                <div class="payment-actions">
+                    <span class="pill amber">Payment</span>
+                    <details class="payment-edit">
+                        <summary>Edit</summary>
+                        <form method="POST" action="/edit_payment/{payment_id}">
+                            <label>Date</label>
+                            <input type="date" name="payment_date" value="{escape(payment_date or '', quote=True)}">
+                            <label>Amount</label>
+                            <input type="number" step="0.01" name="amount" value="{escape(str(amount or 0), quote=True)}">
+                            <label>Lessons added</label>
+                            <input type="number" name="lessons_added" value="{escape(str(lessons_added or 0), quote=True)}">
+                            <label>Method</label>
+                            <input name="payment_method" value="{escape(payment_method or 'Payment', quote=True)}">
+                            <button type="submit">Save</button>
+                        </form>
+                    </details>
+                    <form class="inline-pay-form" method="POST" action="/delete_payment/{payment_id}" onsubmit="return confirm('Delete this payment and reverse its lesson credit change?');">
+                        <button class="danger-link" type="submit">Delete</button>
+                    </form>
+                </div>
             </div>
             """
     if not payment_html:
@@ -4798,6 +4836,14 @@ def student_detail(name):
             .payment-actions {{ display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }}
             .inline-pay-form {{ margin:0; }}
             .inline-pay-form button {{ width:auto; min-height:30px; padding:6px 10px; border-radius:8px; font-size:12px; background:var(--blue); color:white; border-color:var(--blue); }}
+            .inline-pay-form .danger-link {{ background:white; color:var(--red); border-color:#fecaca; }}
+            .payment-edit {{ position:relative; }}
+            .payment-edit summary {{ list-style:none; min-height:30px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--border); border-radius:8px; padding:6px 10px; background:white; color:var(--blue); font-size:12px; font-weight:800; cursor:pointer; }}
+            .payment-edit summary::-webkit-details-marker {{ display:none; }}
+            .payment-edit form {{ position:absolute; right:0; top:36px; z-index:3; width:240px; display:grid; gap:6px; padding:12px; border:1px solid var(--border); border-radius:12px; background:white; box-shadow:0 12px 32px rgba(15,23,42,.14); }}
+            .payment-edit label {{ color:var(--muted); font-size:11px; font-weight:800; }}
+            .payment-edit input {{ width:100%; min-height:34px; border:1px solid var(--border); border-radius:8px; padding:0 9px; font-size:13px; }}
+            .payment-edit button {{ min-height:34px; background:var(--blue); color:white; border-color:var(--blue); }}
             .timeline-date {{ color:var(--muted); font-weight:800; font-size:13px; }}
             .timeline-item p {{ margin-top:4px; line-height:1.45; }}
             .empty {{ border:1px dashed var(--border); border-radius:12px; padding:16px; color:var(--muted); background:#fafafa; }}
@@ -4906,7 +4952,7 @@ def student_detail(name):
                         <div class="timeline">{lesson_html}</div>
                     </div>
 
-                    <div class="section">
+                    <div class="section" id="payments">
                         <h2>Payment History</h2>
                         <div class="timeline">{payment_html}</div>
                     </div>
@@ -5279,6 +5325,118 @@ def payment(name):
 
     <p><a href="/student/{name}">Back to Student</a></p>
     """
+
+
+@app.route("/edit_payment/<int:payment_id>", methods=["POST"])
+def edit_payment(payment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name, amount, lessons_added, payment_method, payment_date
+    FROM payments
+    WHERE id = ?
+    """, (payment_id,))
+    payment_row = cursor.fetchone()
+
+    if not payment_row:
+        conn.close()
+        return redirect("/students")
+
+    student_name, old_amount, old_lessons_added, old_method, old_date = payment_row
+
+    def numeric_value(raw, default=0):
+        try:
+            return float(raw if raw not in (None, "") else default)
+        except (TypeError, ValueError):
+            return float(default or 0)
+
+    new_amount = round(numeric_value(request.form.get("amount"), old_amount), 2)
+    new_lessons_added = int(numeric_value(request.form.get("lessons_added"), old_lessons_added))
+    new_method = (request.form.get("payment_method") or old_method or "Payment").strip()
+    new_date = request.form.get("payment_date") or old_date or date.today().strftime("%Y-%m-%d")
+    old_lessons_added = int(numeric_value(old_lessons_added, 0))
+    lesson_delta = new_lessons_added - old_lessons_added
+
+    cursor.execute("""
+    UPDATE payments
+    SET amount = ?,
+        lessons_added = ?,
+        payment_method = ?,
+        payment_date = ?
+    WHERE id = ?
+    """, (new_amount, new_lessons_added, new_method, new_date, payment_id))
+
+    if lesson_delta:
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = MAX(COALESCE(lessons_left, 0) + ?, 0)
+        WHERE name = ?
+        """, (lesson_delta, student_name))
+
+    cursor.execute("""
+    UPDATE student_ledger
+    SET amount = ?,
+        description = ?,
+        created_at = ?
+    WHERE related_payment_id = ?
+    """, (
+        new_amount,
+        f"Payment received · {new_method}",
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        payment_id
+    ))
+
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{quote(student_name)}#payments")
+
+
+@app.route("/delete_payment/<int:payment_id>", methods=["POST"])
+def delete_payment(payment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name, COALESCE(lessons_added, 0)
+    FROM payments
+    WHERE id = ?
+    """, (payment_id,))
+    payment_row = cursor.fetchone()
+
+    if not payment_row:
+        conn.close()
+        return redirect("/students")
+
+    student_name, lessons_added = payment_row
+
+    cursor.execute("""
+    SELECT related_invoice_id
+    FROM student_ledger
+    WHERE related_payment_id = ?
+    AND related_invoice_id IS NOT NULL
+    """, (payment_id,))
+    invoice_ids = [row[0] for row in cursor.fetchall()]
+
+    cursor.execute("""
+    UPDATE students
+    SET lessons_left = MAX(COALESCE(lessons_left, 0) - ?, 0)
+    WHERE name = ?
+    """, (int(float(lessons_added or 0)), student_name))
+
+    cursor.execute("DELETE FROM student_ledger WHERE related_payment_id = ?", (payment_id,))
+    cursor.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
+
+    for invoice_id in invoice_ids:
+        cursor.execute("UPDATE invoices SET status = 'unpaid' WHERE id = ?", (invoice_id,))
+
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{quote(student_name)}#payments")
 
 
 @app.route("/generate_parent_email/<name>")
