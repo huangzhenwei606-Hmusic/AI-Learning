@@ -6852,8 +6852,8 @@ def calendar():
               <div>
                 <label class="pop-label">Price type</label>
                 <select class="pop-sel" name="parent_billing_basis" id="popParentBillingBasis" onchange="updateQuickCourseSummary()">
-                  <option value="per_class">Per class</option>
                   <option value="hourly">Hourly</option>
+                  <option value="per_class">Per class</option>
                 </select>
               </div>
               <div>
