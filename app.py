@@ -3951,6 +3951,10 @@ def edit_student(name):
     program_value = student[7] or "Piano private lesson"
     lesson_length_value = student[8] or "30 minutes"
     internal_note_value = student[9] or ""
+    delete_confirm_message = json.dumps(
+        f"Delete {student_name} and all linked lessons, payments, schedule, teacher links, and parent links? "
+        "Use this only for duplicate/test students."
+    )
 
     def options(values, current):
         html = ""
@@ -4120,7 +4124,9 @@ def edit_student(name):
             .badge.neutral {{ background:#eef2f7; color:#475467; }}
             .inactive-row {{ margin-top:10px; padding-top:10px; border-top:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px; }}
             .inactive-row span {{ color:var(--muted); font-size:12px; font-weight:700; }}
+            .danger-actions {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }}
             .inactive-row button {{ color:var(--red); background:#fff; border-color:#fecaca; }}
+            .inactive-row .delete-student-btn {{ background:var(--red); border-color:var(--red); color:#fff; }}
             .deploy-stamp {{ display:none; }}
             @media (max-width:1050px) {{
                 .layout {{ grid-template-columns:160px minmax(0,1fr); }}
@@ -4249,7 +4255,16 @@ def edit_student(name):
                                 </div>
                                 <div class="inactive-row">
                                     <span>Student stopped lessons? Set inactive to keep history while hiding from active lists.</span>
-                                    <button type="button" onclick="document.getElementById('studentStatusSelect').value='Inactive';">Set inactive</button>
+                                    <div class="danger-actions">
+                                        <button type="button" onclick="document.getElementById('studentStatusSelect').value='Inactive';">Set inactive</button>
+                                        <button
+                                            class="delete-student-btn"
+                                            type="submit"
+                                            formaction="/delete_student/{student_url_name}"
+                                            formmethod="POST"
+                                            onclick="return confirm({delete_confirm_message});"
+                                        >Delete duplicate record</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -4311,6 +4326,87 @@ def edit_student(name):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response
+
+
+@app.route("/delete_student/<name>", methods=["POST"])
+def delete_student(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    ensure_teacher_management_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT name FROM students WHERE name = ? LIMIT 1", (name,))
+    student = cursor.fetchone()
+    if not student:
+        conn.close()
+        return redirect("/students")
+
+    student_name = student[0]
+
+    def table_exists(table_name):
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,)
+        )
+        return cursor.fetchone() is not None
+
+    def table_has_column(table_name, column_name):
+        if not table_exists(table_name):
+            return False
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return column_name in [row[1] for row in cursor.fetchall()]
+
+    def delete_by_student_name(table_name, column_name="student_name"):
+        if table_has_column(table_name, column_name):
+            cursor.execute(
+                f"DELETE FROM {table_name} WHERE {column_name} = ?",
+                (student_name,)
+            )
+
+    if table_has_column("message_threads", "student_name"):
+        cursor.execute("SELECT id FROM message_threads WHERE student_name = ?", (student_name,))
+        thread_ids = [row[0] for row in cursor.fetchall()]
+        for thread_id in thread_ids:
+            if table_exists("message_attachments") and table_exists("messages"):
+                cursor.execute(
+                    """
+                    DELETE FROM message_attachments
+                    WHERE message_id IN (
+                        SELECT id FROM messages WHERE thread_id = ?
+                    )
+                    """,
+                    (thread_id,)
+                )
+            if table_exists("messages"):
+                cursor.execute("DELETE FROM messages WHERE thread_id = ?", (thread_id,))
+            if table_exists("message_participants"):
+                cursor.execute("DELETE FROM message_participants WHERE thread_id = ?", (thread_id,))
+            cursor.execute("DELETE FROM message_threads WHERE id = ?", (thread_id,))
+
+    for table_name in [
+        "schedule",
+        "payments",
+        "invoices",
+        "lessons",
+        "student_ledger",
+        "parent_students",
+        "enrollments",
+        "student_course_rates",
+        "student_credit_wallets",
+        "parent_booking_requests",
+        "event_rsvps",
+        "reschedule_requests",
+        "child_os_requests",
+    ]:
+        delete_by_student_name(table_name)
+
+    cursor.execute("DELETE FROM students WHERE name = ?", (student_name,))
+    conn.commit()
+    conn.close()
+    return redirect("/students")
 
 
 @app.route("/student/<name>")
