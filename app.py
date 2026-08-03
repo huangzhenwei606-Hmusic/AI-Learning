@@ -4068,56 +4068,56 @@ def edit_student(name):
             .badge.danger {{ background:var(--red-soft); color:var(--red); }}
             .badge.amber {{ background:var(--red-soft); color:var(--red); }}
             .badge.neutral {{ background:#e7f1ff; color:#858585; }}
-            /* Dark single-column edit student page */
+            /* Light single-column edit student page */
             :root {{
-                --bg:#111620; --card:#1f2631; --text:#e8edf4; --muted:#a3adbb; --border:#364254;
-                --blue:#72a8e8; --blue-dark:#72a8e8; --blue-soft:#1e3a5a;
-                --red:#f59a91; --red-soft:#5a2b2d; --green:#7bd98d; --green-soft:#173b2a;
+                --bg:#f5f7fb; --card:#ffffff; --text:#111827; --muted:#667085; --border:#e4e8f0;
+                --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff;
+                --red:#b42318; --red-soft:#fee2e2; --green:#166534; --green-soft:#dcfce7;
             }}
             body {{ background:var(--bg); color:var(--text); }}
-            .shell {{ min-height:100vh; border:1px solid var(--border); border-radius:0; background:var(--bg); }}
-            .topbar {{ height:78px; grid-template-columns:auto minmax(0,1fr) auto; gap:22px; padding:0 26px; background:#202733; border-bottom:1px solid var(--border); }}
-            .brand {{ font-size:28px; color:#f6f8fb; }}
+            .shell {{ min-height:100vh; border:0; border-radius:0; background:var(--bg); }}
+            .topbar {{ height:64px; grid-template-columns:auto minmax(0,1fr) auto; gap:20px; padding:0 28px; background:#fff; border-bottom:1px solid var(--border); }}
+            .brand {{ font-size:22px; color:var(--text); font-weight:850; }}
             .nav {{ gap:8px; }}
-            .nav a {{ min-height:54px; padding:0 16px; border-radius:10px; color:var(--muted); font-size:20px; font-weight:500; }}
-            .nav a.active {{ background:var(--blue-soft); color:var(--blue); }}
-            .savebar {{ gap:10px; }}
-            .page {{ max-width:none; padding:30px 28px 42px; }}
-            .header {{ display:block; margin-bottom:16px; }}
-            .crumbs {{ font-size:20px; margin-bottom:14px; color:var(--muted); }}
-            h1 {{ font-size:28px; line-height:1.15; color:#f6f8fb; }}
-            h2 {{ font-size:22px; color:#f6f8fb; }}
-            .subline {{ margin-top:12px; gap:10px; font-size:19px; color:var(--muted); }}
-            .quick {{ justify-content:flex-start; gap:10px; padding-top:18px; }}
-            .button, button {{ min-height:54px; border:1px solid var(--border); border-radius:9px; background:#1b222d; color:var(--text); padding:0 18px; font-size:20px; font-weight:500; }}
-            .primary {{ background:#73aaf0; color:#0b1420; border-color:#73aaf0; }}
-            .layout {{ display:grid; grid-template-columns:1fr; gap:16px; }}
-            .side, .panel {{ background:var(--card); border:1px solid var(--border); border-radius:10px; }}
-            .side {{ padding:10px; min-height:320px; }}
-            .side a {{ min-height:58px; padding:0 14px; border-radius:8px; color:var(--muted); font-size:19px; font-weight:500; }}
-            .side a.active {{ background:var(--blue-soft); color:var(--blue); }}
+            .nav a {{ min-height:40px; padding:0 13px; border-radius:9px; color:var(--muted); font-size:14px; font-weight:800; }}
+            .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
+            .savebar {{ gap:8px; }}
+            .page {{ max-width:none; padding:22px 28px 42px; }}
+            .header {{ display:block; margin-bottom:14px; }}
+            .crumbs {{ font-size:13px; margin-bottom:8px; color:var(--muted); }}
+            h1 {{ font-size:26px; line-height:1.12; color:var(--text); font-weight:850; }}
+            h2 {{ font-size:16px; color:var(--text); font-weight:850; }}
+            .subline {{ margin-top:9px; gap:8px; font-size:13px; color:var(--muted); }}
+            .quick {{ justify-content:flex-start; gap:8px; padding-top:14px; }}
+            .button, button {{ min-height:38px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:0 13px; font-size:13px; font-weight:800; }}
+            .primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
+            .layout {{ display:grid; grid-template-columns:1fr; gap:14px; }}
+            .side, .panel {{ background:var(--card); border:1px solid var(--border); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.05); }}
+            .side {{ padding:8px; min-height:0; }}
+            .side a {{ min-height:40px; padding:0 12px; border-radius:8px; color:var(--muted); font-size:13px; font-weight:800; }}
+            .side a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
             .profile-panel {{ grid-column:auto; }}
-            .panel-head {{ min-height:66px; padding:0 18px; border-bottom:1px solid var(--border); background:var(--card); color:var(--muted); font-size:19px; }}
-            .panel-body {{ padding:18px; }}
-            .form-grid {{ display:grid; grid-template-columns:1fr; gap:14px; }}
+            .panel-head {{ min-height:46px; padding:0 14px; border-bottom:1px solid var(--border); background:#f8fafc; color:var(--muted); font-size:13px; }}
+            .panel-body {{ padding:14px; }}
+            .form-grid {{ display:grid; grid-template-columns:1fr; gap:11px; }}
             .span {{ grid-column:auto; }}
             #notes {{ grid-column:auto; }}
-            label {{ color:var(--muted); font-size:19px; margin-bottom:8px; font-weight:500; }}
-            input, select, textarea, .readonly {{ min-height:54px; border:1px solid var(--border); border-radius:9px; background:#1b222d; color:var(--text); padding:0 14px; font-size:19px; }}
-            textarea {{ min-height:54px; padding-top:14px; }}
+            label {{ color:var(--muted); font-size:12px; margin-bottom:5px; font-weight:800; }}
+            input, select, textarea, .readonly {{ min-height:38px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--text); padding:0 10px; font-size:13px; font-weight:600; }}
+            textarea {{ min-height:64px; padding-top:9px; }}
             .teacher-field {{ grid-template-columns:minmax(0,1fr) 72px; gap:8px; }}
             .teacher-field .teacher-link[href*="add_teacher"] {{ display:none; }}
-            .teacher-link {{ min-height:54px; border:1px solid var(--border); border-radius:9px; background:#1b222d; color:#dcecff; padding:0 16px; font-size:19px; font-weight:500; }}
-            .stack {{ grid-column:auto; grid-template-columns:1fr; gap:16px; margin-top:0; }}
+            .teacher-link {{ min-height:38px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--blue-dark); padding:0 12px; font-size:13px; font-weight:800; }}
+            .stack {{ grid-column:auto; grid-template-columns:1fr; gap:14px; margin-top:0; }}
             .stack .panel {{ min-height:0; }}
-            .mini-row {{ gap:8px; padding:16px 0; border-bottom:1px solid var(--border); font-size:18px; }}
-            .mini-row strong {{ color:#f6f8fb; font-size:19px; font-weight:500; }}
-            .mini-row span {{ color:var(--muted); font-size:18px; margin-top:8px; }}
-            .badge {{ min-height:38px; padding:0 12px; font-size:18px; font-weight:500; }}
+            .mini-row {{ gap:8px; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }}
+            .mini-row strong {{ color:var(--text); font-size:13px; font-weight:850; }}
+            .mini-row span {{ color:var(--muted); font-size:12px; margin-top:3px; }}
+            .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
-            .badge.neutral {{ background:#273446; color:var(--muted); }}
-            .deploy-stamp {{ margin-top:10px; color:#5f6b7d; font-size:12px; }}
+            .badge.neutral {{ background:#eef2f7; color:#475467; }}
+            .deploy-stamp {{ display:none; }}
             @media (max-width:1050px) {{
                 .layout {{ grid-template-columns:1fr; }}
                 .profile-panel {{ grid-column:auto; }}
@@ -4168,7 +4168,6 @@ def edit_student(name):
                         <a class="button" href="/parent_login_info/{student_url_name}">Parent login</a>
                         <a class="button" href="/create_package_invoice/{student_url_name}">Invoice</a>
                     </div>
-                    <div class="deploy-stamp">Edit layout v2026-08-02 dark</div>
                 </section>
 
                 <form id="editStudentForm" method="POST">
