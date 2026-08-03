@@ -6023,11 +6023,25 @@ def calendar():
             return "Late"
         if status in ("no_show", "no-show"):
             return "No show"
+        if status == "teacher_cancelled":
+            return "Teacher Cancel"
         if status.startswith("cancel"):
             return "Cancelled"
-        if status in ("excused_24h", "excused", "teacher_cancelled"):
+        if status in ("excused_24h", "excused"):
             return "Excused"
         return "Scheduled"
+
+    def owner_status_icons(status):
+        status = status or "scheduled"
+        if status == "teacher_cancelled":
+            return '<span class="ev-icon ev-icon-teacher" aria-label="Teacher cancel"><i class="ti ti-clipboard-x" aria-hidden="true"></i></span>'
+        if status in ("no_show", "no-show"):
+            return '<span class="ev-icon ev-icon-noshow" aria-label="No show"><i class="ti ti-user-x" aria-hidden="true"></i></span>'
+        if status in ("cancel_3h", "cancel_12h", "cancel_24h"):
+            return '<span class="ev-icon ev-icon-lastmin" aria-label="Last minute cancel"><i class="ti ti-clock-exclamation" aria-hidden="true"></i></span>'
+        if status.startswith("cancel"):
+            return '<span class="ev-icon ev-icon-cancelled" aria-label="Canceled"><i class="ti ti-ban" aria-hidden="true"></i></span>'
+        return ""
 
     def owner_status_options(current_status):
         options = [
@@ -6106,6 +6120,7 @@ def calendar():
                 course_name = event[11] or event[8] or ""
                 dot_class = owner_status_dot(event_status)
                 status_label = owner_status_label(event_status)
+                status_icons = owner_status_icons(event_status)
                 time_range = owner_time_range(event[2], event[12])
                 warning = warning_pill(event[13], event[8])
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
@@ -6116,7 +6131,7 @@ def calendar():
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
-                    <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span></span>
+                    <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span><span class="ev-icon-stack">{status_icons}</span></span>
                     <span class="ev-name">{escape(str(event[3] or ""))}</span>
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
@@ -6293,7 +6308,7 @@ def calendar():
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
             .ev-name{{font-weight:600;display:block;color:inherit}}
-            .ev-head{{display:flex;align-items:center;justify-content:flex-start;margin-bottom:2px}}
+            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:2px}}
             .ev-time{{font-size:9px;opacity:.75;display:block}}
             .ev-sub{{font-size:9px;opacity:.6;display:block}}
             .ev-status-badge{{display:inline-flex;align-items:center;gap:3px;
@@ -6303,6 +6318,17 @@ def calendar():
             .ev-status-badge:before{{content:"";width:6px;height:6px;border-radius:50%;
                                      background:currentColor;filter:brightness(0) invert(1);
                                      opacity:.96}}
+            .ev-icon-stack{{display:inline-flex;align-items:center;justify-content:flex-end;gap:3px;
+                            flex-wrap:wrap;max-width:48%}}
+            .ev-icon{{width:18px;height:18px;border-radius:999px;display:inline-flex;
+                      align-items:center;justify-content:center;border:1px solid currentColor;
+                      background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12);
+                      font-size:12px;line-height:1}}
+            .ev-icon i{{font-size:12px;line-height:1}}
+            .ev-icon-teacher{{color:#6941C6;background:#F4EBFF}}
+            .ev-icon-noshow{{color:#B42318;background:#FEE4E2}}
+            .ev-icon-lastmin{{color:#B54708;background:#FFEAD5}}
+            .ev-icon-cancelled{{color:#475467;background:#EEF2F7}}
             .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 34px;
                                 gap:4px;margin-top:4px;align-items:center}}
             .owner-status-form select,.owner-status-form button{{height:22px;border:1px solid rgba(0,0,0,.16);
@@ -6950,8 +6976,8 @@ def calendar():
     // ---- owner lesson panel ----
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
-    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
-    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
+    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : st && st.startsWith('cancel') ? 'Cancelled' : 'Scheduled'; }}
+    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
       if (!timeText) return '';
       const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
