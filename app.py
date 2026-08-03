@@ -8064,24 +8064,179 @@ def add_schedule():
         if require_teacher() and not require_owner():
             return redirect(f"/teacher_dashboard?view=add_schedule&created={generated_count}")
 
-        student_charge_line = "" if require_teacher() and not require_owner() else f"<p>Student Charge Per Lesson: ${student_charge_amount}</p>"
+        student_charge_summary = ""
+        if not (require_teacher() and not require_owner()):
+            student_charge_summary = f"""
+                        <div class="detail">
+                            <span>Student charge</span>
+                            <strong>${escape(str(student_charge_amount))}</strong>
+                        </div>
+            """
 
-        return f"""
-        <h1>Schedule Generated!</h1>
+        calendar_label = "Teacher Dashboard" if require_teacher() and not require_owner() else "Calendar"
 
-        <p>{generated_count} lesson(s) created for {student_name}.</p>
-        <p>Teacher: {teacher}</p>
-        <p>Location: {location or 'TBD'}</p>
-        <p>Room: {classroom}</p>
-        <p>Course: {course_name}</p>
-        <p>Duration: {duration} mins</p>
-        {student_charge_line}
-        <p>Start Date: {start_date}</p>
-        <p>Time: {lesson_time}</p>
+        return f"""<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Schedule Generated - H-Music CRM</title>
+    <style>
+        :root {{ --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff; --ink:#111827; --muted:#667085; --line:#e4e8f0; --bg:#f5f7fb; --card:#fff; --green:#166534; --green-soft:#dcfce7; }}
+        * {{ box-sizing:border-box; }}
+        body {{ margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+        a {{ color:inherit; text-decoration:none; }}
+        .topbar {{ height:60px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:20px; padding:0 28px; background:#fff; border-bottom:1px solid var(--line); }}
+        .brand {{ font-size:21px; font-weight:850; white-space:nowrap; }}
+        .nav {{ display:flex; gap:8px; overflow:hidden; }}
+        .nav a {{ min-height:38px; display:inline-flex; align-items:center; padding:0 13px; border-radius:8px; color:var(--muted); font-size:14px; font-weight:800; white-space:nowrap; }}
+        .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
+        .top-actions {{ display:flex; gap:8px; justify-content:flex-end; }}
+        .page {{ max-width:1180px; margin:0 auto; padding:22px 28px 42px; }}
+        .crumbs {{ display:flex; gap:7px; align-items:center; color:var(--muted); font-size:12px; font-weight:700; margin-bottom:8px; }}
+        .hero {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:end; margin-bottom:14px; }}
+        h1, p {{ margin:0; }}
+        h1 {{ font-size:26px; line-height:1.12; font-weight:850; letter-spacing:0; }}
+        .subline {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; color:var(--muted); font-size:13px; font-weight:700; }}
+        .badge {{ display:inline-flex; align-items:center; min-height:24px; padding:0 9px; border-radius:999px; background:var(--green-soft); color:var(--green); font-size:12px; font-weight:850; }}
+        .btn {{ min-height:36px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:0 12px; font-size:13px; font-weight:800; white-space:nowrap; }}
+        .btn.primary {{ background:var(--blue); border-color:var(--blue); color:#fff; }}
+        .grid {{ display:grid; grid-template-columns:260px minmax(0,1fr); gap:14px; align-items:start; }}
+        .summary, .panel {{ background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 28px rgba(15,23,42,.05); overflow:hidden; }}
+        .summary {{ padding:14px; position:sticky; top:14px; }}
+        .count {{ display:grid; grid-template-columns:auto minmax(0,1fr); gap:12px; align-items:center; padding-bottom:12px; border-bottom:1px solid var(--line); margin-bottom:12px; }}
+        .count-number {{ width:58px; height:58px; border-radius:14px; display:flex; align-items:center; justify-content:center; background:var(--blue-soft); color:var(--blue-dark); font-size:28px; font-weight:900; }}
+        .count-title {{ font-size:13px; color:var(--muted); font-weight:800; }}
+        .count-student {{ margin-top:3px; font-size:16px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+        .mini {{ display:grid; gap:8px; }}
+        .mini-row {{ display:grid; grid-template-columns:78px minmax(0,1fr); gap:8px; font-size:12px; }}
+        .mini-row span {{ color:var(--muted); font-weight:800; }}
+        .mini-row strong {{ color:var(--ink); font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+        .panel-head {{ min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 14px; background:#f8fafc; border-bottom:1px solid var(--line); }}
+        .panel-head h2 {{ margin:0; font-size:16px; font-weight:900; }}
+        .panel-head span {{ color:var(--muted); font-size:12px; font-weight:700; }}
+        .details {{ padding:14px; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }}
+        .detail {{ min-height:58px; border:1px solid var(--line); border-radius:10px; padding:10px 11px; background:#fff; min-width:0; }}
+        .detail span {{ display:block; color:var(--muted); font-size:11px; font-weight:850; margin-bottom:5px; }}
+        .detail strong {{ display:block; color:var(--ink); font-size:14px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+        .footer-actions {{ display:flex; gap:8px; justify-content:flex-end; padding:12px 14px; border-top:1px solid var(--line); background:#fbfcff; }}
+        @media (max-width:850px) {{
+            .topbar, .hero, .grid {{ grid-template-columns:1fr; }}
+            .topbar {{ height:auto; padding-top:10px; padding-bottom:10px; }}
+            .top-actions, .footer-actions {{ justify-content:flex-start; flex-wrap:wrap; }}
+            .details {{ grid-template-columns:1fr 1fr; }}
+            .summary {{ position:static; }}
+        }}
+        @media (max-width:560px) {{
+            .page {{ padding:18px 16px 34px; }}
+            .details {{ grid-template-columns:1fr; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="brand">H-Music CRM</div>
+        <nav class="nav" aria-label="Main navigation">
+            <a href="/students">Students</a>
+            <a href="/renewal_emails">Renewals</a>
+            <a class="active" href="/calendar">Calendar</a>
+            <a href="/teachers">Teachers</a>
+        </nav>
+        <div class="top-actions">
+            <a class="btn" href="{back_href}">Back</a>
+            <a class="btn primary" href="/add_schedule">Add Schedule</a>
+        </div>
+    </div>
 
-        <a href="{back_href}">Back</a><br>
-        <a href="/add_schedule">Add Another Schedule</a><br>
-        <a href="/course_types">Manage Course Types</a>
+    <main class="page">
+        <div class="crumbs">
+            <a href="{back_href}">{calendar_label}</a>
+            <span>/</span>
+            <span>Schedule generated</span>
+        </div>
+
+        <section class="hero">
+            <div>
+                <h1>Schedule Generated</h1>
+                <div class="subline">
+                    <span class="badge">Success</span>
+                    <span>{generated_count} lesson(s) created</span>
+                    <span>{escape(str(student_name))}</span>
+                </div>
+            </div>
+            <div class="top-actions">
+                <a class="btn" href="/course_types">Manage Course Types</a>
+                <a class="btn primary" href="{back_href}">View {calendar_label}</a>
+            </div>
+        </section>
+
+        <section class="grid">
+            <aside class="summary">
+                <div class="count">
+                    <div class="count-number">{generated_count}</div>
+                    <div>
+                        <div class="count-title">Lessons created</div>
+                        <div class="count-student">{escape(str(student_name))}</div>
+                    </div>
+                </div>
+                <div class="mini">
+                    <div class="mini-row"><span>Teacher</span><strong>{escape(str(teacher or "Unassigned"))}</strong></div>
+                    <div class="mini-row"><span>Start</span><strong>{escape(str(start_date or "TBD"))}</strong></div>
+                    <div class="mini-row"><span>Time</span><strong>{escape(str(lesson_time or "TBD"))}</strong></div>
+                    <div class="mini-row"><span>Course</span><strong>{escape(str(course_name or "Lesson"))}</strong></div>
+                </div>
+            </aside>
+
+            <div class="panel">
+                <div class="panel-head">
+                    <h2>Schedule Details</h2>
+                    <span>Generated from add schedule</span>
+                </div>
+                <div class="details">
+                    <div class="detail">
+                        <span>Student</span>
+                        <strong>{escape(str(student_name))}</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Teacher</span>
+                        <strong>{escape(str(teacher or "Unassigned"))}</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Location</span>
+                        <strong>{escape(str(location or "TBD"))}</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Room</span>
+                        <strong>{escape(str(classroom or "TBD"))}</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Course</span>
+                        <strong>{escape(str(course_name or "Lesson"))}</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Duration</span>
+                        <strong>{escape(str(duration))} mins</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Start date</span>
+                        <strong>{escape(str(start_date or "TBD"))}</strong>
+                    </div>
+                    <div class="detail">
+                        <span>Time</span>
+                        <strong>{escape(str(lesson_time or "TBD"))}</strong>
+                    </div>
+                    {student_charge_summary}
+                </div>
+                <div class="footer-actions">
+                    <a class="btn" href="/course_types">Manage Course Types</a>
+                    <a class="btn" href="/add_schedule">Add Another Schedule</a>
+                    <a class="btn primary" href="{back_href}">View {calendar_label}</a>
+                </div>
+            </div>
+        </section>
+    </main>
+</body>
+</html>
         """
 
     if require_teacher() and not require_owner():
