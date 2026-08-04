@@ -347,7 +347,7 @@ def get_parent_unread_notification_count():
 def parent_bottom_nav(active="home"):
     items = [
         ("home", "/parent_dashboard", "Home"),
-        ("schedule", "/parent_dashboard#calendar", "Schedule"),
+        ("schedule", "/parent_schedule", "Schedule"),
         ("messages", "/parent_messages", "Messages"),
         ("profile", "/parent_profile", "Profile"),
     ]
@@ -10649,6 +10649,7 @@ def parent_cancel():
     cursor = conn.cursor()
 
     today = date.today().strftime("%Y-%m-%d")
+    selected_schedule_id = request.args.get("schedule_id") or ""
 
     cursor.execute("""
     SELECT id, lesson_date, lesson_time, teacher, classroom, status
@@ -10665,8 +10666,9 @@ def parent_cancel():
     lessons_html = ""
 
     for lesson in lessons:
+        highlight_style = "border-color:#bcd8f5; background:#f8fbff;" if str(lesson[0]) == str(selected_schedule_id) else ""
         lessons_html += f"""
-        <form method="POST" style="border:1px solid #ddd; padding:15px; margin:15px 0;">
+        <form method="POST" style="border:1px solid #ddd; padding:15px; margin:15px 0; {highlight_style}">
             <p><b>{lesson[1]} {lesson[2]}</b></p>
             <p>Teacher: {lesson[3]}</p>
             <p>Room: {lesson[4]}</p>
@@ -10677,7 +10679,7 @@ def parent_cancel():
             Reason:<br>
             <input name="reason" required><br><br>
 
-            <button type="submit">Cancel This Lesson</button>
+            <button type="submit">Submit Cancel Request</button>
         </form>
         """
 
@@ -10685,17 +10687,42 @@ def parent_cancel():
         lessons_html = "<p>No upcoming lessons found.</p>"
 
     return f"""
-    <h1>Parent Cancel Lesson</h1>
-    <p>Student: {student_name}</p>
-    <p><b>If you want to move the lesson instead of cancelling it, please use Reschedule first.</b></p>
-    <p><a href="/parent_reschedule">Go to Reschedule</a></p>
-
-    <hr>
-
-    {lessons_html}
-
-    <br>
-    <a href="/parent_dashboard">Back to Parent Portal</a>
+    <html>
+    <head>
+        {parent_app_meta("Cancel Lesson")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f6f3; color:#151515; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12px; }}
+            .container {{ min-height:100vh; max-width:640px; margin:0 auto; background:#f7f6f3; padding:max(24px, env(safe-area-inset-top)) 20px calc(92px + env(safe-area-inset-bottom)); }}
+            h1 {{ margin:0 0 5px; font-size:18px; }}
+            p {{ line-height:1.42; }}
+            .app-card {{ background:#fff; border:1px solid #ddd9d2; border-radius:16px; padding:14px; margin-bottom:12px; }}
+            .reschedule-first {{ background:#eef6ff; border-color:#bcd8f5; color:#1d65ad; }}
+            form {{ background:#fff; border:1px solid #ddd9d2; border-radius:14px; padding:13px; margin:10px 0; }}
+            input {{ width:100%; min-height:42px; border:1px solid #d8d4cd; border-radius:12px; padding:10px 12px; margin-top:6px; font-size:13px; }}
+            button, .button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; border:0; border-radius:12px; padding:10px 13px; background:#1d65ad; color:#fff; font-weight:900; font-size:12px; text-decoration:none; }}
+            button {{ margin-top:10px; background:#b42318; }}
+            .button.secondary {{ background:#fff; color:#111; border:1px solid #ddd9d2; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:7px 10px calc(7px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.97); border-top:1px solid #ddd9d2; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; color:#6f6b65; font-size:11px; font-weight:750; padding:8px 4px; border-radius:8px; text-decoration:none; }}
+            .parent-bottom-nav a.active {{ color:#1d65ad; background:#eef6ff; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Cancel Lesson</h1>
+            <p>Student: {escape(str(student_name))}</p>
+            <section class="app-card reschedule-first">
+                <b>Want to keep the lesson?</b>
+                <p>Please try reschedule first when possible. Cancel requests require owner review and policy confirmation.</p>
+                <a class="button" href="/parent_reschedule{('?schedule_id=' + escape(str(selected_schedule_id), quote=True)) if selected_schedule_id else ''}">Request reschedule instead</a>
+            </section>
+            {lessons_html}
+            <a class="button secondary" href="/parent_schedule">Back to Schedule</a>
+        </div>
+        {parent_bottom_nav("schedule")}
+    </body>
+    </html>
     """
 
 
@@ -18754,6 +18781,7 @@ def parent_reschedule():
 
     conn.close()
 
+    selected_schedule_id = request.args.get("schedule_id") or ""
     lesson_options = ""
     for l in lessons:
         notice = ""
@@ -18762,8 +18790,9 @@ def parent_reschedule():
                 notice = " | within 24h: last-minute fee may apply"
         except Exception:
             notice = ""
+        selected_attr = "selected" if str(l[0]) == str(selected_schedule_id) else ""
         lesson_options += f"""
-        <option value="{l[0]}">{l[1]} {l[2]} | {l[3]} | {l[4]}{notice}</option>
+        <option value="{l[0]}" {selected_attr}>{l[1]} {l[2]} | {l[3]} | {l[4]}{notice}</option>
         """
 
     if not lesson_options:
@@ -21280,7 +21309,7 @@ def parent_dashboard():
             <section class="parent-tools">
                 <div class="section-head"><h2>Parent Tools</h2></div>
                 <div class="tool-groups">
-                    <a class="tool-card wide" href="/parent_booking"><strong>Scheduling</strong><span>Book / Makeup, reschedule, cancel lesson, and add trial</span></a>
+                    <a class="tool-card wide" href="/parent_schedule"><strong>Scheduling</strong><span>Cancel, reschedule, book / makeup, and trial requests</span></a>
                     <div class="tool-row">
                         <a class="tool-card" href="/parent_billing"><strong>Billing & Credits</strong><span>Invoices, payment, lessons, service credit</span></a>
                         <a class="tool-card" href="/parent_messages"><strong>Messages & Notices</strong><span>Messages, notifications, reminders</span></a>
@@ -21741,13 +21770,284 @@ def parent_credits():
         <section class="app-card metric"><div class="metric-label">Monetary Credits</div><div class="metric-value">${hmusic_money(wallet[2])}</div><div class="metric-sub">Money credit on account</div></section>
     </div>
     <section class="app-card"><div class="section-head"><h2>Recent Credit Activity</h2></div>{ledger_rows}</section>
-    <section class="app-card"><div class="section-head"><h2>Requests</h2><a href="/parent_booking">Book</a></div>{request_rows}</section>
+    <section class="app-card"><div class="section-head"><h2>Requests</h2><a href="/parent_schedule">Schedule</a></div>{request_rows}</section>
     """
     return parent_portal_shell("Credits", "home", body)
 
 
-@app.route("/parent_booking", methods=["GET", "POST"])
-def parent_booking():
+@app.route("/parent_booking", methods=["GET"])
+@app.route("/parent_schedule", methods=["GET", "POST"])
+def parent_schedule():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_parent_portal_feature_schema()
+    parent_id, linked_students, current_student = get_parent_context()
+    if not parent_id or not linked_students:
+        return redirect("/parent_dashboard")
+
+    linked_names = [str(row[0]) for row in linked_students if row and row[0]]
+    if not linked_names:
+        return redirect("/parent_dashboard")
+
+    if request.method == "POST":
+        student_scope = (request.form.get("student_scope") or current_student or "All linked students").strip()
+        change_type = (request.form.get("change_type") or "reschedule").strip()
+        notes = (request.form.get("notes") or "").strip()
+        if student_scope != "All linked students" and not parent_can_access_student(parent_id, student_scope):
+            return "<h1>Permission denied</h1>"
+        if change_type not in ("reschedule", "cancel", "reschedule_or_cancel"):
+            change_type = "reschedule"
+        if not notes:
+            return redirect("/parent_schedule?notes_required=1")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        request_label = {
+            "reschedule": "General reschedule note",
+            "cancel": "General cancellation note",
+            "reschedule_or_cancel": "General schedule change note",
+        }.get(change_type, "General schedule change note")
+        note_body = f"Scope: {student_scope}. Request type: {change_type.replace('_', ' ')}. Notes: {notes}"
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO parent_booking_requests (
+            parent_id, student_name, request_type, preferred_date, preferred_time,
+            preferred_teacher, preferred_room, notes, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_owner_review', ?, ?)
+        """, (
+            parent_id,
+            student_scope,
+            "schedule_change_note",
+            None,
+            None,
+            None,
+            None,
+            note_body,
+            now,
+            now,
+        ))
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        create_notification(
+            "owner",
+            "owner",
+            request_label,
+            f"{session.get('parent_name', 'Parent')} sent schedule notes. {note_body}",
+            "/dashboard",
+            related_type="parent_booking_request",
+            related_id=request_id
+        )
+        log_parent_activity(
+            parent_id,
+            student_scope,
+            "schedule_change_note",
+            note_body,
+            None
+        )
+        return redirect("/parent_schedule?sent=1")
+
+    placeholders = ",".join("?" for _ in linked_names)
+    today = date.today().strftime("%Y-%m-%d")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute(f"""
+    SELECT id, student_name, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), COALESCE(course_type_name, '')
+    FROM schedule
+    WHERE student_name IN ({placeholders})
+    AND lesson_date >= ?
+    AND (status IS NULL OR status = '' OR status = 'scheduled')
+    ORDER BY lesson_date, lesson_time
+    LIMIT 16
+    """, tuple(linked_names) + (today,))
+    upcoming = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT request_type, student_name, notes, status, created_at
+    FROM parent_booking_requests
+    WHERE parent_id = ?
+    ORDER BY id DESC
+    LIMIT 6
+    """, (parent_id,))
+    booking_requests = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT student_name, original_date, original_time, requested_date, requested_time, status, created_at
+    FROM reschedule_requests
+    WHERE parent_id = ?
+    ORDER BY id DESC
+    LIMIT 6
+    """, (parent_id,))
+    reschedule_requests = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT student_name, original_date, original_time, policy_status, status, created_at
+    FROM lesson_change_requests
+    WHERE parent_id = ?
+    ORDER BY id DESC
+    LIMIT 6
+    """, (parent_id,))
+    cancel_requests = cursor.fetchall()
+    conn.close()
+
+    next_lesson = upcoming[0] if upcoming else None
+    next_card = ""
+    if next_lesson:
+        next_card = f"""
+        <section class="app-card schedule-next">
+            <div class="schedule-strip"><span>{escape(str(next_lesson[2]))}</span><span>{escape(str(next_lesson[1]))}</span></div>
+            <div class="schedule-next-body">
+                <div class="schedule-time">{escape(str(next_lesson[3] or 'Time TBD'))}</div>
+                <div class="schedule-meta">{escape(str(next_lesson[7] or 'Private Lesson'))} · {escape(str(next_lesson[4] or 'Teacher TBD'))}</div>
+                <div class="schedule-room">Room: {escape(str(next_lesson[5] or 'TBD'))}</div>
+                <div class="primary-schedule-actions">
+                    <a class="schedule-action cancel" href="/parent_cancel?schedule_id={next_lesson[0]}"><strong>Cancel lesson</strong><span>Reason required; owner confirms policy</span></a>
+                    <a class="schedule-action reschedule" href="/parent_reschedule?schedule_id={next_lesson[0]}"><strong>Request reschedule</strong><span>Choose preferred times for approval</span></a>
+                </div>
+            </div>
+        </section>
+        """
+    else:
+        next_card = """
+        <section class="app-card"><span class="pill warn">No upcoming lessons</span><h3 style="margin-top:10px;">No scheduled lessons found.</h3><p class="muted">Use book or trial request if you need to add a lesson.</p></section>
+        """
+
+    upcoming_rows = ""
+    for lesson in upcoming:
+        upcoming_rows += f"""
+        <div class="schedule-row">
+            <div>
+                <b>{escape(str(lesson[2]))} · {escape(str(lesson[3] or 'Time TBD'))}</b>
+                <p>{escape(str(lesson[1]))} · {escape(str(lesson[7] or 'Lesson'))} · {escape(str(lesson[4] or 'Teacher TBD'))}</p>
+                <small>{escape(str(lesson[5] or 'Room TBD'))}</small>
+            </div>
+            <div class="mini-actions">
+                <a href="/parent_reschedule?schedule_id={lesson[0]}">Reschedule</a>
+                <a class="danger-link" href="/parent_cancel?schedule_id={lesson[0]}">Cancel</a>
+            </div>
+        </div>
+        """
+    if not upcoming_rows:
+        upcoming_rows = "<p class='muted'>No future scheduled lessons yet.</p>"
+
+    student_scope_options = '<option value="All linked students">All linked students</option>' + "".join(
+        f'<option value="{escape(name)}" {"selected" if name == current_student else ""}>{escape(name)}</option>'
+        for name in linked_names
+    )
+
+    recent_items = []
+    for row in reschedule_requests:
+        recent_items.append((
+            "Reschedule",
+            row[0],
+            f"{row[1]} {row[2]} → {row[3] or 'TBD'} {row[4] or ''}",
+            row[5],
+            row[6],
+        ))
+    for row in cancel_requests:
+        recent_items.append((
+            "Cancel",
+            row[0],
+            f"{row[1]} {row[2]} · {hmusic_policy_status_label(row[3])}",
+            row[4],
+            row[5],
+        ))
+    for row in booking_requests:
+        label = str(row[0] or "request").replace("_", " ").title()
+        recent_items.append((label, row[1], row[2] or "", row[3], row[4]))
+    recent_items.sort(key=lambda item: item[4] or "", reverse=True)
+    recent_rows = "".join(
+        f"<div class='list-row'><div><b>{escape(str(item[0]))}</b><p class='muted'>{escape(str(item[1] or ''))} · {escape(str(item[2] or ''))}</p></div><span class='pill warn'>{escape(str(item[3] or 'pending'))}</span></div>"
+        for item in recent_items[:8]
+    ) or "<p class='muted'>No schedule requests yet.</p>"
+
+    sent = "<section class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and follow up before anything changes on the calendar.</p></section>" if request.args.get("sent") == "1" else ""
+    notes_required = "<section class='app-card'><span class='pill warn'>Notes required</span><p>Please describe what needs to change.</p></section>" if request.args.get("notes_required") == "1" else ""
+
+    body = f"""
+    <style>
+        .schedule-strip {{ display:flex; justify-content:space-between; gap:10px; align-items:center; background:#d9e9fb; color:#2467b2; padding:9px 13px; font-size:12px; font-weight:900; text-transform:uppercase; }}
+        .schedule-next {{ padding:0; overflow:hidden; }}
+        .schedule-next-body {{ padding:13px; }}
+        .schedule-time {{ font-size:17px; font-weight:900; margin-bottom:4px; }}
+        .schedule-meta {{ color:#5f5b55; font-size:13px; font-weight:800; margin-bottom:6px; }}
+        .schedule-room {{ color:#716d67; font-size:11px; font-weight:750; margin-bottom:11px; }}
+        .primary-schedule-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+        .schedule-action {{ min-height:76px; border:1px solid #ddd9d2; border-radius:14px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; }}
+        .schedule-action strong {{ font-size:16px; line-height:1.08; }}
+        .schedule-action span {{ font-size:11px; line-height:1.24; color:#716d67; font-weight:750; }}
+        .schedule-action.cancel {{ color:#b42318; background:#fff7f5; border-color:#ffc9c1; }}
+        .schedule-action.reschedule {{ color:#1d65ad; background:#eef6ff; border-color:#bcd8f5; }}
+        .policy-mini {{ display:grid; gap:0; padding:9px 12px; }}
+        .policy-mini div {{ display:grid; grid-template-columns:66px 1fr; gap:7px; padding:6px 0; border-top:1px solid #eee9e2; font-size:11px; font-weight:700; color:#716d67; line-height:1.22; }}
+        .policy-mini div:first-child {{ border-top:0; }}
+        .policy-mini b {{ color:#151515; }}
+        .schedule-row {{ display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; padding:11px 0; border-top:1px solid #eee9e2; }}
+        .schedule-row:first-child {{ border-top:0; }}
+        .schedule-row b {{ display:block; font-size:13px; }}
+        .schedule-row p {{ margin:3px 0 1px; color:#716d67; font-size:11px; font-weight:750; }}
+        .schedule-row small {{ color:#8a857d; font-size:10px; font-weight:750; }}
+        .mini-actions {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
+        .mini-actions a {{ border:1px solid #ddd9d2; color:#1d65ad; background:#fff; border-radius:999px; padding:6px 8px; font-size:11px; font-weight:900; white-space:nowrap; }}
+        .mini-actions .danger-link {{ color:#b42318; border-color:#ffd7d2; background:#fffafa; }}
+        .book-grid {{ display:grid; gap:9px; }}
+        .book-card {{ display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; border:1px solid #ddd9d2; background:#fff; border-radius:14px; padding:13px; }}
+        .book-card b {{ display:block; font-size:14px; margin-bottom:3px; }}
+        .book-card span {{ color:#716d67; font-size:11px; font-weight:750; line-height:1.25; }}
+        .book-card em {{ font-style:normal; color:#1d65ad; font-size:18px; font-weight:900; }}
+        .book-card.trial {{ background:#f7fbff; border-color:#bcd8f5; }}
+        .note-panel {{ border-color:#bcd8f5; background:#f8fbff; }}
+        @media (max-width:430px) {{
+            .primary-schedule-actions {{ grid-template-columns:1fr; }}
+            .schedule-row {{ grid-template-columns:1fr; }}
+            .mini-actions {{ justify-content:flex-start; }}
+        }}
+    </style>
+    <h1>Schedule</h1>
+    <p class="muted">Cancel, reschedule, book, makeup, or send a schedule note for multiple lessons.</p>
+    {sent}
+    {notes_required}
+    <div class="section-head"><h2>Next Lesson</h2></div>
+    {next_card}
+    <section class="app-card policy-mini">
+        <div><b>No Show</b><span>Within 1 hour or missed lesson. Deduct 1 credit unless waiver is available.</span></div>
+        <div><b>Last Min</b><span>Within 24h. Creates pending fee, minimum $30.</span></div>
+        <div><b>&gt; 24h</b><span>No credit deduction and no fee.</span></div>
+    </section>
+    <section class="app-card">
+        <div class="section-head"><h2>Upcoming Lessons</h2></div>
+        {upcoming_rows}
+    </section>
+    <form method="POST" class="app-card note-panel">
+        <div class="section-head"><h2>Describe Schedule Change</h2></div>
+        <p class="muted">Use this when several lessons, siblings, or different teachers need changes together.</p>
+        <label>Student / scope</label><select name="student_scope">{student_scope_options}</select>
+        <label>Request type</label><select name="change_type"><option value="reschedule">Reschedule</option><option value="cancel">Cancel</option><option value="reschedule_or_cancel">Reschedule or cancel</option></select>
+        <label>Notes</label><textarea name="notes" required placeholder="Example: Alaia has piano and voice on Sundays. We want to move both to Saturday afternoon if possible."></textarea>
+        <button class="full" type="submit">Send schedule note</button>
+    </form>
+    <section class="app-card">
+        <div class="section-head"><h2>Book & Makeup</h2></div>
+        <div class="book-grid">
+            <a class="book-card" href="/parent_booking_request?type=self_booking"><span><b>Book a lesson</b>Request an extra or new regular lesson time</span><em>›</em></a>
+            <a class="book-card" href="/parent_booking_request?type=makeup"><span><b>Request makeup</b>Use an approved makeup credit or owner-approved missed lesson</span><em>›</em></a>
+            <a class="book-card trial" href="/parent_booking_request?type=trial"><span><b>Add a trial request</b>For sibling, friend, or a new program trial</span><em>+</em></a>
+        </div>
+    </section>
+    <section class="app-card">
+        <div class="section-head"><h2>Recent Requests</h2></div>
+        {recent_rows}
+    </section>
+    """
+    return parent_portal_shell("Schedule", "schedule", body)
+
+
+@app.route("/parent_booking_request", methods=["GET", "POST"])
+def parent_booking_request():
     if not require_parent():
         return redirect("/parent_login")
 
@@ -21786,7 +22086,7 @@ def parent_booking():
             f"{session.get('parent_name', 'Parent')} requested {request_type.replace('_', ' ')} for {student_name}.",
             "/dashboard", related_type="parent_booking_request", related_id=request_id
         )
-        return redirect("/parent_booking?sent=1")
+        return redirect("/parent_schedule?sent=1")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -21802,25 +22102,31 @@ def parent_booking():
     requests = cursor.fetchall()
     conn.close()
 
+    request_type_value = request.args.get("type") or "self_booking"
+    if request_type_value not in ("self_booking", "makeup", "trial"):
+        request_type_value = "self_booking"
     student_options = "".join(f'<option value="{escape(str(row[0]))}" {"selected" if row[0] == current_student else ""}>{escape(str(row[0]))}</option>' for row in linked_students)
     teacher_options = '<option value="">Any teacher</option>' + "".join(f'<option value="{escape(str(t))}">{escape(str(t))}</option>' for t in teachers)
     rows = "".join(
         f"<div class='list-row'><div><b>{escape(str(row[1]).replace('_', ' ').title())}</b><p class='muted'>{escape(str(row[0]))} · {escape(str(row[2] or 'Date TBD'))} {escape(str(row[3] or ''))}</p></div><span class='pill warn'>{escape(str(row[4]))}</span></div>"
         for row in requests
     ) or "<p class='muted'>No requests yet.</p>"
-    sent = "<div class='app-card'><span class='pill good'>Request sent</span><p>Owner will confirm before the schedule changes or family is notified.</p></div>" if request.args.get("sent") == "1" else ""
+    page_title = {
+        "self_booking": "Book a Lesson",
+        "makeup": "Request Makeup",
+        "trial": "Add Trial Request",
+    }.get(request_type_value, "Book a Lesson")
 
     body = f"""
-    <h1>Book / Makeup / Trial</h1>
+    <h1>{page_title}</h1>
     <p class="muted">Submit a request. Owner approval is required before anything changes on the calendar.</p>
-    {sent}
     <form method="POST" class="app-card">
         <label>Student</label><select name="student_name">{student_options}</select>
         <label>Request type</label>
         <select name="request_type">
-            <option value="self_booking">Self-booking</option>
-            <option value="makeup">Makeup lesson</option>
-            <option value="trial">Trial lesson</option>
+            <option value="self_booking" {"selected" if request_type_value == "self_booking" else ""}>Book a lesson</option>
+            <option value="makeup" {"selected" if request_type_value == "makeup" else ""}>Makeup lesson</option>
+            <option value="trial" {"selected" if request_type_value == "trial" else ""}>Trial lesson</option>
         </select>
         <label>Preferred date</label><input type="date" name="preferred_date">
         <label>Preferred time</label><input type="time" name="preferred_time">
@@ -21831,7 +22137,7 @@ def parent_booking():
     </form>
     <section class="app-card"><div class="section-head"><h2>Recent Requests</h2></div>{rows}</section>
     """
-    return parent_portal_shell("Book Lessons", "schedule", body)
+    return parent_portal_shell(page_title, "schedule", body)
 
 
 @app.route("/parent_family", methods=["GET", "POST"])
