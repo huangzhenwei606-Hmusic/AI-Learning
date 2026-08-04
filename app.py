@@ -300,6 +300,37 @@ def parent_app_meta(title):
                     installButton.hidden = true;
                 }}
             }}
+            function hmusicUpdateAppBadge() {{
+                if (!("setAppBadge" in navigator) && !("clearAppBadge" in navigator)) {{
+                    return;
+                }}
+                fetch("/parent_app_badge_count", {{ credentials: "same-origin" }})
+                    .then(function(response) {{
+                        if (!response.ok) {{
+                            return null;
+                        }}
+                        return response.json();
+                    }})
+                    .then(function(data) {{
+                        if (!data) {{
+                            return;
+                        }}
+                        const count = Number(data.count || 0);
+                        if (count > 0 && "setAppBadge" in navigator) {{
+                            navigator.setAppBadge(count).catch(function() {{}});
+                        }} else if (count <= 0 && "clearAppBadge" in navigator) {{
+                            navigator.clearAppBadge().catch(function() {{}});
+                        }}
+                    }})
+                    .catch(function() {{}});
+            }}
+            window.addEventListener("load", hmusicUpdateAppBadge);
+            document.addEventListener("visibilitychange", function() {{
+                if (!document.hidden) {{
+                    hmusicUpdateAppBadge();
+                }}
+            }});
+            window.setInterval(hmusicUpdateAppBadge, 60000);
         </script>
     """
 
@@ -672,6 +703,15 @@ def parent_app_entry():
     if require_parent():
         return redirect("/parent_dashboard")
     return redirect("/parent_login")
+
+
+@app.route("/parent_app_badge_count")
+def parent_app_badge_count():
+    if not require_parent():
+        return Response('{"ok": false, "count": 0}', status=401, mimetype="application/json")
+
+    count = get_parent_unread_notification_count() + get_parent_unread_message_count()
+    return Response(json.dumps({"ok": True, "count": count}), mimetype="application/json")
 
 
 @app.route("/manifest.webmanifest")
@@ -15304,6 +15344,34 @@ def send_queued_email_now(queue_id):
     return sent, response
 
 
+def send_parent_email_notice_now(parent_id, title, body, link_url, related_type=None, related_id=None):
+    if not parent_id:
+        return None
+
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (parent_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        return None
+
+    queue_id = queue_direct_delivery(
+        "email",
+        row[0],
+        title,
+        body,
+        link_url,
+        related_type=related_type,
+        related_id=related_id
+    )
+    if queue_id:
+        send_queued_email_now(queue_id)
+    return queue_id
+
+
 def create_lesson_reminders_for_date(target_date):
     ensure_v33_schema()
 
@@ -17243,14 +17311,50 @@ def create_reschedule_message_event(request_id, event_type, body, parent_id=None
         recipient_role = "parent" if parent_id else "teacher"
         add_message(thread_id, "owner", "Owner", recipient_role, body)
         if parent_id:
-            create_notification("parent", str(parent_id), "Reschedule approved", body, f"/message_thread/{thread_id}")
+            title = "Reschedule approved"
+            link_url = f"/message_thread/{thread_id}"
+            create_notification(
+                "parent",
+                str(parent_id),
+                title,
+                body,
+                link_url,
+                related_type="reschedule_request",
+                related_id=request_id
+            )
+            send_parent_email_notice_now(
+                parent_id,
+                title,
+                body,
+                link_url,
+                related_type="reschedule_request",
+                related_id=request_id
+            )
         if teacher_name:
             create_notification("teacher", teacher_name, "Reschedule approved", body, f"/message_thread/{thread_id}")
     elif event_type == "rejected":
         recipient_role = "parent" if parent_id else "teacher"
         add_message(thread_id, "owner", "Owner", recipient_role, body)
         if parent_id:
-            create_notification("parent", str(parent_id), "Reschedule rejected", body, f"/message_thread/{thread_id}")
+            title = "Reschedule rejected"
+            link_url = f"/message_thread/{thread_id}"
+            create_notification(
+                "parent",
+                str(parent_id),
+                title,
+                body,
+                link_url,
+                related_type="reschedule_request",
+                related_id=request_id
+            )
+            send_parent_email_notice_now(
+                parent_id,
+                title,
+                body,
+                link_url,
+                related_type="reschedule_request",
+                related_id=request_id
+            )
         if teacher_name:
             create_notification("teacher", teacher_name, "Reschedule rejected", body, f"/message_thread/{thread_id}")
 
