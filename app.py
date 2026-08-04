@@ -4597,6 +4597,17 @@ def student_detail(name):
     invoices = cursor.fetchall()
 
     cursor.execute("""
+    SELECT id, amount, description, created_at, related_schedule_id
+    FROM student_ledger
+    WHERE student_name = ?
+    AND entry_type = 'pending_last_min_fee'
+    AND related_invoice_id IS NULL
+    AND amount > 0
+    ORDER BY id DESC
+    """, (name,))
+    pending_fees = cursor.fetchall()
+
+    cursor.execute("""
     SELECT lesson_date, lesson_time, teacher, classroom, status, duration, schedule_type
     FROM schedule
     WHERE student_name = ?
@@ -4708,7 +4719,38 @@ def student_detail(name):
     else:
         lesson_html = "<div class='empty'>No lesson history yet.</div>"
 
-    payment_html = ""
+    pending_fee_html = ""
+    pending_fee_total = round(sum(float(fee[1] or 0) for fee in pending_fees), 2)
+    if pending_fees and require_owner():
+        pending_fee_html += f"""
+        <div class="pending-fee-summary">
+            <div>
+                <b>Pending fee: ${hmusic_money(pending_fee_total)}</b>
+                <p>Last Min Cancel fee(s). They will be added to the next package invoice by default.</p>
+            </div>
+            <a class="button" href="/create_package_invoice/{student_url_name}">Add to next invoice</a>
+        </div>
+        """
+        for fee in pending_fees:
+            pending_fee_html += f"""
+            <div class="timeline-item billing pending-fee">
+                <div class="timeline-date">{escape(str(fee[3] or 'Pending'))}</div>
+                <div>
+                    <b>Last Min Cancel fee · ${hmusic_money(fee[1])}</b>
+                    <p>{escape(str(fee[2] or 'Pending fee'))}</p>
+                </div>
+                <div class="payment-actions">
+                    <form class="inline-pay-form" method="POST" action="/create_pending_fee_invoice/{fee[0]}">
+                        <button type="submit">Create invoice now</button>
+                    </form>
+                    <form class="inline-pay-form" method="POST" action="/waive_pending_fee/{fee[0]}" onsubmit="return confirm('Waive this pending fee?');">
+                        <button class="danger-link" type="submit">Waive</button>
+                    </form>
+                </div>
+            </div>
+            """
+
+    payment_html = pending_fee_html
     for invoice in invoices:
         invoice_id, charge_lessons, amount, status, invoice_type, created_at = invoice
         status_text = status or "unpaid"
@@ -4902,6 +4944,9 @@ def student_detail(name):
             .timeline-item {{ display:grid; grid-template-columns:96px 1fr auto; gap:12px; border:1px solid var(--border); border-radius:12px; padding:12px; align-items:start; background:white; }}
             .timeline-item.billing {{ background:#fffdf6; }}
             .payment-toolbar {{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin-bottom:10px; }}
+            .pending-fee-summary {{ display:flex; justify-content:space-between; align-items:center; gap:10px; border:1px solid #fed7aa; background:#fff7ed; color:#9a3412; border-radius:12px; padding:12px; margin-bottom:10px; }}
+            .pending-fee-summary p {{ margin:3px 0 0; color:#9a3412; font-size:12px; }}
+            .pending-fee {{ background:#fffbeb; border-color:#fde68a; }}
             .payment-actions {{ display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }}
             .inline-pay-form {{ margin:0; }}
             .inline-pay-form button {{ width:auto; min-height:30px; padding:6px 10px; border-radius:8px; font-size:12px; background:var(--blue); color:white; border-color:var(--blue); }}
@@ -6148,11 +6193,9 @@ def calendar():
         status = status or "scheduled"
         if status == "present":
             return "sd-present"
-        if status == "late":
-            return "sd-late"
         if status in ("no_show", "no-show"):
             return "sd-noshow"
-        if status.startswith("cancel"):
+        if status == "last_min_cancel" or status.startswith("cancel"):
             return "sd-cancelled"
         if status in ("excused_24h", "excused", "teacher_cancelled"):
             return "sd-excused"
@@ -6162,14 +6205,14 @@ def calendar():
         status = status or "scheduled"
         if status == "present":
             return "Present"
-        if status == "late":
-            return "Late"
         if status in ("no_show", "no-show"):
             return "No show"
+        if status == "last_min_cancel":
+            return "Last Min Cancel"
         if status == "teacher_cancelled":
             return "Teacher Cancel"
         if status.startswith("cancel"):
-            return "Cancelled"
+            return "Last Min Cancel"
         if status in ("excused_24h", "excused"):
             return "Excused"
         return "Scheduled"
@@ -6180,7 +6223,7 @@ def calendar():
             return '<span class="ev-icon ev-icon-teacher" aria-label="Teacher cancel"><i class="ti ti-clipboard-x" aria-hidden="true"></i></span>'
         if status in ("no_show", "no-show"):
             return '<span class="ev-icon ev-icon-noshow" aria-label="No show"><i class="ti ti-user-x" aria-hidden="true"></i></span>'
-        if status in ("cancel_3h", "cancel_12h", "cancel_24h"):
+        if status in ("last_min_cancel", "cancel_3h", "cancel_12h", "cancel_24h"):
             return '<span class="ev-icon ev-icon-lastmin" aria-label="Last minute cancel"><i class="ti ti-clock-exclamation" aria-hidden="true"></i></span>'
         if status.startswith("cancel"):
             return '<span class="ev-icon ev-icon-cancelled" aria-label="Canceled"><i class="ti ti-ban" aria-hidden="true"></i></span>'
@@ -6190,11 +6233,8 @@ def calendar():
         options = [
             ("scheduled", "Scheduled"),
             ("present", "Present"),
-            ("late", "Late"),
             ("no_show", "No Show"),
-            ("cancel_3h", "Cancel < 3h"),
-            ("cancel_12h", "Cancel < 12h"),
-            ("cancel_24h", "Cancel < 24h"),
+            ("last_min_cancel", "Last Min Cancel"),
             ("excused_24h", "Cancel > 24h"),
             ("teacher_cancelled", "Teacher Cancel"),
             ("makeup", "Makeup"),
@@ -6644,7 +6684,7 @@ def calendar():
             .att-btn{{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
             .att-btn:hover{{background:#F7FAFD;border-color:#C8D3E2}}
             .att-btn.active{{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}}
-            .att-btn[data-status="present"].active{{background:var(--s-present)}} .att-btn[data-status="late"].active{{background:#D99019}} .att-btn[data-status="no_show"].active{{background:var(--s-noshow)}} .att-btn[data-status="excused_24h"].active{{background:var(--s-excused)}}
+            .att-btn[data-status="present"].active{{background:var(--s-present)}} .att-btn[data-status="last_min_cancel"].active{{background:var(--s-cancelled)}} .att-btn[data-status="no_show"].active{{background:var(--s-noshow)}} .att-btn[data-status="excused_24h"].active{{background:var(--s-excused)}}
             .panel-field{{width:100%;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}}
             .panel-field:focus{{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}}
             .panel-field::placeholder{{color:#98A2B3}}
@@ -6732,10 +6772,9 @@ def calendar():
         <span class="filter-label">Status:</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-present)"></span>Present</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-scheduled)"></span>Scheduled</span>
-        <span class="leg"><span class="leg-dot" style="background:var(--s-late)"></span>Late</span>
         <span class="leg"><span class="leg-dot" style="background:var(--s-noshow)"></span>No show</span>
-        <span class="leg"><span class="leg-dot" style="background:var(--s-cancelled)"></span>Cancelled</span>
-        <span class="leg"><span class="leg-dot" style="background:var(--s-excused)"></span>Excused</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-cancelled)"></span>Last min</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-excused)"></span>No charge</span>
         <span class="leg-sep"></span>
         <span class="leg"><span class="warn-pill">2 left</span> Low pkg</span>
         <span class="leg"><span class="last-pill">Last!</span> Final lesson</span>
@@ -6978,9 +7017,9 @@ def calendar():
         </div>
         <div class="panel-section"><h3>Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
-          <button class="att-btn" data-status="late" onclick="setPanelStatus('late')">Late</button>
           <button class="att-btn" data-status="no_show" onclick="setPanelStatus('no_show')">No show</button>
-          <button class="att-btn" data-status="excused_24h" onclick="setPanelStatus('excused_24h')">Excused</button>
+          <button class="att-btn" data-status="last_min_cancel" onclick="setPanelStatus('last_min_cancel')">Last min</button>
+          <button class="att-btn" data-status="excused_24h" onclick="setPanelStatus('excused_24h')">Cancel >24h</button>
         </div></div>
         <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="panelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
         <div class="panel-section"><h3>Homework assignment</h3><textarea class="panel-field" id="panelHomework" placeholder="Add homework. Each line can be one assignment."></textarea></div>
@@ -7124,8 +7163,8 @@ def calendar():
     // ---- owner lesson panel ----
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
-    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : st && st.startsWith('cancel') ? 'Cancelled' : 'Scheduled'; }}
-    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
+    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Cancel >24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
+    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
       if (!timeText) return '';
       const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
@@ -9488,11 +9527,8 @@ def teacher_dashboard():
         options = [
             ("scheduled", "Scheduled"),
             ("present", "Present"),
-            ("late", "Late"),
             ("no_show", "No Show"),
-            ("cancel_3h", "Cancel < 3h"),
-            ("cancel_12h", "Cancel < 12h"),
-            ("cancel_24h", "Cancel < 24h"),
+            ("last_min_cancel", "Last Min Cancel"),
             ("excused_24h", "Cancel > 24h"),
             ("teacher_cancelled", "Teacher Cancel"),
             ("makeup", "Makeup"),
@@ -9598,7 +9634,7 @@ def teacher_dashboard():
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
     .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
-    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="late"].active{background:#D99019}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
+    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
     </style>
     """
@@ -9781,7 +9817,7 @@ def teacher_dashboard():
           <div class="lesson-panel-scroll">
             <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
             <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
-            <div class="panel-section"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="late" onclick="setTeacherPanelStatus('late')">Late</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Excused</button></div></div>
+        <div class="panel-section"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
@@ -9814,8 +9850,8 @@ def teacher_dashboard():
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherPanelSaving = false;
-        function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'late' ? 'Late' : st === 'no_show' ? 'No show' : (st === 'excused_24h' || st === 'excused') ? 'Excused' : 'Scheduled'; }}
-        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'late' ? 'late' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'excused' : st && st.startsWith('cancel') ? 'cancelled' : 'scheduled'; }}
+        function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Cancel >24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
+        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'last_min_cancel' || (st && st.startsWith('cancel')) ? 'cancelled' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled') ? 'excused' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
@@ -10136,12 +10172,10 @@ def get_parent_cancel_status(lesson_date, lesson_time):
 
     hours_before = (lesson_datetime - datetime.now()).total_seconds() / 3600
 
-    if hours_before < 3:
-        return "cancel_3h"
-    if hours_before < 12:
-        return "cancel_12h"
+    if hours_before < 1:
+        return "no_show"
     if hours_before < 24:
-        return "cancel_24h"
+        return "last_min_cancel"
     return "excused_24h"
 
 
@@ -10156,7 +10190,100 @@ def get_hours_before_lesson(lesson_date, lesson_time):
     return (lesson_datetime - datetime.now()).total_seconds() / 3600
 
 
-def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None):
+def hmusic_lesson_duration_hours(duration):
+    try:
+        minutes = float(duration or 30)
+    except Exception:
+        minutes = 30
+    return max(minutes, 0) / 60
+
+
+def hmusic_last_min_fee(duration):
+    return round(max(30, hmusic_lesson_duration_hours(duration) * 30), 2)
+
+
+def hmusic_policy_status_label(status):
+    labels = {
+        "scheduled": "Scheduled",
+        "present": "Present",
+        "no_show": "No Show",
+        "last_min_cancel": "Last Min Cancel",
+        "cancel_3h": "Last Min Cancel",
+        "cancel_12h": "Last Min Cancel",
+        "cancel_24h": "Last Min Cancel",
+        "excused_24h": "Cancel > 24h",
+        "teacher_cancelled": "Teacher Cancel",
+        "makeup": "Makeup",
+    }
+    return labels.get(status or "scheduled", status or "Scheduled")
+
+
+def hmusic_get_setting(cursor, key, default=""):
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    return row[0] if row and row[0] is not None else default
+
+
+def hmusic_waiver_holder(cursor, student_name, enrollment_id):
+    if enrollment_id:
+        cursor.execute("""
+        SELECT COALESCE(package_lessons, 10), COALESCE(policy_waiver_used, 0)
+        FROM enrollments
+        WHERE id = ?
+        """, (enrollment_id,))
+        row = cursor.fetchone()
+        package_lessons = row[0] if row else 10
+        used = row[1] if row else 0
+        try:
+            allowance = max(1, int(float(package_lessons or 10) // 10))
+        except Exception:
+            allowance = 1
+        return {"table": "enrollments", "id": enrollment_id, "allowance": allowance, "used": int(used or 0)}
+
+    cursor.execute("""
+    SELECT COALESCE(free_cancel_used, 0)
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+    row = cursor.fetchone()
+    try:
+        allowance = int(float(hmusic_get_setting(cursor, "free_cancel_per_package", "1") or 1))
+    except Exception:
+        allowance = 1
+    return {"table": "students", "id": student_name, "allowance": max(1, allowance), "used": int(row[0] if row else 0)}
+
+
+def hmusic_adjust_waiver(cursor, holder, delta):
+    if not holder or not delta:
+        return
+    if holder["table"] == "enrollments":
+        cursor.execute("""
+        UPDATE enrollments
+        SET policy_waiver_used = MAX(COALESCE(policy_waiver_used, 0) + ?, 0),
+            updated_at = ?
+        WHERE id = ?
+        """, (delta, datetime.now().strftime("%Y-%m-%d %H:%M"), holder["id"]))
+    else:
+        cursor.execute("""
+        UPDATE students
+        SET free_cancel_used = MAX(COALESCE(free_cancel_used, 0) + ?, 0)
+        WHERE name = ?
+        """, (delta, holder["id"]))
+
+
+def hmusic_pending_fee_total(cursor, student_name):
+    cursor.execute("""
+    SELECT COALESCE(SUM(amount), 0)
+    FROM student_ledger
+    WHERE student_name = ?
+    AND entry_type = 'pending_last_min_fee'
+    AND related_invoice_id IS NULL
+    AND amount > 0
+    """, (student_name,))
+    return round(float(cursor.fetchone()[0] or 0), 2)
+
+
+def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None, use_policy_waiver=True):
     ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -10171,7 +10298,10 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         student_charge_amount,
         teacher_pay_amount,
         lesson_date,
-        lesson_time
+        lesson_time,
+        COALESCE(duration, 30),
+        COALESCE(policy_waiver_applied, 0),
+        COALESCE(pending_fee_amount, 0)
     FROM schedule
     WHERE id = ?
     """, (schedule_id,))
@@ -10193,11 +10323,21 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     student_charge_amount = lesson[3] or 0
     teacher_pay_amount = lesson[4] or 0
     lesson_date = lesson[5] or ""
+    duration = lesson[7] or 30
+    previous_waiver_applied = int(lesson[8] or 0)
     payroll_month = lesson_date[:7]
 
     if payroll_month and is_payroll_locked(payroll_month):
         conn.close()
         return {"ok": False, "error": f"Payroll is locked for {payroll_month}"}
+
+    if status in ("cancel_3h", "cancel_12h", "cancel_24h"):
+        status = "last_min_cancel"
+
+    holder = hmusic_waiver_holder(cursor, student_name, enrollment_id)
+    if previous_waiver_applied:
+        hmusic_adjust_waiver(cursor, holder, -1)
+        holder["used"] = max(holder["used"] - 1, 0)
 
     business_rule = get_business_rule(status)
 
@@ -10212,12 +10352,33 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     payroll_amount = round(teacher_pay_amount * teacher_pay_units, 2)
     profit_amount = round(revenue_amount - payroll_amount, 2)
 
-    new_charge_lessons = 1 if deduct_lesson == 1 else 0
+    policy_waiver_applied = 0
+    pending_fee_amount = 0
+    pending_fee_description = ""
+    if use_policy_waiver and status in ("no_show", "last_min_cancel") and holder["used"] < holder["allowance"]:
+        policy_waiver_applied = 1
+        hmusic_adjust_waiver(cursor, holder, 1)
+
+    if status == "no_show":
+        new_charge_lessons = 0 if policy_waiver_applied else 1
+        student_charge_units = 0 if policy_waiver_applied else student_charge_units
+        revenue_amount = 0 if policy_waiver_applied else revenue_amount
+        profit_amount = round(revenue_amount - payroll_amount, 2)
+    elif status == "last_min_cancel":
+        new_charge_lessons = 0
+        student_charge_units = 0
+        revenue_amount = 0
+        profit_amount = round(revenue_amount - payroll_amount, 2)
+        if not policy_waiver_applied:
+            pending_fee_amount = hmusic_last_min_fee(duration)
+            pending_fee_description = f"Last Min Cancel fee pending · ${hmusic_money(pending_fee_amount)}"
+    else:
+        new_charge_lessons = 1 if deduct_lesson == 1 else 0
     lesson_delta = new_charge_lessons - previous_charge_lessons
 
     cancelled_at = None
     cancellation_reason = None
-    if status.startswith("cancel") or status == "excused_24h":
+    if status.startswith("cancel") or status in ("excused_24h", "last_min_cancel", "no_show"):
         cancelled_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         cancellation_reason = reason
 
@@ -10231,7 +10392,9 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         payroll_amount = ?,
         profit_amount = ?,
         cancellation_reason = ?,
-        cancelled_at = ?
+        cancelled_at = ?,
+        policy_waiver_applied = ?,
+        pending_fee_amount = ?
     WHERE id = ?
     """, (
         status,
@@ -10243,6 +10406,8 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         profit_amount,
         cancellation_reason,
         cancelled_at,
+        policy_waiver_applied,
+        pending_fee_amount,
         schedule_id,
     ))
 
@@ -10273,6 +10438,8 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         cursor.execute("""
         DELETE FROM student_ledger
         WHERE related_schedule_id = ?
+        AND related_invoice_id IS NULL
+        AND related_payment_id IS NULL
         """, (schedule_id,))
     except:
         pass
@@ -10292,14 +10459,37 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             student_name,
-            status,
-            -revenue_amount,
-            f"{business_rule['rule_label']} | Actor: {actor} | Student Charge: {student_charge_percent}% | Teacher Pay: {teacher_pay_percent}% | Deduct Lesson: {deduct_lesson} | Revenue: ${revenue_amount} | Payroll: ${payroll_amount} | Profit: ${profit_amount}",
+            "waived_" + status if policy_waiver_applied else status,
+            0 if policy_waiver_applied else -revenue_amount,
+            f"{hmusic_policy_status_label(status)} | Actor: {actor} | {'Package waiver applied | ' if policy_waiver_applied else ''}Student Charge: {student_charge_percent}% | Teacher Pay: {teacher_pay_percent}% | Deduct Lesson: {new_charge_lessons} | Revenue: ${revenue_amount} | Payroll: ${payroll_amount} | Profit: ${profit_amount}",
             None,
             None,
             schedule_id,
             datetime.now().strftime("%Y-%m-%d %H:%M")
         ))
+        if pending_fee_amount > 0:
+            cursor.execute("""
+            INSERT INTO student_ledger (
+                student_name,
+                entry_type,
+                amount,
+                description,
+                related_invoice_id,
+                related_payment_id,
+                related_schedule_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                student_name,
+                "pending_last_min_fee",
+                pending_fee_amount,
+                f"{pending_fee_description} | Actor: {actor} | {duration} min lesson | Add to next invoice by default",
+                None,
+                None,
+                schedule_id,
+                datetime.now().strftime("%Y-%m-%d %H:%M")
+            ))
     except:
         pass
 
@@ -10331,6 +10521,8 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         "revenue_amount": revenue_amount,
         "payroll_amount": payroll_amount,
         "profit_amount": profit_amount,
+        "waiver_applied": policy_waiver_applied,
+        "pending_fee_amount": pending_fee_amount,
     }
 
 
@@ -10349,49 +10541,100 @@ def parent_cancel():
         cursor = conn.cursor()
 
         cursor.execute("""
-        SELECT student_name, lesson_date, lesson_time
+        SELECT student_name, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), enrollment_id
         FROM schedule
         WHERE id = ?
         """, (schedule_id,))
 
         lesson = cursor.fetchone()
-        conn.close()
-
         if not lesson:
+            conn.close()
             return "<h1>Lesson not found</h1>"
 
         if lesson[0] != student_name:
+            conn.close()
             return "<h1>Permission denied</h1>"
 
         cancel_status = get_parent_cancel_status(lesson[1], lesson[2])
-        result = apply_lesson_status(
+        holder = hmusic_waiver_holder(cursor, student_name, lesson[6])
+        waiver_available = 1 if cancel_status in ("no_show", "last_min_cancel") and holder["used"] < holder["allowance"] else 0
+        fee_preview = hmusic_last_min_fee(lesson[5]) if cancel_status == "last_min_cancel" and not waiver_available else 0
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        INSERT INTO lesson_change_requests (
+            parent_id,
+            student_name,
             schedule_id,
-            cancel_status,
-            actor="parent",
-            reason=reason,
-            allowed_student_name=student_name
+            request_type,
+            original_date,
+            original_time,
+            teacher,
+            classroom,
+            policy_status,
+            fee_preview,
+            waiver_available,
+            reason,
+            status,
+            created_at,
+            updated_at
         )
-
-        if not result["ok"]:
-            return f"""
-            <h1>Cancellation Not Submitted</h1>
-            <p>{result["error"]}</p>
-            <p><a href="/parent_dashboard">Back to Parent Portal</a></p>
-            """
+        VALUES (?, ?, ?, 'cancel_lesson', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        """, (
+            session.get("parent_id"),
+            student_name,
+            schedule_id,
+            lesson[1],
+            lesson[2],
+            lesson[3],
+            lesson[4],
+            cancel_status,
+            fee_preview,
+            waiver_available,
+            reason,
+            now,
+            now
+        ))
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
 
         log_parent_activity(
             session.get("parent_id"),
-            result["student_name"],
-            "cancel_lesson",
-            f"Parent cancelled lesson #{schedule_id}; status {result['status']}; charge {result['charge_lessons']} lesson(s).",
+            student_name,
+            "cancel_request",
+            f"Parent requested cancellation for lesson #{schedule_id}; policy preview {cancel_status}; pending owner approval.",
             schedule_id
         )
+        create_notification(
+            "owner",
+            "owner",
+            "Parent cancellation request",
+            f"{student_name} requested cancellation for {lesson[1]} {lesson[2]}. Policy preview: {hmusic_policy_status_label(cancel_status)}.",
+            f"/lesson_change_request/{request_id}",
+            related_type="lesson_change_request",
+            related_id=request_id
+        )
+        if lesson[3]:
+            create_notification(
+                "teacher",
+                lesson[3],
+                "Parent cancellation request",
+                f"{student_name} requested cancellation for {lesson[1]} {lesson[2]}. Owner approval is pending.",
+                "/teacher_messages",
+                related_type="lesson_change_request",
+                related_id=request_id
+            )
 
+        fee_line = f"<p>Pending fee preview: ${hmusic_money(fee_preview)}</p>" if fee_preview else "<p>Pending fee preview: $0.00</p>"
+        waiver_line = "<p>Package waiver available: Yes</p>" if waiver_available else "<p>Package waiver available: No</p>"
         return f"""
-        <h1>Cancellation Submitted</h1>
-        <p>Student: {result["student_name"]}</p>
-        <p>Status: {result["status"]}</p>
-        <p>Charge: {result["charge_lessons"]} lesson(s)</p>
+        <h1>Cancellation Request Submitted</h1>
+        <p>Request #{request_id}</p>
+        <p>Student: {student_name}</p>
+        <p>Policy preview: {hmusic_policy_status_label(cancel_status)}</p>
+        {fee_line}
+        {waiver_line}
+        <p>Status: Waiting for studio approval.</p>
         <p><b>Need a makeup time?</b> Please submit a reschedule request from the parent app so the owner can approve a new slot.</p>
         <p><a href="/parent_reschedule">Request Reschedule</a></p>
         <p><a href="/parent_dashboard">Back to Parent Portal</a></p>
@@ -10427,7 +10670,7 @@ def parent_cancel():
             <input type="hidden" name="schedule_id" value="{lesson[0]}">
 
             Reason:<br>
-            <input name="reason"><br><br>
+            <input name="reason" required><br><br>
 
             <button type="submit">Cancel This Lesson</button>
         </form>
@@ -10448,6 +10691,166 @@ def parent_cancel():
 
     <br>
     <a href="/parent_dashboard">Back to Parent Portal</a>
+    """
+
+
+@app.route("/lesson_change_request/<int:request_id>", methods=["GET", "POST"])
+def lesson_change_request_detail(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id, parent_id, student_name, schedule_id, request_type, original_date,
+        original_time, teacher, classroom, policy_status, fee_preview,
+        waiver_available, reason, status, owner_decision, owner_note, created_at
+    FROM lesson_change_requests
+    WHERE id = ?
+    """, (request_id,))
+    req = cursor.fetchone()
+    if not req:
+        conn.close()
+        return "<h1>Request not found</h1>"
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        owner_note = (request.form.get("owner_note") or "").strip()
+        decision = action or "reviewed"
+        result = {"ok": True}
+
+        if action == "apply_policy":
+            result = apply_lesson_status(
+                req[3],
+                req[9],
+                actor="owner:request",
+                reason=req[12],
+                use_policy_waiver=True
+            )
+        elif action == "charge":
+            result = apply_lesson_status(
+                req[3],
+                req[9],
+                actor="owner:request_charge",
+                reason=req[12],
+                use_policy_waiver=False
+            )
+        elif action == "no_charge":
+            result = apply_lesson_status(
+                req[3],
+                "excused_24h",
+                actor="owner:request_no_charge",
+                reason=owner_note or req[12],
+                use_policy_waiver=False
+            )
+        elif action == "reject":
+            result = {"ok": True}
+        else:
+            result = {"ok": False, "error": "Unknown action"}
+
+        if not result.get("ok"):
+            conn.close()
+            return f"""
+            <h1>Request Not Updated</h1>
+            <p>{escape(result.get("error") or "Unable to update request.")}</p>
+            <p><a href="/lesson_change_request/{request_id}">Back</a></p>
+            """
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        new_status = "rejected" if action == "reject" else "approved"
+        cursor.execute("""
+        UPDATE lesson_change_requests
+        SET status = ?,
+            owner_decision = ?,
+            owner_note = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (new_status, decision, owner_note, now, request_id))
+        conn.commit()
+        conn.close()
+
+        if req[1]:
+            create_notification(
+                "parent",
+                str(req[1]),
+                "Cancellation request updated",
+                f"H-Music reviewed {req[2]}'s cancellation request. Decision: {decision.replace('_', ' ')}.",
+                "/parent_dashboard",
+                related_type="lesson_change_request",
+                related_id=request_id
+            )
+        return redirect(f"/lesson_change_request/{request_id}")
+
+    cursor.execute("""
+    SELECT status, COALESCE(charge_lessons, 0), COALESCE(policy_waiver_applied, 0), COALESCE(pending_fee_amount, 0)
+    FROM schedule
+    WHERE id = ?
+    """, (req[3],))
+    schedule_state = cursor.fetchone()
+    conn.close()
+
+    status_label = hmusic_policy_status_label(req[9])
+    fee_preview = hmusic_money(req[10])
+    waiver_text = "Available" if req[11] else "Not available"
+    current_state = ""
+    if schedule_state:
+        current_state = f"{hmusic_policy_status_label(schedule_state[0])} · credit {schedule_state[1]} · waiver {schedule_state[2]} · pending fee ${hmusic_money(schedule_state[3])}"
+
+    return f"""
+    <html>
+    <head>
+        <title>Cancellation Request</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f6f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:28px; }}
+            .wrap {{ max-width:860px; margin:0 auto; }}
+            .card {{ background:white; border:1px solid #e5e7eb; border-radius:14px; padding:20px; margin-bottom:14px; }}
+            h1 {{ margin:0 0 6px; font-size:26px; }}
+            .muted {{ color:#6b7280; }}
+            .grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:14px; }}
+            .metric {{ border:1px solid #e5e7eb; border-radius:10px; padding:12px; background:#f9fafb; }}
+            .metric span {{ display:block; color:#6b7280; font-size:12px; margin-bottom:4px; }}
+            .metric b {{ font-size:18px; }}
+            textarea {{ width:100%; min-height:84px; border:1px solid #d1d5db; border-radius:10px; padding:10px; font:inherit; }}
+            .actions {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:12px; }}
+            button,.button {{ border:1px solid #d1d5db; border-radius:10px; background:white; color:#111827; padding:11px 12px; font-weight:800; text-align:center; text-decoration:none; cursor:pointer; }}
+            button.primary {{ background:#1d65ad; border-color:#1d65ad; color:white; }}
+            button.warn {{ background:#fff7ed; color:#9a3412; border-color:#fed7aa; }}
+            button.danger {{ background:#fef2f2; color:#991b1b; border-color:#fecaca; }}
+            @media(max-width:760px) {{ body {{ padding:14px; }} .grid,.actions {{ grid-template-columns:1fr; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <div class="card">
+                <p class="muted">Request #{req[0]} · {escape(req[16] or '')}</p>
+                <h1>{escape(req[2])} cancellation request</h1>
+                <p>{escape(req[5] or '')} {escape(req[6] or '')} · {escape(req[7] or '')} · {escape(req[8] or '')}</p>
+                <p><b>Reason:</b> {escape(req[12] or 'No reason provided.')}</p>
+                <p><b>Request status:</b> {escape(req[13] or 'pending')}</p>
+                <p><b>Current lesson state:</b> {escape(current_state or 'Lesson not found')}</p>
+                <div class="grid">
+                    <div class="metric"><span>Policy preview</span><b>{status_label}</b></div>
+                    <div class="metric"><span>Waiver</span><b>{waiver_text}</b></div>
+                    <div class="metric"><span>Fee preview</span><b>${fee_preview}</b></div>
+                </div>
+            </div>
+            <form class="card" method="POST">
+                <label class="muted">Owner note</label>
+                <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
+                <div class="actions">
+                    <button class="primary" name="action" value="apply_policy" type="submit">Apply policy</button>
+                    <button class="warn" name="action" value="charge" type="submit">Charge / deduct</button>
+                    <button name="action" value="no_charge" type="submit">No charge</button>
+                    <button class="danger" name="action" value="reject" type="submit">Reject request</button>
+                </div>
+            </form>
+            <a class="button" href="/calendar">Back to calendar</a>
+        </div>
+    </body>
+    </html>
     """
 
 @app.route("/update_lesson_status", methods=["POST"])
@@ -10525,12 +10928,12 @@ def calendar_status_label(status):
     status = status or "scheduled"
     if status == "present":
         return "Present"
-    if status == "late":
-        return "Late"
     if status in ("no_show", "no-show"):
         return "No show"
-    if status in ("excused", "excused_24h", "teacher_cancelled") or status.startswith("cancel"):
-        return "Excused"
+    if status == "last_min_cancel" or status.startswith("cancel"):
+        return "Last min cancel"
+    if status in ("excused", "excused_24h", "teacher_cancelled"):
+        return "No charge"
     return "Scheduled"
 
 
@@ -11147,6 +11550,7 @@ def create_package_invoice(name):
 
     parent_id = get_primary_parent_for_student(cursor, student[0])
     default_due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+    pending_fee_total = hmusic_pending_fee_total(cursor, student[0])
 
     def money_value(raw, default=0):
         try:
@@ -11158,7 +11562,9 @@ def create_package_invoice(name):
         package_type = (request.form.get("package_type") or "10").strip()
         custom_lessons = money_value(request.form.get("custom_lessons"), 10)
         charge_lessons = 10 if package_type == "10" else custom_lessons
-        subtotal_amount = money_value(request.form.get("subtotal_amount"), 650)
+        include_pending_fees = request.form.get("include_pending_fees") == "1"
+        package_subtotal_amount = money_value(request.form.get("subtotal_amount"), 650)
+        subtotal_amount = round(package_subtotal_amount + (pending_fee_total if include_pending_fees else 0), 2)
         discount_code = (request.form.get("discount_code") or "").strip().upper()
         discount_amount = money_value(request.form.get("discount_amount"), 0)
         amount_due = max(round(subtotal_amount - discount_amount, 2), 0)
@@ -11172,6 +11578,8 @@ def create_package_invoice(name):
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         invoice_notes = notes or f"Package invoice for {charge_lessons:g} lesson(s)."
+        if include_pending_fees and pending_fee_total > 0:
+            invoice_notes += f" Includes pending last-minute cancellation fee(s): ${hmusic_money(pending_fee_total)}."
         if discount_code and discount_amount:
             invoice_notes += f" Discount code {discount_code} applied: -${hmusic_money(discount_amount)}."
 
@@ -11206,6 +11614,17 @@ def create_package_invoice(name):
             payment_methods
         ))
         invoice_id = cursor.lastrowid
+        if include_pending_fees and pending_fee_total > 0:
+            cursor.execute("""
+            UPDATE student_ledger
+            SET entry_type = 'invoiced_last_min_fee',
+                related_invoice_id = ?,
+                description = description || ' | Added to invoice #' || ?
+            WHERE student_name = ?
+            AND entry_type = 'pending_last_min_fee'
+            AND related_invoice_id IS NULL
+            AND amount > 0
+            """, (invoice_id, invoice_id, student[0]))
         conn.commit()
         conn.close()
 
@@ -11232,6 +11651,18 @@ def create_package_invoice(name):
     if request.args.get("error") == "1":
         error_html = "<div class='alert danger'>Please enter a valid package and amount.</div>"
 
+    pending_fee_html = ""
+    pending_checked = ""
+    default_subtotal = 650
+    if pending_fee_total > 0:
+        pending_checked = "checked"
+        pending_fee_html = f"""
+                    <div class="span-2 pending-fee-box">
+                        <label class="method"><input type="checkbox" name="include_pending_fees" value="1" {pending_checked} onchange="syncInvoicePreview()"> Include pending Last Min Cancel fee(s): ${hmusic_money(pending_fee_total)}</label>
+                        <p>Pending fees are added to the next package invoice by default. Uncheck this only if you want to collect them separately.</p>
+                    </div>
+        """
+
     return f"""
     <html>
     <head>
@@ -11249,6 +11680,8 @@ def create_package_invoice(name):
             textarea {{ min-height:92px; resize:vertical; }}
             .span-2 {{ grid-column:1 / -1; }}
             .summary {{ border:1px solid #bfdbfe; background:#eff6ff; color:#164e85; border-radius:14px; padding:15px; font-weight:850; line-height:1.45; margin:18px 0; }}
+            .pending-fee-box {{ border:1px solid #fed7aa; background:#fff7ed; color:#9a3412; border-radius:14px; padding:12px; }}
+            .pending-fee-box p {{ margin:6px 0 0; color:#9a3412; font-size:13px; }}
             .methods {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
             .method {{ border:1px solid #d1d5db; border-radius:12px; padding:12px; display:flex; align-items:center; gap:8px; font-weight:850; }}
             .method input {{ width:auto; min-height:auto; }}
@@ -11262,11 +11695,14 @@ def create_package_invoice(name):
             function syncInvoicePreview() {{
                 const type = document.querySelector('[name="package_type"]').value;
                 const lessons = type === '10' ? 10 : parseFloat(document.querySelector('[name="custom_lessons"]').value || '0');
-                const subtotal = parseFloat(document.querySelector('[name="subtotal_amount"]').value || '0');
+                const baseSubtotal = parseFloat(document.querySelector('[name="subtotal_amount"]').value || '0');
                 const discount = parseFloat(document.querySelector('[name="discount_amount"]').value || '0');
+                const pendingBox = document.querySelector('[name="include_pending_fees"]');
+                const pendingFees = pendingBox && pendingBox.checked ? {pending_fee_total} : 0;
+                const subtotal = baseSubtotal + pendingFees;
                 const total = Math.max(subtotal - discount, 0);
                 document.getElementById('invoicePreview').textContent =
-                    `Parent app will show ${{lessons || 0}} lesson(s), subtotal $${{subtotal.toFixed(2)}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
+                    `Parent app will show ${{lessons || 0}} lesson(s), subtotal $${{subtotal.toFixed(2)}}${{pendingFees ? ' including pending fee(s) $' + pendingFees.toFixed(2) : ''}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
             }}
             window.addEventListener('DOMContentLoaded', syncInvoicePreview);
         </script>
@@ -11296,7 +11732,7 @@ def create_package_invoice(name):
                     </div>
                     <div>
                         <label>Subtotal amount</label>
-                        <input name="subtotal_amount" type="number" step="0.01" value="650.00" oninput="syncInvoicePreview()">
+                        <input name="subtotal_amount" type="number" step="0.01" value="{hmusic_money(default_subtotal)}" oninput="syncInvoicePreview()">
                     </div>
                     <div>
                         <label>Due date</label>
@@ -11318,6 +11754,7 @@ def create_package_invoice(name):
                             <label class="method"><input type="checkbox" name="payment_methods" value="paypal" checked> PayPal</label>
                         </div>
                     </div>
+                    {pending_fee_html}
                     <div class="span-2">
                         <label>Owner note</label>
                         <textarea name="notes" placeholder="Optional internal / invoice note"></textarea>
@@ -11334,6 +11771,116 @@ def create_package_invoice(name):
     </body>
     </html>
     """
+
+
+@app.route("/create_pending_fee_invoice/<int:ledger_id>", methods=["POST"])
+def create_pending_fee_invoice(ledger_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name, amount, description
+    FROM student_ledger
+    WHERE id = ?
+    AND entry_type = 'pending_last_min_fee'
+    AND related_invoice_id IS NULL
+    AND amount > 0
+    """, (ledger_id,))
+    fee = cursor.fetchone()
+    if not fee:
+        conn.close()
+        return "<h1>Pending fee not found</h1>"
+
+    student_name, amount, description = fee
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+    cursor.execute("""
+    INSERT INTO invoices (
+        student_name,
+        schedule_id,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        due_date,
+        notes,
+        subtotal_amount,
+        payment_methods
+    )
+    VALUES (?, NULL, 0, ?, 'unpaid', 'cancellation_fee', ?, ?, ?, ?, 'ach,zelle,paypal')
+    """, (
+        student_name,
+        amount,
+        now,
+        due_date,
+        description,
+        amount
+    ))
+    invoice_id = cursor.lastrowid
+    cursor.execute("""
+    UPDATE student_ledger
+    SET entry_type = 'invoiced_last_min_fee',
+        related_invoice_id = ?,
+        description = description || ' | Invoice #' || ?
+    WHERE id = ?
+    """, (invoice_id, invoice_id, ledger_id))
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+    conn.commit()
+    conn.close()
+
+    if parent_id:
+        notify_parent_tuition_due(
+            student_name,
+            parent_id,
+            invoice_id,
+            hmusic_money(amount),
+            "Cancellation fee invoice"
+        )
+    return redirect(f"/student/{quote(student_name)}#payments")
+
+
+@app.route("/waive_pending_fee/<int:ledger_id>", methods=["POST"])
+def waive_pending_fee(ledger_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name, related_schedule_id
+    FROM student_ledger
+    WHERE id = ?
+    AND entry_type = 'pending_last_min_fee'
+    AND related_invoice_id IS NULL
+    """, (ledger_id,))
+    fee = cursor.fetchone()
+    if not fee:
+        conn.close()
+        return "<h1>Pending fee not found</h1>"
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    UPDATE student_ledger
+    SET entry_type = 'waived_last_min_fee',
+        amount = 0,
+        description = description || ' | Waived by owner',
+        waived_at = ?
+    WHERE id = ?
+    """, (now, ledger_id))
+    if fee[1]:
+        cursor.execute("""
+        UPDATE schedule
+        SET pending_fee_amount = 0
+        WHERE id = ?
+        """, (fee[1],))
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{quote(fee[0])}#payments")
 
 
 @app.route("/invoices")
@@ -29779,9 +30326,7 @@ def add_enrollment():
                     <option value="active">Active</option>
                     <option value="present">Present</option>
                     <option value="no_show">No Show</option>
-                    <option value="cancel_3h">Cancel &lt; 3h</option>
-                    <option value="cancel_12h">Cancel &lt; 12h</option>
-                    <option value="cancel_24h">Cancel &lt; 24h</option>
+                    <option value="last_min_cancel">Last Min Cancel</option>
                     <option value="excused_24h">Cancel &gt; 24h</option>
                     <option value="teacher_cancelled">Teacher Cancel</option>
                     <option value="makeup">Makeup</option>
@@ -31416,6 +31961,7 @@ def ensure_v321_schema():
     add_column_if_missing("enrollments", "autopay_pending_invoice_id", "autopay_pending_invoice_id INTEGER")
     add_column_if_missing("enrollments", "autopay_charge_due_date", "autopay_charge_due_date TEXT")
     add_column_if_missing("enrollments", "autopay_charge_status", "autopay_charge_status TEXT")
+    add_column_if_missing("enrollments", "policy_waiver_used", "policy_waiver_used INTEGER DEFAULT 0")
 
     add_column_if_missing("invoices", "enrollment_id", "enrollment_id INTEGER")
     add_column_if_missing("invoices", "due_date", "due_date TEXT")
@@ -31432,6 +31978,32 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
     add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
+    add_column_if_missing("schedule", "policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0")
+    add_column_if_missing("schedule", "pending_fee_amount", "pending_fee_amount REAL DEFAULT 0")
+    add_column_if_missing("student_ledger", "waived_at", "waived_at TEXT")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lesson_change_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        schedule_id INTEGER,
+        request_type TEXT,
+        original_date TEXT,
+        original_time TEXT,
+        teacher TEXT,
+        classroom TEXT,
+        policy_status TEXT,
+        fee_preview REAL DEFAULT 0,
+        waiver_available INTEGER DEFAULT 0,
+        reason TEXT,
+        status TEXT DEFAULT 'pending',
+        owner_decision TEXT,
+        owner_note TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
 
     conn.commit()
     conn.close()
@@ -31680,6 +32252,7 @@ def ensure_v25_schema():
     default_rules = [
         ("present", "Present", 1.0, 1.0, 1, 1),
         ("no_show", "No Show", 1.0, 1.0, 1, 1),
+        ("last_min_cancel", "Last Min Cancel", 0.0, 0.0, 0, 0),
         ("cancel_3h", "Cancel < 3h", 1.0, 1.0, 1, 1),
         ("cancel_12h", "Cancel < 12h", 0.75, 0.75, 1, 1),
         ("cancel_24h", "Cancel < 24h", 0.5, 0.5, 1, 1),
@@ -32039,8 +32612,8 @@ def ensure_v252_schema():
 
     default_rules = [
         ("present", "Present", 100, 100, 1),
-        ("late", "Late", 100, 100, 1),
         ("no_show", "No Show", 100, 100, 1),
+        ("last_min_cancel", "Last Min Cancel", 0, 0, 0),
         ("cancel_3h", "Cancel < 3h", 100, 100, 1),
         ("cancel_12h", "Cancel < 12h", 100, 75, 1),
         ("cancel_24h", "Cancel < 24h", 50, 50, 0),
