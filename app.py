@@ -100,6 +100,15 @@ def hmusic_clean_student_picker_value(value):
     return text
 
 
+def hmusic_parent_visible_lesson_note(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?:^|\s)Billing decision:\s*[^.。]*(?:[.。]|$)", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:^|\s)Lesson count:\s*[^.。]*(?:[.。]|$)", " ", text, flags=re.IGNORECASE)
+    return " ".join(text.split()).strip()
+
+
 def hmusic_csrf_token():
     token = session.get("_csrf_token")
     if not token:
@@ -8070,11 +8079,6 @@ def add_schedule():
             "invoice_later": "Invoice later",
             "custom_price": "Custom price",
         }
-        billing_note = f"Billing decision: {billing_labels.get(billing_decision, billing_decision)}."
-        if package_type == "custom" and custom_lesson_count:
-            billing_note += f" Lesson count: {custom_lesson_count}."
-        schedule_note = (schedule_note + " " + billing_note).strip()
-
         if schedule_type == "one_time":
             number_of_lessons = 1
         elif package_type == "10":
@@ -20373,10 +20377,11 @@ def parent_dashboard():
     lesson_rows = ""
     lesson_note_cards = ""
     for l in lesson_history:
+        history_lesson_content = hmusic_parent_visible_lesson_note(l[1]) or "No lesson notes yet."
         lesson_rows += f"""
         <tr>
             <td>{l[0]}</td>
-            <td>{l[1]}</td>
+            <td>{escape(str(history_lesson_content))}</td>
             <td>{l[2]}</td>
             <td>{l[3]}</td>
         </tr>
@@ -20384,19 +20389,20 @@ def parent_dashboard():
 
     for l in lesson_history[:3]:
         lesson_date = escape(str(l[0] or ""))
-        lesson_content = escape(str(l[1] or "No lesson notes yet."))
+        cleaned_lesson_content = hmusic_parent_visible_lesson_note(l[1])
+        lesson_content = escape(cleaned_lesson_content or "No lesson notes yet.")
         performance = escape(str(l[2] or ""))
         homework = escape(str(l[3] or "No homework assigned yet."))
         performance_line = f'<div class="note-performance">{performance}</div>' if performance else ""
         lesson_note_cards += f"""
         <div class="note-card">
-            <div class="note-date">{lesson_date}</div>
+            <div class="note-date">{lesson_date} · Private Lesson</div>
             {performance_line}
             <div class="note-section">
                 <strong>Lesson Notes</strong>
                 <p>{lesson_content}</p>
             </div>
-            <div class="note-section">
+            <div class="note-section homework-box">
                 <strong>Homework</strong>
                 <p>{homework}</p>
             </div>
@@ -20638,27 +20644,29 @@ def parent_dashboard():
             .next-card {{ margin-bottom:14px; padding:0; overflow:hidden; }}
             .next-strip {{ display:flex; justify-content:space-between; align-items:center; background:#d9e9fb; color:#2a65ad; padding:8px 16px; font-size:12px; font-weight:900; text-transform:uppercase; }}
             .next-strip span:last-child {{ text-transform:none; background:#c5ddf8; border-radius:999px; padding:4px 10px; }}
-            .next-body {{ padding:14px 16px 16px; }}
-            .next-date {{ font-size:17px; font-weight:900; line-height:1.1; margin-bottom:3px; }}
-            .next-time {{ color:#5f5b55; font-size:17px; font-weight:800; margin-bottom:10px; }}
-            .next-meta {{ display:flex; flex-wrap:wrap; gap:8px 12px; color:#6f6b65; font-size:11px; font-weight:750; }}
+            .next-body {{ padding:10px 14px 12px; }}
+            .next-line {{ display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:6px; }}
+            .next-date {{ font-size:16px; font-weight:900; line-height:1.1; }}
+            .next-time {{ color:#5f5b55; font-size:14px; font-weight:800; }}
+            .next-meta {{ display:flex; flex-wrap:wrap; gap:6px 10px; color:#6f6b65; font-size:11px; font-weight:750; }}
             .next-meta span {{ display:inline-flex; align-items:center; gap:4px; }}
             .next-address {{ display:block; color:#5f5b55; font-size:11px; font-weight:750; line-height:1.35; margin-top:8px; }}
             .section-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
             .section-head h2 {{ margin:0; font-size:13px; line-height:1; text-transform:uppercase; letter-spacing:0; color:#3e3e3e; }}
             .section-head a {{ color:#2467b2; font-weight:800; font-size:12px; }}
-            .mini-calendar {{ margin-bottom:14px; }}
-            .calendar-head h2 {{ text-transform:none; font-size:16px; color:#111; }}
-            .calendar-nav {{ display:flex; gap:8px; }}
-            .calendar-nav a {{ display:grid; place-items:center; width:36px; height:36px; border:1px solid #d8d4cd; border-radius:12px; font-size:22px; color:#111; font-weight:500; }}
+            .mini-calendar {{ margin-bottom:14px; padding:10px 14px 11px; }}
+            .mini-calendar .section-head {{ margin-bottom:5px; }}
+            .calendar-head h2 {{ text-transform:none; font-size:15px; color:#111; }}
+            .calendar-nav {{ display:flex; gap:6px; }}
+            .calendar-nav a {{ display:grid; place-items:center; width:30px; height:30px; border:1px solid #d8d4cd; border-radius:10px; font-size:16px; color:#111; font-weight:700; }}
             .weekdays,.month-grid {{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; }}
-            .weekdays {{ color:#77736d; font-size:11px; font-weight:800; margin-bottom:6px; }}
-            .weekdays div {{ padding:5px 0; }}
-            .mini-day {{ min-height:38px; display:grid; place-items:center; position:relative; color:#343434; font-size:15px; font-weight:500; }}
-            .mini-day span {{ display:grid; place-items:center; width:34px; height:34px; border-radius:10px; }}
+            .weekdays {{ color:#77736d; font-size:9px; font-weight:800; margin-bottom:1px; }}
+            .weekdays div {{ padding:3px 0; }}
+            .mini-day {{ min-height:22px; display:grid; place-items:center; position:relative; color:#343434; font-size:12px; font-weight:600; }}
+            .mini-day span {{ display:grid; place-items:center; width:22px; height:22px; border-radius:7px; }}
             .mini-day.muted span {{ color:transparent; }}
             .mini-day.has-lesson span {{ background:#d8e7f9; color:#2a65ad; font-weight:800; }}
-            .mini-day.has-lesson:after {{ content:""; position:absolute; bottom:4px; left:50%; transform:translateX(-50%); width:5px; height:5px; border-radius:999px; background:#2a65ad; }}
+            .mini-day.has-lesson:after {{ content:""; position:absolute; bottom:1px; left:50%; transform:translateX(-50%); width:3px; height:3px; border-radius:999px; background:#2a65ad; }}
             .mini-day.today span {{ background:#1d65ad; color:#fff; font-weight:900; }}
             .mini-day.today:after {{ background:#fff; }}
             .notes-card {{ margin-bottom:14px; padding:0; overflow:hidden; }}
@@ -20669,14 +20677,16 @@ def parent_dashboard():
             .note-date {{ color:#77736d; font-size:10px; font-weight:800; margin-bottom:5px; }}
             .note-performance {{ display:inline-block; color:#1d65ad; background:#eef6ff; border-radius:999px; padding:3px 7px; font-size:10px; font-weight:800; margin-bottom:6px; }}
             .note-section {{ margin-top:5px; }} .note-section strong {{ display:block; font-size:11px; margin-bottom:2px; }} .note-section p {{ margin:0; color:#555; font-size:11px; line-height:1.35; }}
+            .homework-box {{ margin-top:10px; border:1px solid #a9d0df; border-left:4px solid #2f83a8; background:#dff2f7; border-radius:10px; padding:9px 10px; box-shadow:0 8px 18px rgba(47,131,168,.22); }}
+            .homework-box strong {{ color:#0f6688; font-size:12px; }}
+            .homework-box p {{ color:#21313c !important; font-size:14px !important; font-weight:850; line-height:1.34 !important; }}
             .parent-tools {{ margin-bottom:14px; }}
-            .tool-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
-            .tool-card {{ min-height:84px; background:#fff; border:1px solid #ddd9d2; border-radius:14px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; }}
+            .tool-groups {{ display:grid; gap:9px; }}
+            .tool-row {{ display:grid; grid-template-columns:1fr 1fr; gap:9px; }}
+            .tool-card {{ min-height:66px; background:#fff; border:1px solid #ddd9d2; border-radius:14px; padding:11px 12px; display:flex; flex-direction:column; justify-content:space-between; }}
+            .tool-card.wide {{ min-height:58px; }}
             .tool-card strong {{ font-size:13px; line-height:1.15; }}
             .tool-card span {{ color:#716d67; font-size:10px; font-weight:750; line-height:1.25; }}
-            .quick-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }}
-            .quick-action {{ min-height:74px; display:flex; align-items:center; justify-content:center; gap:10px; text-align:center; background:#fff; border:1px solid #ddd9d2; border-radius:14px; color:#111; font-size:17px; font-weight:900; padding:10px; }}
-            .quick-action.primary {{ color:#2a65ad; }} .quick-action.small {{ min-height:56px; font-size:15px; }}
             .records-panel {{ border:1px solid #ddd9d2; border-radius:14px; background:#fff; margin-top:12px; overflow:hidden; }}
             .records-panel summary {{ cursor:pointer; list-style:none; padding:13px 14px; font-size:12px; font-weight:900; display:flex; justify-content:space-between; }} .records-panel summary::-webkit-details-marker {{ display:none; }} .records-panel summary:after {{ content:"+"; color:#2467b2; font-size:18px; }} .records-panel[open] summary:after {{ content:"-"; }}
             .records-content {{ border-top:1px solid #eee9e2; padding:12px; }} .records-content h2 {{ font-size:13px; margin:16px 0 8px; }}
@@ -20704,8 +20714,7 @@ def parent_dashboard():
             <section class="app-card next-card">
                 <div class="next-strip"><span>Next Lesson</span><span>{escape(next_lesson_pill or 'Next')}</span></div>
                 <div class="next-body">
-                    <div class="next-date">{next_lesson_day}</div>
-                    <div class="next-time">{next_lesson_time}</div>
+                    <div class="next-line"><div class="next-date">{next_lesson_day}</div><div class="next-time">{next_lesson_time}</div></div>
                     <div class="next-meta"><span>Course: {next_lesson_course}</span><span>Teacher: {next_lesson_teacher}</span></div>
                     <div class="next-address">Address: {next_lesson_address}</div>
                     <div class="next-address">Room: {next_lesson_room}</div>
@@ -20718,22 +20727,19 @@ def parent_dashboard():
             </section>
             <section class="parent-tools">
                 <div class="section-head"><h2>Parent Tools</h2></div>
-                <div class="tool-grid">
-                    <a class="tool-card" href="/parent_credits"><strong>Credits</strong><span>Lessons, service credits, makeup, money credit</span></a>
-                    <a class="tool-card" href="/parent_booking"><strong>Book / Makeup</strong><span>Self-booking, makeup, and trial requests</span></a>
-                    <a class="tool-card" href="/parent_family"><strong>Family Account</strong><span>Students and guardian access</span></a>
-                    <a class="tool-card" href="/parent_events"><strong>Recital / Events</strong><span>Studio events and RSVP</span></a>
-                    <a class="tool-card" href="/parent_notification_preferences"><strong>Notifications</strong><span>Reminder and message preferences</span></a>
+                <div class="tool-groups">
+                    <a class="tool-card wide" href="/parent_booking"><strong>Scheduling</strong><span>Book / Makeup, reschedule, cancel lesson, and add trial</span></a>
+                    <div class="tool-row">
+                        <a class="tool-card" href="/parent_billing"><strong>Billing & Credits</strong><span>Invoices, payment, lessons, service credit</span></a>
+                        <a class="tool-card" href="/parent_messages"><strong>Messages & Notices</strong><span>Messages, notifications, reminders</span></a>
+                    </div>
+                    <div class="tool-row">
+                        <a class="tool-card" href="/parent_family"><strong>Family Account</strong><span>Students, guardian access, account records</span></a>
+                        <a class="tool-card" href="/parent_events"><strong>Events</strong><span>Recital, studio events, RSVP</span></a>
+                    </div>
+                    <a class="tool-card wide" href="/parent_agent"><strong>Family Assistant</strong><span>Ask for help across schedule, billing, messages, and account questions</span></a>
                 </div>
             </section>
-            <div class="quick-actions">
-                <a class="quick-action primary" href="/parent_agent">Family<br>Assistant</a>
-                <a class="quick-action" href="/parent_reschedule">Reschedule</a>
-                <a class="quick-action" href="/parent_messages">{message_label}</a>
-                <a class="quick-action" href="/parent_cancel">Cancel<br>lesson</a>
-                <a class="quick-action small" href="/parent_billing">Billing</a>
-                <a class="quick-action small" href="/trial?from_parent_app=1">+ Add trial</a>
-            </div>
             <details class="records-panel" id="records">
                 <summary>Account Records</summary>
                 <div class="records-content">
