@@ -18798,9 +18798,18 @@ def parent_reschedule():
     if not lesson_options:
         lesson_options = '<option value="">No upcoming scheduled lessons</option>'
 
+    slot_picker_data = []
     open_slot_options = '<option value="">Use backup date/time instead</option>'
     for slot in open_slots:
         value = f"{slot['teacher']}|{slot['slot_date']}|{slot['slot_time']}|{slot['classroom']}|{slot['source']}"
+        slot_picker_data.append({
+            "value": value,
+            "date": slot.get("slot_date") or "",
+            "time": slot.get("slot_time") or "",
+            "teacher": slot.get("teacher") or "",
+            "room": slot.get("classroom") or "",
+            "source": slot.get("source") or "open_slot",
+        })
         open_slot_options += f"""
         <option value="{value}">{slot['slot_date']} {slot['slot_time']} | {slot['teacher']} | {slot['classroom']} | {slot['source']}</option>
         """
@@ -18811,17 +18820,21 @@ def parent_reschedule():
     request_rows = ""
     for r in requests:
         request_rows += f"""
-        <tr>
-            <td>{r[0]}</td>
-            <td>{r[1]} {r[2]}</td>
-            <td>{r[3]} {r[4]}</td>
-            <td>{r[5]}</td>
-            <td>{r[6]}</td>
-        </tr>
+        <div class="recent-row">
+            <b>#{escape(str(r[0]))}</b>
+            <div>
+                <b>{escape(str(r[1] or ''))} {escape(str(r[2] or ''))}</b>
+                <p class="muted">Requested: {escape(str(r[3] or 'TBD'))} {escape(str(r[4] or ''))}</p>
+                <p class="muted">{escape(str(r[6] or ''))}</p>
+            </div>
+            <span class="pill">{escape(str(r[5] or 'pending'))}</span>
+        </div>
         """
 
     if not request_rows:
-        request_rows = "<tr><td colspan='5'>No reschedule requests yet.</td></tr>"
+        request_rows = "<p class='muted'>No reschedule requests yet.</p>"
+
+    slot_picker_json = json.dumps(slot_picker_data)
 
     return f"""
     <html>
@@ -18829,116 +18842,182 @@ def parent_reschedule():
         {parent_app_meta("Request Reschedule")}
         <style>
             * {{ box-sizing: border-box; }}
-            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
-            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:900px; margin:0 auto; }}
-            h1 {{ font-size:30px; line-height:1.08; margin:0 0 24px; }}
-            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
-            textarea {{ min-height:120px; }}
-            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
-            table {{ width:100%; border-collapse:collapse; margin-top:16px; }}
-            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
-            th {{ background:#eeeeff; }}
-            .backup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:8px; }}
-            .backup-title {{ font-weight:900; margin:14px 0 4px; }}
-            .hint {{ color:#6b7280; font-size:13px; margin-top:-4px; }}
-            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
-            .parent-bottom-nav {{
-                position: fixed; left: 0; right: 0; bottom: 0;
-                display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
-                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-                background: rgba(255,255,255,.96); border-top: 1px solid #e5e7eb;
-                box-shadow: 0 -4px 18px rgba(0,0,0,.08); z-index: 20;
-            }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f6f3; margin:0; color:#151515; font-size:12px; }}
+            .container {{ min-height:100vh; max-width:640px; margin:0 auto; padding:max(24px, env(safe-area-inset-top)) 20px calc(96px + env(safe-area-inset-bottom)); }}
+            a {{ color:inherit; text-decoration:none; }}
+            .top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }}
+            .brand {{ display:flex; align-items:center; gap:10px; }}
+            .brand-mark {{ width:38px; height:38px; border-radius:11px; background:{PARENT_APP_ICON_BG} url('/hmusic-icon.png') center / cover no-repeat; }}
+            .brand-name {{ font-size:13px; font-weight:900; }}
+            .back {{ border:1px solid #ddd9d2; background:#fff; border-radius:14px; padding:11px 14px; font-size:13px; font-weight:900; }}
+            h1 {{ font-size:24px; line-height:1.08; margin:0 0 6px; }}
+            h2 {{ font-size:13px; text-transform:uppercase; margin:0; color:#3e3e3e; }}
+            p {{ line-height:1.42; margin:4px 0; }}
+            .muted {{ color:#716d67; }}
+            .card {{ background:#fff; border:1px solid #ddd9d2; border-radius:16px; padding:16px; margin-bottom:12px; box-shadow:0 1px 0 rgba(0,0,0,.02); }}
+            .policy {{ background:#fffaf5; border-color:#ffd7aa; color:#7c2d12; }}
+            label {{ display:block; color:#716d67; font-size:11px; font-weight:850; margin:12px 0 6px; }}
+            input, select, textarea {{ width:100%; min-height:44px; padding:10px 12px; font-size:14px; border:1px solid #ddd9d2; border-radius:12px; background:white; color:#151515; font-family:inherit; }}
+            textarea {{ min-height:96px; resize:vertical; }}
+            button, .button {{ display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:11px 14px; border-radius:12px; border:0; background:#216db7; color:white; font-weight:900; font-size:13px; font-family:inherit; cursor:pointer; }}
+            .button.secondary {{ background:white; color:#1d65ad; border:1px solid #bcd8f5; }}
+            .full {{ width:100%; margin-top:12px; }}
+            .slot-summary {{ display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; border:1px solid #bcd8f5; background:#f8fbff; border-radius:14px; padding:12px; margin-top:8px; }}
+            .slot-summary b {{ display:block; font-size:13px; }}
+            .slot-summary span {{ display:block; color:#716d67; font-size:11px; margin-top:2px; }}
+            .calendar-box {{ display:none; margin-top:10px; border:1px solid #ddd9d2; border-radius:16px; overflow:hidden; background:#fff; }}
+            .calendar-box.show {{ display:block; }}
+            .date-row {{ display:flex; gap:7px; overflow-x:auto; padding:10px; border-bottom:1px solid #eee9e2; }}
+            .date-chip {{ min-width:62px; border:1px solid #ddd9d2; background:#fff; color:#151515; border-radius:12px; padding:8px 6px; font-size:11px; font-weight:900; line-height:1.2; }}
+            .date-chip.on {{ background:#e8f3ff; border-color:#87bff4; color:#1d65ad; }}
+            .slots {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:10px; }}
+            .slot-chip {{ border:1px solid #ddd9d2; background:#fff; border-radius:12px; padding:10px; text-align:left; color:#151515; min-height:auto; justify-content:flex-start; }}
+            .slot-chip.on {{ border-color:#216db7; background:#e8f3ff; color:#1d65ad; }}
+            .slot-chip small {{ display:block; color:#716d67; font-size:10px; font-weight:800; margin-top:2px; }}
+            .backup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .recent-row {{ display:grid; grid-template-columns:50px 1fr auto; gap:8px; align-items:start; padding:9px 0; border-top:1px solid #eee9e2; }}
+            .recent-row:first-child {{ border-top:0; }}
+            .pill {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 8px; font-size:10px; font-weight:900; background:#fff3cd; color:#8a5a00; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
-            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
-            @media (max-width:760px) {{
-                table {{ display:block; overflow-x:auto; font-size:12px; }}
-                .backup-grid {{ grid-template-columns:1fr; gap:0; }}
-                .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
-                .form-actions button, .form-actions a {{ text-align:center; }}
-            }}
-            @media (min-width:900px) {{
-                body {{ padding:32px; }}
-                .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
-            }}
+            .parent-bottom-nav a.active {{ color:#216db7; background:#e8f3ff; }}
+            @media (max-width:430px) {{ .backup-grid, .slots {{ grid-template-columns:1fr; }} }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Request Reschedule - {student_name}</h1>
-            <p><b>Policy:</b> Please request reschedules at least 24 hours before class. Within 24 hours, a last-minute reschedule fee may apply. The first exception may be free per package if available.</p>
-            <p><a class="button" href="/parent_reschedule_group">Coordinate multiple lessons / siblings</a></p>
-
-            <form method="POST">
-                Current Lesson:<br>
+            <div class="top">
+                <div class="brand"><div class="brand-mark"></div><div class="brand-name">H-Music</div></div>
+                <a class="back" href="/parent_schedule">Back</a>
+            </div>
+            <h1>Request Reschedule</h1>
+            <p class="muted">{escape(str(student_name))}</p>
+            <section class="card policy">
+                <b>Policy preview</b>
+                <p>Request at least 24 hours before class when possible. Within 24 hours, a last-minute fee may apply unless a package waiver is available.</p>
+            </section>
+            <section class="card">
+                <h2>Need multiple changes?</h2>
+                <p class="muted">Use Request Manager when several lessons, siblings, or teachers need to move together.</p>
+                <a class="button secondary full" href="/parent_reschedule_group">Open Request Manager</a>
+            </section>
+            <form method="POST" class="card">
+                <h2>Single Lesson</h2>
+                <label>Current lesson</label>
                 <select name="schedule_id" required>
                     {lesson_options}
                 </select>
 
-                Preferred Open Slot:<br>
-                <select name="preferred_slot">
-                    {open_slot_options}
-                </select>
+                <label>Preferred open slot</label>
+                <input type="hidden" name="preferred_slot" id="preferredSlot">
+                <div class="slot-summary">
+                    <div><b id="slotTitle">Choose from calendar</b><span id="slotSub">Pick an available studio opening, or use backup times below.</span></div>
+                    <button type="button" class="button secondary" onclick="toggleSlotPicker()">Pick</button>
+                </div>
+                <div class="calendar-box" id="slotPicker">
+                    <div class="date-row" id="dateRow"></div>
+                    <div class="slots" id="slotList"></div>
+                </div>
 
-                <div class="backup-title">Backup Option 1</div>
-                <div class="hint">Optional if you selected an open slot.</div>
+                <label>Backup option 1</label>
                 <div class="backup-grid">
                     <div>
-                        Backup Requested Date:<br>
+                        <label>Requested date</label>
                         <input type="date" name="requested_date">
                     </div>
                     <div>
-                        Backup Requested Time:<br>
+                        <label>Requested time</label>
                         <input type="time" name="requested_time">
                     </div>
                 </div>
 
-                <div class="backup-title">Backup Option 2</div>
+                <label>Backup option 2</label>
                 <div class="backup-grid">
                     <div>
-                        Backup Requested Date:<br>
+                        <label>Requested date</label>
                         <input type="date" name="backup_date_2">
                     </div>
                     <div>
-                        Backup Requested Time:<br>
+                        <label>Requested time</label>
                         <input type="time" name="backup_time_2">
                     </div>
                 </div>
 
-                <div class="backup-title">Backup Option 3</div>
+                <label>Backup option 3</label>
                 <div class="backup-grid">
                     <div>
-                        Backup Requested Date:<br>
+                        <label>Requested date</label>
                         <input type="date" name="backup_date_3">
                     </div>
                     <div>
-                        Backup Requested Time:<br>
+                        <label>Requested time</label>
                         <input type="time" name="backup_time_3">
                     </div>
                 </div>
 
-                Reason:<br>
+                <label>Notes</label>
                 <textarea name="reason" rows="4"></textarea>
 
-                <div class="form-actions">
-                    <button type="submit">Submit Request</button>
-                    <a class="button" href="/parent_dashboard">Back</a>
-                </div>
+                <button class="full" type="submit">Submit Request</button>
             </form>
 
-            <h2>Recent Requests</h2>
-            <table>
-                <tr>
-                    <th>ID</th>
-                    <th>Original</th>
-                    <th>Requested</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                </tr>
+            <section class="card">
+                <h2>Recent Requests</h2>
                 {request_rows}
-            </table>
+            </section>
         </div>
-        {parent_bottom_nav("reschedule")}
+        <script>
+            const SLOT_DATA = {slot_picker_json};
+            let activeDate = SLOT_DATA.length ? SLOT_DATA[0].date : "";
+            function groupedDates() {{
+                return [...new Set(SLOT_DATA.map(s => s.date).filter(Boolean))].slice(0, 14);
+            }}
+            function toggleSlotPicker() {{
+                document.getElementById("slotPicker").classList.toggle("show");
+                renderSlotPicker();
+            }}
+            function chooseDate(date) {{
+                activeDate = date;
+                renderSlotPicker();
+            }}
+            function chooseSlot(slot) {{
+                document.getElementById("preferredSlot").value = slot.value;
+                document.getElementById("slotTitle").textContent = `${{slot.date}} · ${{slot.time}}`;
+                document.getElementById("slotSub").textContent = `${{slot.teacher}} · ${{slot.room}}`;
+                document.getElementById("slotPicker").classList.remove("show");
+            }}
+            function renderSlotPicker() {{
+                const dates = groupedDates();
+                const dateRow = document.getElementById("dateRow");
+                const slotList = document.getElementById("slotList");
+                dateRow.innerHTML = "";
+                slotList.innerHTML = "";
+                if (!dates.length) {{
+                    slotList.innerHTML = "<p class='muted'>No open slots found. Please enter backup dates and times.</p>";
+                    return;
+                }}
+                if (!activeDate) activeDate = dates[0];
+                dates.forEach(date => {{
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "date-chip" + (date === activeDate ? " on" : "");
+                    const parsed = new Date(date + "T00:00:00");
+                    btn.innerHTML = `${{parsed.toLocaleDateString([], {{weekday:"short"}})}}<br>${{date.slice(5)}}`;
+                    btn.onclick = () => chooseDate(date);
+                    dateRow.appendChild(btn);
+                }});
+                SLOT_DATA.filter(s => s.date === activeDate).slice(0, 12).forEach(slot => {{
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "slot-chip";
+                    btn.innerHTML = `${{slot.time}}<small>${{slot.teacher}} · ${{slot.room}}</small>`;
+                    btn.onclick = () => chooseSlot(slot);
+                    slotList.appendChild(btn);
+                }});
+            }}
+            renderSlotPicker();
+        </script>
+        {parent_bottom_nav("schedule")}
     </body>
     </html>
     """
@@ -18949,7 +19028,7 @@ def parent_reschedule_group():
     if not require_parent():
         return redirect("/parent_login")
 
-    ensure_v282_schema()
+    ensure_parent_portal_feature_schema()
 
     parent_id = session.get("parent_id")
     if not parent_id:
@@ -18967,10 +19046,62 @@ def parent_reschedule_group():
         backup_date_3 = request.form.get("backup_date_3")
         backup_time_3 = request.form.get("backup_time_3")
         reason = (request.form.get("reason") or "").strip()
+        student_scope = (request.form.get("student_scope") or "All linked students").strip()
+        change_type = (request.form.get("change_type") or "reschedule_or_cancel").strip()
 
         if len(schedule_ids) < 2:
+            if not reason:
+                conn.close()
+                return redirect("/parent_reschedule_group?notes_required=1")
+
+            if change_type not in ("reschedule", "cancel", "reschedule_or_cancel"):
+                change_type = "reschedule_or_cancel"
+
+            if student_scope != "All linked students" and not parent_can_access_student(parent_id, student_scope):
+                conn.close()
+                return "<h1>Permission denied</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            note_body = f"Scope: {student_scope}. Request type: {change_type.replace('_', ' ')}. Notes: {reason}"
+            cursor.execute("""
+            INSERT INTO parent_booking_requests (
+                parent_id, student_name, request_type, preferred_date, preferred_time,
+                preferred_teacher, preferred_room, notes, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_owner_review', ?, ?)
+            """, (
+                parent_id,
+                student_scope,
+                "schedule_change_note",
+                requested_date,
+                requested_time,
+                None,
+                None,
+                note_body,
+                now,
+                now,
+            ))
+            request_id = cursor.lastrowid
+            conn.commit()
             conn.close()
-            return "<h1>Please select at least two lessons to coordinate.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+            create_notification(
+                "owner",
+                "owner",
+                "Schedule request manager note",
+                f"{session.get('parent_name', 'Parent')} sent a schedule request. {note_body}",
+                "/dashboard",
+                related_type="parent_booking_request",
+                related_id=request_id
+            )
+            log_parent_activity(
+                parent_id,
+                student_scope,
+                "schedule_change_note",
+                note_body,
+                None
+            )
+            return redirect("/parent_reschedule_group?sent=1")
 
         placeholders = ",".join(["?"] * len(schedule_ids))
         cursor.execute(f"""
@@ -19072,6 +19203,134 @@ def parent_reschedule_group():
         <p>{summary}</p>
         <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
         """
+
+    today = date.today().strftime("%Y-%m-%d")
+    cursor.execute("""
+    SELECT student_name
+    FROM parent_students
+    WHERE parent_id = ?
+    AND active = 1
+    ORDER BY student_name
+    """, (parent_id,))
+    linked_students = [row[0] for row in cursor.fetchall() if row and row[0]]
+
+    if linked_students:
+        placeholders = ",".join("?" for _ in linked_students)
+        cursor.execute(f"""
+        SELECT
+            s.id,
+            s.student_name,
+            s.lesson_date,
+            s.lesson_time,
+            s.teacher,
+            s.classroom,
+            COALESCE(s.course_type_name, 'Lesson')
+        FROM schedule s
+        WHERE s.student_name IN ({placeholders})
+        AND s.lesson_date >= ?
+        AND (s.status IS NULL OR s.status = '' OR s.status = 'scheduled')
+        ORDER BY s.lesson_date, s.lesson_time
+        LIMIT 12
+        """, tuple(linked_students) + (today,))
+        upcoming_lessons = cursor.fetchall()
+    else:
+        upcoming_lessons = []
+    conn.close()
+
+    student_scope_options = '<option value="All linked students">All linked students</option>' + "".join(
+        f'<option value="{escape(str(name))}">{escape(str(name))}</option>'
+        for name in linked_students
+    )
+    lesson_rows = ""
+    for lesson in upcoming_lessons:
+        lesson_rows += f"""
+        <label class="lesson-pick">
+            <input type="checkbox" name="schedule_ids" value="{escape(str(lesson[0]))}">
+            <span>
+                <b>{escape(str(lesson[2]))} · {escape(str(lesson[3] or 'Time TBD'))}</b>
+                <small>{escape(str(lesson[1]))} · {escape(str(lesson[6] or 'Lesson'))} · {escape(str(lesson[4] or 'Teacher TBD'))}</small>
+                <em>{escape(str(lesson[5] or 'Room TBD'))}</em>
+            </span>
+        </label>
+        """
+    if not lesson_rows:
+        lesson_rows = "<p class='muted'>No upcoming scheduled lessons found.</p>"
+
+    sent = "<section class='app-card success-card'><b>Request sent</b><p>Owner will review your note and coordinate the final schedule change.</p></section>" if request.args.get("sent") == "1" else ""
+    notes_required = "<section class='app-card warn-card'><b>Notes required</b><p>Please write what needs to change before submitting.</p></section>" if request.args.get("notes_required") == "1" else ""
+
+    body = f"""
+    <style>
+        .request-title {{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }}
+        .back-link {{ border:1px solid #ddd9d2; background:#fff; border-radius:14px; padding:10px 13px; font-size:12px; font-weight:900; white-space:nowrap; }}
+        .lead-card {{ background:#f8fbff; border-color:#bcd8f5; }}
+        .lead-card b {{ display:block; color:#1d65ad; font-size:13px; margin-bottom:4px; }}
+        .success-card {{ background:#f0fff6; border-color:#bbe7c8; }}
+        .warn-card {{ background:#fff8ed; border-color:#ffd7aa; }}
+        label {{ display:block; color:#716d67; font-size:11px; font-weight:850; margin:12px 0 6px; }}
+        select, input, textarea {{ width:100%; min-height:44px; border:1px solid #ddd9d2; border-radius:12px; background:white; color:#151515; padding:10px 12px; font-size:14px; font-family:inherit; }}
+        textarea {{ min-height:138px; resize:vertical; line-height:1.35; }}
+        .grid-2-local {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+        .full {{ width:100%; margin-top:12px; min-height:46px; border:0; border-radius:12px; background:#216db7; color:white; font-weight:900; font-size:13px; font-family:inherit; }}
+        .optional-title {{ display:flex; justify-content:space-between; gap:10px; align-items:center; margin:16px 0 8px; }}
+        .optional-title h2 {{ margin:0; }}
+        .optional-title span {{ color:#716d67; font-size:10px; font-weight:850; }}
+        .lesson-list {{ display:grid; gap:8px; }}
+        .lesson-pick {{ display:grid; grid-template-columns:20px 1fr; gap:9px; align-items:start; border:1px solid #eee9e2; border-radius:13px; padding:10px; margin:0; color:#151515; }}
+        .lesson-pick input {{ width:16px; height:16px; min-height:auto; padding:0; margin:2px 0 0; }}
+        .lesson-pick b {{ display:block; font-size:12px; }}
+        .lesson-pick small, .lesson-pick em {{ display:block; color:#716d67; font-size:11px; font-style:normal; font-weight:750; margin-top:2px; }}
+        .policy-mini {{ display:grid; gap:0; padding:9px 12px; }}
+        .policy-mini div {{ display:grid; grid-template-columns:66px 1fr; gap:7px; padding:6px 0; border-top:1px solid #eee9e2; font-size:11px; font-weight:700; color:#716d67; line-height:1.22; }}
+        .policy-mini div:first-child {{ border-top:0; }}
+        .policy-mini b {{ color:#151515; }}
+        @media (max-width:430px) {{ .grid-2-local {{ grid-template-columns:1fr; }} }}
+    </style>
+    <div class="request-title">
+        <div>
+            <h1>Request Manager</h1>
+            <p class="muted">For multiple lessons, siblings, or different teachers.</p>
+        </div>
+        <a class="back-link" href="/parent_schedule">Back</a>
+    </div>
+    {sent}
+    {notes_required}
+    <section class="app-card lead-card">
+        <b>Tell us what to adjust</b>
+        <p class="muted">Write the full request here. Owner will review lessons, teachers, rooms, policy, and available times before anything changes on the calendar.</p>
+    </section>
+    <form method="POST" class="app-card">
+        <label>Student / scope</label>
+        <select name="student_scope">{student_scope_options}</select>
+        <label>Request type</label>
+        <select name="change_type">
+            <option value="reschedule_or_cancel">Reschedule or cancel</option>
+            <option value="reschedule">Reschedule only</option>
+            <option value="cancel">Cancel only</option>
+        </select>
+        <label>Request notes</label>
+        <textarea name="reason" required placeholder="Example: Alaia has piano and voice on Sundays. Please move both to Saturday afternoon if possible. If not possible, cancel this week only."></textarea>
+        <div class="grid-2-local">
+            <div>
+                <label>Preferred date</label>
+                <input type="date" name="requested_date">
+            </div>
+            <div>
+                <label>Preferred time</label>
+                <input type="time" name="requested_time">
+            </div>
+        </div>
+        <div class="optional-title"><h2>Optional Lessons</h2><span>Select 2+ only if you want to specify exact lessons</span></div>
+        <div class="lesson-list">{lesson_rows}</div>
+        <button class="full" type="submit">Submit to owner</button>
+    </form>
+    <section class="app-card policy-mini">
+        <div><b>No Show</b><span>Within 1 hour or missed lesson. Deduct 1 credit unless waiver is available.</span></div>
+        <div><b>Last Min</b><span>Within 24h. Creates pending fee, minimum $30.</span></div>
+        <div><b>&gt; 24h</b><span>No credit deduction and no fee.</span></div>
+    </section>
+    """
+    return parent_portal_shell("Request Manager", "schedule", body)
 
     today_obj = date.today()
     week_param = request.args.get("week")
