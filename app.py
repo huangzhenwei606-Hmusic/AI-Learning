@@ -4987,6 +4987,7 @@ def student_detail(name):
                     <h1>Student Profile</h1>
                 </div>
                 <div class="top-actions">
+                    <a class="button" href="/calendar">Back to Schedule</a>
                     <a class="button" href="/students">Back to Students</a>
                     <a class="button primary" href="/edit_student/{student_url_name}">Edit Student</a>
                 </div>
