@@ -4705,12 +4705,13 @@ def student_detail(name):
     lesson_html = ""
     if lessons:
         for lesson in lessons:
+            visible_lesson_note = hmusic_parent_visible_lesson_note(lesson[1]) or "No lesson notes yet."
             lesson_html += f"""
             <div class="timeline-item">
                 <div class="timeline-date">{escape(lesson[0] or '')}</div>
                 <div>
                     <b>{escape(lesson[2] or 'Lesson note')}</b>
-                    <p>{escape(lesson[1] or '')}</p>
+                    <p>{escape(visible_lesson_note)}</p>
                     <p class="muted"><b>Homework:</b> {escape(lesson[3] or 'No homework recorded.')}</p>
                 </div>
                 <span class="pill">Lesson</span>
@@ -5648,6 +5649,8 @@ def generate_parent_email(name):
         <p><a href="/student/{name}">Back to Student</a></p>
         """
 
+    visible_lesson_content = hmusic_parent_visible_lesson_note(lesson[1]) or "the lesson material"
+
     prompt = f"""
 You are a professional piano teacher.
 
@@ -5655,7 +5658,7 @@ Write a warm, professional parent update email based on this lesson.
 
 Student: {name}
 Date: {lesson[0]}
-Lesson Content: {lesson[1]}
+Lesson Content: {visible_lesson_content}
 Performance: {lesson[2]}
 Homework: {lesson[3]}
 
@@ -5724,11 +5727,12 @@ def send_parent_email(name):
         """
 
     parent_email = student[0]
+    visible_lesson_content = hmusic_parent_visible_lesson_note(lesson[1]) or "lesson material"
 
     email_text = f"""
 Dear Parent,
 
-Today {name} worked on {lesson[1]}.
+Today {name} worked on {visible_lesson_content}.
 
 Performance:
 {lesson[2]}
@@ -5917,10 +5921,11 @@ def send_all_feedback(teacher_name):
             lesson_detail = cursor.fetchone()
 
             if lesson_detail:
+                visible_lesson_content = hmusic_parent_visible_lesson_note(lesson_detail[1]) or "lesson material"
                 email_text = f"""
 Dear Parent,
 
-Today {student_name} worked on {lesson_detail[1]}.
+Today {student_name} worked on {visible_lesson_content}.
 
 Performance:
 {lesson_detail[2]}
