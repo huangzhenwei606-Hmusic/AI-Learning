@@ -25,6 +25,11 @@ try:
 except ImportError:
     stripe = None
 
+try:
+    import boto3
+except ImportError:
+    boto3 = None
+
 from openai import OpenAI
 
 app = Flask(__name__)
@@ -34432,6 +34437,78 @@ def backup_state_path():
     return os.path.join(ensure_backup_dir(), "backup_state.json")
 
 
+def get_offsite_backup_config():
+    bucket = os.environ.get("HMUSIC_BACKUP_S3_BUCKET")
+    if not bucket:
+        return None
+
+    return {
+        "bucket": bucket,
+        "prefix": os.environ.get("HMUSIC_BACKUP_S3_PREFIX", "hmusic-backups").strip("/"),
+        "region": os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "us-east-1",
+        "endpoint_url": os.environ.get("HMUSIC_BACKUP_S3_ENDPOINT_URL") or None,
+    }
+
+
+def upload_file_to_offsite_backup(local_path, remote_name):
+    config = get_offsite_backup_config()
+    if not config:
+        return {"ok": False, "skipped": True, "reason": "HMUSIC_BACKUP_S3_BUCKET is not configured."}
+    if boto3 is None:
+        return {"ok": False, "skipped": False, "reason": "boto3 is not installed."}
+    if not os.path.exists(local_path):
+        return {"ok": False, "skipped": False, "reason": f"Backup file not found: {remote_name}"}
+
+    key_parts = [config["prefix"], remote_name] if config["prefix"] else [remote_name]
+    object_key = "/".join(part.strip("/") for part in key_parts if part)
+
+    client = boto3.client(
+        "s3",
+        region_name=config["region"],
+        endpoint_url=config["endpoint_url"]
+    )
+    client.upload_file(local_path, config["bucket"], object_key)
+    return {
+        "ok": True,
+        "skipped": False,
+        "bucket": config["bucket"],
+        "key": object_key,
+    }
+
+
+def upload_backup_manifest_offsite(manifest, include_manifest=True):
+    uploaded = []
+    errors = []
+    files_to_upload = [
+        manifest.get("database"),
+        manifest.get("uploads_zip"),
+    ]
+    if include_manifest:
+        files_to_upload.append(manifest.get("manifest_file"))
+
+    for file_name in files_to_upload:
+        if not file_name:
+            continue
+        try:
+            result = upload_file_to_offsite_backup(
+                os.path.join(HMUSIC_BACKUP_DIR, file_name),
+                file_name
+            )
+            if result.get("ok"):
+                uploaded.append(result)
+            elif not result.get("skipped"):
+                errors.append(result.get("reason", "Upload failed."))
+        except Exception as exc:
+            errors.append(f"{file_name}: {exc}")
+
+    config = get_offsite_backup_config()
+    return {
+        "configured": config is not None,
+        "uploaded": uploaded,
+        "errors": errors,
+    }
+
+
 def create_hmusic_backup(label="manual"):
     ensure_backup_dir()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -34471,8 +34548,40 @@ def create_hmusic_backup(label="manual"):
         "source_upload_dir": HMUSIC_UPLOAD_DIR,
     }
     manifest_name = f"hmusic_{safe_label}_{timestamp}_manifest.json"
+    manifest["manifest_file"] = manifest_name
+    manifest["offsite_backup"] = {
+        "configured": get_offsite_backup_config() is not None,
+        "uploaded": [],
+        "errors": [],
+    }
+
     with open(os.path.join(HMUSIC_BACKUP_DIR, manifest_name), "w") as f:
         json.dump(manifest, f, indent=2)
+
+    offsite = upload_backup_manifest_offsite(manifest, include_manifest=False)
+    manifest["offsite_backup"] = offsite
+
+    with open(os.path.join(HMUSIC_BACKUP_DIR, manifest_name), "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    if offsite.get("configured"):
+        try:
+            result = upload_file_to_offsite_backup(
+                os.path.join(HMUSIC_BACKUP_DIR, manifest_name),
+                manifest_name
+            )
+            if result.get("ok"):
+                manifest["offsite_backup"]["uploaded"].append(result)
+            elif not result.get("skipped"):
+                manifest["offsite_backup"]["errors"].append(result.get("reason", "Manifest upload failed."))
+            with open(os.path.join(HMUSIC_BACKUP_DIR, manifest_name), "w") as f:
+                json.dump(manifest, f, indent=2)
+        except Exception as exc:
+            manifest["offsite_backup"] = {
+                "configured": True,
+                "uploaded": manifest["offsite_backup"].get("uploaded", []),
+                "errors": manifest["offsite_backup"].get("errors", []) + [f"manifest upload: {exc}"],
+            }
 
     cleanup_old_backups()
     return manifest
@@ -34517,6 +34626,7 @@ def maybe_run_daily_backup():
         state["last_auto_backup_date"] = today
         state["last_auto_backup_at"] = manifest["created_at"]
         state["last_auto_backup_db"] = manifest["database"]
+        state["last_auto_backup_offsite"] = manifest.get("offsite_backup", {})
         with open(state_file, "w") as f:
             json.dump(state, f, indent=2)
     except Exception as exc:
@@ -34578,6 +34688,26 @@ def owner_backup():
             state = {}
 
     last_auto = state.get("last_auto_backup_at", "Not yet")
+    offsite_config = get_offsite_backup_config()
+    offsite_status = state.get("last_auto_backup_offsite") or {}
+    offsite_uploaded = offsite_status.get("uploaded") or []
+    offsite_errors = offsite_status.get("errors") or []
+    if offsite_config:
+        offsite_html = f"""
+        <div class="notice">
+            Offsite backup configured: {escape(offsite_config["bucket"])}
+            {('/' + escape(offsite_config["prefix"])) if offsite_config.get("prefix") else ''}
+            <br>Last offsite upload: {len(offsite_uploaded)} file(s) uploaded.
+            {('<br>Errors: ' + escape('; '.join(offsite_errors))) if offsite_errors else ''}
+        </div>
+        """
+    else:
+        offsite_html = """
+        <div class="warning">
+            Offsite backup is not configured yet. Add S3 backup environment variables in Render
+            so backups are copied outside the Render disk.
+        </div>
+        """
 
     return f"""
     <html>
@@ -34607,6 +34737,7 @@ def owner_backup():
                 Backup folder: <b>{escape(HMUSIC_BACKUP_DIR)}</b><br>
                 Last automatic backup: <b>{escape(str(last_auto))}</b>
             </p>
+            {offsite_html}
             {created_notice}
             <div class="warning">
                 Automatic backup runs once per day on the first app request of the day.

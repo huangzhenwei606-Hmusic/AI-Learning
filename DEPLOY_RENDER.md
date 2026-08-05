@@ -35,6 +35,23 @@ HMUSIC_UPLOAD_DIR=/var/data/message_uploads
 HMUSIC_SECRET_KEY=<generate a long random value>
 ```
 
+Optional offsite backups:
+
+```text
+HMUSIC_ENABLE_AUTO_BACKUP=1
+HMUSIC_BACKUP_S3_BUCKET=<your-backup-bucket>
+HMUSIC_BACKUP_S3_PREFIX=hmusic-crm
+AWS_ACCESS_KEY_ID=<backup-user-access-key>
+AWS_SECRET_ACCESS_KEY=<backup-user-secret-key>
+AWS_DEFAULT_REGION=us-east-1
+```
+
+For S3-compatible storage such as Cloudflare R2 or another provider, also set:
+
+```text
+HMUSIC_BACKUP_S3_ENDPOINT_URL=<provider-s3-endpoint-url>
+```
+
 Persistent disk:
 
 ```text
@@ -43,6 +60,13 @@ Size: 1 GB
 ```
 
 The SQLite database and message attachments must live on the persistent disk. Do not rely on Render's normal app filesystem for production data.
+
+Offsite backup note:
+
+- Local Render backups live under `/var/data/backups`.
+- Offsite backup copies the `.db`, upload `.zip`, and manifest JSON to the configured S3 bucket.
+- Use `/owner_backup` to create a manual backup and verify whether offsite upload is configured.
+- Keep the backup bucket in a separate cloud account/project from Render when possible.
 
 ## First Deploy Flow
 
