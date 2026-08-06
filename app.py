@@ -6246,9 +6246,11 @@ def calendar():
             return "sd-present"
         if status in ("no_show", "no-show"):
             return "sd-noshow"
+        if status in ("excused_24h", "excused"):
+            return "sd-early-cancel"
         if status == "last_min_cancel" or status.startswith("cancel"):
             return "sd-cancelled"
-        if status in ("excused_24h", "excused", "teacher_cancelled"):
+        if status == "teacher_cancelled":
             return "sd-excused"
         return "sd-scheduled"
 
@@ -6262,10 +6264,10 @@ def calendar():
             return "Last Min Cancel"
         if status == "teacher_cancelled":
             return "Teacher Cancel"
+        if status in ("excused_24h", "excused"):
+            return "Canceled > 24h"
         if status.startswith("cancel"):
             return "Last Min Cancel"
-        if status in ("excused_24h", "excused"):
-            return "Excused"
         return "Scheduled"
 
     def owner_status_icons(status):
@@ -6360,8 +6362,11 @@ def calendar():
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
+                early_cancel = event_status in ("excused_24h", "excused")
+                early_cancel_class = " ev-early-cancel" if early_cancel else ""
+                cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
                 event_cards += f"""
-                <div class="ev" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
+                <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
@@ -6370,6 +6375,7 @@ def calendar():
                     <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event[3] or ""))}</a>
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
+                    {cancel_result}
                     {warning}
                     <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
                         <input type="hidden" name="schedule_id" value="{event[0]}">
@@ -6549,6 +6555,7 @@ def calendar():
             .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:2px}}
             .ev-time{{font-size:9px;opacity:.75;display:block}}
             .ev-sub{{font-size:9px;opacity:.6;display:block}}
+            .ev-cancel-result{{font-size:9px;opacity:.78;display:block;margin-top:1px}}
             .ev-status-badge{{display:inline-flex;align-items:center;gap:3px;
                               border-radius:999px;padding:2px 6px;font-size:8px;
                               line-height:1;font-weight:800;color:#fff;
@@ -6575,6 +6582,17 @@ def calendar():
                                 min-width:0;padding:1px 4px}}
             .owner-status-form button{{background:#185FA5;color:#fff;border-color:#185FA5;
                                 font-weight:800;cursor:pointer;padding:0 4px}}
+            .ev.ev-early-cancel{{background:#F1F3F6 !important;border-left-color:#98A2B3 !important;
+                                 color:#667085 !important;box-shadow:none}}
+            .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:#667085;box-shadow:none;
+                                                  text-decoration:line-through;text-decoration-thickness:1.5px}}
+            .ev.ev-early-cancel .ev-name,
+            .ev.ev-early-cancel .ev-time,
+            .ev.ev-early-cancel .ev-sub,
+            .ev.ev-early-cancel .ev-cancel-result{{color:#667085 !important;text-decoration:line-through;
+                                                   text-decoration-thickness:1.5px}}
+            .ev.ev-early-cancel .owner-status-form select,
+            .ev.ev-early-cancel .owner-status-form button{{text-decoration:none}}
             /* instrument colors */
             .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
             .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
@@ -6590,6 +6608,7 @@ def calendar():
             .sd-noshow{{background:var(--s-noshow)}}
             .sd-cancelled{{background:var(--s-cancelled)}}
             .sd-excused{{background:var(--s-excused)}}
+            .sd-early-cancel{{background:#98A2B3}}
             /* drop target */
             .drop-active{{outline:2px dashed var(--blue);outline-offset:-2px;
                           background:#EEF5FD !important}}
@@ -6720,7 +6739,7 @@ def calendar():
             .lesson-panel-close:hover{{background:#F3F6FA;color:var(--text)}}
             .panel-badges{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}}
             .panel-status{{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1}}
-            .panel-status.scheduled{{background:var(--s-scheduled)}} .panel-status.present{{background:var(--s-present)}} .panel-status.late{{background:#D99019}} .panel-status.no_show{{background:var(--s-noshow)}} .panel-status.excused{{background:var(--s-excused)}} .panel-status.cancelled{{background:var(--s-cancelled)}}
+            .panel-status.scheduled{{background:var(--s-scheduled)}} .panel-status.present{{background:var(--s-present)}} .panel-status.late{{background:#D99019}} .panel-status.no_show{{background:var(--s-noshow)}} .panel-status.excused{{background:var(--s-excused)}} .panel-status.early_cancel{{background:#98A2B3}} .panel-status.cancelled{{background:var(--s-cancelled)}}
             .panel-balance{{display:none;border-radius:999px;padding:5px 10px;background:#FFF4E5;color:#B54708;font-weight:900;font-size:12px;line-height:1}}
             .lesson-panel h2{{font-size:27px;line-height:1.08;margin:0 0 6px;font-weight:900;color:var(--text)}}
             .panel-sub{{font-size:15px;color:var(--muted);font-weight:700;line-height:1.35}}
@@ -7204,8 +7223,8 @@ def calendar():
       if (st === 'present')   return 'sd-present';
       if (st === 'late') return 'sd-late';
       if (st === 'no_show' || st === 'no-show') return 'sd-noshow';
+      if (st === 'excused_24h' || st === 'excused') return 'sd-early-cancel';
       if (st && st.startsWith('cancel')) return 'sd-cancelled';
-      if (st === 'excused_24h' || st === 'excused') return 'sd-excused';
       return 'sd-scheduled';
     }}
 
@@ -7214,8 +7233,8 @@ def calendar():
     // ---- owner lesson panel ----
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
-    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Cancel >24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
-    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
+    function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
+    function statusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
       if (!timeText) return '';
       const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
@@ -9623,8 +9642,8 @@ def teacher_dashboard():
         if st == "present":   return "sd-present"
         if st == "late":      return "sd-late"
         if st in ("no_show","no-show"): return "sd-noshow"
+        if st in ("excused_24h","excused"): return "sd-early-cancel"
         if st and st.startswith("cancel"): return "sd-cancelled"
-        if st in ("excused_24h","excused"): return "sd-excused"
         return "sd-scheduled"
 
     def _t_status_label(st):
@@ -9634,10 +9653,10 @@ def teacher_dashboard():
             return "Late"
         if st in ("no_show", "no-show"):
             return "No show"
+        if st in ("excused_24h", "excused"):
+            return "Canceled > 24h"
         if st and st.startswith("cancel"):
             return "Cancelled"
-        if st in ("excused_24h", "excused"):
-            return "Excused"
         return "Scheduled"
 
     TEACHER_CAL_CSS = """
@@ -9664,7 +9683,17 @@ def teacher_dashboard():
     .sd-noshow   {background:var(--s-noshow)}
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
+    .sd-early-cancel{background:#98A2B3}
     .calendar-event{border-left:4px solid var(--blue)}
+    .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:#667085!important;box-shadow:none!important}
+    .calendar-event.early-cancel .t-status-badge{background:#E5E7EB;color:#667085;box-shadow:none;text-decoration:line-through;text-decoration-thickness:1.5px}
+    .calendar-event.early-cancel .event-time span:last-child,
+    .calendar-event.early-cancel .event-student,
+    .calendar-event.early-cancel .event-line,
+    .calendar-event.early-cancel .event-cancel-result{color:#667085!important;text-decoration:line-through;text-decoration-thickness:1.5px}
+    .calendar-event.early-cancel .event-cancel-result{display:block;font-size:10px;margin:2px 0 0;font-weight:800}
+    .calendar-event.early-cancel .event-status-form select,
+    .calendar-event.early-cancel .event-status-form button{text-decoration:none}
     .calendar-event{cursor:grab;user-select:none}
     .calendar-event.dragging{opacity:.35}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
@@ -9683,7 +9712,7 @@ def teacher_dashboard():
     .lesson-scrim{position:fixed;inset:0;background:rgba(17,24,39,.42);display:none;z-index:1100}.lesson-scrim.show{display:block}
     .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#fff;color:#172033;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);display:flex;flex-direction:column;border-left:1px solid #E5E7EB}.lesson-panel.show{transform:translateX(0)}
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
-    .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.cancelled{background:var(--s-cancelled)}
+    .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.early_cancel{background:#98A2B3}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
     .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
@@ -9692,12 +9721,16 @@ def teacher_dashboard():
 
     def calendar_event(lesson):
         time_range = teacher_time_range(lesson[2], lesson[6])
-        dot = _t_status_dot(lesson[5] or "scheduled")
-        status_text = _t_status_label(lesson[5] or "scheduled")
+        lesson_status = lesson[5] or "scheduled"
+        is_early_cancel = lesson_status in ("excused_24h", "excused")
+        event_class = " early-cancel" if is_early_cancel else ""
+        cancel_result = '<div class="event-cancel-result">No credit deducted · No fee</div>' if is_early_cancel else ""
+        dot = _t_status_dot(lesson_status)
+        status_text = _t_status_label(lesson_status)
         course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
         return f"""
-        <div class="calendar-event"
+        <div class="calendar-event{event_class}"
              draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
              data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
              data-time="{escape(str(lesson[2] or ''))}"
@@ -9711,6 +9744,7 @@ def teacher_dashboard():
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
             <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
+            {cancel_result}
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
                 <input type="hidden" name="return_to" value="{schedule_return_url}">
@@ -9901,8 +9935,8 @@ def teacher_dashboard():
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherPanelSaving = false;
-        function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Cancel >24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
-        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'last_min_cancel' || (st && st.startsWith('cancel')) ? 'cancelled' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled') ? 'excused' : 'scheduled'; }}
+        function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
+        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
