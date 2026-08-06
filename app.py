@@ -24208,6 +24208,7 @@ def parent_profile():
         return redirect("/parent_login")
 
     ensure_v27_schema()
+    ensure_v321_schema()
 
     parent_id = session.get("parent_id")
 
@@ -24218,20 +24219,79 @@ def parent_profile():
         <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
         """
 
+    from html import escape as html_escape
+
+    def clean_text(value, fallback=""):
+        if value is None or value == "":
+            return fallback
+        return html_escape(str(value))
+
+    def format_money(value):
+        try:
+            amount = float(value or 0)
+        except (TypeError, ValueError):
+            return "$0.00"
+        return f"${amount:,.2f}"
+
+    def format_lessons(value):
+        try:
+            lessons = int(float(value or 0))
+        except (TypeError, ValueError):
+            lessons = 0
+        if lessons <= 0:
+            return "No lesson count"
+        return f"{lessons} lesson{'s' if lessons != 1 else ''}"
+
+    def short_date(value):
+        if not value:
+            return ""
+        raw = str(value)
+        for candidate in (raw, raw[:19], raw[:16], raw[:10]):
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(candidate, fmt).strftime("%b %-d, %Y")
+                except ValueError:
+                    continue
+        return clean_text(raw)
+
+    def invoice_type_label(value):
+        label = str(value or "").lower()
+        if "package" in label:
+            return "Package invoice"
+        if "renewal" in label:
+            return "Renewal invoice"
+        if "manual" in label:
+            return "Manual invoice"
+        if "lesson" in label:
+            return "Lesson invoice"
+        return "Invoice"
+
+    def invoice_status_class(status):
+        label = str(status or "").lower()
+        if "paid" in label:
+            return "paid"
+        if any(word in label for word in ("sent", "open", "unpaid", "due")):
+            return "open"
+        if any(word in label for word in ("void", "waived", "cancel")):
+            return "void"
+        return "pending"
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     if request.method == "POST":
-        parent_name = request.form.get("parent_name")
-        phone = request.form.get("phone")
-        password = request.form.get("password")
+        parent_name = request.form.get("parent_name", "").strip()
+        phone = request.form.get("phone", "").strip()
+        new_password = request.form.get("new_password", "").strip()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         password_sql = ""
-        password_values = []
-        if password:
+        values = [parent_name, phone]
+        if new_password:
             password_sql = "password = '', password_hash = ?, must_change_password = 0,"
-            password_values.append(hmusic_password_hash(password))
+            values.append(hmusic_password_hash(new_password))
 
+        values.extend([now, parent_id])
         cursor.execute(f"""
         UPDATE parent_profiles
         SET parent_name = ?,
@@ -24239,28 +24299,18 @@ def parent_profile():
             {password_sql}
             updated_at = ?
         WHERE id = ?
-        """, (
-            parent_name,
-            phone,
-            *password_values,
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            parent_id
-        ))
-
+        """, values)
         conn.commit()
-        conn.close()
-
         session["parent_name"] = parent_name
-        log_parent_activity(parent_id, session.get("parent_student_name"), "profile_update", "Parent profile updated.")
-
-        return redirect("/parent_profile")
+        log_parent_activity(parent_id, None, "profile_update", "Updated parent profile")
+        conn.close()
+        return redirect(url_for("parent_profile", updated=1))
 
     cursor.execute("""
     SELECT parent_name, email, phone, password
     FROM parent_profiles
     WHERE id = ?
     """, (parent_id,))
-
     profile = cursor.fetchone()
 
     cursor.execute("""
@@ -24270,172 +24320,300 @@ def parent_profile():
     AND active = 1
     ORDER BY student_name
     """, (parent_id,))
-
     linked = cursor.fetchall()
+
+    invoice_records = []
+    linked_student_names = [item[0] for item in linked]
+    if linked_student_names:
+        cursor.execute("PRAGMA table_info(invoices)")
+        invoice_cols = {row[1] for row in cursor.fetchall()}
+        charge_expr = "i.charge_lessons" if "charge_lessons" in invoice_cols else "NULL"
+        type_expr = "i.invoice_type" if "invoice_type" in invoice_cols else "''"
+        due_expr = "i.due_date" if "due_date" in invoice_cols else "NULL"
+        join_sql = "LEFT JOIN schedule s ON i.schedule_id = s.id" if "schedule_id" in invoice_cols else ""
+        lesson_date_expr = "s.lesson_date" if join_sql else "NULL"
+        lesson_time_expr = "s.lesson_time" if join_sql else "NULL"
+        placeholders = ",".join(["?"] * len(linked_student_names))
+        cursor.execute(f"""
+        SELECT i.id, i.student_name, {charge_expr}, i.amount, i.status, {type_expr},
+               i.created_at, {due_expr}, {lesson_date_expr}, {lesson_time_expr}
+        FROM invoices i
+        {join_sql}
+        WHERE i.student_name IN ({placeholders})
+        ORDER BY COALESCE(i.created_at, '') DESC, i.id DESC
+        LIMIT 12
+        """, linked_student_names)
+        invoice_records = cursor.fetchall()
+
     conn.close()
 
+    parent_name = profile[0] if profile else ""
+    email = profile[1] if profile else ""
+    phone = profile[2] if profile else ""
+
     linked_rows = ""
-    for item in linked:
-        linked_rows += f"<tr><td>{item[0]}</td><td>{item[1]}</td></tr>"
+    for student_name, relationship in linked:
+        linked_rows += f"<tr><td>{clean_text(student_name)}</td><td>{clean_text(relationship)}</td></tr>"
 
     if not linked_rows:
         linked_rows = "<tr><td colspan='2'>No linked students.</td></tr>"
 
+    invoice_rows = ""
+    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, due_date, lesson_date, lesson_time in invoice_records:
+        status_text = clean_text(status or "Pending")
+        status_class = invoice_status_class(status)
+        title = f"{clean_text(student_name)} · {invoice_type_label(invoice_type)}"
+        meta_parts = [format_lessons(charge_lessons)]
+        created_label = short_date(created_at)
+        if created_label:
+            meta_parts.append(f"Issued {created_label}")
+        due_label = short_date(due_date)
+        if due_label:
+            meta_parts.append(f"Due {due_label}")
+        elif lesson_date:
+            lesson_label = f"Lesson {short_date(lesson_date)}"
+            if lesson_time:
+                lesson_label += f" {clean_text(lesson_time)}"
+            meta_parts.append(lesson_label)
+        meta = " · ".join(meta_parts)
+        invoice_rows += f"""
+        <a class="record-row" href="/parent_invoice/{invoice_id}">
+            <div class="record-main">
+                <div class="record-title">{title}</div>
+                <div class="record-sub">{clean_text(meta)}</div>
+            </div>
+            <div class="record-side">
+                <div class="record-amount">{format_money(amount)}</div>
+                <span class="status-pill {status_class}">{status_text}</span>
+            </div>
+        </a>
+        """
+
+    if not invoice_rows:
+        invoice_rows = "<div class='empty-record'>No package or invoice records yet.</div>"
+
     return f"""
+    <!DOCTYPE html>
     <html>
     <head>
-        {parent_app_meta("Parent Profile")}
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+        <title>Parent Profile</title>
         <style>
-            * {{
-                box-sizing: border-box;
+            :root {{
+                --ink:#111827;
+                --muted:#6b7280;
+                --line:#e5e7eb;
+                --soft:#f8fafc;
+                --blue:#2563eb;
+                --purple:#4f46e5;
             }}
+            * {{ box-sizing:border-box; }}
             body {{
+                margin:0;
+                min-height:100vh;
+                background:#ffffff;
+                color:var(--ink);
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #f7f7fb;
-                margin: 0;
-                color: #111827;
+                font-size:14px;
+                font-weight:650;
             }}
             .container {{
-                background: white;
-                padding: max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
-                min-height: 100vh;
-                max-width: 760px;
-                margin: 0 auto;
+                max-width:760px;
+                margin:0 auto;
+                padding:max(18px, env(safe-area-inset-top)) 16px calc(92px + env(safe-area-inset-bottom));
             }}
             h1 {{
-                font-size: 30px;
-                margin: 0 0 22px;
+                font-size:26px;
+                line-height:1.1;
+                margin:18px 0 22px;
+                letter-spacing:0;
+            }}
+            h2 {{
+                font-size:18px;
+                line-height:1.15;
+                margin:22px 0 10px;
+                letter-spacing:0;
+            }}
+            label {{
+                display:block;
+                margin:12px 0 6px;
+                font-size:13px;
+                color:#111827;
             }}
             input {{
-                width: 100%;
-                min-height: 48px;
-                padding: 12px 14px;
-                margin: 8px 0 18px;
-                font-size: 16px;
-                border: 1px solid #d1d5db;
-                border-radius: 10px;
+                width:100%;
+                min-height:44px;
+                border:1px solid #d1d5db;
+                border-radius:10px;
+                padding:10px 12px;
+                font-size:14px;
+                font-weight:650;
+                color:#111827;
+                background:#fff;
             }}
-            button, a.button {{
-                display: inline-block;
-                background: #4f46e5;
-                color: white;
-                border: none;
-                padding: 12px 16px;
-                border-radius: 8px;
-                font-weight: bold;
-                text-decoration: none;
-                min-height: 48px;
+            input[disabled] {{
+                color:#9ca3af;
+                background:#fff;
+                border-color:#e5e7eb;
             }}
+            .actions {{
+                display:grid;
+                grid-template-columns:1fr 1fr;
+                gap:10px;
+                margin:18px 0 8px;
+            }}
+            button, .button {{
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                min-height:42px;
+                border:0;
+                border-radius:10px;
+                padding:10px 12px;
+                background:var(--purple);
+                color:white;
+                font-size:13px;
+                font-weight:800;
+                text-decoration:none;
+            }}
+            .button.secondary {{ background:#eef2ff; color:#4338ca; }}
             table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 14px;
+                width:100%;
+                border-collapse:collapse;
+                border:1px solid var(--line);
+                overflow:hidden;
+                border-radius:10px;
+                font-size:13px;
             }}
             th, td {{
-                padding: 10px;
-                border: 1px solid #ddd;
-                text-align: left;
+                border:1px solid var(--line);
+                padding:9px 10px;
+                text-align:left;
             }}
-            th {{
-                background: #eeeeff;
+            th {{ background:#f3f4f6; color:#374151; }}
+            .section-card {{
+                margin-top:20px;
+                border:1px solid var(--line);
+                border-radius:14px;
+                overflow:hidden;
+                background:#fff;
             }}
-            .form-actions {{
-                display: flex;
-                gap: 10px;
-                flex-wrap: wrap;
+            .section-header {{
+                display:flex;
+                align-items:flex-start;
+                justify-content:space-between;
+                gap:12px;
+                padding:13px 14px;
+                border-bottom:1px solid var(--line);
             }}
-            .parent-bottom-nav {{
-                position: fixed;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 4px;
-                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-                background: rgba(255, 255, 255, 0.96);
-                border-top: 1px solid #e5e7eb;
-                box-shadow: 0 -4px 18px rgba(0,0,0,0.08);
-                z-index: 20;
+            .section-title {{ font-size:17px; font-weight:900; }}
+            .section-note {{
+                margin-top:3px;
+                color:var(--muted);
+                font-size:12px;
+                line-height:1.3;
+                font-weight:650;
             }}
-            .parent-bottom-nav a {{
-                text-align: center;
-                text-decoration: none;
-                color: #6b7280;
-                font-size: 12px;
-                font-weight: 800;
-                padding: 9px 4px;
-                border-radius: 8px;
+            .records-list {{ display:flex; flex-direction:column; }}
+            .record-row {{
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                gap:12px;
+                padding:11px 14px;
+                color:inherit;
+                text-decoration:none;
+                border-bottom:1px solid #eef2f7;
             }}
-            .parent-bottom-nav a.active {{
-                color: #4f46e5;
-                background: #eef2ff;
+            .record-row:last-child {{ border-bottom:0; }}
+            .record-main {{ min-width:0; }}
+            .record-title {{
+                font-size:14px;
+                line-height:1.25;
+                font-weight:900;
+                white-space:nowrap;
+                overflow:hidden;
+                text-overflow:ellipsis;
             }}
-            @media (max-width: 760px) {{
-                table {{
-                    display: block;
-                    overflow-x: auto;
-                    font-size: 12px;
-                }}
-                .form-actions {{
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                }}
-                .form-actions button,
-                .form-actions a {{
-                    text-align: center;
-                }}
+            .record-sub {{
+                margin-top:3px;
+                color:var(--muted);
+                font-size:12px;
+                line-height:1.3;
+                font-weight:650;
             }}
-            @media (min-width: 900px) {{
-                body {{
-                    padding: 32px;
-                }}
-                .container {{
-                    min-height: auto;
-                    padding: 32px;
-                    border-radius: 16px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-                }}
+            .record-side {{ text-align:right; flex:0 0 auto; }}
+            .record-amount {{ font-size:14px; font-weight:900; }}
+            .status-pill {{
+                display:inline-flex;
+                margin-top:4px;
+                padding:3px 8px;
+                border-radius:999px;
+                font-size:11px;
+                line-height:1.1;
+                font-weight:900;
+                background:#eef2ff;
+                color:#4338ca;
+            }}
+            .status-pill.paid {{ background:#dcfce7; color:#166534; }}
+            .status-pill.open {{ background:#fff7ed; color:#9a3412; }}
+            .status-pill.void {{ background:#f3f4f6; color:#6b7280; }}
+            .status-pill.pending {{ background:#eff6ff; color:#1d4ed8; }}
+            .empty-record {{
+                padding:14px;
+                color:var(--muted);
+                font-size:13px;
+                font-weight:650;
+            }}
+            @media (min-width:720px) {{
+                .container {{ padding-left:24px; padding-right:24px; }}
             }}
         </style>
     </head>
     <body>
-        <div class="container">
+        <main class="container">
             <h1>Parent Profile</h1>
-
             <form method="POST">
-                Parent Name:<br>
-                <input name="parent_name" value="{profile[0] or ''}">
+                <label>Parent Name:</label>
+                <input name="parent_name" value="{clean_text(parent_name)}" required>
 
-                Email:<br>
-                <input value="{profile[1] or ''}" disabled>
+                <label>Email:</label>
+                <input value="{clean_text(email)}" disabled>
 
-                Phone:<br>
-                <input name="phone" value="{profile[2] or ''}">
+                <label>Phone:</label>
+                <input name="phone" value="{clean_text(phone)}">
 
-                New Password:<br>
-                <input type="password" name="password" placeholder="Leave blank to keep current password">
+                <label>New Password:</label>
+                <input type="password" name="new_password" placeholder="Leave blank to keep current password">
 
-                <div class="form-actions">
+                <div class="actions">
                     <button type="submit">Save Profile</button>
-                    <a class="button" href="/parent_dashboard">Back</a>
+                    <a class="button secondary" href="/parent_dashboard">Back</a>
                 </div>
             </form>
 
             <h2>Linked Students</h2>
             <table>
-                <tr>
-                    <th>Student</th>
-                    <th>Relationship</th>
-                </tr>
-                {linked_rows}
+                <thead><tr><th>Student</th><th>Relationship</th></tr></thead>
+                <tbody>{linked_rows}</tbody>
             </table>
-        </div>
+
+            <section class="section-card">
+                <div class="section-header">
+                    <div>
+                        <div class="section-title">Package / Invoice Records</div>
+                        <div class="section-note">Issued invoices and package purchase history. Lesson credits stay in Billing & Credits.</div>
+                    </div>
+                </div>
+                <div class="records-list">
+                    {invoice_rows}
+                </div>
+            </section>
+        </main>
         {parent_bottom_nav("profile")}
     </body>
     </html>
     """
-
 
 @app.route("/parent_logout")
 def parent_logout():
