@@ -7103,7 +7103,7 @@ def calendar():
         <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="panelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
         <div class="panel-section"><h3>Homework assignment</h3><textarea class="panel-field" id="panelHomework" placeholder="Add homework. Each line can be one assignment."></textarea></div>
         <div class="panel-section"><h3>Reminders</h3>
-          <label class="panel-toggle"><span><strong>24h before lesson</strong><span>SMS + email to parent</span></span><input type="checkbox" id="panelPreReminder"></label>
+          <label class="panel-toggle"><span><strong>24h before lesson</strong><span>Email or SMS to parent</span></span><input type="checkbox" id="panelPreReminder"></label>
           <label class="panel-toggle"><span><strong>Practice reminder after lesson</strong><span>2h after lesson · includes homework</span></span><input type="checkbox" id="panelPracticeReminder"></label>
           <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
         </div>
@@ -11503,8 +11503,8 @@ def calendar_lesson_action():
         queued = 0
         if homework and (practice_reminder or data.get("send_homework_now")):
             queued += calendar_queue_parent_notice(effective_student_name, "Practice reminder", f"Homework for {effective_student_name}:\n{homework}", "homework_assignment", int(schedule_id))
-        if is_owner and parent_reminder:
-            queued += calendar_queue_parent_notice(effective_student_name, "Lesson reminder", f"{effective_student_name} has a lesson on {effective_lesson_date} at {effective_lesson_time} with {effective_teacher_name} in {effective_classroom or 'the studio'}.", "lesson_reminder", int(schedule_id))
+        # The 24h lesson reminder checkbox only controls the scheduled reminder job.
+        # Saving lesson details should not immediately notify parents.
         if is_owner and low_balance_alert:
             queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
         scope_count = len(following_ids) if is_owner and detail_update else 0
@@ -15016,7 +15016,7 @@ def save_message_attachments(message_id, files):
     conn.close()
 
 
-def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None):
+def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True):
     ensure_v29_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -15087,6 +15087,9 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
 
     conn.commit()
     conn.close()
+
+    if not queue_delivery:
+        return notification_id
 
     queue_notification_delivery(
         user_role,
@@ -15209,6 +15212,25 @@ def queue_notification_delivery(user_role, user_key, title, body, link_url, chan
     if not destination:
         conn.close()
         return None
+
+    cursor.execute("""
+    SELECT id
+    FROM notification_delivery_queue
+    WHERE user_role = ?
+    AND user_key = ?
+    AND channel = ?
+    AND destination = ?
+    AND title = ?
+    AND COALESCE(related_type, '') = COALESCE(?, '')
+    AND COALESCE(related_id, -1) = COALESCE(?, -1)
+    AND status IN ('pending', 'sent')
+    ORDER BY id DESC
+    LIMIT 1
+    """, (user_role, str(user_key), channel, destination, title, related_type, related_id))
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return existing[0]
 
     cursor.execute("""
     INSERT INTO notification_delivery_queue (
@@ -15432,6 +15454,44 @@ def send_parent_email_notice_now(parent_id, title, body, link_url, related_type=
     return queue_id
 
 
+def queue_parent_lesson_reminder(parent_id, title, body, link_url, schedule_id):
+    parent_key = str(parent_id)
+    create_notification(
+        "parent",
+        parent_key,
+        title,
+        body,
+        link_url,
+        related_type="lesson_reminder",
+        related_id=schedule_id,
+        queue_delivery=False
+    )
+
+    email_queue_id = queue_notification_delivery(
+        "parent",
+        parent_key,
+        title,
+        body,
+        link_url,
+        "email",
+        related_type="lesson_reminder",
+        related_id=schedule_id
+    )
+    if email_queue_id:
+        send_queued_email_now(email_queue_id)
+        return email_queue_id
+
+    return queue_sms_if_available(
+        "parent",
+        parent_key,
+        title,
+        body,
+        link_url,
+        related_type="lesson_reminder",
+        related_id=schedule_id
+    )
+
+
 def create_lesson_reminders_for_date(target_date):
     ensure_v33_schema()
 
@@ -15443,6 +15503,7 @@ def create_lesson_reminders_for_date(target_date):
     FROM schedule
     WHERE lesson_date = ?
     AND COALESCE(status, 'scheduled') = 'scheduled'
+    AND COALESCE(parent_lesson_reminder_enabled, 0) = 1
     ORDER BY lesson_time
     """, (target_date,))
     lessons = cursor.fetchall()
@@ -15468,6 +15529,8 @@ def create_lesson_reminders_for_date(target_date):
             AND user_key = ?
             AND related_type = 'lesson_reminder'
             AND related_id = ?
+            AND channel IN ('email', 'sms')
+            AND status IN ('pending', 'sent')
             LIMIT 1
             """, (str(parent_id), schedule_id))
             existing = cursor.fetchone()
@@ -15475,19 +15538,13 @@ def create_lesson_reminders_for_date(target_date):
                 continue
 
             title = "Lesson reminder"
-            body = f"{student_name} has a lesson tomorrow at {lesson_time} with {teacher} in {classroom}."
+            studio_room = classroom or "the studio"
+            body = f"{student_name} has a lesson on {lesson_date} at {lesson_time} with {teacher} in {studio_room}."
             link = "/parent_dashboard"
             conn.commit()
-            create_notification(
-                "parent",
-                str(parent_id),
-                title,
-                body,
-                link,
-                related_type="lesson_reminder",
-                related_id=schedule_id
-            )
-            created += 1
+            queue_id = queue_parent_lesson_reminder(parent_id, title, body, link, schedule_id)
+            if queue_id:
+                created += 1
 
     conn.close()
     return created
