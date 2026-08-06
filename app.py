@@ -6441,6 +6441,14 @@ def calendar():
         "student": selected_student,
         "status_filter": selected_status
     })
+    current_query = urlencode({
+        "month": selected_month,
+        "teacher": selected_teacher,
+        "student": selected_student,
+        "status_filter": selected_status
+    })
+    current_calendar_url = f"/calendar?{current_query}"
+    add_schedule_href = f"/add_schedule?{urlencode({'return_to': current_calendar_url})}"
 
     return f"""
     <html>
@@ -6808,7 +6816,7 @@ def calendar():
         </div>
         <div class="top-btns">
           <a class="btn" href="/">Home</a>
-          <a class="btn" href="/add_schedule">+ Add Schedule</a>
+          <a class="btn" href="{add_schedule_href}">+ Add Schedule</a>
           <a class="btn" href="/locations_rooms">Locations & Rooms</a>
           <a class="btn" href="/room_schedule">Room Schedule</a>
           <a class="btn btn-primary" href="/owner_dashboard">Dashboard</a>
@@ -6878,6 +6886,7 @@ def calendar():
     <!-- Add lesson drawer -->
     <div class="popover" id="popover">
       <form id="quickLessonForm" method="POST" action="/add_schedule">
+        <input type="hidden" name="return_to" value="{escape(current_calendar_url, quote=True)}">
         <div class="pop-inner">
           <div class="pop-title">
             <span id="popTitle">Add lesson</span>
@@ -7903,6 +7912,15 @@ def add_schedule():
 
     ensure_v18_schema()
 
+    def safe_schedule_return(value, fallback="/calendar"):
+        value = (value or "").strip()
+        if not value or not value.startswith("/") or value.startswith("//"):
+            return fallback
+        return value
+
+    owner_calendar_return = safe_schedule_return(request.values.get("return_to"), "/calendar")
+    add_schedule_href = f"/add_schedule?{urlencode({'return_to': owner_calendar_return})}"
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -7960,7 +7978,7 @@ def add_schedule():
             request_note = (request.form.get("request_note") or request.form.get("new_student_note") or "").strip()
             if not requested_student:
                 conn.close()
-                return "<h1>Please enter the student name.</h1><p><a href='/add_schedule'>Back</a></p>"
+                return f"<h1>Please enter the student name.</h1><p><a href='{escape(add_schedule_href, quote=True)}'>Back</a></p>"
 
             subject = f"Teacher Student Setup Request - {requested_student}"
             thread_id = get_or_create_message_thread(
@@ -8002,6 +8020,7 @@ def add_schedule():
 
             if not teacher_linked and not allow_unassigned_teacher_schedule:
                 hidden_fields = {
+                    "return_to": owner_calendar_return,
                     "action": "create_unassigned_teacher_schedule",
                     "student_name": student_name,
                     "teacher": teacher,
@@ -8058,7 +8077,7 @@ def add_schedule():
 
             if not teacher_linked and allow_unassigned_teacher_schedule and not temporary_schedule_note:
                 conn.close()
-                return "<h1>Temporary schedule note is required.</h1><p><a href='/add_schedule'>Back</a></p>"
+                return f"<h1>Temporary schedule note is required.</h1><p><a href='{escape(add_schedule_href, quote=True)}'>Back</a></p>"
 
         location_id = (request.form.get("location_id") or "").strip()
         room_id = (request.form.get("room_id") or "").strip()
@@ -8282,7 +8301,8 @@ def add_schedule():
 
         conn.commit()
         conn.close()
-        back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
+        back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else owner_calendar_return
+        add_another_href = "/teacher_dashboard?view=add_schedule" if require_teacher() and not require_owner() else add_schedule_href
 
         if allow_unassigned_teacher_schedule:
             subject = f"Temporary Schedule Created - {student_name}"
@@ -8396,7 +8416,7 @@ def add_schedule():
         </nav>
         <div class="top-actions">
             <a class="btn" href="{back_href}">Back</a>
-            <a class="btn primary" href="/add_schedule">Add Schedule</a>
+            <a class="btn primary" href="{add_another_href}">Add Schedule</a>
         </div>
     </div>
 
@@ -8481,7 +8501,7 @@ def add_schedule():
                 </div>
                 <div class="footer-actions">
                     <a class="btn" href="/course_types">Manage Course Types</a>
-                    <a class="btn" href="/add_schedule">Add Another Schedule</a>
+                    <a class="btn" href="{add_another_href}">Add Another Schedule</a>
                     <a class="btn primary" href="{back_href}">View {calendar_label}</a>
                 </div>
             </div>
@@ -8649,7 +8669,7 @@ def add_schedule():
         for s in student_rows
     ])
 
-    back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
+    back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else owner_calendar_return
     teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
     locations_manage_link = ' | <a href="/locations_rooms">Manage Locations & Rooms</a>' if require_owner() else ""
     teacher_student_mode_html = ""
@@ -8769,6 +8789,7 @@ def add_schedule():
             </p>
 
             <form method="POST">
+                <input type="hidden" name="return_to" value="{escape(owner_calendar_return, quote=True)}">
 
                 Student:<br>
                 {teacher_student_mode_html}
