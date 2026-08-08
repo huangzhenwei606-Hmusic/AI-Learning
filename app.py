@@ -1993,6 +1993,50 @@ def home():
     """)
     pending_sub_requests = cursor.fetchall()
 
+    try:
+        ensure_parent_portal_feature_schema()
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM parent_booking_requests
+        WHERE status IN ('pending', 'pending_owner_review')
+        """)
+        pending_booking_count = cursor.fetchone()[0] or 0
+
+        cursor.execute("""
+        SELECT id, student_name, request_type, preferred_date, preferred_time
+        FROM parent_booking_requests
+        WHERE status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 5
+        """)
+        pending_booking_requests = cursor.fetchall()
+    except sqlite3.Error:
+        pending_booking_count = 0
+        pending_booking_requests = []
+
+    try:
+        ensure_v321_schema()
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        AND status IN ('pending', 'pending_owner_review')
+        """)
+        pending_cancel_count = cursor.fetchone()[0] or 0
+
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, policy_status
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        AND status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 5
+        """)
+        pending_cancel_requests = cursor.fetchall()
+    except sqlite3.Error:
+        pending_cancel_count = 0
+        pending_cancel_requests = []
+
     cursor.execute("""
     SELECT COUNT(*)
     FROM invoices
@@ -2071,6 +2115,30 @@ def home():
                 <span>{r[1]} · {r[3]} {r[4]}</span>
             </div>
             """
+    if pending_booking_requests:
+        for r in pending_booking_requests:
+            request_label = str(r[2] or "booking").replace("_", " ").title()
+            date_label = f"{r[3] or 'Date TBD'} {r[4] or ''}".strip()
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Booking</span>
+                    <a href="/owner_booking_requests">Request #{r[0]} · {escape(str(r[1] or 'Student'))}</a>
+                </div>
+                <span>{escape(request_label)} · {escape(date_label)}</span>
+            </div>
+            """
+    if pending_cancel_requests:
+        for r in pending_cancel_requests:
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Cancel</span>
+                    <a href="/lesson_change_request/{r[0]}">Request #{r[0]} · {escape(str(r[1] or 'Student'))}</a>
+                </div>
+                <span>{escape(str(r[2] or ''))} {escape(str(r[3] or ''))} · {escape(hmusic_policy_status_label(r[4]))}</span>
+            </div>
+            """
     if unread_owner_messages:
         attention_html += f"""
         <div class="task-row medium">
@@ -2118,6 +2186,8 @@ def home():
     message_badge = f" ({unread_owner_messages})" if unread_owner_messages else ""
     reschedule_badge = f" ({pending_reschedule_count})" if pending_reschedule_count else ""
     sub_badge = f" ({pending_sub_count})" if pending_sub_count else ""
+    booking_badge = f" ({pending_booking_count})" if pending_booking_count else ""
+    cancel_badge = f" ({pending_cancel_count})" if pending_cancel_count else ""
     invoice_badge = f" ({unpaid_invoice_count})" if unpaid_invoice_count else ""
     trial_badge = f" ({pending_trial_count})" if pending_trial_count else ""
     homework_badge = f" ({missing_homework_count})" if missing_homework_count else ""
@@ -2511,6 +2581,14 @@ def home():
                         <div class="label">Sub Requests</div>
                         <div class="value">{pending_sub_count}</div>
                     </a>
+                    <a class="attention-card {'alert' if pending_booking_count else ''}" href="/owner_booking_requests">
+                        <div class="label">Booking Requests</div>
+                        <div class="value">{pending_booking_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if pending_cancel_count else ''}" href="/owner_cancel_requests">
+                        <div class="label">Cancel Requests</div>
+                        <div class="value">{pending_cancel_count}</div>
+                    </a>
                     <a class="attention-card {'alert' if unpaid_invoice_count else ''}" href="/invoices">
                         <div class="label">Open Invoices</div>
                         <div class="value">{unpaid_invoice_count}</div>
@@ -2572,6 +2650,8 @@ def home():
     <div class="action-group">
         <a href="/parents">Parent Management</a>
         <a href="/owner_reschedule_requests">Reschedule Requests{reschedule_badge}</a>
+        <a href="/owner_booking_requests">Booking Requests{booking_badge}</a>
+        <a href="/owner_cancel_requests">Cancel Requests{cancel_badge}</a>
         <a href="/messages">Message Center{message_badge}</a>
         <a href="/open_slots">Open Slots</a>
         <a href="/enrollment_renewals">Enrollment Renewals</a>
@@ -19036,6 +19116,188 @@ def notifications():
     """
 
 
+@app.route("/owner_booking_requests")
+def owner_booking_requests():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_parent_portal_feature_schema()
+    status_filter = (request.args.get("status") or "pending").strip()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    if status_filter == "all":
+        cursor.execute("""
+        SELECT id, parent_id, student_name, request_type, preferred_date, preferred_time,
+               preferred_teacher, preferred_room, notes, status, created_at
+        FROM parent_booking_requests
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    else:
+        cursor.execute("""
+        SELECT id, parent_id, student_name, request_type, preferred_date, preferred_time,
+               preferred_teacher, preferred_room, notes, status, created_at
+        FROM parent_booking_requests
+        WHERE status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    requests = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in requests:
+        request_type = str(r[3] or "booking").replace("_", " ").title()
+        rows += f"""
+        <tr>
+            <td>#{r[0]}</td>
+            <td>{escape(str(r[10] or ""))}</td>
+            <td><a href="/student/{quote(str(r[2] or ''))}">{escape(str(r[2] or ""))}</a></td>
+            <td>{escape(request_type)}</td>
+            <td>{escape(str(r[4] or "Date TBD"))} {escape(str(r[5] or ""))}</td>
+            <td>{escape(str(r[6] or "Any teacher"))}</td>
+            <td>{escape(str(r[7] or "Any room"))}</td>
+            <td>{escape(str(r[8] or ""))}</td>
+            <td>{escape(str(r[9] or ""))}</td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='9'>No booking requests found.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Booking Requests</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:30px; color:#111827; }}
+            .container {{ max-width:1180px; margin:0 auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            h1 {{ margin:0 0 10px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 18px; }}
+            .button {{ display:inline-block; background:#1f6fb8; color:white; padding:9px 12px; border-radius:8px; text-decoration:none; font-weight:800; }}
+            .button.secondary {{ background:#eef4ff; color:#155d9e; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }}
+            th {{ background:#f3f4f6; color:#667085; font-size:12px; text-transform:uppercase; }}
+            td {{ font-size:14px; }}
+            a {{ color:#155d9e; font-weight:800; }}
+            .muted {{ color:#667085; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Booking Requests</h1>
+            <p class="muted">Parent requests for extra lessons, makeup lessons, trials, and general schedule notes.</p>
+            <div class="actions">
+                <a class="button" href="/owner_booking_requests">Pending</a>
+                <a class="button secondary" href="/owner_booking_requests?status=all">All</a>
+                <a class="button secondary" href="/">Dashboard</a>
+            </div>
+            <table>
+                <tr>
+                    <th>ID</th><th>Created</th><th>Student</th><th>Type</th><th>Preferred time</th>
+                    <th>Teacher</th><th>Room</th><th>Notes</th><th>Status</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/owner_cancel_requests")
+def owner_cancel_requests():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    status_filter = (request.args.get("status") or "pending").strip()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    if status_filter == "all":
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, teacher, classroom,
+               policy_status, fee_preview, waiver_available, reason, status, created_at
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    else:
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, teacher, classroom,
+               policy_status, fee_preview, waiver_available, reason, status, created_at
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        AND status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    requests = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in requests:
+        waiver = "Yes" if r[8] else "No"
+        rows += f"""
+        <tr>
+            <td><a href="/lesson_change_request/{r[0]}">#{r[0]}</a></td>
+            <td>{escape(str(r[11] or ""))}</td>
+            <td><a href="/student/{quote(str(r[1] or ''))}">{escape(str(r[1] or ""))}</a></td>
+            <td>{escape(str(r[2] or ""))} {escape(str(r[3] or ""))}</td>
+            <td>{escape(str(r[4] or ""))}</td>
+            <td>{escape(str(r[5] or ""))}</td>
+            <td>{escape(hmusic_policy_status_label(r[6]))}</td>
+            <td>${hmusic_money(r[7] or 0)}</td>
+            <td>{waiver}</td>
+            <td>{escape(str(r[9] or ""))}</td>
+            <td>{escape(str(r[10] or ""))}</td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='11'>No cancellation requests found.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Cancel Requests</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:30px; color:#111827; }}
+            .container {{ max-width:1240px; margin:0 auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            h1 {{ margin:0 0 10px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 18px; }}
+            .button {{ display:inline-block; background:#1f6fb8; color:white; padding:9px 12px; border-radius:8px; text-decoration:none; font-weight:800; }}
+            .button.secondary {{ background:#eef4ff; color:#155d9e; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }}
+            th {{ background:#f3f4f6; color:#667085; font-size:12px; text-transform:uppercase; }}
+            td {{ font-size:14px; }}
+            a {{ color:#155d9e; font-weight:800; }}
+            .muted {{ color:#667085; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Cancellation Requests</h1>
+            <p class="muted">Parent cancellation requests that need owner policy review.</p>
+            <div class="actions">
+                <a class="button" href="/owner_cancel_requests">Pending</a>
+                <a class="button secondary" href="/owner_cancel_requests?status=all">All</a>
+                <a class="button secondary" href="/">Dashboard</a>
+            </div>
+            <table>
+                <tr>
+                    <th>ID</th><th>Created</th><th>Student</th><th>Lesson</th><th>Teacher</th>
+                    <th>Room</th><th>Policy</th><th>Fee preview</th><th>Waiver</th><th>Reason</th><th>Status</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.route("/parent_reschedule", methods=["GET", "POST"])
 def parent_reschedule():
     if not require_parent():
@@ -19540,7 +19802,7 @@ def parent_reschedule_group():
                 "owner",
                 "Schedule request manager note",
                 f"{session.get('parent_name', 'Parent')} sent a schedule request. {note_body}",
-                "/dashboard",
+                "/owner_booking_requests",
                 related_type="parent_booking_request",
                 related_id=request_id
             )
@@ -22547,7 +22809,7 @@ def parent_schedule():
             "owner",
             request_label,
             f"{session.get('parent_name', 'Parent')} sent schedule notes. {note_body}",
-            "/dashboard",
+            "/owner_booking_requests",
             related_type="parent_booking_request",
             related_id=request_id
         )
@@ -22793,7 +23055,7 @@ def parent_booking_request():
         create_notification(
             "owner", "owner", "Parent booking request",
             f"{session.get('parent_name', 'Parent')} requested {request_type.replace('_', ' ')} for {student_name}.",
-            "/dashboard", related_type="parent_booking_request", related_id=request_id
+            "/owner_booking_requests", related_type="parent_booking_request", related_id=request_id
         )
         return redirect("/parent_schedule?sent=1")
 
