@@ -11207,6 +11207,7 @@ def lesson_change_request_detail(request_id):
     status_label = hmusic_policy_status_label(req[9])
     fee_preview = hmusic_money(req[10])
     waiver_text = "Available" if req[11] else "Not available"
+    request_status_display = "confirmed" if (req[13] or "") == "approved" else (req[13] or "pending")
     current_state = ""
     if schedule_state:
         current_state = f"{hmusic_policy_status_label(schedule_state[0])} · credit {schedule_state[1]} · waiver {schedule_state[2]} · pending fee ${hmusic_money(schedule_state[3])}"
@@ -11242,7 +11243,7 @@ def lesson_change_request_detail(request_id):
                 <h1>{escape(req[2])} cancellation request</h1>
                 <p>{escape(req[5] or '')} {escape(req[6] or '')} · {escape(req[7] or '')} · {escape(req[8] or '')}</p>
                 <p><b>Reason:</b> {escape(req[12] or 'No reason provided.')}</p>
-                <p><b>Request status:</b> {escape(req[13] or 'pending')}</p>
+                <p><b>Request status:</b> {escape(request_status_display)}</p>
                 <p><b>Current lesson state:</b> {escape(current_state or 'Lesson not found')}</p>
                 <div class="grid">
                     <div class="metric"><span>Policy preview</span><b>{status_label}</b></div>
@@ -11254,12 +11255,13 @@ def lesson_change_request_detail(request_id):
                 <label class="muted">Owner note</label>
                 <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
                 <div class="actions">
-                    <button class="primary" name="action" value="apply_policy" type="submit">Apply policy</button>
-                    <button class="warn" name="action" value="charge" type="submit">Charge / deduct</button>
-                    <button name="action" value="no_charge" type="submit">No charge</button>
+                    <button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button>
+                    <button class="warn" name="action" value="charge" type="submit">Confirm + charge</button>
+                    <button name="action" value="no_charge" type="submit">Confirm no charge</button>
                     <button class="danger" name="action" value="reject" type="submit">Reject request</button>
                 </div>
             </form>
+            <a class="button" href="/owner_cancel_requests">Back to cancel requests</a>
             <a class="button" href="/calendar">Back to calendar</a>
         </div>
     </body>
@@ -19239,6 +19241,8 @@ def owner_cancel_requests():
     rows = ""
     for r in requests:
         waiver = "Yes" if r[8] else "No"
+        status_display = "confirmed" if (r[10] or "") == "approved" else (r[10] or "")
+        action_html = f"<a class='mini-button' href='/lesson_change_request/{r[0]}'>Review / Confirm</a>"
         rows += f"""
         <tr>
             <td><a href="/lesson_change_request/{r[0]}">#{r[0]}</a></td>
@@ -19251,11 +19255,12 @@ def owner_cancel_requests():
             <td>${hmusic_money(r[7] or 0)}</td>
             <td>{waiver}</td>
             <td>{escape(str(r[9] or ""))}</td>
-            <td>{escape(str(r[10] or ""))}</td>
+            <td>{escape(status_display)}</td>
+            <td>{action_html}</td>
         </tr>
         """
     if not rows:
-        rows = "<tr><td colspan='11'>No cancellation requests found.</td></tr>"
+        rows = "<tr><td colspan='12'>No cancellation requests found.</td></tr>"
 
     return f"""
     <html>
@@ -19273,6 +19278,7 @@ def owner_cancel_requests():
             th {{ background:#f3f4f6; color:#667085; font-size:12px; text-transform:uppercase; }}
             td {{ font-size:14px; }}
             a {{ color:#155d9e; font-weight:800; }}
+            .mini-button {{ display:inline-block; background:#1f6fb8; color:white; padding:7px 10px; border-radius:8px; text-decoration:none; white-space:nowrap; }}
             .muted {{ color:#667085; }}
         </style>
     </head>
@@ -19288,7 +19294,7 @@ def owner_cancel_requests():
             <table>
                 <tr>
                     <th>ID</th><th>Created</th><th>Student</th><th>Lesson</th><th>Teacher</th>
-                    <th>Room</th><th>Policy</th><th>Fee preview</th><th>Waiver</th><th>Reason</th><th>Status</th>
+                    <th>Room</th><th>Policy</th><th>Fee preview</th><th>Waiver</th><th>Reason</th><th>Status</th><th>Action</th>
                 </tr>
                 {rows}
             </table>
