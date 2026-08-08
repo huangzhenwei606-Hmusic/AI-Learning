@@ -26236,8 +26236,8 @@ def renewal_emails():
             <td>{escape(str(s[1] or ""))}</td>
             <td>{escape(str(s[2] or ""))}</td>
             <td>
-                <a href="/send_renewal_email/{student_url_name}">
-                    Send Renewal Email
+                <a href="/review_renewal_email/{student_url_name}">
+                    Review Renewal
                 </a>
             </td>
         </tr>
@@ -26263,8 +26263,230 @@ def renewal_emails():
     """
 
 
-@app.route("/send_renewal_email/<student_name>")
+def renewal_package_count(lessons_left, package_size=10):
+    try:
+        balance = int(float(lessons_left or 0))
+    except (TypeError, ValueError):
+        balance = 0
+    if balance < 0:
+        overage = abs(balance)
+        return max(1, (overage + package_size - 1) // package_size)
+    if balance <= 2:
+        return 1
+    return 0
+
+
+def renewal_email_copy(student_name, lessons_left, package_count, package_size=10):
+    try:
+        balance = int(float(lessons_left or 0))
+    except (TypeError, ValueError):
+        balance = 0
+
+    first_name = str(student_name or "your student").split()[0] if student_name else "your student"
+    package_word = "package" if package_count == 1 else "packages"
+    subject = f"{student_name} - Lesson Package Renewal"
+
+    if balance < 0:
+        overage = abs(balance)
+        balance_line = (
+            f"Our records show that {first_name} has used {overage} lesson"
+            f"{'' if overage == 1 else 's'} beyond the current package balance. "
+            f"Since H-Music packages are {package_size} lessons each, this renewal is for "
+            f"{package_count} {package_word}."
+        )
+    elif balance == 0:
+        balance_line = (
+            f"Our records show that {first_name}'s current package balance is at 0 lessons. "
+            f"This renewal is for {package_count} {package_word}."
+        )
+    else:
+        balance_line = (
+            f"Our records show that {first_name} currently has {balance} lesson"
+            f"{'' if balance == 1 else 's'} remaining. "
+            f"This renewal is for {package_count} {package_word}."
+        )
+
+    body = f"""Dear Parent,
+
+This is a friendly reminder that {first_name}'s lesson package is due for renewal.
+
+{balance_line}
+
+Please open the H-Music parent app to review the renewal details and payment information:
+
+https://hmusic-crm.onrender.com/parent_login
+
+If you have any questions before completing the renewal, please reply to this email.
+
+Thank you,
+H-Music
+"""
+    return subject, body
+
+
+@app.route("/review_renewal_email/<student_name>")
+def review_renewal_email(student_name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, parent_email, lessons_left
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    name = student[0]
+    parent_email = student[1]
+    lessons_left = student[2]
+    conn.close()
+
+    package_size = 10
+    default_package_count = renewal_package_count(lessons_left, package_size)
+    package_options = ""
+    for count in range(1, 6):
+        selected = "selected" if count == default_package_count else ""
+        package_word = "package" if count == 1 else "packages"
+        label = f"{count} {package_word}"
+        if count == default_package_count:
+            label += " - system trigger"
+        package_options += f'<option value="{count}" {selected}>{label}</option>'
+
+    subject, email_text = renewal_email_copy(name, lessons_left, default_package_count, package_size)
+    try:
+        balance_int = int(float(lessons_left or 0))
+    except (TypeError, ValueError):
+        balance_int = 0
+    if balance_int < 0:
+        trigger_reason = (
+            f"Student is {abs(balance_int)} lessons over balance. "
+            f"At {package_size} lessons per package, this triggers {default_package_count} package"
+            f"{'' if default_package_count == 1 else 's'}."
+        )
+    else:
+        trigger_reason = (
+            f"Student has {balance_int} lesson{'' if balance_int == 1 else 's'} left, "
+            f"so the renewal queue triggers 1 package."
+        )
+
+    student_url_name = quote(str(name or ""))
+    missing_email_warning = ""
+    if not parent_email or "@" not in parent_email:
+        missing_email_warning = """
+        <div class="warning">This student does not have a valid parent email. Fix the student profile before sending.</div>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Review Renewal Email</title>
+        <style>
+            body {{ margin:0; background:#f5f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            .shell {{ max-width:1180px; margin:0 auto; padding:28px 24px 44px; }}
+            .head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }}
+            .eyebrow {{ display:inline-block; padding:4px 10px; border-radius:999px; background:#fff7ed; color:#9a5b13; font-weight:800; font-size:12px; margin-bottom:8px; }}
+            h1 {{ margin:0; font-size:32px; line-height:1.1; }}
+            p {{ color:#667085; line-height:1.45; }}
+            .actions {{ display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end; }}
+            .button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:10px 14px; border-radius:8px; border:1px solid #d9e0ea; background:#fff; color:#344054; font:inherit; font-weight:800; text-decoration:none; cursor:pointer; }}
+            button.primary {{ background:#1f6fb8; color:#fff; border-color:#1f6fb8; }}
+            .grid {{ display:grid; grid-template-columns:minmax(290px,390px) minmax(0,1fr); gap:16px; align-items:start; }}
+            .panel {{ background:#fff; border:1px solid #d9e0ea; border-radius:10px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.05); }}
+            h2 {{ margin:0 0 14px; font-size:20px; }}
+            .kv {{ display:grid; grid-template-columns:132px minmax(0,1fr); gap:8px 12px; padding:10px 0; border-bottom:1px solid #eef2f7; }}
+            .kv:last-child {{ border-bottom:0; }}
+            .label {{ color:#667085; }}
+            .value {{ font-weight:800; overflow-wrap:anywhere; }}
+            .trigger {{ margin-top:14px; padding:12px; border-radius:8px; border:1px solid #fed7aa; background:#fff7ed; line-height:1.45; }}
+            .trigger b {{ color:#9a5b13; }}
+            .info {{ margin-top:12px; padding:12px; border-radius:8px; border:1px solid #bfdbfe; background:#eef4ff; line-height:1.45; }}
+            .info b {{ color:#1f6fb8; }}
+            .warning {{ margin:12px 0; padding:12px; border-radius:8px; border:1px solid #fecaca; background:#fef2f2; color:#991b1b; font-weight:800; }}
+            label {{ display:block; color:#667085; font-weight:800; font-size:13px; margin:14px 0 6px; }}
+            select, input, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d9e0ea; border-radius:8px; padding:10px; font:inherit; }}
+            textarea {{ min-height:74px; resize:vertical; }}
+            .email-meta {{ display:grid; gap:8px; margin-bottom:12px; }}
+            .email-row {{ display:grid; grid-template-columns:70px minmax(0,1fr); gap:10px; color:#667085; }}
+            .email-row strong {{ color:#111827; overflow-wrap:anywhere; }}
+            pre {{ margin:0; white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid #d9e0ea; border-radius:8px; background:#fcfcfd; padding:15px; min-height:300px; font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+            .footer {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; flex-wrap:wrap; }}
+            .status {{ color:#166534; font-weight:800; }}
+            @media (max-width:820px) {{
+                .head {{ display:block; }}
+                .actions {{ justify-content:flex-start; margin-top:12px; }}
+                .grid {{ grid-template-columns:1fr; }}
+                .kv {{ grid-template-columns:1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="shell">
+            <div class="head">
+                <div>
+                    <div class="eyebrow">Owner review required</div>
+                    <h1>Review Renewal Email</h1>
+                    <p>Nothing sends until you review the package count and confirm.</p>
+                </div>
+                <div class="actions">
+                    <a class="button" href="/renewal_emails">Back to Queue</a>
+                    <a class="button" href="/student/{student_url_name}">Student Profile</a>
+                </div>
+            </div>
+            {missing_email_warning}
+            <form method="POST" action="/send_renewal_email/{student_url_name}">
+                <div class="grid">
+                    <section class="panel">
+                        <h2>Renewal Decision</h2>
+                        <div class="kv"><div class="label">Student</div><div class="value">{escape(str(name))}</div></div>
+                        <div class="kv"><div class="label">Parent email</div><div class="value">{escape(str(parent_email or ''))}</div></div>
+                        <div class="kv"><div class="label">Current balance</div><div class="value">{escape(str(lessons_left))} lessons</div></div>
+                        <div class="kv"><div class="label">Package size</div><div class="value">{package_size} lessons</div></div>
+                        <div class="trigger"><b>System trigger: {default_package_count} package{'' if default_package_count == 1 else 's'}</b><br>{escape(trigger_reason)}</div>
+                        <div class="info"><b>Email only</b><br>Payment details stay inside the parent app. This email sends the parent back to the app to review renewal details and payment information.</div>
+                        <label for="package_count">Package to send</label>
+                        <select id="package_count" name="package_count">
+                            {package_options}
+                        </select>
+                        <label for="custom_package_count">Custom package count</label>
+                        <input id="custom_package_count" name="custom_package_count" type="number" min="1" max="20" step="1" placeholder="Optional override">
+                        <label for="manager_note">Internal manager note</label>
+                        <textarea id="manager_note" name="manager_note">Balance reviewed. System triggered {default_package_count} package{'' if default_package_count == 1 else 's'}.</textarea>
+                    </section>
+                    <section class="panel">
+                        <h2>Email Preview</h2>
+                        <div class="email-meta">
+                            <div class="email-row"><span>To</span><strong>{escape(str(parent_email or ''))}</strong></div>
+                            <div class="email-row"><span>Subject</span><strong>{escape(subject)}</strong></div>
+                        </div>
+                        <pre>{escape(email_text)}</pre>
+                        <div class="footer">
+                            <div class="status">Ready after manager review</div>
+                            <button class="primary" type="submit">Send Email</button>
+                        </div>
+                    </section>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/send_renewal_email/<student_name>", methods=["GET", "POST"])
 def send_renewal_email(student_name):
+    if request.method != "POST":
+        return redirect(f"/review_renewal_email/{quote(str(student_name or ''))}")
+
     if not require_owner():
         return redirect("/owner_login")
 
@@ -26308,16 +26530,15 @@ def send_renewal_email(student_name):
         ))
         conn.commit()
 
-    email_text = f"""
-Dear Parent,
-
-This is a friendly reminder that {name} currently has {lessons_left} lesson(s) remaining.
-
-To avoid any interruption in scheduling, please renew the lesson package when convenient.
-
-Thank you,
-H-Music
-"""
+    package_size = 10
+    default_package_count = renewal_package_count(lessons_left, package_size)
+    package_count_raw = (request.form.get("custom_package_count") or request.form.get("package_count") or "").strip()
+    try:
+        package_count = int(float(package_count_raw))
+    except (TypeError, ValueError):
+        package_count = default_package_count
+    package_count = max(1, min(package_count, 20))
+    subject, email_text = renewal_email_copy(name, lessons_left, package_count, package_size)
 
     if not parent_email or "@" not in parent_email:
         record_renewal_status("failed: missing parent email")
@@ -26336,24 +26557,26 @@ H-Music
         response = f"Email send failed: {exc}"
 
     if not sent:
-        record_renewal_status(f"failed: {response}"[:200])
+        record_renewal_status(f"failed: {response}; packages={package_count}"[:200])
         conn.close()
         return f"""
         <h1>Renewal Email Not Sent</h1>
         <p>Student: {escape(str(name))}</p>
         <p>To: {escape(str(parent_email))}</p>
+        <p>Package count: {package_count}</p>
         <p><b>Reason:</b> {escape(str(response))}</p>
         <pre>{escape(email_text)}</pre>
         <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
         """, 502
 
-    record_renewal_status("sent")
+    record_renewal_status(f"sent; packages={package_count}")
     conn.close()
 
     return f"""
     <h1>Renewal Email Sent</h1>
     <p>Student: {escape(str(name))}</p>
     <p>To: {escape(str(parent_email))}</p>
+    <p>Package count: {package_count}</p>
     <pre>{escape(email_text)}</pre>
     <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
     """
