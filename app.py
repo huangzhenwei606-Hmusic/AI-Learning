@@ -11302,6 +11302,29 @@ def calendar_queue_parent_notice(student_name, title, body, related_type, relate
     return new_count
 
 
+def hmusic_practice_reminder_title(student_name):
+    name = str(student_name or "your student").strip() or "your student"
+    return f"H-Music Practice Reminder for {name}"
+
+
+def hmusic_practice_reminder_body(student_name, homework):
+    name = str(student_name or "your student").strip() or "your student"
+    first_name = name.split()[0] if name else "your student"
+    homework_text = str(homework or "").strip()
+    return f"""Hi,
+
+Here is {first_name}'s practice assignment from today's lesson:
+
+{homework_text}
+
+Please open the H-Music parent app to review lesson notes and homework details:
+https://hmusic-crm.onrender.com/parent_login
+
+Thank you,
+H-Music
+"""
+
+
 def upsert_calendar_lesson_record(cursor, schedule_id, student_name, lesson_note, homework, private_note, actor):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1", (schedule_id,))
@@ -11702,7 +11725,13 @@ def calendar_lesson_action():
         conn.close()
         queued = 0
         if homework and (practice_reminder or data.get("send_homework_now")):
-            queued += calendar_queue_parent_notice(effective_student_name, "Practice reminder", f"Homework for {effective_student_name}:\n{homework}", "homework_assignment", int(schedule_id))
+            queued += calendar_queue_parent_notice(
+                effective_student_name,
+                hmusic_practice_reminder_title(effective_student_name),
+                hmusic_practice_reminder_body(effective_student_name, homework),
+                "homework_assignment",
+                int(schedule_id)
+            )
         # The 24h lesson reminder checkbox only controls the scheduled reminder job.
         # Saving lesson details should not immediately notify parents.
         if is_owner and low_balance_alert:
