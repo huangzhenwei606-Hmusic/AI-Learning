@@ -2,10 +2,24 @@
 __pycache__/
 *.pyc
 .venv/
+.env
+*.log
+
+# Local/runtime data
 hmusic.db
 hmusic.db-*
 message_uploads/
-*.log
-.env
+backups/
+tmp_import_test/
+
+# iOS dependencies
 ios-parent-app/node_modules/
 ios-parent-app/ios/App/Pods/
+
+# Local packages and generated review artifacts
+*.zip
+rendered_calendar_spec/
+calendar_spec_mockups/
+resume_render/
+app_store_screenshots/
+app_store_screenshots_ipad_13/

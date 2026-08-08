@@ -1,0 +1,17 @@
+{
+    "Emma": {
+        "lessons_left": 1,
+        "instrument": "Piano",
+        "teacher": "Zhenwei"
+    },
+    "Tom": {
+        "lessons_left": 8,
+        "instrument": "Violin",
+        "teacher": "Jessie"
+    },
+    "Sophia": {
+        "lessons_left": 2,
+        "instrument": "Piano",
+        "teacher": "Joanna"
+    }
+}

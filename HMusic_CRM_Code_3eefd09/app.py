@@ -1,0 +1,25589 @@
+from flask import Flask, request, redirect, session, Response, send_from_directory, abort
+import sqlite3
+import os
+import smtplib
+import calendar as calendar_lib
+import json
+import zipfile
+from email.message import EmailMessage
+from datetime import date, datetime, timedelta
+from html import escape
+from urllib.parse import urlencode, quote
+
+try:
+    import stripe
+except ImportError:
+    stripe = None
+
+from openai import OpenAI
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("HMUSIC_SECRET_KEY", "hmusic_secret_key")
+HMUSIC_DB_PATH = os.environ.get("HMUSIC_DB_PATH", "hmusic.db")
+HMUSIC_UPLOAD_DIR = os.environ.get("HMUSIC_UPLOAD_DIR", "message_uploads")
+HMUSIC_BACKUP_DIR = os.environ.get(
+    "HMUSIC_BACKUP_DIR",
+    os.path.join(os.path.dirname(HMUSIC_DB_PATH) or ".", "backups")
+)
+DB_NAME = "hmusic.db"
+if not hasattr(sqlite3, "_hmusic_original_connect"):
+    sqlite3._hmusic_original_connect = sqlite3.connect
+_sqlite_connect = sqlite3._hmusic_original_connect
+
+
+def hmusic_sqlite_connect(database, *args, **kwargs):
+    if database == "hmusic.db":
+        database = HMUSIC_DB_PATH
+    return _sqlite_connect(database, *args, **kwargs)
+
+
+sqlite3.connect = hmusic_sqlite_connect
+OWNER_USERNAME = "owner"
+OWNER_PASSWORD = "1234"
+
+
+def require_owner():
+    return session.get("user_role") == "owner"
+
+
+def ensure_owner():
+    if not require_owner():
+        abort(redirect("/owner_login"))
+
+
+def require_teacher():
+    return session.get("teacher_name") is not None
+
+
+def require_parent():
+    return session.get("parent_id") is not None or session.get("parent_student_name") is not None
+client = None
+
+
+PARENT_APP_NAME = "H-Music"
+PARENT_APP_THEME = "#4f46e5"
+PARENT_APP_ICON_BG = "#050505"
+
+
+def parent_app_meta(title):
+    return f"""
+        <title>{title}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="{PARENT_APP_THEME}">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-title" content="{PARENT_APP_NAME}">
+        <meta name="apple-mobile-web-app-status-bar-style" content="default">
+        <link rel="manifest" href="/manifest.webmanifest">
+        <link rel="icon" href="/hmusic-icon.png" type="image/png">
+        <link rel="apple-touch-icon" href="/hmusic-icon.png">
+        <script>
+            if ("serviceWorker" in navigator) {{
+                window.addEventListener("load", function() {{
+                    navigator.serviceWorker.register("/sw.js").catch(function() {{}});
+                }});
+            }}
+            let hmusicInstallPrompt = null;
+            window.addEventListener("beforeinstallprompt", function(event) {{
+                event.preventDefault();
+                hmusicInstallPrompt = event;
+                const installButton = document.querySelector("[data-install-app]");
+                if (installButton) {{
+                    installButton.hidden = false;
+                }}
+            }});
+            function installParentApp() {{
+                if (!hmusicInstallPrompt) {{
+                    return;
+                }}
+                hmusicInstallPrompt.prompt();
+                hmusicInstallPrompt = null;
+                const installButton = document.querySelector("[data-install-app]");
+                if (installButton) {{
+                    installButton.hidden = true;
+                }}
+            }}
+        </script>
+    """
+
+
+def get_parent_unread_message_count():
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return 0
+
+    try:
+        return get_unread_message_count("parent", parent_id)
+    except Exception:
+        return 0
+
+
+def get_parent_unread_notification_count():
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return 0
+
+    try:
+        return get_unread_notification_count("parent", str(parent_id))
+    except Exception:
+        return 0
+
+
+def parent_bottom_nav(active="home"):
+    items = [
+        ("home", "/parent_dashboard", "Home"),
+        ("reschedule", "/parent_reschedule", "Reschedule"),
+        ("messages", "/parent_messages", "Messages"),
+        ("profile", "/parent_profile", "Profile"),
+    ]
+    links = ""
+    unread_messages = get_parent_unread_message_count()
+    unread_notifications = get_parent_unread_notification_count()
+    for key, href, label in items:
+        active_class = "active" if key == active else ""
+        badge = ""
+        if key == "messages" and unread_messages:
+            badge = (
+                f' <span class="nav-badge" style="display:inline-flex;'
+                f'align-items:center;justify-content:center;min-width:18px;'
+                f'height:18px;padding:0 5px;border-radius:999px;'
+                f'background:#dc2626;color:white;font-size:11px;'
+                f'font-weight:900;">{unread_messages}</span>'
+            )
+        if key == "home" and unread_notifications:
+            badge = (
+                f' <span class="nav-badge" style="display:inline-flex;'
+                f'align-items:center;justify-content:center;min-width:18px;'
+                f'height:18px;padding:0 5px;border-radius:999px;'
+                f'background:#dc2626;color:white;font-size:11px;'
+                f'font-weight:900;">{unread_notifications}</span>'
+            )
+        links += f'<a class="{active_class}" href="{href}">{label}{badge}</a>'
+    return f'<nav class="parent-bottom-nav">{links}</nav>'
+
+
+@app.route("/app_install")
+def parent_app_install():
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Install H-Music App")}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                background: #f7f7fb;
+                color: #111827;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }}
+            .container {{
+                min-height: 100vh;
+                max-width: 720px;
+                margin: 0 auto;
+                background: white;
+                padding: max(26px, env(safe-area-inset-top)) 20px max(30px, env(safe-area-inset-bottom));
+            }}
+            .app-mark {{
+                width: 64px;
+                height: 64px;
+                border-radius: 18px;
+                background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                color: transparent;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 18px;
+            }}
+            h1 {{
+                font-size: 34px;
+                line-height: 1.05;
+                margin: 0 0 10px;
+            }}
+            p {{
+                color: #4b5563;
+                line-height: 1.55;
+            }}
+            .steps {{
+                display: grid;
+                gap: 14px;
+                margin: 22px 0;
+            }}
+            .step {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 16px;
+                background: #fafafa;
+            }}
+            .step h2 {{
+                margin: 0 0 10px;
+                font-size: 18px;
+            }}
+            ol {{
+                margin: 0;
+                padding-left: 22px;
+                color: #374151;
+                line-height: 1.65;
+            }}
+            a.button {{
+                display: inline-block;
+                background: {PARENT_APP_THEME};
+                color: white;
+                padding: 12px 16px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: 800;
+                margin-right: 8px;
+                margin-bottom: 8px;
+            }}
+            a.secondary {{
+                background: #111827;
+            }}
+            .legal {{
+                margin-top: 24px;
+                padding-top: 18px;
+                border-top: 1px solid #eef0f4;
+                color: #6b7280;
+                font-size: 13px;
+            }}
+            .legal a {{
+                color: #4f46e5;
+                font-weight: 800;
+                margin-right: 14px;
+            }}
+            @media (min-width: 900px) {{
+                body {{ padding: 32px; }}
+                .container {{
+                    min-height: auto;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    padding: 34px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="app-mark">Hf</div>
+            <h1>Install H-Music</h1>
+            <p>Use the parent portal like an app from your phone home screen.</p>
+
+            <div class="steps">
+                <div class="step">
+                    <h2>iPhone / iPad</h2>
+                    <ol>
+                        <li>Open this page in Safari.</li>
+                        <li>Tap the Share button.</li>
+                        <li>Choose Add to Home Screen.</li>
+                        <li>Tap Add.</li>
+                    </ol>
+                </div>
+
+                <div class="step">
+                    <h2>Android</h2>
+                    <ol>
+                        <li>Open this page in Chrome.</li>
+                        <li>Tap Install App if Chrome shows it, or open the browser menu.</li>
+                        <li>Choose Install app or Add to Home screen.</li>
+                    </ol>
+                </div>
+            </div>
+
+            <a class="button" href="/app">Open Parent App</a>
+            <a class="button secondary" href="/parent_login">Parent Login</a>
+            <div class="legal">
+                <a href="/privacy">Privacy Policy</a>
+                <a href="/terms">Terms</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def public_legal_page(title, body_html):
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta(title)}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                background: #f7f7fb;
+                color: #111827;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }}
+            .container {{
+                max-width: 860px;
+                margin: 0 auto;
+                background: white;
+                min-height: 100vh;
+                padding: max(28px, env(safe-area-inset-top)) 22px max(34px, env(safe-area-inset-bottom));
+            }}
+            .brand-mark {{
+                width: 52px;
+                height: 52px;
+                border-radius: 15px;
+                background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                margin-bottom: 18px;
+            }}
+            h1 {{
+                font-size: 34px;
+                margin: 0 0 8px;
+                line-height: 1.08;
+            }}
+            h2 {{
+                margin: 28px 0 8px;
+                font-size: 20px;
+            }}
+            p, li {{
+                color: #4b5563;
+                line-height: 1.65;
+                font-size: 16px;
+            }}
+            ul {{
+                padding-left: 22px;
+            }}
+            .updated {{
+                color: #6b7280;
+                font-size: 14px;
+                margin-bottom: 24px;
+            }}
+            .actions {{
+                margin-top: 28px;
+                padding-top: 18px;
+                border-top: 1px solid #eef0f4;
+            }}
+            a {{
+                color: #4f46e5;
+                font-weight: 800;
+            }}
+            .actions a {{
+                margin-right: 16px;
+            }}
+            @media (min-width: 900px) {{
+                body {{ padding: 32px; }}
+                .container {{
+                    min-height: auto;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    padding: 38px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <main class="container">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <h1>{title}</h1>
+            <p class="updated">Last updated: June 17, 2026</p>
+            {body_html}
+            <div class="actions">
+                <a href="/app">Parent App</a>
+                <a href="https://www.h-musicandarts.com/">H-Music & Arts Website</a>
+            </div>
+        </main>
+    </body>
+    </html>
+    """
+
+
+@app.route("/privacy")
+@app.route("/privacy_policy")
+def privacy_policy():
+    return public_legal_page("Privacy Policy", """
+        <p>H-Music Parent App helps enrolled H-Music families manage lesson schedules, messages, reschedule requests, invoices, payments, and lesson history.</p>
+
+        <h2>Information We Collect</h2>
+        <ul>
+            <li>Parent contact information such as name, email address, and phone number.</li>
+            <li>Student lesson information such as student name, teacher, schedule, attendance status, lesson notes, homework, and reschedule or cancellation requests.</li>
+            <li>Messages and attachments sent through the app between families and H-Music staff.</li>
+            <li>Billing records such as invoices, payment status, package balances, and AutoPay preferences.</li>
+            <li>Basic technical information needed to keep the app signed in and working, such as session state and device/browser information.</li>
+        </ul>
+
+        <h2>Payments</h2>
+        <p>Payments are processed by Stripe. H-Music does not store full card numbers, bank account numbers, or bank login credentials. Stripe may collect and process payment details under its own privacy and security practices.</p>
+
+        <h2>How We Use Information</h2>
+        <ul>
+            <li>To provide lesson scheduling, attendance, rescheduling, messaging, billing, and tuition renewal features.</li>
+            <li>To notify families and H-Music staff about important lesson, payment, and account events.</li>
+            <li>To keep records needed for studio operations, parent support, and accounting.</li>
+        </ul>
+
+        <h2>Sharing</h2>
+        <p>We share information only as needed to operate the studio, support families, process payments, comply with law, or use trusted service providers such as Stripe, hosting, email, and SMS providers.</p>
+
+        <h2>Retention and Access</h2>
+        <p>Lesson, account, and billing records may be retained while the student is enrolled and for reasonable business, tax, accounting, and support purposes. Families may contact H-Music & Arts to request help with access, correction, or account questions.</p>
+
+        <h2>Contact</h2>
+        <p>For privacy questions, contact H-Music & Arts through <a href="https://www.h-musicandarts.com/">www.h-musicandarts.com</a>.</p>
+    """)
+
+
+@app.route("/terms")
+def terms_of_use():
+    return public_legal_page("Terms of Use", """
+        <p>These terms apply to the H-Music Parent App for enrolled H-Music families. By using the app, you agree to use it only for managing H-Music lesson, account, communication, and tuition activity.</p>
+
+        <h2>Parent Accounts</h2>
+        <p>Parent accounts are for authorized parents or guardians of enrolled students. Please keep your login information private and contact H-Music if you believe your account has been accessed without permission.</p>
+
+        <h2>Lessons, Rescheduling, and Cancellation</h2>
+        <p>The app may show lesson schedules, cancellation options, reschedule requests, open slots, and studio policy reminders. Final scheduling approval may require H-Music owner or teacher confirmation. Within-policy and last-minute fees are governed by the studio policies shown in the app or provided by H-Music.</p>
+
+        <h2>Tuition and Payments</h2>
+        <p>Tuition invoices, package renewals, AutoPay reminders, and payment links are for real-world music lessons and studio services. Payments are processed through Stripe. H-Music may update invoice status, package balances, and account history after payment confirmation.</p>
+
+        <h2>Messages and Lesson Notes</h2>
+        <p>Messages, lesson notes, homework, and attachments should be used for lesson-related communication. The app is not intended for emergencies or urgent safety communication.</p>
+
+        <h2>Changes</h2>
+        <p>H-Music may update the app, policies, or these terms as the studio system evolves. Continued use of the app means you accept the updated terms.</p>
+
+        <h2>Contact</h2>
+        <p>For questions about these terms, contact H-Music & Arts through <a href="https://www.h-musicandarts.com/">www.h-musicandarts.com</a>.</p>
+    """)
+
+
+@app.route("/app")
+def parent_app_entry():
+    if require_parent():
+        return redirect("/parent_dashboard")
+    return redirect("/parent_login")
+
+
+@app.route("/manifest.webmanifest")
+@app.route("/manifest.json")
+def parent_app_manifest():
+    return Response(f"""{{
+        "name": "H-Music Parent App",
+        "short_name": "H-Music",
+        "description": "Parent portal for H-Music lessons, messages, rescheduling, and account history.",
+        "start_url": "/app",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#f7f7fb",
+        "theme_color": "{PARENT_APP_THEME}",
+        "icons": [
+            {{
+                "src": "/hmusic-icon.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable"
+            }}
+        ]
+    }}""", mimetype="application/manifest+json")
+
+
+@app.route("/sw.js")
+def parent_app_service_worker():
+    return Response("""
+const CACHE_NAME = "hmusic-parent-v33-icon";
+const SHELL = ["/app_install", "/parent_login", "/hmusic-icon.png", "/manifest.webmanifest"];
+
+self.addEventListener("install", function(event) {
+  event.waitUntil(caches.open(CACHE_NAME).then(function(cache) {
+    return cache.addAll(SHELL);
+  }));
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", function(event) {
+  event.waitUntil(
+    caches.keys().then(function(keys) {
+      return Promise.all(keys.filter(function(key) {
+        return key !== CACHE_NAME;
+      }).map(function(key) {
+        return caches.delete(key);
+      }));
+    })
+  );
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", function(event) {
+  if (event.request.mode === "navigate") {
+    event.respondWith(fetch(event.request).catch(function() {
+      return caches.match("/app_install");
+    }));
+  }
+});
+""", mimetype="application/javascript")
+
+
+@app.route("/hmusic-icon.png")
+def parent_app_icon_png():
+    return send_from_directory("static", "hmusic-icon.png")
+
+
+@app.route("/hmusic-icon.svg")
+def parent_app_icon():
+    return Response(f"""
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="hmusicGold" x1="120" x2="392" y1="118" y2="394" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9b681f"/>
+      <stop offset="0.42" stop-color="#f3d079"/>
+      <stop offset="0.68" stop-color="#c79436"/>
+      <stop offset="1" stop-color="#7a4d17"/>
+    </linearGradient>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="{PARENT_APP_ICON_BG}"/>
+  <text
+    x="256"
+    y="318"
+    text-anchor="middle"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="182"
+    font-weight="600"
+    letter-spacing="-22"
+    fill="url(#hmusicGold)"
+    filter="url(#softGlow)">Hf</text>
+</svg>
+""", mimetype="image/svg+xml")
+
+
+def ensure_teacher_management_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teachers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT UNIQUE
+    )
+    """)
+
+    cursor.execute("PRAGMA table_info(teachers)")
+    teacher_columns = [row[1] for row in cursor.fetchall()]
+    for column_name, column_sql in [
+        ("username", "username TEXT"),
+        ("password", "password TEXT"),
+        ("hourly_rate", "hourly_rate REAL DEFAULT 30"),
+        ("email", "email TEXT"),
+        ("phone", "phone TEXT"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("notes", "notes TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT")
+    ]:
+        if column_name not in teacher_columns:
+            cursor.execute(f"ALTER TABLE teachers ADD COLUMN {column_sql}")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        password TEXT,
+        role TEXT,
+        display_name TEXT,
+        linked_teacher_name TEXT,
+        linked_student_name TEXT
+    )
+    """)
+
+    owner_username = os.environ.get("HMUSIC_OWNER_USERNAME", OWNER_USERNAME)
+    owner_password = os.environ.get("HMUSIC_OWNER_PASSWORD", OWNER_PASSWORD)
+    owner_display_name = os.environ.get("HMUSIC_OWNER_DISPLAY_NAME", "Owner")
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'owner'")
+    owner_count = cursor.fetchone()[0]
+    if owner_count == 0:
+        cursor.execute("""
+        INSERT OR IGNORE INTO users (
+            username,
+            password,
+            role,
+            display_name
+        )
+        VALUES (?, ?, ?, ?)
+        """, (
+            owner_username,
+            owner_password,
+            "owner",
+            owner_display_name
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+def teacher_login_username(teacher_name):
+    base = "".join(ch.lower() for ch in (teacher_name or "") if ch.isalnum())
+    return base or "teacher"
+
+
+
+HSTUDIO_APP_NAME = "H-Music Studio"
+
+
+def hstudio_money_whole(value):
+    try:
+        return f"${float(value):,.0f}"
+    except (TypeError, ValueError):
+        return "$0"
+
+
+def hstudio_date_short(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%-m/%-d")
+    except Exception:
+        return value or "-"
+
+
+def hstudio_status_key(status):
+    status = (status or "scheduled").lower().strip()
+    if status == "present":
+        return "present"
+    if status in ("no_show", "no show", "no-show"):
+        return "noshow"
+    if status.startswith("cancel") or status in ("teacher_cancelled", "teacher_cancel", "excused_24h", "excused"):
+        return "cancelled"
+    return "scheduled"
+
+
+def hstudio_badge(count):
+    try:
+        number = int(count or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        return ""
+    return f'<span class="nav-badge">{number}</span>'
+
+
+def get_missing_homework_lessons(limit=None, teacher_name=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    filters = ["LOWER(COALESCE(s.status, '')) = 'present'"]
+    params = []
+    if teacher_name:
+        filters.append("s.teacher = ?")
+        params.append(teacher_name)
+
+    limit_sql = ""
+    if limit:
+        limit_sql = "LIMIT ?"
+        params.append(limit)
+
+    cursor.execute(f"""
+    SELECT
+        s.id,
+        s.student_name,
+        s.teacher,
+        s.lesson_date,
+        s.lesson_time,
+        s.classroom
+    FROM schedule s
+    WHERE {" AND ".join(filters)}
+    AND NOT EXISTS (
+        SELECT 1
+        FROM lessons l
+        WHERE l.student_name = s.student_name
+        AND l.lesson_date = s.lesson_date
+        AND TRIM(COALESCE(l.homework, '')) != ''
+    )
+    ORDER BY s.lesson_date DESC, s.lesson_time DESC, s.id DESC
+    {limit_sql}
+    """, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_missing_homework_count(teacher_name=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    filters = ["LOWER(COALESCE(s.status, '')) = 'present'"]
+    params = []
+    if teacher_name:
+        filters.append("s.teacher = ?")
+        params.append(teacher_name)
+
+    cursor.execute(f"""
+    SELECT COUNT(*)
+    FROM schedule s
+    WHERE {" AND ".join(filters)}
+    AND NOT EXISTS (
+        SELECT 1
+        FROM lessons l
+        WHERE l.student_name = s.student_name
+        AND l.lesson_date = s.lesson_date
+        AND TRIM(COALESCE(l.homework, '')) != ''
+    )
+    """, params)
+    count = cursor.fetchone()[0] or 0
+    conn.close()
+    return count
+
+
+def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_count=0):
+    message_badge = hstudio_badge(unread_messages)
+    homework_badge = hstudio_badge(missing_homework_count)
+
+    def item(key, href, icon, label, extra=""):
+        active_class = " active" if key == active else ""
+        return f'<a class="td-nav-item{active_class}" href="{href}"><i class="ti {icon}"></i><span>{label}</span>{extra}</a>'
+
+    return f"""
+        <div class="td-nav-section">Today</div>
+        {item("home", "/teacher_dashboard", "ti-home", "Home")}
+        {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Schedule")}
+        {item("messages", "/teacher_messages", "ti-message", "Messages", message_badge)}
+        <div class="td-nav-section">Lessons</div>
+        {item("records", "/teacher_lesson_notes", "ti-notes", "Lesson Records", homework_badge)}
+        {item("homework", "/teacher_missing_homework", "ti-alert-circle", "Missing Homework", homework_badge)}
+        {item("sub", "/teacher_sub_request", "ti-replace", "Sub Request")}
+        {item("reschedule", "/teacher_reschedule", "ti-calendar-x", "Reschedule Request")}
+        {item("add_schedule", "/add_schedule", "ti-calendar-plus", "Add Schedule")}
+        <div class="td-nav-section">Payroll</div>
+        {item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>')}
+        <div class="td-nav-section">Account</div>
+        {item("profile", "/teacher_dashboard", "ti-settings", "Profile Settings")}
+        {item("logout", "/teacher_logout", "ti-logout", "Logout")}
+    """
+
+
+def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, active="home", missing_homework_count=0):
+    initials = (teacher_name or "T")[:2].upper()
+    return f"""
+    <html>
+    <head>
+        <title>Teacher Portal · {HSTUDIO_APP_NAME}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+        <style>
+            :root {{
+                --td-bg:#f6f7f9;
+                --td-surface:#ffffff;
+                --td-sidebar:#ffffff;
+                --td-line:#e3e7ee;
+                --td-line-strong:#cfd6e1;
+                --td-text:#17202a;
+                --td-muted:#667085;
+                --td-faint:#98a2b3;
+                --td-blue:#2563eb;
+                --td-blue-soft:#eaf2ff;
+                --td-green:#16803c;
+                --td-green-soft:#e9f8ef;
+                --td-gold:#b7791f;
+                --td-gold-soft:#fff6df;
+                --td-red:#b42318;
+                --td-red-soft:#fff0ef;
+                --td-gray-soft:#f2f4f7;
+                --td-radius:12px;
+            }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:var(--td-bg); color:var(--td-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; font-weight:400; }}
+            a {{ color:inherit; text-decoration:none; }}
+            .td-shell {{ display:grid; grid-template-columns:240px 1fr; grid-template-rows:56px 1fr; min-height:100vh; background:var(--td-bg); }}
+            .td-topbar {{ grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:var(--td-surface); border-bottom:1px solid var(--td-line); }}
+            .td-brand {{ display:flex; align-items:center; gap:10px; font-size:18px; font-weight:500; }}
+            .td-mark {{ width:32px; height:32px; display:grid; place-items:center; border-radius:8px; background:var(--td-blue-soft); color:var(--td-blue); font-size:18px; }}
+            .td-top-actions {{ display:flex; align-items:center; gap:10px; }}
+            .td-role {{ display:inline-flex; gap:6px; align-items:center; padding:6px 10px; border:1px solid var(--td-line); border-radius:999px; color:var(--td-muted); font-size:13px; }}
+            .td-avatar {{ width:32px; height:32px; border-radius:999px; display:grid; place-items:center; background:var(--td-blue); color:white; font-size:12px; font-weight:500; }}
+            .td-more {{ width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--td-gray-soft); color:var(--td-muted); font-size:18px; }}
+            .td-sidebar {{ background:var(--td-sidebar); border-right:1px solid var(--td-line); padding:18px 0; }}
+            .td-nav-section {{ padding:12px 18px 6px; color:var(--td-faint); font-size:11px; letter-spacing:.05em; text-transform:uppercase; font-weight:500; }}
+            .td-nav-item {{ display:flex; align-items:center; gap:10px; min-height:38px; padding:0 18px; color:var(--td-muted); font-size:14px; font-weight:400; }}
+            .td-nav-item i {{ width:18px; font-size:18px; color:var(--td-muted); }}
+            .td-nav-item.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
+            .td-nav-item.active i {{ color:var(--td-blue); }}
+            .nav-badge {{ margin-left:auto; display:inline-grid; place-items:center; min-width:20px; height:20px; padding:0 6px; border-radius:999px; background:var(--td-red-soft); color:var(--td-red); font-size:11px; font-weight:500; }}
+            .td-new-badge {{ margin-left:auto; border-radius:999px; padding:1px 6px; background:var(--td-green-soft); color:var(--td-green); font-size:11px; font-weight:500; }}
+            .td-main {{ padding:20px 24px 40px; overflow:auto; }}
+            .td-greeting {{ display:flex; align-items:baseline; gap:12px; margin-bottom:18px; }}
+            .td-greeting h1 {{ margin:0; font-size:22px; line-height:1.25; font-weight:500; }}
+            .td-greeting span {{ color:var(--td-muted); font-size:14px; }}
+            .td-kpis {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:18px; }}
+            .td-kpi {{ background:var(--td-surface); border:1px solid var(--td-line); border-radius:var(--td-radius); padding:16px 18px; min-height:96px; }}
+            .td-kpi-label {{ color:var(--td-muted); font-size:13px; margin-bottom:6px; }}
+            .td-kpi-value {{ font-size:26px; line-height:1; font-weight:500; }}
+            .td-kpi-sub {{ margin-top:6px; color:var(--td-faint); font-size:12px; }}
+            .green {{ color:var(--td-green); }} .gold {{ color:var(--td-gold); }}
+            .td-layout {{ display:grid; grid-template-columns:minmax(430px,1fr) minmax(320px,.85fr); gap:16px; align-items:start; }}
+            .td-card {{ background:var(--td-surface); border:1px solid var(--td-line); border-radius:var(--td-radius); padding:18px; }}
+            .td-card h2 {{ margin:0 0 14px; font-size:16px; color:var(--td-text); font-weight:500; }}
+            .td-records {{ min-height:420px; position:relative; }}
+            .td-lesson-row {{ display:grid; grid-template-columns:56px 1fr auto; gap:10px; align-items:center; padding:11px 12px; margin-bottom:8px; border-radius:10px; color:var(--td-text); border:1px solid transparent; }}
+            .td-lesson-row.present {{ background:var(--td-green-soft); border-color:#c9efd5; }}
+            .td-lesson-row.scheduled {{ background:var(--td-blue-soft); border-color:#cfe1ff; }}
+            .td-lesson-row.noshow {{ background:var(--td-red-soft); border-color:#ffd0cc; }}
+.td-lesson-row.cancelled {{ background:var(--td-gray-soft); border-color:var(--td-line); color:var(--td-muted); }}
+.td-date {{ color:var(--td-muted); font-size:14px; font-weight:500; }}
+.td-student {{ font-size:15px; font-weight:500; line-height:1.25; }}
+.td-meta {{ color:var(--td-muted); font-size:13px; line-height:1.3; }}
+.td-status {{ font-size:13px; color:var(--td-blue); white-space:nowrap; font-weight:500; }}
+.td-lesson-row.present .td-status {{ color:var(--td-green); }}
+.td-lesson-row.noshow .td-status {{ color:var(--td-red); }}
+.td-lesson-row.cancelled .td-student,
+.td-lesson-row.cancelled .td-meta {{ color:var(--td-muted); text-decoration:line-through; text-decoration-thickness:1.5px; }}
+.td-lesson-row.cancelled .td-status {{ color:var(--td-muted); }}
+            .td-empty {{ color:var(--td-muted); font-size:14px; }}
+            .td-down {{ position:absolute; left:50%; bottom:-18px; transform:translateX(-50%); width:44px; height:44px; border-radius:999px; border:1px solid var(--td-line); background:white; display:grid; place-items:center; font-size:22px; color:var(--td-muted); }}
+            .td-stack {{ display:grid; gap:16px; }}
+            .td-action {{ display:flex; align-items:center; gap:12px; width:100%; min-height:48px; padding:0 14px; border:1px solid var(--td-line-strong); border-radius:10px; color:var(--td-text); font-size:15px; font-weight:400; margin-bottom:8px; }}
+            .td-action i {{ color:var(--td-muted); font-size:18px; width:20px; }}
+            .td-pay-row {{ display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--td-line); padding:9px 0; color:var(--td-muted); font-size:14px; }}
+            .td-pay-row:last-child {{ border-bottom:0; }}
+            .td-pay-row strong {{ color:var(--td-text); font-size:14px; font-weight:500; }}
+            .td-pay-row strong.green {{ color:var(--td-green); }}
+            .td-pay-row strong.gold {{ color:var(--td-gold); }}
+            .schedule-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }}
+            .schedule-title h1 {{ margin:0 0 4px; font-size:22px; font-weight:500; }}
+            .schedule-title p {{ margin:0; color:var(--td-muted); font-size:13px; }}
+            .schedule-controls {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
+            .schedule-controls a, .schedule-controls button {{ border:1px solid var(--td-line); border-radius:8px; background:white; padding:7px 10px; color:var(--td-text); font:inherit; font-size:13px; }}
+            .schedule-controls input {{ border:1px solid var(--td-line); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px; }}
+            .schedule-tabs {{ display:inline-flex; border:1px solid var(--td-line); border-radius:8px; overflow:hidden; background:white; }}
+            .schedule-tabs a {{ border:0; border-radius:0; background:white; padding:7px 11px; }}
+            .schedule-tabs a.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
+            .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
+            .calendar-day {{ min-height:560px; background:white; padding:8px; min-width:0; }}
+            .calendar-day.today {{ background:#fbfdff; }}
+            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:6px; align-items:center; min-height:20px; margin-bottom:7px; color:var(--td-muted); font-size:11px; }}
+            .calendar-day-head strong {{ color:var(--td-text); font-size:13px; font-weight:500; }}
+            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:6px solid var(--td-blue); border-radius:7px; padding:5px 6px; margin-bottom:5px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
+            .calendar-event.private-30 {{ border-left-color:#38bdf8; background:#dff4ff; border-color:#8bdcff; }}
+            .calendar-event.private-45 {{ border-left-color:#2563eb; background:#bfdbfe; border-color:#60a5fa; }}
+            .calendar-event.private-60 {{ border-left-color:#0f172a; background:#93c5fd; border-color:#1d4ed8; }}
+            .calendar-event.private-long {{ border-left-color:#172554; background:#bfdbfe; border-color:#1e40af; }}
+            .calendar-event.group-small {{ border-left-color:#a855f7; background:#eadcff; border-color:#c084fc; }}
+            .calendar-event.group-large {{ border-left-color:#4c1d95; background:#c4b5fd; border-color:#7c3aed; }}
+            .calendar-event.trial {{ border-left-color:#eab308; background:#fde68a; border-color:#facc15; }}
+            .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:5px; margin-bottom:2px; }}
+            .event-time {{ flex:1 1 auto; min-width:0; font-size:10px; color:#334155; line-height:1.1; font-weight:500; }}
+            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:11.5px; font-weight:600; line-height:1.12; margin-bottom:2px; }}
+            .event-line {{ overflow-wrap:anywhere; font-size:10px; color:#334155; line-height:1.12; margin-top:0; }}
+            .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 36px; gap:3px; margin-top:4px; align-items:center; }}
+            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:21px; border:1px solid rgba(51,65,85,.28); border-radius:5px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:10px; padding:1px 4px; }}
+            .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; padding:0 4px; }}
+            .calendar-empty {{ color:var(--td-faint); font-size:13px; padding:8px 2px; }}
+            @media (max-width:900px) {{
+                .td-shell {{ grid-template-columns:64px 1fr; }}
+                .td-brand span, .td-nav-item span, .td-nav-section, .td-new-badge, .nav-badge {{ display:none; }}
+                .td-nav-item {{ justify-content:center; padding:0; }}
+                .td-main {{ padding:16px; }}
+                .td-layout, .td-kpis {{ grid-template-columns:1fr; }}
+                .calendar-grid {{ grid-template-columns:1fr; }}
+                .calendar-day {{ min-height:auto; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="td-shell">
+            <header class="td-topbar">
+                <div class="td-brand"><span class="td-mark"><i class="ti ti-music"></i></span><span>{HSTUDIO_APP_NAME}</span></div>
+                <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> Teacher</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
+            </header>
+            <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages, active, missing_homework_count)}</aside>
+            <main class="td-main">{content_html}</main>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def owner_path_value(value):
+    return quote(str(value or ""), safe="")
+
+
+def owner_format_money(value):
+    try:
+        return f"${float(value or 0):,.2f}"
+    except (TypeError, ValueError):
+        return "$0.00"
+
+
+def owner_lesson_count(value):
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def owner_count_badge(value, tone="neutral"):
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return ""
+    return f'<span class="owner-badge {tone}">{count}</span>'
+
+
+def owner_shell(active, title, subtitle, body, actions=""):
+    def nav(url, label, key, badge=""):
+        active_class = " active" if active == key else ""
+        return f'<a class="owner-nav-link{active_class}" href="{url}"><span>{label}</span>{badge}</a>'
+
+    operations_nav = [
+        nav("/", "Dashboard", "dashboard"),
+        nav("/calendar", "Calendar", "calendar"),
+        nav("/students", "Students", "students"),
+        nav("/trial_leads", "Intake", "intake"),
+        nav("/enrollments", "Enrollments", "enrollments"),
+        nav("/messages", "Messages", "messages"),
+    ]
+    money_nav = [
+        nav("/invoices", "Invoices", "invoices"),
+        nav("/enrollment_payments", "Payments", "payments"),
+        nav("/renewal_emails", "Renewals", "renewals"),
+    ]
+    setup_nav = [
+        nav("/locations_rooms", "Locations & Rooms", "locations"),
+        nav("/teachers", "Teachers", "teachers"),
+        nav("/teacher_rate_cards", "Teacher Rates", "teacher_rates"),
+        nav("/owner_settings", "Owner Settings", "settings"),
+    ]
+
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{escape(str(title))} - H-Music CRM</title>
+        <style>
+            :root {{
+                --owner-bg: #f5f7fb;
+                --owner-panel: #ffffff;
+                --owner-line: #e4e8f0;
+                --owner-text: #111827;
+                --owner-muted: #667085;
+                --owner-soft: #eef4ff;
+                --owner-blue: #1f6fb8;
+                --owner-blue-dark: #155d9e;
+                --owner-red: #dc2626;
+                --owner-amber: #b7791f;
+                --owner-green: #238636;
+                --owner-shadow: 0 14px 40px rgba(15, 23, 42, 0.07);
+            }}
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                background: var(--owner-bg);
+                color: var(--owner-text);
+                font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                font-size: 14px;
+            }}
+            a {{ color: inherit; text-decoration: none; }}
+            .owner-shell {{ min-height: 100vh; display: flex; }}
+            .owner-sidebar {{
+                width: 260px;
+                min-height: 100vh;
+                position: sticky;
+                top: 0;
+                align-self: flex-start;
+                background: #fff;
+                border-right: 1px solid var(--owner-line);
+                padding: 22px 18px;
+            }}
+            .owner-brand {{ display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }}
+            .owner-logo-mark {{
+                width: 38px;
+                height: 38px;
+                border-radius: 10px;
+                background: #0b0f19;
+                color: #d8a53a;
+                display: grid;
+                place-items: center;
+                font-weight: 800;
+                letter-spacing: 0;
+            }}
+            .owner-brand-title {{ font-size: 18px; font-weight: 800; }}
+            .owner-brand-subtitle {{ color: var(--owner-muted); font-size: 12px; margin-top: 2px; }}
+            .owner-nav-title {{
+                color: #98a2b3;
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.08em;
+                margin: 20px 10px 8px;
+                text-transform: uppercase;
+            }}
+            .owner-nav-link {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                padding: 11px 12px;
+                border-radius: 9px;
+                color: #344054;
+                font-weight: 700;
+                margin: 2px 0;
+            }}
+            .owner-nav-link:hover {{ background: #f2f4f7; }}
+            .owner-nav-link.active {{ background: var(--owner-soft); color: var(--owner-blue-dark); }}
+            .owner-main {{ flex: 1; min-width: 0; }}
+            .owner-content {{ max-width: 1260px; margin: 0 auto; padding: 32px 34px 56px; }}
+            .owner-page-head {{
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 18px;
+                margin-bottom: 22px;
+            }}
+            .owner-eyebrow {{
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 10px;
+                border-radius: 999px;
+                background: #fff7ed;
+                color: #9a5b13;
+                font-size: 12px;
+                font-weight: 800;
+                margin-bottom: 10px;
+            }}
+            .owner-page-title {{ font-size: 32px; line-height: 1.12; font-weight: 850; margin: 0; }}
+            .owner-subtitle {{ color: var(--owner-muted); font-size: 15px; margin: 8px 0 0; max-width: 760px; }}
+            .owner-actions {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }}
+            .owner-btn {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 40px;
+                padding: 10px 16px;
+                border: 1px solid var(--owner-line);
+                border-radius: 9px;
+                background: #fff;
+                color: #344054;
+                font-weight: 800;
+            }}
+            .owner-btn.primary {{ background: var(--owner-blue); color: #fff; border-color: var(--owner-blue); }}
+            .owner-btn:hover {{ border-color: #b8c3d6; }}
+            .owner-btn.primary:hover {{ background: var(--owner-blue-dark); }}
+            .owner-panel {{
+                background: var(--owner-panel);
+                border: 1px solid var(--owner-line);
+                border-radius: 16px;
+                box-shadow: var(--owner-shadow);
+                padding: 22px;
+                margin-bottom: 22px;
+            }}
+            .owner-section-head {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 14px;
+                margin-bottom: 15px;
+            }}
+            .owner-section-title {{ margin: 0; font-size: 20px; font-weight: 850; }}
+            .owner-section-note {{ color: var(--owner-muted); margin: 4px 0 0; }}
+            .owner-kpis {{
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 16px;
+                margin-bottom: 22px;
+            }}
+            .owner-card {{
+                display: block;
+                background: #fff;
+                border: 1px solid var(--owner-line);
+                border-radius: 14px;
+                padding: 18px;
+                box-shadow: var(--owner-shadow);
+            }}
+            .owner-card.highlight {{ border-color: #b6d5ff; background: #f8fbff; }}
+            .owner-card-label {{ color: var(--owner-muted); font-weight: 800; font-size: 13px; }}
+            .owner-card-value {{ font-size: 34px; line-height: 1; font-weight: 850; margin-top: 12px; }}
+            .owner-card-note {{ color: var(--owner-muted); font-size: 13px; margin-top: 8px; line-height: 1.35; }}
+            .owner-card-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 14px;
+            }}
+            .owner-workflow-card {{
+                min-height: 112px;
+                border: 1px solid var(--owner-line);
+                border-radius: 12px;
+                padding: 16px;
+                background: #fff;
+            }}
+            .owner-workflow-card.primary {{ border-color: #b6d5ff; background: #f8fbff; }}
+            .owner-workflow-title {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                font-weight: 850;
+                font-size: 17px;
+                margin-bottom: 8px;
+            }}
+            .owner-alert-grid {{
+                display: grid;
+                grid-template-columns: repeat(6, minmax(0, 1fr));
+                gap: 12px;
+            }}
+            .owner-alert-card {{
+                border: 1px solid var(--owner-line);
+                border-radius: 12px;
+                padding: 14px;
+                background: #fff;
+            }}
+            .owner-alert-card strong {{ display: block; font-size: 25px; margin-top: 8px; }}
+            .owner-three-col {{
+                display: grid;
+                grid-template-columns: 1.25fr 1fr 1fr;
+                gap: 16px;
+            }}
+            .owner-badge {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 24px;
+                min-height: 24px;
+                padding: 3px 8px;
+                border-radius: 999px;
+                background: #eef2ff;
+                color: #344054;
+                font-size: 12px;
+                font-weight: 850;
+            }}
+            .owner-badge.danger {{ background: #fee2e2; color: #b42318; }}
+            .owner-badge.warning {{ background: #fff3cd; color: #9a5b13; }}
+            .owner-badge.success {{ background: #dcfce7; color: #166534; }}
+            .owner-badge.info {{ background: #dbeafe; color: #155d9e; }}
+            .owner-badge.neutral {{ background: #eef2f7; color: #475467; }}
+            .owner-searchbar {{
+                display: grid;
+                grid-template-columns: minmax(260px, 1fr) 210px 190px;
+                gap: 12px;
+                margin-bottom: 16px;
+            }}
+            .owner-input, .owner-select {{
+                width: 100%;
+                min-height: 44px;
+                border: 1px solid var(--owner-line);
+                border-radius: 10px;
+                background: #fff;
+                padding: 10px 12px;
+                font: inherit;
+                color: var(--owner-text);
+            }}
+            .owner-input:focus, .owner-select:focus {{
+                outline: 2px solid #b6d5ff;
+                border-color: var(--owner-blue);
+            }}
+            .owner-table-wrap {{ overflow-x: auto; border: 1px solid var(--owner-line); border-radius: 12px; }}
+            .owner-table {{ width: 100%; border-collapse: collapse; background: #fff; min-width: 820px; }}
+            .owner-table th {{
+                background: #f8fafc;
+                color: #667085;
+                font-size: 12px;
+                text-align: left;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                padding: 12px 14px;
+            }}
+            .owner-table td {{ border-top: 1px solid var(--owner-line); padding: 14px; vertical-align: middle; }}
+            .owner-table tr:hover td {{ background: #fbfdff; }}
+            .owner-student-name {{ color: var(--owner-blue-dark); font-weight: 850; font-size: 16px; }}
+            .owner-pill-actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+            .owner-link-pill {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 32px;
+                padding: 7px 11px;
+                border-radius: 999px;
+                border: 1px solid var(--owner-line);
+                background: #fff;
+                color: #344054;
+                font-weight: 800;
+                font-size: 12px;
+            }}
+            .owner-link-pill:hover {{ border-color: var(--owner-blue); color: var(--owner-blue-dark); background: #f8fbff; }}
+            .student-directory-panel {{
+                padding: 16px;
+            }}
+            .student-directory-panel .owner-section-head {{
+                margin-bottom: 10px;
+            }}
+            .student-directory-panel .owner-section-title {{
+                font-size: 17px;
+            }}
+            .student-directory-panel .owner-section-note {{
+                font-size: 12px;
+            }}
+            .student-directory-panel .owner-searchbar {{
+                grid-template-columns: minmax(220px, 1fr) 170px 160px;
+                gap: 8px;
+                margin-bottom: 10px;
+            }}
+            .student-directory-panel .owner-input,
+            .student-directory-panel .owner-select {{
+                min-height: 34px;
+                border-radius: 8px;
+                padding: 7px 10px;
+                font-size: 12px;
+            }}
+            .student-directory-panel .owner-table {{
+                min-width: 920px;
+                font-size: 12px;
+            }}
+            .student-directory-panel .owner-table th {{
+                font-size: 11px;
+                letter-spacing: 0;
+                text-transform: none;
+                padding: 8px 10px;
+            }}
+            .student-directory-panel .owner-table td {{
+                padding: 8px 10px;
+                vertical-align: middle;
+            }}
+            .student-primary-cell {{
+                border-left: 3px solid var(--owner-blue);
+                padding-left: 8px;
+            }}
+            .student-cell-primary {{
+                display: block;
+                color: var(--owner-text);
+                font-size: 13px;
+                font-weight: 850;
+                line-height: 1.2;
+            }}
+            .student-cell-secondary {{
+                display: block;
+                color: var(--owner-muted);
+                font-size: 11px;
+                line-height: 1.25;
+                margin-top: 2px;
+            }}
+            .student-directory-panel .owner-badge {{
+                min-height: 18px;
+                min-width: 0;
+                padding: 2px 7px;
+                font-size: 11px;
+            }}
+            .student-directory-panel .owner-pill-actions {{
+                gap: 5px;
+                flex-wrap: nowrap;
+            }}
+            .student-directory-panel .owner-link-pill {{
+                min-height: 26px;
+                border-radius: 7px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }}
+            .task-row {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid #eef2f7; }}
+            .task-row:first-child {{ border-top: 0; }}
+            .task-row a {{ color: var(--owner-blue-dark); font-weight: 800; }}
+            .muted {{ color: var(--owner-muted); }}
+            .row {{ margin: 10px 0; }}
+            @media (max-width: 1100px) {{
+                .owner-shell {{ display: block; }}
+                .owner-sidebar {{ position: static; width: auto; min-height: auto; border-right: 0; border-bottom: 1px solid var(--owner-line); }}
+                .owner-kpis {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+                .owner-card-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+                .owner-alert-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+                .owner-three-col {{ grid-template-columns: 1fr; }}
+            }}
+            @media (max-width: 720px) {{
+                .owner-content {{ padding: 24px 16px 40px; }}
+                .owner-page-head {{ display: block; }}
+                .owner-actions {{ justify-content: flex-start; margin-top: 14px; }}
+                .owner-kpis, .owner-card-grid, .owner-alert-grid, .owner-searchbar {{ grid-template-columns: 1fr; }}
+                .owner-page-title {{ font-size: 27px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="owner-shell">
+            <aside class="owner-sidebar">
+                <a class="owner-brand" href="/">
+                    <div class="owner-logo-mark">H</div>
+                    <div>
+                        <div class="owner-brand-title">H-Music CRM</div>
+                        <div class="owner-brand-subtitle">Owner workspace</div>
+                    </div>
+                </a>
+                <div class="owner-nav-title">Operations</div>
+                {''.join(operations_nav)}
+                <div class="owner-nav-title">Money</div>
+                {''.join(money_nav)}
+                <div class="owner-nav-title">Setup</div>
+                {''.join(setup_nav)}
+            </aside>
+            <main class="owner-main">
+                <div class="owner-content">
+                    <header class="owner-page-head">
+                        <div>
+                            <div class="owner-eyebrow">Owner</div>
+                            <h1 class="owner-page-title">{escape(str(title))}</h1>
+                            <p class="owner-subtitle">{escape(str(subtitle))}</p>
+                        </div>
+                        <div class="owner-actions">{actions}</div>
+                    </header>
+                    {body}
+                </div>
+            </main>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def render_owner_dashboard(
+    total_students,
+    total_revenue,
+    renewal_count,
+    active_enrollment_count,
+    renewal_html,
+    payments_html,
+    attention_html,
+    pending_reschedule_count=0,
+    unread_owner_messages=0,
+    pending_sub_count=0,
+    unpaid_invoice_count=0,
+    unpaid_invoice_total=0,
+    pending_trial_count=0,
+    missing_homework_count=0,
+):
+    actions = """
+    <a class="owner-btn" href="/calendar">Open Calendar</a>
+    <a class="owner-btn primary" href="/add_student">Add Student</a>
+    """
+    body = f"""
+    <section class="owner-kpis">
+        <a class="owner-card" href="/students">
+            <div class="owner-card-label">Total Students</div>
+            <div class="owner-card-value">{total_students}</div>
+            <div class="owner-card-note">Search family records, login info, teacher links</div>
+        </a>
+        <a class="owner-card" href="/enrollments">
+            <div class="owner-card-label">Active Enrollments</div>
+            <div class="owner-card-value">{active_enrollment_count}</div>
+            <div class="owner-card-note">Package, tuition, invoice workflow</div>
+        </a>
+        <a class="owner-card highlight" href="/invoices">
+            <div class="owner-card-label">Open Invoices</div>
+            <div class="owner-card-value">{unpaid_invoice_count}</div>
+            <div class="owner-card-note">{owner_format_money(unpaid_invoice_total)} outstanding</div>
+        </a>
+        <a class="owner-card" href="/students">
+            <div class="owner-card-label">Need Renewal</div>
+            <div class="owner-card-value">{renewal_count}</div>
+            <div class="owner-card-note">Students at 2 lessons or below</div>
+        </a>
+    </section>
+
+    <section class="owner-panel">
+        <div class="owner-section-head">
+            <div>
+                <h2 class="owner-section-title">Main Workflow</h2>
+                <p class="owner-section-note">Start here for the daily owner tasks.</p>
+            </div>
+        </div>
+        <div class="owner-card-grid">
+            <a class="owner-workflow-card primary" href="/enrollments">
+                <div class="owner-workflow-title">Enrollment Detail</div>
+                <div class="owner-card-note">Find student package, invoice, payment, and schedule.</div>
+            </a>
+            <a class="owner-workflow-card" href="/new_enrollment">
+                <div class="owner-workflow-title">New Enrollment</div>
+                <div class="owner-card-note">Create package, tuition invoice, and parent app access.</div>
+            </a>
+            <a class="owner-workflow-card" href="/trial_leads">
+                <div class="owner-workflow-title">New Students / Intake {owner_count_badge(pending_trial_count, "danger")}</div>
+                <div class="owner-card-note">Family form, trial scheduling, parent account setup.</div>
+            </a>
+            <a class="owner-workflow-card" href="/missing_homework">
+                <div class="owner-workflow-title">Missing Homework {owner_count_badge(missing_homework_count, "warning")}</div>
+                <div class="owner-card-note">Lessons still needing teacher homework notes.</div>
+            </a>
+            <a class="owner-workflow-card" href="/add_schedule">
+                <div class="owner-workflow-title">Add Schedule</div>
+                <div class="owner-card-note">Add a lesson to the owner calendar.</div>
+            </a>
+            <a class="owner-workflow-card" href="/locations_rooms">
+                <div class="owner-workflow-title">Locations & Rooms</div>
+                <div class="owner-card-note">Manage teaching addresses and classroom names.</div>
+            </a>
+            <a class="owner-workflow-card" href="/messages">
+                <div class="owner-workflow-title">Messages {owner_count_badge(unread_owner_messages, "info")}</div>
+                <div class="owner-card-note">Parent and teacher communication.</div>
+            </a>
+            <a class="owner-workflow-card" href="/teachers">
+                <div class="owner-workflow-title">Teacher Management</div>
+                <div class="owner-card-note">Teacher profiles, permissions, pay settings.</div>
+            </a>
+        </div>
+    </section>
+
+    <section class="owner-panel">
+        <div class="owner-section-head">
+            <div>
+                <h2 class="owner-section-title">Today Needs Attention</h2>
+                <p class="owner-section-note">Sorted by operational priority: schedule changes, communication, then money.</p>
+            </div>
+        </div>
+        <div class="owner-alert-grid">
+                <a class="owner-alert-card" href="/owner_reschedule_requests"><span class="owner-card-label">Pending Reschedules</span><strong>{pending_reschedule_count}</strong></a>
+            <a class="owner-alert-card" href="/messages"><span class="owner-card-label">Unread Messages</span><strong>{unread_owner_messages}</strong></a>
+            <a class="owner-alert-card" href="/owner_sub_requests"><span class="owner-card-label">Sub Requests</span><strong>{pending_sub_count}</strong></a>
+            <a class="owner-alert-card" href="/invoices"><span class="owner-card-label">Open Invoices</span><strong>{unpaid_invoice_count}</strong><div class="owner-card-note">{owner_format_money(unpaid_invoice_total)}</div></a>
+            <a class="owner-alert-card" href="/students"><span class="owner-card-label">Low Lessons</span><strong>{renewal_count}</strong></a>
+            <a class="owner-alert-card" href="/trial_leads"><span class="owner-card-label">New Student Intake</span><strong>{pending_trial_count}</strong></a>
+        </div>
+    </section>
+
+    <section class="owner-three-col">
+        <div class="owner-panel">
+            <h2 class="owner-section-title">Pending Work</h2>
+            <div class="owner-card-note">Open requests and reminders.</div>
+            <div style="margin-top: 12px;">{attention_html}</div>
+        </div>
+        <div class="owner-panel">
+            <h2 class="owner-section-title">Renewals</h2>
+            <div style="margin-top: 12px;">{renewal_html}</div>
+        </div>
+        <div class="owner-panel">
+            <h2 class="owner-section-title">Recent Payments</h2>
+            <div style="margin-top: 12px;">{payments_html}</div>
+        </div>
+    </section>
+    """
+    return owner_shell(
+        "dashboard",
+        "H-Music CRM",
+        "Good morning, Zhenwei. Start with the cards that need action first.",
+        body,
+        actions,
+    )
+
+
+@app.route("/")
+def home():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM students")
+    total_students = cursor.fetchone()[0]
+
+    cursor.execute("SELECT SUM(amount) FROM payments")
+    total_revenue = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM students
+    WHERE lessons_left <= 2
+    """)
+    renewal_count = cursor.fetchone()[0]
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM enrollments
+    WHERE status = 'active'
+    """)
+    active_enrollment_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT name, lessons_left
+    FROM students
+    WHERE lessons_left <= 2
+    ORDER BY lessons_left ASC
+    LIMIT 5
+    """)
+    renewal_students = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT student_name, amount, payment_method, payment_date
+    FROM payments
+    ORDER BY id DESC
+    LIMIT 5
+    """)
+    recent_payments = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM reschedule_requests
+    WHERE status = 'pending'
+    """)
+    pending_reschedule_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT id, student_name, original_date, original_time, requested_date, requested_time
+    FROM reschedule_requests
+    WHERE status = 'pending'
+    ORDER BY id DESC
+    LIMIT 5
+    """)
+    pending_reschedules = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM messages
+    WHERE recipient_role = 'owner'
+    AND read_at IS NULL
+    """)
+    unread_owner_messages = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM sub_requests
+    WHERE status = 'pending'
+    """)
+    pending_sub_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT id, teacher_name, student_name, lesson_date, lesson_time
+    FROM sub_requests
+    WHERE status = 'pending'
+    ORDER BY id DESC
+    LIMIT 5
+    """)
+    pending_sub_requests = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM invoices
+    WHERE status IS NULL OR status != 'paid'
+    """)
+    unpaid_invoice_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COALESCE(SUM(amount), 0)
+    FROM invoices
+    WHERE status IS NULL OR status != 'paid'
+    """)
+    unpaid_invoice_total = cursor.fetchone()[0] or 0
+
+    try:
+        ensure_v17_schema()
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM inquiries
+        WHERE status IN ('New Lead', 'Inquiry')
+        OR COALESCE(owner_verified, 0) = 0
+        """)
+        pending_trial_count = cursor.fetchone()[0] or 0
+    except sqlite3.Error:
+        pending_trial_count = 0
+
+    conn.close()
+
+    missing_homework_lessons = get_missing_homework_lessons(limit=5)
+    missing_homework_count = get_missing_homework_count()
+
+    renewal_html = ""
+    if renewal_students:
+        for student in renewal_students:
+            renewal_html += f"""
+            <div class="row">
+                <a href="/student/{student[0]}">{student[0]}</a>
+                <span>{student[1]} lessons left</span>
+            </div>
+            """
+    else:
+        renewal_html = "<p class='muted'>No students need renewal.</p>"
+
+    payments_html = ""
+    if recent_payments:
+        for payment in recent_payments:
+            payments_html += f"""
+            <div class="row">
+                <span>{payment[0]}</span>
+                <span>${payment[1]} · {payment[2]} · {payment[3]}</span>
+            </div>
+            """
+    else:
+        payments_html = "<p class='muted'>No recent payments.</p>"
+
+    attention_html = ""
+    if pending_reschedules:
+        for r in pending_reschedules:
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Reschedule</span>
+                    <a href="/reschedule_request/{r[0]}">Request #{r[0]} · {r[1]}</a>
+                </div>
+                <span>{r[2]} {r[3]} → {r[4]} {r[5]}</span>
+            </div>
+            """
+    if pending_sub_requests:
+        for r in pending_sub_requests:
+            attention_html += f"""
+            <div class="task-row medium">
+                <div>
+                    <span class="task-badge">Sub</span>
+                    <a href="/owner_sub_requests">Request #{r[0]} · {r[2]}</a>
+                </div>
+                <span>{r[1]} · {r[3]} {r[4]}</span>
+            </div>
+            """
+    if unread_owner_messages:
+        attention_html += f"""
+        <div class="task-row medium">
+            <div>
+                <span class="task-badge">Message</span>
+                <a href="/messages">{unread_owner_messages} unread owner message(s)</a>
+            </div>
+            <span>Review inbox</span>
+        </div>
+        """
+    if pending_trial_count:
+        attention_html += f"""
+        <div class="task-row high">
+            <div>
+                <span class="task-badge">Trial</span>
+                <a href="/trial_leads">{pending_trial_count} trial request(s) need review</a>
+            </div>
+            <span>Open lead intake</span>
+        </div>
+        """
+    if missing_homework_lessons:
+        for lesson in missing_homework_lessons:
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Homework</span>
+                    <a href="/add_lesson/{lesson[1]}">{lesson[1]} needs homework</a>
+                </div>
+                <span>{lesson[3]} {lesson[4] or ''} · {lesson[2] or 'Teacher'}</span>
+            </div>
+            """
+    if unpaid_invoice_count:
+        attention_html += f"""
+        <div class="task-row low">
+            <div>
+                <span class="task-badge">Invoice</span>
+                <a href="/invoices">{unpaid_invoice_count} open invoice(s)</a>
+            </div>
+            <span>${unpaid_invoice_total} outstanding</span>
+        </div>
+        """
+    if not attention_html:
+        attention_html = "<p class='muted'>Nothing urgent right now.</p>"
+
+    return render_owner_dashboard(
+        total_students=total_students,
+        total_revenue=total_revenue,
+        renewal_count=renewal_count,
+        active_enrollment_count=active_enrollment_count,
+        renewal_html=renewal_html,
+        payments_html=payments_html,
+        attention_html=attention_html,
+        pending_reschedule_count=pending_reschedule_count,
+        unread_owner_messages=unread_owner_messages,
+        pending_sub_count=pending_sub_count,
+        unpaid_invoice_count=unpaid_invoice_count,
+        unpaid_invoice_total=unpaid_invoice_total,
+        pending_trial_count=pending_trial_count,
+        missing_homework_count=missing_homework_count,
+    )
+
+    message_badge = f" ({unread_owner_messages})" if unread_owner_messages else ""
+    reschedule_badge = f" ({pending_reschedule_count})" if pending_reschedule_count else ""
+    sub_badge = f" ({pending_sub_count})" if pending_sub_count else ""
+    invoice_badge = f" ({unpaid_invoice_count})" if unpaid_invoice_count else ""
+    trial_badge = f" ({pending_trial_count})" if pending_trial_count else ""
+    homework_badge = f" ({missing_homework_count})" if missing_homework_count else ""
+    trial_red_badge = f' <span class="red-dot">{pending_trial_count}</span>' if pending_trial_count else ""
+    homework_red_badge = f' <span class="red-dot">{missing_homework_count}</span>' if missing_homework_count else ""
+
+    return f"""
+    <html>
+    <head>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #f6f8fa;
+                margin: 0;
+                color: #111827;
+            }}
+            .container {{
+                max-width: 1100px;
+                margin: 40px auto;
+                padding: 0 24px;
+            }}
+            .header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 32px;
+            }}
+            .title h1 {{
+                margin: 0;
+                font-size: 32px;
+            }}
+            .title p {{
+                margin: 8px 0 0;
+                color: #6b7280;
+            }}
+            .nav a {{
+                margin-left: 16px;
+                text-decoration: none;
+                color: #635bff;
+                font-weight: 600;
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 16px;
+                margin-bottom: 24px;
+            }}
+            .attention-cards {{
+                display: grid;
+                grid-template-columns: repeat(6, 1fr);
+                gap: 12px;
+                margin-bottom: 20px;
+            }}
+            .card {{
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                padding: 22px;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+                margin-bottom: 20px;
+            }}
+            .card .label {{
+                color: #6b7280;
+                font-size: 14px;
+                margin-bottom: 10px;
+            }}
+            .card .value {{
+                font-size: 30px;
+                font-weight: 700;
+            }}
+            .attention-card {{
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 16px;
+                text-decoration: none;
+                color: #111827;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            }}
+            .attention-card .label {{
+                color: #6b7280;
+                font-size: 12px;
+                margin-bottom: 8px;
+            }}
+            .attention-card .value {{
+                font-size: 24px;
+                font-weight: 800;
+            }}
+            .attention-card.alert .value {{
+                color: #dc2626;
+            }}
+            .section {{
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                padding: 22px;
+                margin-bottom: 20px;
+            }}
+            .section h2 {{
+                margin-top: 0;
+                font-size: 20px;
+            }}
+            .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 12px 0;
+                border-top: 1px solid #f0f0f0;
+            }}
+            .row a {{
+                color: #111827;
+                font-weight: 600;
+                text-decoration: none;
+            }}
+            .row span:last-child {{
+                color: #6b7280;
+            }}
+            .task-row {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 14px;
+                padding: 12px 0 12px 12px;
+                border-top: 1px solid #f0f0f0;
+                border-left: 4px solid #d1d5db;
+            }}
+            .task-row.high {{
+                border-left-color: #dc2626;
+            }}
+            .task-row.medium {{
+                border-left-color: #f59e0b;
+            }}
+            .task-row.low {{
+                border-left-color: #2563eb;
+            }}
+            .task-row a {{
+                color: #111827;
+                font-weight: 700;
+                text-decoration: none;
+            }}
+            .task-row span:last-child {{
+                color: #6b7280;
+                white-space: nowrap;
+            }}
+            .task-badge {{
+                display: inline-block;
+                min-width: 78px;
+                margin-right: 10px;
+                padding: 4px 8px;
+                border-radius: 999px;
+                background: #eef2ff;
+                color: #374151;
+                font-size: 12px;
+                font-weight: 800;
+                text-align: center;
+            }}
+            .red-dot {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 20px;
+                height: 20px;
+                padding: 0 6px;
+                border-radius: 999px;
+                background: #dc2626;
+                color: white;
+                font-size: 12px;
+                font-weight: 900;
+                vertical-align: middle;
+            }}
+
+            .actions h3 {{
+                margin-top: 22px;
+                margin-bottom: 10px;
+                color: #374151;
+                font-size: 15px;
+                font-weight: 700;
+            }}
+
+            .actions a {{
+                display: inline-block;
+                margin-right: 10px;
+                margin-bottom: 10px;
+                padding: 10px 14px;
+                border-radius: 10px;
+                background: #635bff;
+                color: white;
+                text-decoration: none;
+                font-weight: 600;
+            }}
+
+            .actions {{
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }}
+
+            .action-group {{
+                margin-bottom: 15px;
+            }}
+
+            .primary-actions {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 12px;
+                margin-top: 14px;
+            }}
+
+            .primary-action {{
+                display: block;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 18px;
+                text-decoration: none;
+                color: #111827;
+                background: #fbfbff;
+            }}
+
+            .primary-action strong {{
+                display: block;
+                font-size: 16px;
+                margin-bottom: 8px;
+            }}
+
+            .primary-action span {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+
+            .primary-action.main {{
+                background: #eef2ff;
+                border-color: #c7d2fe;
+            }}
+
+            details.tool-drawer {{
+                border-top: 1px solid #eef0f4;
+                padding-top: 14px;
+            }}
+
+            details.tool-drawer summary {{
+                cursor: pointer;
+                font-weight: 800;
+                color: #374151;
+                margin-bottom: 10px;
+            }}
+
+            .muted {{
+                color: #6b7280;
+            }}
+            @media (max-width: 760px) {{
+                .container {{
+                    margin: 20px auto;
+                    padding: 0 14px;
+                }}
+                .header {{
+                    display: block;
+                }}
+                .nav a {{
+                    display: inline-block;
+                    margin: 10px 10px 0 0;
+                }}
+                .cards,
+                .attention-cards {{
+                    grid-template-columns: repeat(2, 1fr);
+                }}
+                .primary-actions {{
+                    grid-template-columns: 1fr;
+                }}
+                .row,
+                .task-row {{
+                    display: block;
+                }}
+                .task-row span:last-child {{
+                    display: block;
+                    margin-top: 6px;
+                    white-space: normal;
+                }}
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+
+            <div class="header">
+                <div class="title">
+                    <h1>H-Music CRM</h1>
+                    <p>Good morning, Zhenwei 👋</p>
+                </div>
+
+                <div class="nav">
+                    <a href="/students">Students</a>
+                    <a href="/overdue">Renewals</a>
+                    <a href="/calendar">Calendar</a>
+                    <a href="/teacher_dashboard">Teacher Dashboard</a>
+        <a href="/teachers">Teacher Management</a>
+                </div>
+            </div>
+
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Total Revenue</div>
+                    <div class="value">${total_revenue}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Active Enrollments</div>
+                    <div class="value">{active_enrollment_count}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Need Renewal</div>
+                    <div class="value">{renewal_count}</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Main Workflow</h2>
+                <div class="primary-actions">
+                    <a class="primary-action main" href="/enrollments">
+                        <strong>Enrollment Detail</strong>
+                        <span>Find student package, invoice, payment, schedule</span>
+                    </a>
+                    <a class="primary-action" href="/add_enrollment">
+                        <strong>New Enrollment</strong>
+                        <span>Create package and tuition invoice</span>
+                    </a>
+                    <a class="primary-action" href="/trial_leads">
+                        <strong>Trial Leads{trial_red_badge}</strong>
+                        <span>AI intake, trial scheduling, follow-up, convert to enrollment</span>
+                    </a>
+                    <a class="primary-action" href="/missing_homework">
+                        <strong>Missing Homework{homework_red_badge}</strong>
+                        <span>Present lessons that still need parent homework notes</span>
+                    </a>
+                    <a class="primary-action" href="/add_schedule">
+                        <strong>Add Schedule</strong>
+                        <span>Add a lesson to calendar</span>
+                    </a>
+                    <a class="primary-action" href="/messages">
+                        <strong>Messages{message_badge}</strong>
+                        <span>Parent and teacher communication</span>
+                    </a>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Today Needs Attention</h2>
+                <p class="muted">Sorted by operational priority: reschedules first, then coverage, messages, and money.</p>
+                <div class="attention-cards">
+                    <a class="attention-card {'alert' if pending_reschedule_count else ''}" href="/owner_reschedule_requests">
+                        <div class="label">Pending Reschedules</div>
+                        <div class="value">{pending_reschedule_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if unread_owner_messages else ''}" href="/messages">
+                        <div class="label">Unread Messages</div>
+                        <div class="value">{unread_owner_messages}</div>
+                    </a>
+                    <a class="attention-card {'alert' if pending_sub_count else ''}" href="/owner_sub_requests">
+                        <div class="label">Sub Requests</div>
+                        <div class="value">{pending_sub_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if unpaid_invoice_count else ''}" href="/invoices">
+                        <div class="label">Open Invoices</div>
+                        <div class="value">{unpaid_invoice_count}</div>
+                        <div class="label">${unpaid_invoice_total}</div>
+                    </a>
+                    <a class="attention-card {'alert' if renewal_count else ''}" href="/overdue">
+                        <div class="label">Low Lessons</div>
+                        <div class="value">{renewal_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if pending_trial_count else ''}" href="/trial_leads">
+                        <div class="label">Trial Requests</div>
+                        <div class="value">{pending_trial_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if missing_homework_count else ''}" href="/missing_homework">
+                        <div class="label">Missing Homework</div>
+                        <div class="value">{missing_homework_count}</div>
+                    </a>
+                </div>
+                {attention_html}
+            </div>
+
+            <div class="section">
+                <h2>Renewal Needed</h2>
+                {renewal_html}
+            </div>
+
+            <div class="section">
+                <h2>Recent Payments</h2>
+                {payments_html}
+            </div>
+
+            <div class="section actions">
+    <h2>Tools</h2>
+
+    <h3>Daily Operations</h3>
+    <div class="action-group">
+        <a href="/enrollments">Enrollment Detail</a>
+        <a href="/add_enrollment">New Enrollment</a>
+        <a href="/trial_leads">Trial Leads{trial_badge}</a>
+        <a href="/add_trial_lead">Add Trial Lead</a>
+        <a href="/missing_homework">Missing Homework{homework_badge}</a>
+        <a href="/add_student">Add Student</a>
+        <a href="/add_schedule">Add Schedule</a>
+        <a href="/calendar">Calendar</a>
+        <a href="/calendar/today">Today</a>
+        <a href="/students">Students</a>
+    </div>
+
+    <h3>Money</h3>
+    <div class="action-group">
+        <a href="/invoices">Invoices{invoice_badge}</a>
+        <a href="/enrollment_payments">Enrollment Payments</a>
+        <a href="/payroll">Teacher Payroll</a>
+        <a href="/executive_dashboard">Executive Dashboard</a>
+    </div>
+
+    <h3>Parent & Renewal</h3>
+    <div class="action-group">
+        <a href="/parents">Parent Management</a>
+        <a href="/owner_reschedule_requests">Reschedule Requests{reschedule_badge}</a>
+        <a href="/messages">Message Center{message_badge}</a>
+        <a href="/open_slots">Open Slots</a>
+        <a href="/enrollment_renewals">Enrollment Renewals</a>
+    </div>
+
+    <details class="tool-drawer">
+        <summary>More CRM / Admin Tools</summary>
+        <div class="action-group">
+            <a href="/teacher_dashboard">Teacher Dashboard</a>
+            <a href="/parent_portal">Parent Portal</a>
+            <a href="/renewal_emails">Renewal Emails</a>
+            <a href="/trial_leads">Lead / Trial Intake</a>
+            <a href="/add_trial_lead">Add Trial Lead</a>
+            <a href="/owner_settings">Owner Settings</a>
+            <a href="/notification_queue">Notification Queue</a>
+            <a href="/billing_settings">Billing Settings</a>
+            <a href="/owner_sub_requests">Sub Requests{sub_badge}</a>
+            <a href="/teacher_rate_cards">Teacher Rate Cards</a>
+            <a href="/rate_overrides">Course Pay Rates</a>
+            <a href="/business_rules">Business Rules</a>
+        </div>
+    </details>
+            </div>
+
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/students")
+def students():
+    ensure_owner()
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA table_info(students)")
+    student_columns = {row[1] for row in cursor.fetchall()}
+
+    def student_select(column, fallback):
+        if column in student_columns:
+            return column
+        return f"{fallback} AS {column}"
+
+    select_parts = [
+        student_select("name", "''"),
+        student_select("teacher", "''"),
+        student_select("lessons_left", "0"),
+        student_select("parent_name", "''"),
+        student_select("parent_email", "''"),
+        student_select("parent_phone", "''"),
+        student_select("active", "1"),
+    ]
+    show_inactive = request.args.get("show_inactive") == "1"
+    active_filter = "" if show_inactive else "WHERE COALESCE(active, 1) = 1"
+
+    cursor.execute(f"""
+    SELECT {", ".join(select_parts)}
+    FROM students
+    {active_filter}
+    ORDER BY LOWER(name)
+    """)
+    student_rows = cursor.fetchall()
+    conn.close()
+
+    teacher_options = sorted({str(row[1]) for row in student_rows if row[1]})
+    teacher_filter_options = "".join(
+        f'<option value="{escape(str(teacher).lower(), quote=True)}">{escape(str(teacher))}</option>'
+        for teacher in teacher_options
+    )
+
+    rows_html = ""
+    for name, teacher, lessons_left, parent_name, parent_email, parent_phone, active in student_rows:
+        display_name = str(name or "Unnamed student")
+        teacher_display = str(teacher or "No teacher assigned")
+        lessons = owner_lesson_count(lessons_left)
+        inactive_badge = ""
+        if int(active or 0) == 0:
+            inactive_badge = ' <span class="owner-badge neutral">Inactive</span>'
+
+        if lessons <= 0:
+            balance_label = "Renewal"
+            balance_tone = "danger"
+        elif lessons <= 2:
+            balance_label = "Low"
+            balance_tone = "warning"
+        else:
+            balance_label = "Active"
+            balance_tone = "success"
+
+        search_text = " ".join(
+            str(part or "")
+            for part in (display_name, teacher, parent_name, parent_email, parent_phone)
+        ).lower()
+        student_url = f"/student/{owner_path_value(display_name)}"
+        calendar_url = f"/calendar?{urlencode({'student': display_name})}"
+        login_url = f"/parent_login_info/{owner_path_value(display_name)}"
+        parent_display = str(parent_name or "No parent")
+        parent_bits = [parent_email, parent_phone]
+        parent_line = " | ".join(escape(str(bit)) for bit in parent_bits if bit) or "No parent contact"
+        student_secondary = f"{teacher_display} | {lessons} lesson{'s' if lessons != 1 else ''} left"
+
+        rows_html += f"""
+        <tr class="student-row"
+            data-search="{escape(search_text, quote=True)}"
+            data-teacher="{escape(teacher_display.lower(), quote=True)}"
+            data-balance="{escape(balance_label.lower(), quote=True)}">
+            <td>
+                <div class="student-primary-cell">
+                    <a class="student-cell-primary" href="{student_url}">{escape(display_name)}</a>
+                    <span class="student-cell-secondary">{escape(student_secondary)}</span>
+                </div>
+            </td>
+            <td>
+                <span class="student-cell-primary">{escape(parent_display)}</span>
+                <span class="student-cell-secondary">{parent_line}</span>
+            </td>
+            <td>{escape(teacher_display)}</td>
+            <td>{lessons}</td>
+            <td><span class="owner-badge {balance_tone}">{balance_label}</span>{inactive_badge}</td>
+            <td>
+                <div class="owner-pill-actions">
+                    <a class="owner-link-pill" href="{student_url}">Open</a>
+                    <a class="owner-link-pill" href="{calendar_url}">Schedule</a>
+                    <a class="owner-link-pill" href="{login_url}">Login info</a>
+                </div>
+            </td>
+        </tr>
+        """
+
+    if not rows_html:
+        rows_html = "<tr><td colspan='6'><p class='muted'>No students found.</p></td></tr>"
+
+    inactive_href = "/students" if show_inactive else "/students?show_inactive=1"
+    inactive_label = "Hide Inactive" if show_inactive else "Show Inactive"
+    actions = f"""
+    <a class="owner-btn" href="/">Dashboard</a>
+    <a class="owner-btn" href="{inactive_href}">{inactive_label}</a>
+    <a class="owner-btn primary" href="/add_student">Add Student</a>
+    """
+
+    body = f"""
+    <section class="owner-panel student-directory-panel">
+        <div class="owner-section-head">
+            <div>
+                <h2 class="owner-section-title">Student Directory</h2>
+                <p class="owner-section-note">Search first, then open a student, schedule lessons, or send parent login info.</p>
+            </div>
+        </div>
+
+        <div class="owner-searchbar">
+            <input class="owner-input" id="studentSearch" type="search" placeholder="Search student, parent, email, phone, or teacher">
+            <select class="owner-select" id="teacherFilter">
+                <option value="">All teachers</option>
+                {teacher_filter_options}
+            </select>
+            <select class="owner-select" id="balanceFilter">
+                <option value="">All balances</option>
+                <option value="renewal">Renewal needed</option>
+                <option value="low">Low balance</option>
+                <option value="active">Active balance</option>
+            </select>
+        </div>
+
+        <div class="owner-table-wrap">
+            <table class="owner-table">
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Parent</th>
+                        <th>Teacher</th>
+                        <th>Lessons</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="studentsTableBody">
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <script>
+        const studentSearchInput = document.getElementById('studentSearch');
+        const studentTeacherFilter = document.getElementById('teacherFilter');
+        const studentBalanceFilter = document.getElementById('balanceFilter');
+        const studentRows = Array.from(document.querySelectorAll('.student-row'));
+
+        function filterOwnerStudents() {{
+            const query = (studentSearchInput.value || '').trim().toLowerCase();
+            const teacher = (studentTeacherFilter.value || '').trim().toLowerCase();
+            const balance = (studentBalanceFilter.value || '').trim().toLowerCase();
+
+            studentRows.forEach((row) => {{
+                const matchesText = !query || row.dataset.search.includes(query);
+                const matchesTeacher = !teacher || row.dataset.teacher === teacher;
+                const matchesBalance = !balance || row.dataset.balance === balance;
+                row.style.display = matchesText && matchesTeacher && matchesBalance ? '' : 'none';
+            }});
+        }}
+
+        [studentSearchInput, studentTeacherFilter, studentBalanceFilter].forEach((control) => {{
+            control.addEventListener('input', filterOwnerStudents);
+            control.addEventListener('change', filterOwnerStudents);
+        }});
+    </script>
+    """
+
+    return owner_shell(
+        "students",
+        "Students",
+        f"{len(student_rows)} student records. Search by student, parent, email, phone, or teacher.",
+        body,
+        actions,
+    )
+
+
+@app.route("/missing_homework")
+def missing_homework():
+    ensure_owner()
+
+    lessons = get_missing_homework_lessons()
+    rows = ""
+    for lesson in lessons:
+        rows += f"""
+        <tr>
+            <td>{lesson[3]}</td>
+            <td>{lesson[4] or '-'}</td>
+            <td><a href="/student/{lesson[1]}">{escape(lesson[1] or '-')}</a></td>
+            <td>{escape(lesson[2] or '-')}</td>
+            <td>{escape(lesson[5] or '-')}</td>
+            <td><a class="button" href="/add_lesson/{lesson[1]}">Add Homework</a></td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='6'>No missing homework right now.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Missing Homework</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:20px; background:white; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; text-align:left; }}
+            th {{ background:#fee2e2; color:#7f1d1d; }}
+            a {{ color:#4f46e5; font-weight:800; text-decoration:none; }}
+            .button {{ display:inline-block; padding:9px 12px; border-radius:8px; background:#dc2626; color:white; }}
+            .secondary {{ display:inline-block; padding:10px 14px; border-radius:8px; background:#111827; color:white; }}
+            p {{ color:#6b7280; }}
+        </style>
+    </head>
+    <body>
+        <div class="panel">
+            <div class="top">
+                <div>
+                    <h1>Missing Homework</h1>
+                    <p>Present lessons that still need homework notes for parents.</p>
+                </div>
+                <a class="secondary" href="/">Home</a>
+            </div>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Student</th>
+                    <th>Teacher</th>
+                    <th>Room</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+
+
+@app.route("/teachers")
+def teachers():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_management_schema()
+    ensure_v18b_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        t.id,
+        t.teacher_name,
+        COALESCE(t.username, ''),
+        COALESCE(t.email, ''),
+        COALESCE(t.phone, ''),
+        COALESCE(t.hourly_rate, 30),
+        COALESCE(t.active, 1),
+        COALESCE(u.username, ''),
+        COALESCE(u.password, ''),
+        COALESCE((
+            SELECT COUNT(*) FROM students s WHERE s.teacher = t.teacher_name
+        ), 0),
+        COALESCE((
+            SELECT COUNT(*) FROM schedule sc WHERE sc.teacher = t.teacher_name
+        ), 0),
+        COALESCE((
+            SELECT COUNT(*) FROM teacher_course_rates r WHERE r.teacher_name = t.teacher_name AND r.active = 1
+        ), 0)
+    FROM teachers t
+    LEFT JOIN users u
+        ON u.role = 'teacher'
+        AND u.linked_teacher_name = t.teacher_name
+    ORDER BY COALESCE(t.active, 1) DESC, t.teacher_name
+    """)
+    teacher_rows = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for t in teacher_rows:
+        status = "Active" if t[6] == 1 else "Inactive"
+        status_class = "active" if t[6] == 1 else "inactive"
+        login_text = t[7] or t[2] or ""
+        rows += f"""
+        <tr>
+            <td>{t[1]}</td>
+            <td><span class="badge {status_class}">{status}</span></td>
+            <td>{login_text}</td>
+            <td>{t[3]}</td>
+            <td>{t[4]}</td>
+            <td>${t[5]}</td>
+            <td>{t[9]}</td>
+            <td>{t[10]}</td>
+            <td>{t[11]}</td>
+            <td>
+                <a href="/edit_teacher/{t[0]}">Edit</a>
+                <form method="POST" action="/toggle_teacher/{t[0]}" style="display:inline;">
+                    <button type="submit">{'Deactivate' if t[6] == 1 else 'Reactivate'}</button>
+                </form>
+                <form method="POST" action="/delete_teacher/{t[0]}" style="display:inline;">
+                    <button class="danger" type="submit">Delete</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='10'>No teachers yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Teacher Management</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            a.button, button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:8px 12px; border-radius:7px; text-decoration:none; font-weight:bold; margin-right:6px; cursor:pointer; }}
+            button.danger {{ background:#dc2626; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
+            th {{ background:#eeeeff; }}
+            a {{ color:#5b5cff; font-weight:bold; }}
+            .badge {{ display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:bold; }}
+            .badge.active {{ background:#dcfce7; color:#166534; }}
+            .badge.inactive {{ background:#e5e7eb; color:#374151; }}
+            .note {{ color:#6b7280; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Teacher Management</h1>
+            <p class="note">Use Teacher Course Rates for different pay by lesson type, trial, or group class.</p>
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/add_teacher">Add Teacher</a>
+            <a class="button" href="/rate_overrides">Teacher Course Rates</a>
+            <a class="button" href="/add_teacher_course_rate">Add Course Pay</a>
+            <a class="button" href="/course_types">Course Types</a>
+            <table>
+                <tr>
+                    <th>Teacher</th>
+                    <th>Status</th>
+                    <th>Login</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Default Hourly</th>
+                    <th>Students</th>
+                    <th>Lessons</th>
+                    <th>Course Pay Rules</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_teacher", methods=["GET", "POST"])
+def add_teacher():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_management_schema()
+
+    if request.method == "POST":
+        teacher_name = request.form.get("teacher_name")
+        username = request.form.get("username") or teacher_login_username(teacher_name)
+        password = request.form.get("password") or "1234"
+        email = request.form.get("email")
+        phone = request.form.get("phone")
+        hourly_rate = request.form.get("hourly_rate") or 30
+        active = int(request.form.get("active") or 1)
+        notes = request.form.get("notes")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO teachers (
+            teacher_name, username, password, email, phone, hourly_rate, active, notes, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (teacher_name, username, password, email, phone, hourly_rate, active, notes, now, now))
+
+        cursor.execute("""
+        INSERT OR IGNORE INTO users (
+            username, password, role, display_name, linked_teacher_name
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (username, password, "teacher", teacher_name, teacher_name))
+
+        cursor.execute("""
+        UPDATE users
+        SET password = ?,
+            role = 'teacher',
+            display_name = ?,
+            linked_teacher_name = ?
+        WHERE username = ?
+        """, (password, teacher_name, teacher_name, username))
+
+        conn.commit()
+        conn.close()
+        return redirect("/teachers")
+
+    return """
+    <html>
+    <head>
+        <title>Add Teacher</title>
+        <style>
+            body { font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }
+            .container { background:white; padding:30px; border-radius:12px; max-width:720px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }
+            input, select, textarea { width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }
+            button, a.button { display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Add Teacher</h1>
+            <form method="POST">
+                Teacher Name:<br>
+                <input name="teacher_name" required>
+                Login Username:<br>
+                <input name="username">
+                Login Password:<br>
+                <input name="password" value="1234">
+                Email:<br>
+                <input type="email" name="email">
+                Phone:<br>
+                <input name="phone">
+                Default Hourly Rate:<br>
+                <input type="number" step="0.01" name="hourly_rate" value="30">
+                Status:<br>
+                <select name="active">
+                    <option value="1">Active</option>
+                    <option value="0">Inactive</option>
+                </select>
+                Notes:<br>
+                <textarea name="notes" rows="3"></textarea>
+                <button type="submit">Create Teacher</button>
+                <a class="button" href="/teachers">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/edit_teacher/<int:teacher_id>", methods=["GET", "POST"])
+def edit_teacher(teacher_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_management_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, teacher_name, username, password, email, phone, hourly_rate, active, notes
+    FROM teachers
+    WHERE id = ?
+    """, (teacher_id,))
+    teacher = cursor.fetchone()
+
+    if not teacher:
+        conn.close()
+        return "<h1>Teacher not found</h1>"
+
+    old_name = teacher[1]
+
+    if request.method == "POST":
+        teacher_name = request.form.get("teacher_name")
+        username = request.form.get("username") or teacher_login_username(teacher_name)
+        password = request.form.get("password") or "1234"
+        email = request.form.get("email")
+        phone = request.form.get("phone")
+        hourly_rate = request.form.get("hourly_rate") or 30
+        active = int(request.form.get("active") or 1)
+        notes = request.form.get("notes")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        UPDATE teachers
+        SET teacher_name = ?,
+            username = ?,
+            password = ?,
+            email = ?,
+            phone = ?,
+            hourly_rate = ?,
+            active = ?,
+            notes = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (teacher_name, username, password, email, phone, hourly_rate, active, notes, now, teacher_id))
+
+        for table, column in [
+            ("students", "teacher"),
+            ("schedule", "teacher"),
+            ("teacher_open_slots", "teacher"),
+            ("teacher_course_rates", "teacher_name"),
+            ("teacher_rate_cards", "teacher_name")
+        ]:
+            cursor.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (teacher_name, old_name))
+
+        cursor.execute("""
+        INSERT OR IGNORE INTO users (
+            username, password, role, display_name, linked_teacher_name
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (username, password, "teacher", teacher_name, teacher_name))
+
+        cursor.execute("""
+        UPDATE users
+        SET username = ?,
+            password = ?,
+            role = 'teacher',
+            display_name = ?,
+            linked_teacher_name = ?
+        WHERE linked_teacher_name = ?
+        """, (username, password, teacher_name, teacher_name, old_name))
+
+        conn.commit()
+        conn.close()
+        return redirect("/teachers")
+
+    conn.close()
+
+    def selected(value, current):
+        return "selected" if value == current else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Edit Teacher</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:720px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Edit Teacher</h1>
+            <form method="POST">
+                Teacher Name:<br>
+                <input name="teacher_name" value="{teacher[1] or ''}" required>
+                Login Username:<br>
+                <input name="username" value="{teacher[2] or ''}">
+                Login Password:<br>
+                <input name="password" value="{teacher[3] or '1234'}">
+                Email:<br>
+                <input type="email" name="email" value="{teacher[4] or ''}">
+                Phone:<br>
+                <input name="phone" value="{teacher[5] or ''}">
+                Default Hourly Rate:<br>
+                <input type="number" step="0.01" name="hourly_rate" value="{teacher[6] or 30}">
+                Status:<br>
+                <select name="active">
+                    <option value="1" {selected(1, teacher[7])}>Active</option>
+                    <option value="0" {selected(0, teacher[7])}>Inactive</option>
+                </select>
+                Notes:<br>
+                <textarea name="notes" rows="3">{teacher[8] or ''}</textarea>
+                <button type="submit">Update Teacher</button>
+                <a class="button" href="/teachers">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/toggle_teacher/<int:teacher_id>", methods=["POST"])
+def toggle_teacher(teacher_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_management_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT active FROM teachers WHERE id = ?", (teacher_id,))
+    teacher = cursor.fetchone()
+    if not teacher:
+        conn.close()
+        return "<h1>Teacher not found</h1>"
+    new_active = 0 if (teacher[0] or 1) == 1 else 1
+    cursor.execute("UPDATE teachers SET active = ?, updated_at = ? WHERE id = ?", (new_active, datetime.now().strftime("%Y-%m-%d %H:%M"), teacher_id))
+    conn.commit()
+    conn.close()
+    return redirect("/teachers")
+
+
+@app.route("/delete_teacher/<int:teacher_id>", methods=["POST"])
+def delete_teacher(teacher_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_teacher_management_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_name FROM teachers WHERE id = ?", (teacher_id,))
+    teacher = cursor.fetchone()
+    if not teacher:
+        conn.close()
+        return "<h1>Teacher not found</h1>"
+
+    teacher_name = teacher[0]
+    reference_count = 0
+    for table, column in [
+        ("students", "teacher"),
+        ("schedule", "teacher"),
+        ("teacher_open_slots", "teacher"),
+        ("teacher_course_rates", "teacher_name"),
+        ("teacher_rate_cards", "teacher_name")
+    ]:
+        cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (teacher_name,))
+        reference_count += cursor.fetchone()[0] or 0
+
+    if reference_count:
+        cursor.execute("UPDATE teachers SET active = 0, updated_at = ? WHERE id = ?", (datetime.now().strftime("%Y-%m-%d %H:%M"), teacher_id))
+    else:
+        cursor.execute("DELETE FROM users WHERE linked_teacher_name = ?", (teacher_name,))
+        cursor.execute("DELETE FROM teachers WHERE id = ?", (teacher_id,))
+
+    conn.commit()
+    conn.close()
+    return redirect("/teachers")
+
+
+@app.route("/add_student", methods=["GET", "POST"])
+def add_student():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        name = request.form.get("name")
+        teacher = request.form.get("teacher")
+        parent_name = request.form.get("parent_name")
+        parent_email = request.form.get("parent_email")
+        parent_phone = request.form.get("parent_phone")
+        lessons_left = request.form.get("lessons_left") or 0
+
+        cursor.execute("""
+        INSERT INTO students (
+            name,
+            teacher,
+            parent_name,
+            parent_email,
+            parent_phone,
+            lessons_left
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            name,
+            teacher,
+            parent_name,
+            parent_email,
+            parent_phone,
+            int(float(lessons_left or 0))
+        ))
+
+        sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
+        conn.commit()
+        conn.close()
+
+        return redirect(f"/student/{name}")
+
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teachers = cursor.fetchall()
+    conn.close()
+
+    teacher_options = "".join([f'<option value="{t[0]}">{t[0]}</option>' for t in teachers])
+
+    return f"""
+    <html>
+    <head>
+        <title>Add Student</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:720px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input, select {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Add Student</h1>
+            <form method="POST">
+                Student Name:<br>
+                <input name="name" required>
+
+                Primary Teacher:<br>
+                <select name="teacher">{teacher_options}</select>
+
+                Parent Name:<br>
+                <input name="parent_name">
+
+                Parent Email:<br>
+                <input type="email" name="parent_email">
+
+                Parent Phone:<br>
+                <input name="parent_phone" placeholder="Phone number">
+
+                Lessons Left:<br>
+                <input type="number" name="lessons_left" value="0">
+
+                <button type="submit">Create Student</button>
+                <a class="button" href="/students">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/edit_student/<name>", methods=["GET", "POST"])
+def edit_student(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    ensure_teacher_management_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        teacher = request.form.get("teacher")
+        parent_name = request.form.get("parent_name")
+        parent_email = request.form.get("parent_email")
+        parent_phone = request.form.get("parent_phone")
+        lessons_left = request.form.get("lessons_left") or 0
+
+        cursor.execute("""
+        UPDATE students
+        SET teacher = ?,
+            parent_name = ?,
+            parent_email = ?,
+            parent_phone = ?,
+            lessons_left = ?
+        WHERE name = ?
+        """, (
+            teacher,
+            parent_name,
+            parent_email,
+            parent_phone,
+            int(float(lessons_left or 0)),
+            name
+        ))
+
+        sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
+        conn.commit()
+        conn.close()
+
+        return redirect(f"/student/{owner_path_value(name)}")
+
+    cursor.execute("""
+    SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left
+    FROM students
+    WHERE name = ?
+    """, (name,))
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    cursor.execute("SELECT id, teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
+    teachers = cursor.fetchall()
+
+    cursor.execute("SELECT id FROM teachers WHERE teacher_name = ? LIMIT 1", (student[1],))
+    current_teacher = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT DISTINCT teacher_name
+    FROM enrollments
+    WHERE student_name = ?
+    AND status = 'active'
+    AND teacher_name IS NOT NULL
+    AND teacher_name != ''
+    ORDER BY teacher_name
+    """, (student[0],))
+    enrollment_teachers = [row[0] for row in cursor.fetchall()]
+
+    cursor.execute("""
+    SELECT DISTINCT teacher
+    FROM schedule
+    WHERE student_name = ?
+    AND teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher
+    """, (student[0],))
+    schedule_teachers = [row[0] for row in cursor.fetchall()]
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_time, teacher, classroom
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    ORDER BY lesson_date, lesson_time
+    LIMIT 1
+    """, (student[0], date.today().isoformat()))
+    next_lesson = cursor.fetchone()
+
+    cursor.execute("SELECT COUNT(*) FROM schedule WHERE student_name = ?", (student[0],))
+    schedule_count = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE student_name = ?", (student[0],))
+    payment_total = cursor.fetchone()[0] or 0
+    conn.close()
+
+    student_name = student[0] or name
+    student_path = owner_path_value(student_name)
+    lessons_left = owner_lesson_count(student[5])
+    status_badge = '<span class="owner-badge success">Active</span>'
+    lesson_badge = (
+        '<span class="owner-badge danger">No lessons</span>'
+        if lessons_left <= 0
+        else '<span class="owner-badge warning">Low lessons</span>'
+        if lessons_left <= 2
+        else '<span class="owner-badge success">Lessons available</span>'
+    )
+    next_lesson_text = (
+        f"{escape(str(next_lesson[0]))} {escape(str(next_lesson[1] or ''))}"
+        if next_lesson
+        else "Not scheduled"
+    )
+    current_teacher_edit_url = f"/edit_teacher/{current_teacher[0]}" if current_teacher else "/teachers"
+
+    teacher_options = '<option value="">Unassigned</option>'
+    seen_teachers = set()
+    if student[1] and all(t[1] != student[1] for t in teachers):
+        teachers = [(None, student[1])] + teachers
+    for teacher_id, teacher_name in teachers:
+        if not teacher_name or teacher_name in seen_teachers:
+            continue
+        seen_teachers.add(teacher_name)
+        selected = "selected" if teacher_name == student[1] else ""
+        teacher_options += (
+            f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
+            f'{escape(str(teacher_name))}</option>'
+        )
+
+    teacher_history = []
+    if student[1]:
+        teacher_history.append((student[1], "Current primary teacher", "Now"))
+    for teacher_name in enrollment_teachers:
+        if teacher_name != student[1]:
+            teacher_history.append((teacher_name, "Active enrollment", "Linked"))
+    for teacher_name in schedule_teachers:
+        if teacher_name != student[1] and teacher_name not in [row[0] for row in teacher_history]:
+            teacher_history.append((teacher_name, "Scheduled lesson history", "Past"))
+
+    teacher_history_html = ""
+    for teacher_name, source, label in teacher_history[:5]:
+        teacher_history_html += f"""
+        <div class="edit-mini-row">
+            <div>
+                <strong>{escape(str(teacher_name))}</strong>
+                <span>{escape(str(source))}</span>
+            </div>
+            <span class="owner-badge neutral">{escape(str(label))}</span>
+        </div>
+        """
+    if not teacher_history_html:
+        teacher_history_html = """
+        <div class="edit-mini-row">
+            <div>
+                <strong>No teacher linked</strong>
+                <span>Choose a primary teacher to grant teacher access.</span>
+            </div>
+        </div>
+        """
+
+    actions = f"""
+    <a class="owner-btn" href="/student/{student_path}">Cancel</a>
+    <button class="owner-btn primary" type="submit" form="editStudentForm">Save changes</button>
+    """
+
+    body = f"""
+    <style>
+        .edit-student-header {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 16px;
+            align-items: start;
+            margin-bottom: 14px;
+        }}
+        .edit-student-crumbs {{
+            display: flex;
+            gap: 7px;
+            align-items: center;
+            color: var(--owner-muted);
+            font-size: 12px;
+            margin-bottom: 6px;
+        }}
+        .edit-student-title {{
+            margin: 0;
+            font-size: 24px;
+            line-height: 1.12;
+            font-weight: 850;
+        }}
+        .edit-student-subline {{
+            margin-top: 7px;
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+            align-items: center;
+            color: var(--owner-muted);
+            font-size: 12px;
+        }}
+        .edit-student-quick {{
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }}
+        .edit-student-layout {{
+            display: grid;
+            grid-template-columns: 220px minmax(0, 1fr) 300px;
+            gap: 12px;
+            align-items: start;
+        }}
+        .edit-student-side,
+        .edit-student-panel {{
+            background: #fff;
+            border: 1px solid var(--owner-line);
+            border-radius: 12px;
+            box-shadow: var(--owner-shadow);
+            overflow: hidden;
+        }}
+        .edit-student-side {{
+            padding: 8px;
+        }}
+        .edit-student-side a {{
+            width: 100%;
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            border-radius: 8px;
+            color: var(--owner-muted);
+            font-weight: 800;
+            font-size: 13px;
+        }}
+        .edit-student-side a.active {{
+            background: var(--owner-soft);
+            color: var(--owner-blue-dark);
+        }}
+        .edit-panel-head {{
+            min-height: 42px;
+            padding: 0 14px;
+            border-bottom: 1px solid var(--owner-line);
+            background: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }}
+        .edit-panel-head h2 {{
+            margin: 0;
+            font-size: 15px;
+            font-weight: 850;
+        }}
+        .edit-panel-body {{
+            padding: 14px;
+        }}
+        .edit-form-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 11px;
+        }}
+        .edit-span {{
+            grid-column: 1 / -1;
+        }}
+        .edit-field label {{
+            display: block;
+            color: var(--owner-muted);
+            font-size: 12px;
+            font-weight: 800;
+            margin-bottom: 5px;
+        }}
+        .edit-field input,
+        .edit-field select,
+        .edit-readonly {{
+            width: 100%;
+            min-height: 36px;
+            border: 1px solid var(--owner-line);
+            border-radius: 8px;
+            background: #fff;
+            color: var(--owner-text);
+            padding: 8px 10px;
+            font: inherit;
+            font-size: 13px;
+        }}
+        .edit-readonly {{
+            display: flex;
+            align-items: center;
+            background: #f8fafc;
+            color: var(--owner-muted);
+        }}
+        .edit-teacher-field {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+        }}
+        .edit-teacher-link {{
+            min-height: 36px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 12px;
+            border: 1px solid var(--owner-line);
+            border-radius: 8px;
+            background: #fff;
+            color: var(--owner-blue-dark);
+            font-size: 13px;
+            font-weight: 850;
+        }}
+        .edit-side-stack {{
+            display: grid;
+            gap: 12px;
+        }}
+        .edit-mini-row {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+            padding: 9px 0;
+            border-bottom: 1px solid var(--owner-line);
+            font-size: 12px;
+        }}
+        .edit-mini-row:last-child {{
+            border-bottom: 0;
+        }}
+        .edit-mini-row strong {{
+            display: block;
+            font-size: 13px;
+            font-weight: 850;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .edit-mini-row span {{
+            color: var(--owner-muted);
+            font-size: 12px;
+        }}
+        @media (max-width: 1180px) {{
+            .edit-student-layout {{
+                grid-template-columns: 190px minmax(0, 1fr);
+            }}
+            .edit-side-stack {{
+                grid-column: 1 / -1;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }}
+        }}
+        @media (max-width: 760px) {{
+            .edit-student-header,
+            .edit-student-layout,
+            .edit-form-grid,
+            .edit-side-stack {{
+                grid-template-columns: 1fr;
+            }}
+            .edit-student-quick {{
+                justify-content: flex-start;
+            }}
+        }}
+    </style>
+
+    <section class="edit-student-header">
+        <div>
+            <div class="edit-student-crumbs">
+                <a href="/students">Students</a>
+                <span>/</span>
+                <a href="/student/{student_path}">{escape(str(student_name))}</a>
+                <span>/ Edit</span>
+            </div>
+            <h2 class="edit-student-title">{escape(str(student_name))}</h2>
+            <div class="edit-student-subline">
+                {status_badge}
+                {lesson_badge}
+                <span>{lessons_left} lessons left</span>
+                <span>Next lesson: {next_lesson_text}</span>
+            </div>
+        </div>
+        <div class="edit-student-quick">
+            <a class="owner-btn" href="/calendar?{urlencode({'student': student_name})}">Open schedule</a>
+            <a class="owner-btn" href="/parent_login_info/{student_path}">Parent login</a>
+            <a class="owner-btn" href="/payment/{student_path}">New payment</a>
+        </div>
+    </section>
+
+    <form id="editStudentForm" method="POST">
+        <section class="edit-student-layout">
+            <nav class="edit-student-side" aria-label="Student edit sections">
+                <a class="active" href="#profile">Profile</a>
+                <a href="#teacher-lessons">Teacher & lessons</a>
+                <a href="#parent-contact">Parent / contact</a>
+                <a href="/student_ledger/{student_path}">Billing</a>
+                <a href="/student/{student_path}">Student record</a>
+            </nav>
+
+            <div class="edit-student-panel">
+                <div class="edit-panel-head" id="profile">
+                    <h2>Profile</h2>
+                    <span class="muted">Student name is the record key today</span>
+                </div>
+                <div class="edit-panel-body">
+                    <div class="edit-form-grid">
+                        <div class="edit-field">
+                            <label>Student</label>
+                            <div class="edit-readonly">{escape(str(student_name))}</div>
+                        </div>
+                        <div class="edit-field">
+                            <label>Status</label>
+                            <div class="edit-readonly">Active</div>
+                        </div>
+                        <div class="edit-field edit-span" id="teacher-lessons">
+                            <label>Primary teacher</label>
+                            <div class="edit-teacher-field">
+                                <select name="teacher">{teacher_options}</select>
+                                <a class="edit-teacher-link" href="{current_teacher_edit_url}">Edit</a>
+                            </div>
+                        </div>
+                        <div class="edit-field">
+                            <label>Lessons left</label>
+                            <input type="number" name="lessons_left" value="{lessons_left}">
+                        </div>
+                        <div class="edit-field">
+                            <label>Scheduled lessons</label>
+                            <div class="edit-readonly">{schedule_count}</div>
+                        </div>
+                        <div class="edit-field" id="parent-contact">
+                            <label>Parent name</label>
+                            <input name="parent_name" value="{escape(str(student[2] or ''), quote=True)}">
+                        </div>
+                        <div class="edit-field">
+                            <label>Parent email</label>
+                            <input type="email" name="parent_email" value="{escape(str(student[3] or ''), quote=True)}">
+                        </div>
+                        <div class="edit-field">
+                            <label>Parent phone</label>
+                            <input name="parent_phone" value="{escape(str(student[4] or ''), quote=True)}">
+                        </div>
+                        <div class="edit-field">
+                            <label>Total payments</label>
+                            <div class="edit-readonly">{owner_format_money(payment_total)}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="edit-side-stack">
+                <div class="edit-student-panel">
+                    <div class="edit-panel-head">
+                        <h2>Teacher history</h2>
+                        <a class="edit-teacher-link" href="/teachers">Manage</a>
+                    </div>
+                    <div class="edit-panel-body">
+                        {teacher_history_html}
+                    </div>
+                </div>
+
+                <div class="edit-student-panel">
+                    <div class="edit-panel-head">
+                        <h2>At a glance</h2>
+                    </div>
+                    <div class="edit-panel-body">
+                        <div class="edit-mini-row">
+                            <div>
+                                <strong>Parent login</strong>
+                                <span>{escape(str(student[3] or student[4] or 'No parent contact'))}</span>
+                            </div>
+                        </div>
+                        <div class="edit-mini-row">
+                            <div>
+                                <strong>Next lesson</strong>
+                                <span>{next_lesson_text}</span>
+                            </div>
+                        </div>
+                        <div class="edit-mini-row">
+                            <div>
+                                <strong>Lesson balance</strong>
+                                <span>{lessons_left} lessons left</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </section>
+    </form>
+    """
+
+    return owner_shell(
+        "students",
+        "Edit student",
+        "Update the student's teacher link, parent contact, and lesson balance.",
+        body,
+        actions,
+    )
+
+
+@app.route("/student/<name>")
+def student_detail(name):
+    ensure_v27_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, teacher, parent_email, parent_phone, lessons_left, COALESCE(active, 1)
+    FROM students
+    WHERE name = ?
+    """, (name,))
+
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_content, performance, homework
+    FROM lessons
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+
+    lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT payment_date, amount, lessons_added, payment_method
+    FROM payments
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+
+    payments = cursor.fetchall()
+
+    teacher_links = []
+    if student[1]:
+        teacher_links.append((student[1], "Primary Teacher"))
+
+    cursor.execute("""
+    SELECT DISTINCT teacher_name
+    FROM enrollments
+    WHERE student_name = ?
+    AND status = 'active'
+    AND teacher_name IS NOT NULL
+    AND teacher_name != ''
+    ORDER BY teacher_name
+    """, (name,))
+    for row in cursor.fetchall():
+        teacher_links.append((row[0], "Active Enrollment"))
+
+    cursor.execute("""
+    SELECT DISTINCT teacher
+    FROM schedule
+    WHERE student_name = ?
+    AND teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher
+    """, (name,))
+    for row in cursor.fetchall():
+        teacher_links.append((row[0], "Scheduled Lesson"))
+
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    all_teachers = cursor.fetchall()
+    teacher_has_access = (
+        require_teacher()
+        and teacher_can_access_student_record(cursor, student[0], session.get("teacher_name"))
+    )
+    conn.close()
+
+    seen_teacher_links = set()
+    teacher_link_html = ""
+    for teacher_name, source in teacher_links:
+        key = (teacher_name, source)
+        if key in seen_teacher_links:
+            continue
+        seen_teacher_links.add(key)
+        teacher_link_html += f"<li>{escape(teacher_name)} <span style='color:#6b7280;'>({source})</span></li>"
+    if not teacher_link_html:
+        teacher_link_html = "<li>No teacher linked yet.</li>"
+
+    teacher_options = ""
+    for t in all_teachers:
+        selected = "selected" if t[0] == student[1] else ""
+        teacher_options += f'<option value="{escape(t[0])}" {selected}>{escape(t[0])}</option>'
+
+    teacher_link_form = ""
+    if require_owner():
+        teacher_link_form = f"""
+        <h2>Teacher Links</h2>
+        <ul>{teacher_link_html}</ul>
+        <form method="POST" action="/link_student_teacher/{escape(student[0])}" style="margin:14px 0;">
+            Primary Teacher:<br>
+            <select name="teacher" style="padding:8px; min-width:260px;">{teacher_options}</select>
+            <button type="submit" style="padding:8px 12px;">Save Teacher Link</button>
+        </form>
+        <p style="color:#6b7280;">Teacher access is automatic when a student has this Primary Teacher, an active enrollment with the teacher, or a scheduled lesson with the teacher.</p>
+        """
+
+    lesson_html = ""
+    if lessons:
+        for lesson in lessons:
+            lesson_html += f"""
+            <hr>
+            <p>
+            <strong>{lesson[0]}</strong><br>
+            Lesson: {lesson[1]}<br>
+            Performance: {lesson[2]}<br>
+            Homework: {lesson[3]}
+            </p>
+            """
+    else:
+        lesson_html = "<p>No lesson history found.</p>"
+
+    payment_html = ""
+    if payments:
+        for payment in payments:
+            payment_html += f"""
+            <hr>
+            <p>
+            <strong>{payment[0]}</strong><br>
+            Amount: ${payment[1]}<br>
+            Lessons Added: {payment[2]}<br>
+            Method: {payment[3]}
+            </p>
+            """
+    else:
+        payment_html = "<p>No payment history found.</p>"
+
+    student_active = int(student[5] or 0)
+    student_status_text = "Active" if student_active else "Inactive"
+    status_color = "#166534" if student_active else "#475467"
+
+    renewal_status = ""
+    if student[4] <= 2:
+        renewal_status = "<h3 style='color:red;'>⚠ Renewal Needed</h3>"
+
+    action_links = ""
+    if require_owner():
+        archive_action = "inactive" if student_active else "restore"
+        archive_label = "Make Inactive" if student_active else "Reactivate Student"
+        archive_confirm = (
+            f"Mark {student[0]} inactive? This hides the student from the active list but keeps lesson and billing history."
+            if student_active
+            else f"Reactivate {student[0]} and show them in the active student list?"
+        )
+        archive_confirm_attr = escape(f"return confirm({json.dumps(archive_confirm)});", quote=True)
+        action_links = f"""
+        <p><a href="/add_lesson/{student[0]}">Add Lesson / Homework</a></p>
+        <p><a href="/payment/{student[0]}">Receive Payment</a></p>
+        <p><a href="/edit_student/{student[0]}">Edit Student</a></p>
+        <form method="POST" action="/archive_student/{owner_path_value(student[0])}" onsubmit="{archive_confirm_attr}">
+            <input type="hidden" name="action" value="{archive_action}">
+            <button type="submit" style="background:#dc2626;color:white;border:0;border-radius:8px;padding:10px 14px;font-weight:800;">{archive_label}</button>
+        </form>
+        <p><a href="/generate_parent_email/{student[0]}">Generate Parent Email</a></p>
+        <p><a href="/send_parent_email/{student[0]}">Send Parent Email</a></p>
+        <p><a href="/students">Back to Students</a></p>
+        <p><a href="/student_ledger/{student[0]}">Student Ledger</a></p>
+        """
+    elif teacher_has_access:
+        action_links = f"""
+        <p><a href="/add_lesson/{student[0]}">Add Lesson Notes / Homework</a></p>
+        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        """
+    elif require_parent():
+        action_links = '<p><a href="/parent_dashboard">Back to Parent App</a></p>'
+
+    return f"""
+    <h1>{student[0]}</h1>
+
+    <p>Teacher: {student[1]}</p>
+    <p>Parent Email: {student[2]}</p>
+    <p>Parent Phone: {student[3] or ''}</p>
+    <p>Lessons Left: {student[4]}</p>
+    <p>Status: <strong style="color:{status_color};">{student_status_text}</strong></p>
+
+    {renewal_status}
+
+    {action_links}
+
+    {teacher_link_form}
+
+    <h2>Lesson History</h2>
+    {lesson_html}
+
+    <h2>Payment History</h2>
+    {payment_html}
+    """
+
+
+@app.route("/archive_student/<name>", methods=["POST"])
+def archive_student(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+    action = request.form.get("action") or "archive"
+    new_active = 1 if action == "restore" else 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM students WHERE name = ?", (name,))
+    student = cursor.fetchone()
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    cursor.execute("UPDATE students SET active = ? WHERE name = ?", (new_active, name))
+    cursor.execute("UPDATE parent_students SET active = ? WHERE student_name = ?", (new_active, name))
+    cursor.execute("""
+    INSERT INTO parent_activity_logs (
+        student_name,
+        action_type,
+        description,
+        created_at
+    )
+    VALUES (?, ?, ?, ?)
+    """, (
+        name,
+        "student_reactivated" if new_active else "student_inactivated",
+        "Student reactivated to active list." if new_active else "Student marked inactive.",
+        now
+    ))
+
+    conn.commit()
+    conn.close()
+
+    if new_active:
+        return redirect(f"/student/{owner_path_value(name)}")
+    return redirect("/students")
+
+
+
+@app.route("/link_student_teacher/<name>", methods=["POST"])
+def link_student_teacher(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    teacher = request.form.get("teacher")
+    if not teacher:
+        return f"<h1>Please select a teacher.</h1><p><a href='/student/{name}'>Back</a></p>"
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT 1 FROM students WHERE name = ?", (name,))
+    if not cursor.fetchone():
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    cursor.execute("SELECT 1 FROM teachers WHERE teacher_name = ?", (teacher,))
+    if not cursor.fetchone():
+        conn.close()
+        return "<h1>Teacher not found</h1>"
+
+    cursor.execute("""
+    UPDATE students
+    SET teacher = ?
+    WHERE name = ?
+    """, (teacher, name))
+
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{name}")
+
+
+@app.route("/teacher_lesson_notes", methods=["GET", "POST"])
+def teacher_lesson_notes():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    selected_date = request.values.get("lesson_date") or date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT DISTINCT student_name
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date = ?
+    ORDER BY lesson_time, student_name
+    """, (teacher_name, selected_date))
+    day_students = [row[0] for row in cursor.fetchall() if row[0]]
+
+    selected_student = request.values.get("student_name") or (day_students[0] if day_students else "")
+
+    if request.method == "POST":
+        if not selected_student or selected_student not in day_students:
+            conn.close()
+            return "<h1>Please choose a student scheduled for this date.</h1><p><a href='/teacher_lesson_notes'>Back</a></p>"
+
+        lesson_content = request.form.get("lesson_content") or "Lesson note"
+        performance = request.form.get("performance", "")
+        homework = request.form.get("homework", "")
+
+        cursor.execute("""
+        INSERT INTO lessons
+        (
+            student_name,
+            lesson_content,
+            performance,
+            homework,
+            lesson_date
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (selected_student, lesson_content, performance, homework, selected_date))
+
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = lessons_left - 1
+        WHERE name = ?
+        """, (selected_student,))
+
+        conn.commit()
+        conn.close()
+        return f"""
+        <h1>Lesson Notes Saved!</h1>
+        <p>{escape(selected_student)}</p>
+        <p><a href="/teacher_dashboard">Back</a></p>
+        """
+
+    conn.close()
+
+    student_options = "".join(
+        f'<option value="{escape(student)}" {"selected" if student == selected_student else ""}>{escape(student)}</option>'
+        for student in day_students
+    )
+    if not student_options:
+        student_options = '<option value="">No students scheduled on this date</option>'
+
+    disabled = "disabled" if not day_students else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Write Lesson Notes</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ max-width:760px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+            textarea {{ min-height:170px; }}
+            textarea.homework {{ min-height:260px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
+            a.button.secondary {{ background:#111827; }}
+            .inline-form {{ margin:0 0 10px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Write Lesson Notes</h1>
+
+            <form method="GET" class="inline-form">
+                Date:<br>
+                <input type="date" name="lesson_date" value="{selected_date}" onchange="this.form.submit()" required>
+            </form>
+
+            <form method="POST">
+                <input type="hidden" name="lesson_date" value="{selected_date}">
+                Student:<br>
+                <select name="student_name" required {disabled}>
+                    {student_options}
+                </select>
+                <input type="hidden" name="lesson_content" value="Lesson note">
+
+                Performance:<br>
+                <select name="performance" required {disabled}>
+                    <option value="Excellent focus and progress">Excellent focus and progress</option>
+                    <option value="Strong effort with steady growth">Strong effort with steady growth</option>
+                    <option value="Good participation, keep practicing">Good participation, keep practicing</option>
+                    <option value="Building consistency and confidence">Building consistency and confidence</option>
+                </select>
+
+                Homework:<br>
+                <textarea class="homework" name="homework" placeholder="Write homework clearly for the parent and student." {disabled}></textarea>
+
+                <button type="submit" {disabled}>Save Notes</button>
+                <a class="button secondary" href="/teacher_dashboard">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route("/add_lesson/<name>", methods=["GET", "POST"])
+def add_lesson(name):
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
+    if require_teacher() and not require_owner():
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id
+        FROM schedule
+        WHERE student_name = ?
+        AND teacher = ?
+        LIMIT 1
+        """, (name, session.get("teacher_name")))
+        teaches_student = cursor.fetchone()
+        conn.close()
+
+        if not teaches_student:
+            return "<h1>Permission denied</h1>"
+
+    if request.method == "POST":
+        lesson_date = request.form["lesson_date"]
+        lesson_content = request.form.get("lesson_content") or "Lesson note"
+        performance = request.form.get("performance", "")
+        homework = request.form.get("homework", "")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO lessons
+        (
+            student_name,
+            lesson_content,
+            performance,
+            homework,
+            lesson_date
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            name,
+            lesson_content,
+            performance,
+            homework,
+            lesson_date
+        ))
+
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = lessons_left - 1
+        WHERE name = ?
+        """, (name,))
+
+        conn.commit()
+        conn.close()
+
+        back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else f"/student/{name}"
+
+        return f"""
+        <h1>Lesson Notes Saved!</h1>
+        <p>{name}</p>
+        <p><a href="{back_href}">Back</a></p>
+        """
+
+    back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else f"/student/{name}"
+
+    return f"""
+    <html>
+    <head>
+        <title>Add Lesson Notes</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ max-width:760px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+            textarea {{ min-height:170px; }}
+            textarea.homework {{ min-height:260px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
+            a.button.secondary {{ background:#111827; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Add Lesson Notes - {name}</h1>
+
+            <form method="POST">
+                Date:<br>
+                <input type="date" name="lesson_date" value="{date.today().strftime('%Y-%m-%d')}" required>
+                <input type="hidden" name="lesson_content" value="Lesson note">
+
+                Performance:<br>
+                <select name="performance" required>
+                    <option value="Excellent focus and progress">Excellent focus and progress</option>
+                    <option value="Strong effort with steady growth">Strong effort with steady growth</option>
+                    <option value="Good participation, keep practicing">Good participation, keep practicing</option>
+                    <option value="Building consistency and confidence">Building consistency and confidence</option>
+                </select>
+
+                Homework:<br>
+                <textarea class="homework" name="homework" placeholder="Write homework clearly for the parent and student."></textarea>
+
+                <button type="submit">Save Notes</button>
+                <a class="button secondary" href="{back_href}">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/payment/<name>", methods=["GET", "POST"])
+def payment(name):
+    if request.method == "POST":
+        amount = float(request.form["amount"])
+        lessons_added = int(request.form["lessons_added"])
+        payment_method = request.form["payment_method"]
+        payment_date = request.form["payment_date"]
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO payments
+        (
+            student_name,
+            amount,
+            lessons_added,
+            payment_method,
+            payment_date
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            name,
+            amount,
+            lessons_added,
+            payment_method,
+            payment_date
+        ))
+
+        payment_id = cursor.lastrowid
+
+        cursor.execute("""
+        INSERT INTO student_ledger (
+            student_name,
+            entry_type,
+            amount,
+            description,
+            related_invoice_id,
+            related_payment_id,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            name,
+            "payment",
+            amount,
+            "Payment received",
+            None,
+            payment_id,
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ))
+
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = lessons_left + ?
+        WHERE name = ?
+        """,
+        (
+            lessons_added,
+            name
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return f"""
+        <h1>Payment Recorded!</h1>
+
+        <p>Student: {name}</p>
+        <p>Amount: ${amount}</p>
+        <p>Lessons Added: {lessons_added}</p>
+        <p>Payment Method: {payment_method}</p>
+        <p>Payment Date: {payment_date}</p>
+
+        <p><a href="/student/{name}">Back to Student</a></p>
+        """
+
+    return f"""
+    <h1>Receive Payment - {name}</h1>
+
+    <form method="POST">
+        Amount:<br>
+        <input name="amount"><br><br>
+
+        Lessons Added:<br>
+        <input name="lessons_added"><br><br>
+
+        Payment Method:<br>
+        <input name="payment_method"><br><br>
+
+        Payment Date:<br>
+        <input name="payment_date"><br><br>
+
+        <button type="submit">Save Payment</button>
+    </form>
+
+    <p><a href="/student/{name}">Back to Student</a></p>
+    """
+
+
+@app.route("/generate_parent_email/<name>")
+def generate_parent_email(name):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_content, performance, homework
+    FROM lessons
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 1
+    """, (name,))
+
+    lesson = cursor.fetchone()
+    conn.close()
+
+    if not lesson:
+        return f"""
+        <h1>No lesson found for {name}</h1>
+        <p><a href="/student/{name}">Back to Student</a></p>
+        """
+
+    prompt = f"""
+You are a professional piano teacher.
+
+Write a warm, professional parent update email based on this lesson.
+
+Student: {name}
+Date: {lesson[0]}
+Lesson Content: {lesson[1]}
+Performance: {lesson[2]}
+Homework: {lesson[3]}
+
+Requirements:
+- Warm and encouraging
+- Clear and concise
+- Mention what the student worked on
+- Mention performance
+- Mention homework
+- End with H-Music
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    email_text = response.choices[0].message.content
+
+    return f"""
+    <h1>Parent Email - {name}</h1>
+
+    <pre>{email_text}</pre>
+
+    <p><a href="/student/{name}">Back to Student</a></p>
+    """
+
+
+@app.route("/send_parent_email/<name>")
+def send_parent_email(name):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT parent_email
+    FROM students
+    WHERE name = ?
+    """, (name,))
+
+    student = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_content, performance, homework
+    FROM lessons
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 1
+    """, (name,))
+
+    lesson = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    if not lesson:
+        conn.close()
+        return f"""
+        <h1>No lesson found for {name}</h1>
+        <p><a href="/student/{name}">Back to Student</a></p>
+        """
+
+    parent_email = student[0]
+
+    email_text = f"""
+Dear Parent,
+
+Today {name} worked on {lesson[1]}.
+
+Performance:
+{lesson[2]}
+
+Homework:
+{lesson[3]}
+
+Thank you,
+H-Music
+"""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"{name}'s Piano Lesson Update"
+    msg["From"] = "huangzhenwei606@gmail.com"
+    msg["To"] = parent_email
+    msg.set_content(email_text)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(
+            "huangzhenwei606@gmail.com",
+            os.getenv("GMAIL_APP_PASSWORD")
+        )
+        smtp.send_message(msg)
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    INSERT INTO email_logs
+    (
+        student_name,
+        email_type,
+        sent_date,
+        status
+    )
+    VALUES (?, ?, ?, ?)
+    """, (
+        name,
+        "parent_feedback",
+        today,
+        "sent"
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <h1>Email Sent Successfully!</h1>
+
+    <p>Student: {name}</p>
+    <p>To: {parent_email}</p>
+
+    <pre>{email_text}</pre>
+
+    <p><a href="/student/{name}">Back to Student</a></p>
+    """
+
+
+@app.route("/overdue")
+def overdue():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, lessons_left, parent_email
+    FROM students
+    WHERE lessons_left <= 2
+    ORDER BY lessons_left ASC
+    """)
+
+    students = cursor.fetchall()
+    conn.close()
+
+    html = """
+    <h1>⚠ Overdue / Renewal Needed</h1>
+    <p><a href="/">Back to Dashboard</a></p>
+    <hr>
+    """
+
+    if len(students) == 0:
+        html += "<h3>No students need renewal.</h3>"
+
+    for student in students:
+        html += f"""
+        <p>
+        <strong>{student[0]}</strong><br>
+        Lessons Left: {student[1]}<br>
+        Parent Email: {student[2]}<br>
+
+        <a href="/student/{student[0]}">View Student</a>
+        </p>
+        <hr>
+        """
+
+    return html
+
+
+@app.route("/generate_all_feedback/<teacher_name>")
+def generate_all_feedback(teacher_name):
+    today = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT student_name
+    FROM lessons
+    WHERE student_name IN (
+        SELECT name FROM students WHERE teacher = ?
+    )
+    AND lesson_date = ?
+    """, (teacher_name, today))
+
+    lessons = cursor.fetchall()
+
+    for lesson in lessons:
+        student_name = lesson[0]
+
+        cursor.execute("""
+        INSERT INTO email_logs
+        (
+            student_name,
+            email_type,
+            sent_date,
+            status
+        )
+        VALUES (?, ?, ?, ?)
+        """, (
+            student_name,
+            "parent_feedback",
+            today,
+            "generated"
+        ))
+
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <h1>All Feedback Generated</h1>
+    <p>{len(lessons)} feedback records marked as generated.</p>
+    <p><a href="/teacher/{teacher_name}">Back to Teacher Dashboard</a></p>
+    """
+
+
+@app.route("/send_all_feedback/<teacher_name>")
+def send_all_feedback(teacher_name):
+    today = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT student_name
+    FROM lessons
+    WHERE student_name IN (
+        SELECT name FROM students WHERE teacher = ?
+    )
+    AND lesson_date = ?
+    """, (teacher_name, today))
+
+    lessons = cursor.fetchall()
+
+    sent_count = 0
+
+    for lesson in lessons:
+        student_name = lesson[0]
+
+        cursor.execute("""
+        SELECT parent_email
+        FROM students
+        WHERE name = ?
+        """, (student_name,))
+
+        result = cursor.fetchone()
+
+        if result:
+            parent_email = result[0]
+
+            cursor.execute("""
+            SELECT lesson_date, lesson_content, performance, homework
+            FROM lessons
+            WHERE student_name = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """, (student_name,))
+
+            lesson_detail = cursor.fetchone()
+
+            if lesson_detail:
+                email_text = f"""
+Dear Parent,
+
+Today {student_name} worked on {lesson_detail[1]}.
+
+Performance:
+{lesson_detail[2]}
+
+Homework:
+{lesson_detail[3]}
+
+Thank you,
+H-Music
+"""
+
+                msg = EmailMessage()
+                msg["Subject"] = f"{student_name}'s Piano Lesson Update"
+                msg["From"] = "huangzhenwei606@gmail.com"
+                msg["To"] = parent_email
+                msg.set_content(email_text)
+
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                    smtp.login(
+                        "huangzhenwei606@gmail.com",
+                        os.getenv("GMAIL_APP_PASSWORD")
+                    )
+                    smtp.send_message(msg)
+
+                cursor.execute("""
+                INSERT INTO email_logs
+                (
+                    student_name,
+                    email_type,
+                    sent_date,
+                    status
+                )
+                VALUES (?, ?, ?, ?)
+                """, (
+                    student_name,
+                    "parent_feedback",
+                    today,
+                    "sent"
+                ))
+
+                sent_count += 1
+
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <h1>All Emails Sent</h1>
+    <p>{sent_count} parent emails sent successfully.</p>
+    <p><a href="/teacher/{teacher_name}">Back to Teacher Dashboard</a></p>
+    """
+
+
+@app.route("/calendar")
+def calendar():
+    ensure_v321_schema()
+    ensure_owner_calendar_detail_schema()
+    if not require_owner():
+        return redirect("/owner_login")
+
+    selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
+    selected_teacher = (request.args.get("teacher") or "").strip()
+    selected_student = (request.args.get("student") or "").strip()
+    selected_status = (request.args.get("status_filter") or "").strip()
+
+    try:
+        month_start = datetime.strptime(selected_month + "-01", "%Y-%m-%d").date()
+    except:
+        month_start = date.today().replace(day=1)
+        selected_month = month_start.strftime("%Y-%m")
+
+    _, last_day = calendar_lib.monthrange(month_start.year, month_start.month)
+    month_end = month_start.replace(day=last_day)
+    prev_month = (month_start - timedelta(days=1)).replace(day=1).strftime("%Y-%m")
+    next_month = (month_end + timedelta(days=1)).replace(day=1).strftime("%Y-%m")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT DISTINCT teacher
+    FROM schedule
+    WHERE teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher
+    """)
+    teacher_options_data = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT DISTINCT student_name
+    FROM schedule
+    WHERE student_name IS NOT NULL
+    AND student_name != ''
+    ORDER BY student_name
+    """)
+    student_options_data = cursor.fetchall()
+
+    where_clauses = ["s.lesson_date BETWEEN ? AND ?"]
+    params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
+
+    if selected_teacher:
+        where_clauses.append("s.teacher = ?")
+        params.append(selected_teacher)
+
+    if selected_student:
+        where_clauses.append("s.student_name = ?")
+        params.append(selected_student)
+
+    if selected_status:
+        if selected_status == "cancelled":
+            where_clauses.append("(s.status = ? OR s.status LIKE 'cancel_%')")
+            params.append("cancelled")
+        elif selected_status == "excused":
+            where_clauses.append("(s.status = ? OR s.status = 'excused_24h' OR s.status = 'teacher_cancelled')")
+            params.append("excused")
+        else:
+            where_clauses.append("COALESCE(s.status, 'scheduled') = ?")
+            params.append(selected_status)
+
+    where_sql = " AND ".join(where_clauses)
+
+    cursor.execute("""
+    SELECT
+        s.id,
+        s.lesson_date,
+        s.lesson_time,
+        s.student_name,
+        s.teacher,
+        s.classroom,
+        s.weekday,
+        s.schedule_type,
+        s.package_type,
+        COALESCE(s.status, 'scheduled'),
+        c.display_color,
+        COALESCE(s.course_type_name, ''),
+        COALESCE(s.duration, 30),
+        COALESCE(st.lessons_left, 0),
+        COALESCE(s.is_group, 0),
+        COALESCE(s.location, ''),
+        COALESCE(s.notes, ''),
+        COALESCE(s.parent_lesson_reminder_enabled, 0),
+        COALESCE(s.practice_reminder_enabled, 0),
+        COALESCE(s.low_balance_alert_enabled, 0)
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN students st    ON s.student_name    = st.name
+    WHERE """ + where_sql + """
+    ORDER BY s.lesson_date, s.lesson_time
+    """, params)
+
+    schedules = cursor.fetchall()
+
+    slot_params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
+    slot_filter = ""
+    if selected_teacher:
+        slot_filter = " AND teacher = ?"
+        slot_params.append(selected_teacher)
+    cursor.execute(f"""
+    SELECT id, teacher, slot_date, slot_time, COALESCE(classroom, ''), COALESCE(notes, '')
+    FROM teacher_open_slots
+    WHERE active = 1
+    AND slot_date BETWEEN ? AND ?
+    {slot_filter}
+    ORDER BY slot_date, slot_time
+    """, slot_params)
+    open_slots = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT name, duration, COALESCE(is_group, 0), COALESCE(display_color, '')
+    FROM course_types
+    WHERE active = 1
+    ORDER BY is_group DESC, name, duration
+    """)
+    course_legend_rows = cursor.fetchall()
+    conn.close()
+
+    teacher_options = '<option value="">All Teachers</option>'
+    teacher_picker_options = '<option value="">Choose teacher</option>'
+    for t in teacher_options_data:
+        selected = "selected" if t[0] == selected_teacher else ""
+        teacher_options += f'<option value="{escape(str(t[0]))}" {selected}>{escape(str(t[0]))}</option>'
+        teacher_picker_options += f'<option value="{escape(str(t[0]))}" {selected}>{escape(str(t[0]))}</option>'
+
+    student_options = '<option value="">All Students</option>'
+    student_picker_options = '<option value="">Choose student</option>'
+    for s in student_options_data:
+        selected = "selected" if s[0] == selected_student else ""
+        student_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
+        student_picker_options += f'<option value="{escape(str(s[0]))}" {selected}>{escape(str(s[0]))}</option>'
+
+    events_by_date = {}
+    for item in schedules:
+        events_by_date.setdefault(item[1], []).append(item)
+
+    slots_by_date = {}
+    for slot in open_slots:
+        slots_by_date.setdefault(slot[2], []).append(slot)
+
+    def owner_time_range(time_text, duration):
+        return escape(format_lesson_time_range(time_text, duration))
+
+    def owner_status_dot(status):
+        status = status or "scheduled"
+        if status == "present":
+            return "sd-present"
+        if status in ("no_show", "no-show"):
+            return "sd-noshow"
+        if status.startswith("cancel"):
+            return "sd-cancelled"
+        if status in ("excused_24h", "excused", "teacher_cancelled"):
+            return "sd-excused"
+        return "sd-scheduled"
+
+    def owner_status_label(status):
+        status = status or "scheduled"
+        if status == "present":
+            return "Present"
+        if status in ("no_show", "no-show"):
+            return "No show"
+        if status.startswith("cancel"):
+            return "Cancelled"
+        if status in ("excused_24h", "excused", "teacher_cancelled"):
+            return "Excused"
+        return "Scheduled"
+
+    def owner_status_options(current_status):
+        options = [
+            ("scheduled", "Scheduled"),
+            ("present", "Present"),
+            ("no_show", "No Show"),
+            ("cancel_3h", "Cancel < 3h"),
+            ("cancel_12h", "Cancel < 12h"),
+            ("cancel_24h", "Cancel < 24h"),
+            ("excused_24h", "Cancel > 24h"),
+            ("teacher_cancelled", "Teacher Cancel"),
+            ("makeup", "Makeup"),
+        ]
+        current_status = current_status or "scheduled"
+        return "".join(
+            f'<option value="{value}" {"selected" if value == current_status else ""}>{label}</option>'
+            for value, label in options
+        )
+
+    def warning_pill(lessons_left):
+        try:
+            left = int(float(lessons_left or 0))
+        except (TypeError, ValueError):
+            return ""
+        if left <= 0:
+            return '<span class="last-pill">Last!</span>'
+        if left == 1:
+            return '<span class="warn-pill">1 left</span>'
+        if left == 2:
+            return '<span class="warn-pill">2 left</span>'
+        return ""
+
+    def open_slot_label(slot):
+        start_label = format_display_time(slot[3])
+        end_time = ""
+        notes = slot[5] or ""
+        if "end_time=" in notes:
+            end_time = notes.split("end_time=", 1)[1].split("|", 1)[0].strip()
+        if end_time:
+            return f"{start_label}-{format_display_time(end_time)}"
+        return start_label
+
+    course_legend_html = ""
+    for course_name, duration, is_group, display_color in course_legend_rows:
+        color = normalize_hex_color(display_color) or default_course_color(course_name, duration, is_group)
+        label = f"{course_name} {int(duration or 0)}m" if duration else str(course_name or "Course")
+        course_legend_html += f"""
+        <span class="leg">
+          <span class="leg-bar" style="background:{course_color_background(color)};border-left-color:{color}"></span>
+          {escape(label)}
+        </span>
+        """
+
+    month_label = month_start.strftime("%B %Y")
+    calendar_weeks = calendar_lib.Calendar(firstweekday=0).monthdatescalendar(month_start.year, month_start.month)
+    weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weekday_header = "".join(
+        f'<th class="today-th">{name}</th>' if i == date.today().weekday() and month_start.strftime("%Y-%m") == date.today().strftime("%Y-%m")
+        else f"<th>{name}</th>"
+        for i, name in enumerate(weekday_names)
+    )
+
+    calendar_html = ""
+    for week in calendar_weeks:
+        calendar_html += "<tr>"
+        for day_obj in week:
+            date_key = day_obj.strftime("%Y-%m-%d")
+            muted = "muted-day" if day_obj.month != month_start.month else ""
+            today_class = "today-cell" if day_obj == date.today() else ""
+            event_cards = ""
+            for event in events_by_date.get(date_key, []):
+                event_status = event[9] or "scheduled"
+                course_name = event[11] or event[8] or ""
+                dot_class = owner_status_dot(event_status)
+                status_label = owner_status_label(event_status)
+                time_range = owner_time_range(event[2], event[12])
+                warning = warning_pill(event[13])
+                course_color = event[10] or default_course_color(course_name, event[12], event[14])
+                course_style = course_calendar_style(course_color)
+                detail = {
+                    "id": event[0],
+                    "date": event[1] or "",
+                    "time": event[2] or "",
+                    "student": event[3] or "",
+                    "teacher": event[4] or "",
+                    "classroom": event[5] or "",
+                    "weekday": event[6] or "",
+                    "schedule_type": event[7] or "",
+                    "package_type": event[8] or "",
+                    "status": event_status,
+                    "status_label": status_label,
+                    "course_name": course_name or "Lesson",
+                    "duration": event[12] or 30,
+                    "lessons_left": event[13] or 0,
+                    "is_group": event[14] or 0,
+                    "location": event[15] or "",
+                    "notes": event[16] or "",
+                    "parent_lesson_reminder_enabled": int(event[17] or 0),
+                    "practice_reminder_enabled": int(event[18] or 0),
+                    "low_balance_alert_enabled": int(event[19] or 0),
+                    "time_range": format_lesson_time_range(event[2], event[12]),
+                }
+                event_cards += f"""
+                <div class="ev" draggable="true" style="{course_style}" onclick="openLessonDrawer(this, event)"
+                     data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
+                     data-time="{escape(str(event[2] or ''))}"
+                     data-student="{escape(str(event[3] or ''))}"
+                     data-teacher="{escape(str(event[4] or ''))}"
+                     data-detail='{escape(json.dumps(detail))}'>
+                    <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span></span>
+                    <span class="ev-name">{escape(str(event[3] or ""))}</span>
+                    <span class="ev-time">{time_range}</span>
+                    <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
+                    {warning}
+                    <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
+                        <input type="hidden" name="schedule_id" value="{event[0]}">
+                        <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
+                        <select name="status" aria-label="Attendance status">{owner_status_options(event_status)}</select>
+                        <button type="submit">Save</button>
+                    </form>
+                </div>
+                """
+            for slot in slots_by_date.get(date_key, []):
+                event_cards += f"""
+                <div class="open-slot">
+                    Open {escape(open_slot_label(slot))} · {escape(str(slot[1] or ""))}
+                </div>
+                """
+            day_badge = "today-badge" if day_obj == date.today() else ""
+            calendar_html += f"""
+            <td class="{muted} {today_class}" data-date="{date_key}">
+                <button type="button" class="day-num {day_badge}" onclick="openPop('{day_obj.day}', '{date_key}', this); event.stopPropagation();">{day_obj.day}</button>
+                {event_cards}
+            </td>
+            """
+        calendar_html += "</tr>"
+
+    rows = ""
+    for item in schedules:
+        lesson_date = item[1]
+        lesson_time = item[2]
+        student_name = item[3]
+        teacher = item[4]
+        classroom = item[5]
+        weekday = item[6]
+        schedule_type = item[7]
+        package_type = item[8]
+        status = item[9]
+
+        rows += f"""
+        <tr>
+            <td>{lesson_date}</td>
+            <td>{weekday}</td>
+            <td>{lesson_time}</td>
+            <td>{student_name}</td>
+            <td>{teacher}</td>
+            <td>{classroom}</td>
+            <td>{schedule_type}</td>
+            <td>{package_type}</td>
+            <td>{status}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='9'>No lessons found for this filter.</td></tr>"
+
+    prev_query = urlencode({
+        "month": prev_month,
+        "teacher": selected_teacher,
+        "student": selected_student,
+        "status_filter": selected_status
+    })
+    next_query = urlencode({
+        "month": next_month,
+        "teacher": selected_teacher,
+        "student": selected_student,
+        "status_filter": selected_status
+    })
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Calendar — H-Music</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+        <style>
+            :root{{
+                --blue:#185FA5;--blue-bg:#E6F1FB;
+                --green:#3B6D11;--green-bg:#EAF3DE;
+                --purple:#534AB7;--purple-bg:#EEEDFE;
+                --pink:#993556;--pink-bg:#FBEAF0;
+                --amber:#854F0B;--amber-bg:#FAEEDA;
+                --coral:#993C1D;--coral-bg:#FAECE7;
+                --s-present:#639922;--s-scheduled:#378ADD;
+                --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
+                --warn-bg:#FFF3E0;--warn-txt:#7D4E00;
+                --last-bg:#FFEBEB;--last-txt:#7D1F1F;
+                --line:#E5E5EA;--bg:#F5F5F7;--surface:#fff;
+                --text:#1C1C1E;--muted:#636366;--faint:#8E8E93;
+                --radius:10px;
+            }}
+            *{{box-sizing:border-box;margin:0;padding:0}}
+            body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+                  background:var(--bg);color:var(--text);font-size:13px}}
+            a{{color:inherit;text-decoration:none}}
+
+            /* ---- top bar ---- */
+            .cal-shell{{display:flex;flex-direction:column;min-height:100vh}}
+            .cal-topbar{{display:flex;align-items:center;justify-content:space-between;
+                         padding:10px 18px;background:var(--surface);
+                         border-bottom:1px solid var(--line);gap:12px;flex-wrap:wrap}}
+            .cal-brand{{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}}
+            .role-pill{{font-size:10px;font-weight:600;padding:2px 9px;border-radius:20px;
+                        background:var(--warn-bg);color:var(--warn-txt)}}
+            .top-btns{{display:flex;gap:8px;flex-wrap:wrap}}
+            .btn{{padding:6px 12px;border:1px solid var(--line);border-radius:8px;
+                  font-size:12px;color:var(--muted);cursor:pointer;
+                  background:var(--surface);font-family:inherit}}
+            .btn:hover{{background:var(--bg)}}
+            .btn-primary{{background:var(--blue);color:#fff;border-color:var(--blue)}}
+            .btn-primary:hover{{background:#0C447C}}
+
+            /* ---- filter bar ---- */
+            .filter-bar{{display:flex;align-items:center;gap:8px;padding:8px 18px;
+                         background:#FAFAFA;border-bottom:1px solid var(--line);flex-wrap:wrap}}
+            .filter-bar select{{font-family:inherit;font-size:11px;padding:4px 8px;
+                                border:1px solid var(--line);border-radius:7px;
+                                background:var(--surface);color:var(--text)}}
+            .filter-label{{font-size:11px;color:var(--faint);font-weight:600}}
+            .hint-text{{margin-left:auto;font-size:10px;color:var(--faint)}}
+
+            /* ---- legend ---- */
+            .legend{{display:flex;gap:10px;align-items:center;padding:6px 18px;
+                     border-bottom:1px solid var(--line);flex-wrap:wrap}}
+            .leg{{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted)}}
+            .leg-bar{{width:12px;height:8px;border-radius:1px;border-left:3px solid transparent}}
+            .leg-dot{{width:11px;height:11px;border-radius:50%;
+                      box-shadow:0 0 0 2px rgba(255,255,255,.95),0 1px 3px rgba(0,0,0,.18)}}
+            .leg-sep{{width:1px;height:12px;background:var(--line)}}
+            .warn-pill{{font-size:9px;padding:1px 5px;border-radius:20px;
+                        background:var(--warn-bg);color:var(--warn-txt)}}
+            .last-pill{{font-size:9px;padding:1px 5px;border-radius:20px;
+                        background:var(--last-bg);color:var(--last-txt)}}
+
+            /* ---- month nav ---- */
+            .month-nav{{display:flex;align-items:center;justify-content:space-between;
+                        padding:10px 18px;gap:12px}}
+            .month-title{{font-size:20px;font-weight:600}}
+
+            /* ---- calendar grid ---- */
+            .cal-grid-wrap{{padding:0 18px 24px;overflow-x:auto}}
+            .cal-table{{width:100%;border-collapse:collapse;
+                        border:1px solid var(--line);border-radius:12px;
+                        overflow:hidden;table-layout:fixed}}
+            .cal-table th{{background:#FAFAFA;color:var(--muted);font-size:10px;
+                           font-weight:600;text-align:center;padding:7px 3px;
+                           border-right:1px solid var(--line);
+                           border-bottom:1px solid var(--line)}}
+            .cal-table th:last-child{{border-right:none}}
+            .cal-table th.today-th{{color:var(--blue);font-weight:700}}
+            .cal-table td{{vertical-align:top;height:110px;padding:3px 2px;
+                           border-right:1px solid var(--line);
+                           border-bottom:1px solid var(--line);
+                           background:var(--surface)}}
+            .cal-table td:last-child{{border-right:none}}
+            .cal-table td.muted-day{{background:#FAFAFA}}
+            .cal-table td.today-cell{{background:#EEF5FD}}
+
+            /* date number — clickable */
+            .day-num{{font-size:11px;color:var(--muted);display:inline-flex;
+                      align-items:center;justify-content:center;
+                      min-width:20px;height:20px;border-radius:50%;
+                      cursor:pointer;margin:0 2px 2px;font-weight:400;
+                      border:0;background:transparent;font-family:inherit}}
+            .day-num:hover{{background:var(--blue-bg);color:var(--blue)}}
+            .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
+
+            /* event card */
+            .ev{{border-radius:3px;padding:3px 4px;font-size:10px;margin-bottom:2px;
+                 border-left:3px solid transparent;line-height:1.35;
+                 cursor:grab;user-select:none}}
+            .ev:active{{cursor:grabbing;opacity:.6}}
+            .ev.dragging{{opacity:.35}}
+            .ev-name{{font-weight:600;display:block;color:inherit}}
+            .ev-head{{display:flex;align-items:center;justify-content:flex-start;margin-bottom:2px}}
+            .ev-time{{font-size:9px;opacity:.75;display:block}}
+            .ev-sub{{font-size:9px;opacity:.6;display:block}}
+            .ev-status-badge{{display:inline-flex;align-items:center;gap:3px;
+                              border-radius:999px;padding:2px 6px;font-size:8px;
+                              line-height:1;font-weight:800;color:#fff;
+                              box-shadow:0 1px 2px rgba(0,0,0,.18)}}
+            .ev-status-badge:before{{content:"";width:6px;height:6px;border-radius:50%;
+                                     background:currentColor;filter:brightness(0) invert(1);
+                                     opacity:.96}}
+            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 34px;
+                                gap:4px;margin-top:4px;align-items:center}}
+            .owner-status-form select,.owner-status-form button{{height:22px;border:1px solid rgba(0,0,0,.16);
+                                border-radius:6px;background:rgba(255,255,255,.92);
+                                font-family:inherit;font-size:9px;color:#1C1C1E;
+                                min-width:0;padding:1px 4px}}
+            .owner-status-form button{{background:#185FA5;color:#fff;border-color:#185FA5;
+                                font-weight:800;cursor:pointer;padding:0 4px}}
+            /* instrument colors */
+            .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
+            .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
+            .ic-violin{{background:var(--purple-bg);border-left-color:var(--purple);color:#3C3489}}
+            .ic-voice{{background:var(--pink-bg);border-left-color:var(--pink);color:#72243E}}
+            .ic-drums{{background:var(--amber-bg);border-left-color:var(--amber);color:#633806}}
+            .ic-ukulele{{background:var(--coral-bg);border-left-color:var(--coral);color:#712B13}}
+            .ic-default{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
+            /* status dot colors */
+            .sd-present{{background:var(--s-present)}}
+            .sd-scheduled{{background:var(--s-scheduled)}}
+            .sd-noshow{{background:var(--s-noshow)}}
+            .sd-cancelled{{background:var(--s-cancelled)}}
+            .sd-excused{{background:var(--s-excused)}}
+            /* drop target */
+            .drop-active{{outline:2px dashed var(--blue);outline-offset:-2px;
+                          background:#EEF5FD !important}}
+            /* open slot */
+            .open-slot{{border-radius:3px;padding:2px 4px;font-size:9px;
+                        margin-bottom:2px;border:1px dashed var(--line);
+                        color:var(--faint)}}
+
+            /* ---- quick-add popover ---- */
+            .popover{{position:fixed;z-index:999;background:var(--surface);
+                      border:1px solid var(--line);border-radius:12px;
+                      padding:14px;width:230px;box-shadow:0 4px 20px rgba(0,0,0,.12);
+                      display:none}}
+            .popover.show{{display:block}}
+            .pop-title{{font-size:13px;font-weight:600;color:var(--text);
+                        margin-bottom:10px;display:flex;align-items:center;
+                        justify-content:space-between}}
+            .pop-close{{cursor:pointer;color:var(--muted);font-size:16px;line-height:1}}
+            .pop-note{{font-size:10px;color:var(--faint);margin-bottom:8px;
+                       padding:5px 8px;background:var(--bg);border-radius:7px;
+                       line-height:1.5}}
+            .pop-sel,.pop-inp{{width:100%;font-family:inherit;font-size:12px;
+                               padding:5px 8px;border:1px solid var(--line);
+                               border-radius:7px;background:var(--bg);
+                               color:var(--text);margin-bottom:6px}}
+            .pop-row{{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px}}
+            .pop-btns{{display:flex;gap:6px;margin-top:8px}}
+            .btn-add-sched{{flex:1;padding:6px;background:var(--blue);color:#fff;
+                            border:none;border-radius:7px;font-size:11px;
+                            cursor:pointer;font-family:inherit;font-weight:600}}
+            .btn-add-sched:hover{{background:#0C447C}}
+            .btn-add-open{{flex:1;padding:6px;background:transparent;
+                           border:1px solid var(--line);color:var(--muted);
+                           border-radius:7px;font-size:11px;cursor:pointer;
+                           font-family:inherit}}
+            .btn-add-open:hover{{background:var(--bg)}}
+
+            /* ---- reschedule modal ---- */
+            .modal-overlay{{position:fixed;inset:0;background:rgba(0,0,0,.35);
+                            display:none;align-items:center;justify-content:center;
+                            z-index:1000}}
+            .modal-overlay.show{{display:flex}}
+            .modal{{background:var(--surface);border-radius:12px;padding:20px;
+                    width:300px;border:1px solid var(--line)}}
+            .modal-title{{font-size:15px;font-weight:600;margin-bottom:6px}}
+            .modal-sub{{font-size:12px;color:var(--muted);margin-bottom:14px;
+                        line-height:1.5}}
+            .modal-opt{{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
+                        border:1px solid var(--line);border-radius:8px;
+                        margin-bottom:8px;cursor:pointer}}
+            .modal-opt.sel{{border-color:var(--blue);background:var(--blue-bg)}}
+            .modal-opt input{{margin-top:2px;accent-color:var(--blue)}}
+            .modal-opt-title{{font-size:13px;font-weight:600;color:var(--text)}}
+            .modal-opt-desc{{font-size:11px;color:var(--muted);margin-top:2px}}
+            .modal-btns{{display:flex;gap:8px;margin-top:14px}}
+            .modal-btn-ok{{flex:1;padding:8px;background:var(--blue);color:#fff;
+                           border:none;border-radius:8px;font-size:13px;
+                           cursor:pointer;font-family:inherit;font-weight:600}}
+            .modal-btn-ok:hover{{background:#0C447C}}
+            .modal-btn-cancel{{flex:1;padding:8px;background:transparent;
+                               border:1px solid var(--line);color:var(--muted);
+                               border-radius:8px;font-size:13px;cursor:pointer;
+                               font-family:inherit}}
+
+            /* ---- lesson detail drawer ---- */
+            .drawer-scrim{{position:fixed;inset:0;background:rgba(0,0,0,.42);
+                           display:none;z-index:1100}}
+            .drawer-scrim.show{{display:block}}
+            .lesson-drawer{{position:fixed;top:0;right:0;bottom:0;width:min(520px,100vw);
+                            background:#222421;color:#f7f7f2;z-index:1101;
+                            transform:translateX(104%);transition:transform .18s ease;
+                            box-shadow:-18px 0 40px rgba(0,0,0,.24);
+                            display:flex;flex-direction:column}}
+            .lesson-drawer.show{{transform:translateX(0)}}
+            .drawer-scroll{{overflow:auto;padding-bottom:18px}}
+            .drawer-head{{padding:26px 28px 22px;border-bottom:1px solid rgba(255,255,255,.11);
+                          position:relative}}
+            .drawer-close{{position:absolute;right:22px;top:22px;width:42px;height:42px;
+                           border-radius:8px;border:1px solid rgba(255,255,255,.18);
+                           background:transparent;color:#fff;font-size:24px;cursor:pointer}}
+            .drawer-status{{display:inline-flex;border-radius:999px;padding:6px 12px;
+                            background:#0d3f78;color:#8fbeff;font-weight:800;font-size:14px;
+                            margin-bottom:12px}}
+            .drawer-head h2{{font-size:25px;line-height:1.1;margin:0 0 6px;font-weight:800}}
+            .drawer-meta{{font-size:17px;color:#c9c7c1;font-weight:700}}
+            .drawer-grid{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(255,255,255,.11)}}
+            .drawer-cell{{padding:18px 28px;border-right:1px solid rgba(255,255,255,.11);
+                          border-bottom:1px solid rgba(255,255,255,.11)}}
+            .drawer-cell:nth-child(2n){{border-right:0}}
+            .drawer-label{{display:block;color:#97958f;font-size:13px;font-weight:900;
+                           text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}}
+            .drawer-value{{font-size:21px;font-weight:800;color:#fff}}
+            .drawer-section{{padding:20px 28px;border-bottom:1px solid rgba(255,255,255,.11)}}
+            .drawer-section h3{{font-size:14px;text-transform:uppercase;letter-spacing:.04em;
+                                color:#97958f;margin:0 0 14px;font-weight:900}}
+            .drawer-field,.drawer-select{{width:100%;border:1px solid rgba(255,255,255,.15);
+                          background:#2b2d2a;color:#fff;border-radius:8px;
+                          padding:11px 12px;font:inherit;font-size:15px}}
+            textarea.drawer-field{{min-height:96px;resize:vertical;line-height:1.45}}
+            .drawer-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}}
+            .drawer-toggle{{display:flex;align-items:center;justify-content:space-between;
+                            gap:16px;padding:10px 0}}
+            .drawer-toggle strong{{display:block;font-size:16px;color:#fff}}
+            .drawer-toggle span{{display:block;color:#c9c7c1;font-size:13px;margin-top:2px}}
+            .drawer-toggle input{{width:42px;height:24px;accent-color:#185FA5}}
+            .drawer-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+            .drawer-action{{min-height:58px;border:1px solid rgba(255,255,255,.16);
+                            border-radius:8px;background:#292b28;color:#fff;
+                            display:flex;align-items:center;justify-content:center;gap:9px;
+                            font:inherit;font-weight:800;font-size:16px;cursor:pointer;
+                            text-align:center;padding:10px}}
+            .drawer-action:hover{{background:#32342f}}
+            .drawer-danger{{color:#ffd2d2;border-color:rgba(255,120,120,.32)}}
+            .drawer-footer{{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;
+                            padding:18px 28px;border-top:1px solid rgba(255,255,255,.11);
+                            background:#222421}}
+            .drawer-footer button{{height:48px;border-radius:8px;font:inherit;font-weight:900;
+                                  font-size:16px;cursor:pointer}}
+            .drawer-discard{{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.18)}}
+            .drawer-save{{background:#f7f7f2;color:#20211f;border:0}}
+            .delete-panel{{display:none;margin-top:14px;border:1px solid rgba(255,120,120,.28);
+                           border-radius:8px;padding:14px;background:rgba(130,35,35,.18)}}
+            .delete-panel.show{{display:block}}
+            .delete-options{{display:grid;gap:8px;margin-bottom:12px}}
+            .delete-options label{{display:flex;gap:8px;align-items:flex-start;color:#fff;font-weight:800}}
+            .date-range{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 12px}}
+            .delete-confirm{{width:100%;height:42px;border-radius:8px;border:0;background:#d92d20;
+                             color:#fff;font:inherit;font-weight:900;cursor:pointer}}
+
+            /* ---- success strip ---- */
+            .success-strip{{background:#EAF3DE;border-radius:8px;padding:8px 14px;
+                            font-size:12px;color:#27500A;margin:0 18px 12px;
+                            display:none;align-items:center;gap:8px}}
+            .success-strip.show{{display:flex}}
+
+            @media(max-width:800px){{
+                .cal-table{{min-width:600px}}
+                .cal-grid-wrap{{padding:0 8px 24px}}
+                .filter-bar,.legend,.month-nav,.cal-topbar{{padding-left:10px;padding-right:10px}}
+            }}
+        </style>
+    </head>
+    <body>
+    <div class="cal-shell">
+
+      <!-- Top bar -->
+      <div class="cal-topbar">
+        <div class="cal-brand">
+          <span class="role-pill">Owner</span>
+          Calendar — {month_label}
+        </div>
+        <div class="top-btns">
+          <a class="btn" href="/">Home</a>
+          <a class="btn" href="/add_schedule">+ Add Schedule</a>
+          <a class="btn" href="/room_schedule">Rooms</a>
+          <a class="btn btn-primary" href="/owner_dashboard">Dashboard</a>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <form class="filter-bar" method="GET" action="/calendar">
+        <input type="hidden" name="month" value="{selected_month}">
+        <span class="filter-label">Filter:</span>
+        <select name="teacher" onchange="this.form.submit()">{teacher_options}</select>
+        <select name="student" onchange="this.form.submit()">{student_options}</select>
+        <select name="status_filter" onchange="this.form.submit()">
+          <option value="">All Status</option>
+          <option value="scheduled" {"selected" if selected_status=="scheduled" else ""}>Scheduled</option>
+          <option value="present"   {"selected" if selected_status=="present"   else ""}>Present</option>
+          <option value="no_show"   {"selected" if selected_status=="no_show"   else ""}>No Show</option>
+          <option value="cancelled" {"selected" if selected_status=="cancelled" else ""}>Cancelled</option>
+          <option value="excused"   {"selected" if selected_status=="excused"   else ""}>Excused</option>
+        </select>
+        <span class="hint-text"><i class="ti ti-click" style="font-size:12px;vertical-align:-1px"></i> Click date to add</span>
+      </form>
+
+      <!-- Legend -->
+      <div class="legend">
+        <span class="filter-label">Course Type:</span>
+        {course_legend_html}
+        <span class="leg-sep"></span>
+        <span class="filter-label">Status:</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-present)"></span>Present</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-scheduled)"></span>Scheduled</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-noshow)"></span>No show</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-cancelled)"></span>Cancelled</span>
+        <span class="leg"><span class="leg-dot" style="background:var(--s-excused)"></span>Excused</span>
+        <span class="leg-sep"></span>
+        <span class="leg"><span class="warn-pill">2 left</span> Low pkg</span>
+        <span class="leg"><span class="last-pill">Last!</span> Final lesson</span>
+      </div>
+
+      <!-- Month nav -->
+      <div class="month-nav">
+        <a class="btn" href="/calendar?{prev_query}"><i class="ti ti-chevron-left"></i> Prev</a>
+        <span class="month-title">{month_label}</span>
+        <a class="btn" href="/calendar?{next_query}">Next <i class="ti ti-chevron-right"></i></a>
+      </div>
+
+      <!-- Success strip -->
+      <div class="success-strip" id="successStrip">
+        <i class="ti ti-check" style="font-size:14px"></i>
+        <span id="successMsg"></span>
+      </div>
+
+      <!-- Calendar grid -->
+      <div class="cal-grid-wrap">
+        <table class="cal-table" id="calTable">
+          <thead><tr>
+            {weekday_header}
+          </tr></thead>
+          <tbody>{calendar_html}</tbody>
+        </table>
+      </div>
+
+    </div><!-- /cal-shell -->
+
+    <!-- Quick-add popover -->
+    <div class="popover" id="popover">
+      <div class="pop-title">
+        <span id="popTitle">Add to —</span>
+        <span class="pop-close" onclick="closePop()"><i class="ti ti-x"></i></span>
+      </div>
+      <select class="pop-sel" id="popTeacher">
+        {teacher_picker_options}
+      </select>
+      <select class="pop-sel" id="popStudent">
+        {student_picker_options}
+      </select>
+      <select class="pop-sel" id="popRoom">
+        <option>Room 1</option><option>Room 2</option><option>Room 3</option>
+      </select>
+      <div class="pop-row">
+        <input type="time" class="pop-inp" id="popStart" value="15:00" style="margin-bottom:0">
+        <input type="time" class="pop-inp" id="popEnd"   value="15:30" style="margin-bottom:0">
+      </div>
+      <div class="pop-btns">
+        <button class="btn-add-sched" onclick="addSchedule()">
+          <i class="ti ti-plus" style="font-size:11px"></i> Add Schedule
+        </button>
+        <button class="btn-add-open" onclick="addOpenSlot()">
+          <i class="ti ti-clock" style="font-size:11px"></i> Open Slot
+        </button>
+      </div>
+    </div>
+
+    <!-- Reschedule modal -->
+    <div class="modal-overlay" id="modalOverlay">
+      <div class="modal">
+        <div class="modal-title">Move lesson</div>
+        <div class="modal-sub" id="modalSub"></div>
+        <div class="modal-opt sel" id="optOnce" onclick="selOpt('once')">
+          <input type="radio" name="rscope" value="once" checked>
+          <div>
+            <div class="modal-opt-title">This lesson only</div>
+            <div class="modal-opt-desc">Move just this occurrence. Future lessons unchanged.</div>
+          </div>
+        </div>
+        <div class="modal-opt" id="optForward" onclick="selOpt('forward')">
+          <input type="radio" name="rscope" value="forward">
+          <div>
+            <div class="modal-opt-title">This and all future lessons</div>
+            <div class="modal-opt-desc">Shift this and every recurring lesson after it.</div>
+          </div>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn-cancel" onclick="closeModal()">Cancel</button>
+          <button class="modal-btn-ok"     onclick="confirmReschedule()">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lesson detail drawer -->
+    <div class="drawer-scrim" id="drawerScrim" onclick="closeLessonDrawer()"></div>
+    <aside class="lesson-drawer" id="lessonDrawer" aria-hidden="true">
+      <div class="drawer-scroll">
+        <div class="drawer-head">
+          <button class="drawer-close" type="button" onclick="closeLessonDrawer()"><i class="ti ti-x"></i></button>
+          <div class="drawer-status" id="drawerStatus">Scheduled</div>
+          <h2 id="drawerStudent">Student</h2>
+          <div class="drawer-meta" id="drawerCourse">Lesson</div>
+        </div>
+        <div class="drawer-grid">
+          <div class="drawer-cell"><span class="drawer-label">Date</span><div class="drawer-value" id="drawerDateLabel"></div></div>
+          <div class="drawer-cell"><span class="drawer-label">Time</span><div class="drawer-value" id="drawerTimeLabel"></div></div>
+          <div class="drawer-cell"><span class="drawer-label">Room</span><div class="drawer-value" id="drawerRoomLabel"></div></div>
+          <div class="drawer-cell"><span class="drawer-label">Type</span><div class="drawer-value" id="drawerTypeLabel"></div></div>
+        </div>
+        <div class="drawer-section">
+          <h3>Attendance</h3>
+          <select class="drawer-select" id="drawerAttendance">{owner_status_options("scheduled")}</select>
+        </div>
+        <div class="drawer-section">
+          <h3>Lesson Note</h3>
+          <textarea class="drawer-field" id="drawerNotes" placeholder="What did you cover? Progress, homework, notes for next lesson"></textarea>
+        </div>
+        <div class="drawer-section">
+          <h3>Reminders</h3>
+          <label class="drawer-toggle">
+            <span><strong>Remind parent before lesson</strong><span>Queue parent email + app reminder</span></span>
+            <input type="checkbox" id="drawerParentReminder">
+          </label>
+          <label class="drawer-toggle">
+            <span><strong>Send practice reminder after</strong><span>Includes homework / lesson note</span></span>
+            <input type="checkbox" id="drawerPracticeReminder">
+          </label>
+          <label class="drawer-toggle">
+            <span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span>
+            <input type="checkbox" id="drawerLowBalanceReminder">
+          </label>
+        </div>
+        <div class="drawer-section">
+          <h3>Reschedule</h3>
+          <div class="drawer-row">
+            <input class="drawer-field" type="date" id="drawerNewDate">
+            <input class="drawer-field" type="time" id="drawerNewTime">
+          </div>
+          <div class="drawer-row">
+            <input class="drawer-field" type="number" id="drawerDuration" min="5" step="5">
+            <input class="drawer-field" id="drawerRoom" placeholder="Room">
+          </div>
+          <select class="drawer-select" id="drawerRescheduleScope">
+            <option value="once">This lesson only</option>
+            <option value="forward">This and all following lessons</option>
+          </select>
+        </div>
+        <div class="drawer-section">
+          <h3>Actions</h3>
+          <div class="drawer-actions">
+            <button type="button" class="drawer-action" onclick="submitDrawerReschedule()"><i class="ti ti-calendar"></i>Reschedule</button>
+            <button type="button" class="drawer-action" onclick="messageParentFromDrawer()"><i class="ti ti-message"></i>Message parent</button>
+            <button type="button" class="drawer-action" onclick="viewStudentFromDrawer()"><i class="ti ti-user"></i>View student</button>
+            <button type="button" class="drawer-action" onclick="renewPackageFromDrawer()"><i class="ti ti-refresh"></i>Renew package</button>
+            <button type="button" class="drawer-action" onclick="duplicateLessonFromDrawer()"><i class="ti ti-copy"></i>Duplicate lesson</button>
+            <button type="button" class="drawer-action drawer-danger" onclick="toggleDeletePanel()"><i class="ti ti-trash"></i>Delete lesson</button>
+          </div>
+          <div class="delete-panel" id="deletePanel">
+            <div class="delete-options">
+              <label><input type="radio" name="deleteScope" value="current" checked> Delete this lesson only</label>
+              <label><input type="radio" name="deleteScope" value="following"> Delete this and following lessons</label>
+              <label><input type="radio" name="deleteScope" value="range"> Delete lessons in date range</label>
+            </div>
+            <div class="date-range">
+              <input class="drawer-field" type="date" id="deleteStartDate">
+              <input class="drawer-field" type="date" id="deleteEndDate">
+            </div>
+            <button type="button" class="delete-confirm" onclick="submitDrawerDelete()">Confirm delete</button>
+          </div>
+        </div>
+      </div>
+      <div class="drawer-footer">
+        <button type="button" class="drawer-discard" onclick="closeLessonDrawer()">Discard</button>
+        <button type="button" class="drawer-save" onclick="saveLessonDetails()">Save changes</button>
+      </div>
+    </aside>
+
+    <script>
+    // ---- instrument color helper ----
+    function instrClass(courseName) {{
+      const n = (courseName || '').toLowerCase();
+      if (n.includes('piano'))   return 'ic-piano';
+      if (n.includes('guitar'))  return 'ic-guitar';
+      if (n.includes('violin'))  return 'ic-violin';
+      if (n.includes('voice') || n.includes('vocal')) return 'ic-voice';
+      if (n.includes('drum'))    return 'ic-drums';
+      if (n.includes('ukulele')) return 'ic-ukulele';
+      return 'ic-default';
+    }}
+    function statusDotClass(st) {{
+      if (st === 'present')   return 'sd-present';
+      if (st === 'no_show' || st === 'no-show') return 'sd-noshow';
+      if (st && st.startsWith('cancel')) return 'sd-cancelled';
+      if (st === 'excused_24h' || st === 'excused') return 'sd-excused';
+      return 'sd-scheduled';
+    }}
+
+    // ---- lesson detail drawer ----
+    let activeLesson = null;
+    function lessonDateLabel(dateStr) {{
+      if (!dateStr) return '';
+      const d = new Date(dateStr + 'T00:00:00');
+      return d.toLocaleDateString(undefined, {{ weekday:'short', month:'short', day:'numeric' }});
+    }}
+    function timeToInputValue(timeText) {{
+      if (!timeText) return '';
+      const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
+      if (!m) return timeText;
+      let h = parseInt(m[1], 10);
+      const min = m[2];
+      const ap = (m[3] || '').toUpperCase();
+      if (ap === 'PM' && h < 12) h += 12;
+      if (ap === 'AM' && h === 12) h = 0;
+      return String(h).padStart(2, '0') + ':' + min;
+    }}
+    function openLessonDrawer(el, eventObj) {{
+      if (eventObj && (eventObj.target.closest('.owner-status-form') || eventObj.defaultPrevented)) return;
+      activeLesson = JSON.parse(el.dataset.detail || '{{}}');
+      document.getElementById('drawerStatus').textContent = activeLesson.status_label || 'Scheduled';
+      document.getElementById('drawerStudent').textContent = activeLesson.student || 'Student';
+      document.getElementById('drawerCourse').textContent =
+        `${{activeLesson.course_name || 'Lesson'}} · ${{activeLesson.teacher || ''}}`;
+      document.getElementById('drawerDateLabel').textContent = lessonDateLabel(activeLesson.date);
+      document.getElementById('drawerTimeLabel').textContent = activeLesson.time_range || activeLesson.time || '';
+      document.getElementById('drawerRoomLabel').textContent = activeLesson.classroom || '-';
+      document.getElementById('drawerTypeLabel').textContent = activeLesson.schedule_type || activeLesson.package_type || 'Lesson';
+      document.getElementById('drawerAttendance').value = activeLesson.status || 'scheduled';
+      document.getElementById('drawerNotes').value = activeLesson.notes || '';
+      document.getElementById('drawerParentReminder').checked = !!activeLesson.parent_lesson_reminder_enabled;
+      document.getElementById('drawerPracticeReminder').checked = !!activeLesson.practice_reminder_enabled;
+      document.getElementById('drawerLowBalanceReminder').checked = !!activeLesson.low_balance_alert_enabled;
+      document.getElementById('drawerNewDate').value = activeLesson.date || '';
+      document.getElementById('drawerNewTime').value = timeToInputValue(activeLesson.time || '');
+      document.getElementById('drawerDuration').value = activeLesson.duration || 30;
+      document.getElementById('drawerRoom').value = activeLesson.classroom || '';
+      document.getElementById('deleteStartDate').value = activeLesson.date || '';
+      document.getElementById('deleteEndDate').value = activeLesson.date || '';
+      document.getElementById('deletePanel').classList.remove('show');
+      document.getElementById('drawerScrim').classList.add('show');
+      document.getElementById('lessonDrawer').classList.add('show');
+      document.getElementById('lessonDrawer').setAttribute('aria-hidden', 'false');
+    }}
+    function closeLessonDrawer() {{
+      document.getElementById('drawerScrim').classList.remove('show');
+      document.getElementById('lessonDrawer').classList.remove('show');
+      document.getElementById('lessonDrawer').setAttribute('aria-hidden', 'true');
+      activeLesson = null;
+    }}
+    function ownerLessonAction(payload) {{
+      return fetch('/owner_schedule_action', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
+        body: JSON.stringify(payload)
+      }}).then(async r => {{
+        const data = await r.json().catch(() => ({{ok:false,error:'Invalid server response'}}));
+        if (!r.ok || !data.ok) throw new Error(data.error || 'Action failed');
+        return data;
+      }});
+    }}
+    function saveLessonDetails() {{
+      if (!activeLesson) return;
+      ownerLessonAction({{
+        action: 'save_details',
+        schedule_id: activeLesson.id,
+        status: document.getElementById('drawerAttendance').value,
+        notes: document.getElementById('drawerNotes').value,
+        parent_lesson_reminder_enabled: document.getElementById('drawerParentReminder').checked ? 1 : 0,
+        practice_reminder_enabled: document.getElementById('drawerPracticeReminder').checked ? 1 : 0,
+        low_balance_alert_enabled: document.getElementById('drawerLowBalanceReminder').checked ? 1 : 0
+      }}).then(d => {{
+        showSuccess(d.message || 'Lesson saved.');
+        setTimeout(() => location.reload(), 900);
+      }}).catch(err => alert(err.message));
+    }}
+    function submitDrawerReschedule() {{
+      if (!activeLesson) return;
+      ownerLessonAction({{
+        action: 'reschedule',
+        schedule_id: activeLesson.id,
+        new_date: document.getElementById('drawerNewDate').value,
+        new_time: document.getElementById('drawerNewTime').value,
+        duration: document.getElementById('drawerDuration').value,
+        classroom: document.getElementById('drawerRoom').value,
+        scope: document.getElementById('drawerRescheduleScope').value
+      }}).then(d => {{
+        showSuccess(d.message || 'Lesson rescheduled.');
+        setTimeout(() => location.reload(), 1000);
+      }}).catch(err => alert(err.message));
+    }}
+    function toggleDeletePanel() {{
+      document.getElementById('deletePanel').classList.toggle('show');
+    }}
+    function submitDrawerDelete() {{
+      if (!activeLesson) return;
+      const scope = document.querySelector('[name=deleteScope]:checked').value;
+      const rangeText = scope === 'range'
+        ? `${{document.getElementById('deleteStartDate').value}} to ${{document.getElementById('deleteEndDate').value}}`
+        : scope;
+      if (!confirm(`Delete ${{activeLesson.student}} lesson(s): ${{rangeText}}?`)) return;
+      ownerLessonAction({{
+        action: 'delete',
+        schedule_id: activeLesson.id,
+        scope,
+        start_date: document.getElementById('deleteStartDate').value,
+        end_date: document.getElementById('deleteEndDate').value
+      }}).then(d => {{
+        showSuccess(d.message || 'Lesson deleted.');
+        closeLessonDrawer();
+        setTimeout(() => location.reload(), 1000);
+      }}).catch(err => alert(err.message));
+    }}
+    function messageParentFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/messages?student=${{encodeURIComponent(activeLesson.student || '')}}`;
+    }}
+    function viewStudentFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/students?student=${{encodeURIComponent(activeLesson.student || '')}}`;
+    }}
+    function renewPackageFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/invoices?student=${{encodeURIComponent(activeLesson.student || '')}}`;
+    }}
+    function duplicateLessonFromDrawer() {{
+      if (!activeLesson) return;
+      window.location.href = `/add_schedule?prefill_date=${{activeLesson.date}}&prefill_teacher=${{encodeURIComponent(activeLesson.teacher || '')}}&prefill_student=${{encodeURIComponent(activeLesson.student || '')}}&prefill_room=${{encodeURIComponent(activeLesson.classroom || '')}}&prefill_start=${{encodeURIComponent(timeToInputValue(activeLesson.time || ''))}}`;
+    }}
+
+    // ---- drag-and-drop ----
+    let dragId = null, dragStudent = null, dragTeacher = null;
+    let dragDate = null, dragTime = null, pendingDrop = null;
+
+    document.querySelectorAll('.ev[data-id]').forEach(el => {{
+      el.addEventListener('dragstart', e => {{
+        if (e.target.closest('.owner-status-form')) {{
+          e.preventDefault();
+          return;
+        }}
+        dragId      = el.dataset.id;
+        dragStudent = el.dataset.student;
+        dragTeacher = el.dataset.teacher;
+        dragDate    = el.dataset.date;
+        dragTime    = el.dataset.time;
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      }});
+      el.addEventListener('dragend', () => {{
+        el.classList.remove('dragging');
+        document.querySelectorAll('.drop-active').forEach(c => c.classList.remove('drop-active'));
+      }});
+    }});
+
+    document.querySelectorAll('.cal-table td[data-date]').forEach(cell => {{
+      cell.addEventListener('dragover', e => {{
+        e.preventDefault();
+        cell.classList.add('drop-active');
+      }});
+      cell.addEventListener('dragleave', () => cell.classList.remove('drop-active'));
+      cell.addEventListener('drop', e => {{
+        e.preventDefault();
+        cell.classList.remove('drop-active');
+        if (!dragId || cell.dataset.date === dragDate) return;
+        pendingDrop = {{ id: dragId, from: dragDate, to: cell.dataset.date,
+                         student: dragStudent, time: dragTime }};
+        document.getElementById('modalSub').innerHTML =
+          `Moving <b>${{dragStudent}}</b> lesson<br>${{dragDate}} &rarr; ${{cell.dataset.date}}`;
+        selOpt('once');
+        document.getElementById('modalOverlay').classList.add('show');
+      }});
+    }});
+
+    function selOpt(scope) {{
+      document.getElementById('optOnce').classList.toggle('sel', scope === 'once');
+      document.getElementById('optForward').classList.toggle('sel', scope === 'forward');
+      document.querySelector('[name=rscope][value="once"]').checked    = scope === 'once';
+      document.querySelector('[name=rscope][value="forward"]').checked = scope === 'forward';
+    }}
+    function closeModal() {{
+      document.getElementById('modalOverlay').classList.remove('show');
+      pendingDrop = null;
+    }}
+    function confirmReschedule() {{
+      if (!pendingDrop) return;
+      const scope = document.querySelector('[name=rscope]:checked').value;
+      const movedTo = pendingDrop.to;
+      fetch('/reschedule_schedule', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
+        body: JSON.stringify({{
+          schedule_id: pendingDrop.id,
+          new_date:    pendingDrop.to,
+          scope:       scope
+        }})
+      }})
+      .then(r => r.json())
+      .then(d => {{
+        closeModal();
+        if (d.ok) {{
+          showSuccess(`Moved to ${{movedTo}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}. Teacher notified.`);
+          setTimeout(() => location.reload(), 1800);
+        }} else {{
+          if ((d.error || '').toLowerCase().includes('permission') || (d.error || '').toLowerCase().includes('logged')) {{
+            alert('Please log in as Owner again before moving lessons.');
+            window.location.href = '/owner_login';
+            return;
+          }}
+          alert('Error: ' + d.error);
+        }}
+      }})
+      .catch(() => alert('Network error'));
+    }}
+
+    // ---- quick-add popover ----
+    let activePopDate = null;
+    function openPop(day, dateStr, el) {{
+      activePopDate = dateStr;
+      document.getElementById('popTitle').textContent = 'Add to ' + dateStr;
+      const pop = document.getElementById('popover');
+      const rect = el.getBoundingClientRect();
+      let top  = rect.bottom + window.scrollY + 4;
+      let left = rect.left  + window.scrollX;
+      if (left + 238 > window.innerWidth) left = window.innerWidth - 242;
+      pop.style.top  = top  + 'px';
+      pop.style.left = left + 'px';
+      pop.classList.add('show');
+      setTimeout(() => document.addEventListener('click', outsideClick), 10);
+    }}
+    function closePop() {{
+      document.getElementById('popover').classList.remove('show');
+      document.removeEventListener('click', outsideClick);
+      activePopDate = null;
+    }}
+    function outsideClick(e) {{
+      if (!document.getElementById('popover').contains(e.target)) closePop();
+    }}
+    function fmt12(t) {{
+      if (!t) return '';
+      const [h, m] = t.split(':').map(Number);
+      return `${{h % 12 || 12}}:${{String(m).padStart(2,'0')}}${{h >= 12 ? 'PM' : 'AM'}}`;
+    }}
+    function addSchedule() {{
+      if (!activePopDate) return;
+      const teacher = document.getElementById('popTeacher').value;
+      const student = document.getElementById('popStudent').value;
+      const room    = document.getElementById('popRoom').value;
+      const start   = document.getElementById('popStart').value;
+      const end     = document.getElementById('popEnd').value;
+      // Redirect to add_schedule with pre-filled params
+      window.location.href = `/add_schedule?prefill_date=${{activePopDate}}&prefill_teacher=${{encodeURIComponent(teacher)}}&prefill_student=${{encodeURIComponent(student)}}&prefill_room=${{encodeURIComponent(room)}}&prefill_start=${{encodeURIComponent(start)}}`;
+    }}
+    function addOpenSlot() {{
+      if (!activePopDate) return;
+      const teacher = document.getElementById('popTeacher').value;
+      const start   = document.getElementById('popStart').value;
+      const end     = document.getElementById('popEnd').value;
+      fetch('/add_open_slot_quick', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-CSRFToken': window.HMUSIC_CSRF_TOKEN || ''}},
+        body: JSON.stringify({{ teacher, date: activePopDate,
+                                start_time: start, end_time: end }})
+      }})
+      .then(r => r.json())
+      .then(d => {{
+        closePop();
+        if (d.ok) {{
+          showSuccess(`Open slot added: ${{activePopDate}} ${{fmt12(start)}}`);
+          setTimeout(() => location.reload(), 1500);
+        }}
+      }});
+    }}
+    function showSuccess(msg) {{
+      const s = document.getElementById('successStrip');
+      document.getElementById('successMsg').textContent = msg;
+      s.classList.add('show');
+      setTimeout(() => s.classList.remove('show'), 4000);
+    }}
+    </script>
+    </body>
+    </html>
+    """
+
+
+@app.route("/calendar/today")
+def calendar_today():
+    today = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT lesson_time, student_name, teacher, classroom, location
+    FROM schedule
+    WHERE lesson_date = ?
+    ORDER BY lesson_time
+    """, (today,))
+
+    schedules = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for s in schedules:
+        rows += f"""
+        <tr>
+            <td>{s[0]}</td>
+            <td><a href="/student/{s[1]}">{s[1]}</a></td>
+            <td>{s[2]}</td>
+            <td>{s[3]}</td>
+            <td>{s[4]}</td>
+        </tr>
+        """
+
+    return f"""
+    <h1>Today's Schedule</h1>
+    <p>{today}</p>
+
+    <table border="1" cellpadding="8">
+        <tr>
+            <th>Time</th>
+            <th>Student</th>
+            <th>Teacher</th>
+            <th>Room</th>
+            <th>Location</th>
+        </tr>
+        {rows}
+    </table>
+
+    <br>
+    <a href="/calendar">Back Calendar</a>
+    """
+
+@app.route("/add_schedule", methods=["GET", "POST"])
+def add_schedule():
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teachers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT UNIQUE,
+        hourly_rate REAL DEFAULT 30
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classrooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_name TEXT UNIQUE
+    )
+    """)
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO teachers (teacher_name)
+    VALUES (?)
+    """, [
+        ("Zhenwei",),
+        ("Jason",),
+        ("Hyewon",)
+    ])
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO classrooms (room_name)
+    VALUES (?)
+    """, [
+        ("Room 1",),
+        ("Room 2",),
+        ("Room 3",),
+        ("Trial Room",)
+    ])
+
+    conn.commit()
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        student_mode = request.form.get("student_mode", "existing")
+        allow_unassigned_teacher_schedule = (
+            action == "create_unassigned_teacher_schedule"
+            and require_teacher()
+            and not require_owner()
+        )
+        temporary_schedule_note = (request.form.get("temporary_schedule_note") or "").strip()
+
+        if (action == "request_student_setup" or student_mode == "new") and require_teacher() and not require_owner():
+            teacher_name = session.get("teacher_name")
+            requested_student = (request.form.get("requested_student") or request.form.get("new_student_name") or "").strip()
+            parent_name = (request.form.get("new_parent_name") or "").strip()
+            parent_contact = (request.form.get("new_parent_contact") or "").strip()
+            request_note = (request.form.get("request_note") or request.form.get("new_student_note") or "").strip()
+            if not requested_student:
+                conn.close()
+                return "<h1>Please enter the student name.</h1><p><a href='/add_schedule'>Back</a></p>"
+
+            subject = f"Teacher Student Setup Request - {requested_student}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=requested_student,
+                parent_id=None,
+                teacher_name=teacher_name,
+                thread_type="teacher_student_setup",
+                related_type=None,
+                related_id=None
+            )
+            body = (
+                f"{teacher_name} tried to add a schedule for {requested_student}, but the student is not active in their enrollment list."
+            )
+            if parent_name or parent_contact:
+                body += f"\n\nParent info: {parent_name or 'N/A'} | {parent_contact or 'N/A'}"
+            if request_note:
+                body += f"\n\nTeacher note: {request_note}"
+            add_message(thread_id, "teacher", teacher_name, "owner", body)
+            create_notification(
+                "owner",
+                "owner",
+                "Teacher student setup request",
+                f"{teacher_name} needs {requested_student} added or assigned before scheduling.",
+                f"/message_thread/{thread_id}"
+            )
+            conn.close()
+            return f"""
+            <h1>Request Sent</h1>
+            <p>Owner has been notified to add or assign {requested_student} before you schedule lessons.</p>
+            <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+            """
+
+        student_name = request.form.get("student_name")
+        teacher = request.form.get("teacher")
+        if require_teacher() and not require_owner():
+            teacher = session.get("teacher_name")
+            teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher)
+
+            if not teacher_linked and not allow_unassigned_teacher_schedule:
+                hidden_fields = {
+                    "action": "create_unassigned_teacher_schedule",
+                    "student_name": student_name,
+                    "teacher": teacher,
+                    "classroom": request.form.get("classroom"),
+                    "weekday": request.form.get("weekday"),
+                    "lesson_time": request.form.get("lesson_time"),
+                    "schedule_type": request.form.get("schedule_type"),
+                    "package_type": request.form.get("package_type"),
+                    "start_date": request.form.get("start_date"),
+                    "course_type_id": request.form.get("course_type_id")
+                }
+                hidden_html = "".join([
+                    f'<input type="hidden" name="{escape(str(k))}" value="{escape(str(v or ""))}">'
+                    for k, v in hidden_fields.items()
+                ])
+
+                conn.close()
+                return f"""
+                <html>
+                <head>
+                    <title>Student Setup Required</title>
+                    <style>
+                        body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+                        .container {{ max-width:720px; background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+                        textarea, input {{ width:100%; box-sizing:border-box; padding:12px 14px; margin:8px 0 18px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }}
+                        textarea {{ min-height:150px; }}
+                        button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:800; text-decoration:none; margin-right:8px; }}
+                        a.button.secondary {{ background:#111827; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>Student Not In Your Enrollment List</h1>
+                        <p><b>{student_name}</b> is not in your active enrollment list yet. You may create a temporary schedule only if you write the student name and reason in the note below. Owner will be notified automatically.</p>
+                        <form method="POST" action="/add_schedule">
+                            {hidden_html}
+                            Required note to owner:<br>
+                            <textarea name="temporary_schedule_note" required placeholder="Example: Student name: {escape(str(student_name or ''))}. This is my new trial student. Please add them to my list / create enrollment."></textarea>
+                            <button type="submit">Create Temporary Schedule + Notify Owner</button>
+                            <a class="button secondary" href="/teacher_dashboard">Back</a>
+                        </form>
+                    </div>
+                </body>
+                </html>
+                """
+
+            if not teacher_linked and allow_unassigned_teacher_schedule and not temporary_schedule_note:
+                conn.close()
+                return "<h1>Temporary schedule note is required.</h1><p><a href='/add_schedule'>Back</a></p>"
+
+        classroom = request.form.get("classroom")
+        weekday = request.form.get("weekday")
+        lesson_time = request.form.get("lesson_time")
+        schedule_type = request.form.get("schedule_type")
+        package_type = request.form.get("package_type")
+        start_date = request.form.get("start_date")
+        course_type_id = request.form.get("course_type_id")
+        custom_duration = request.form.get("custom_duration")
+        lesson_format = request.form.get("lesson_format") or "private"
+        group_size = request.form.get("group_size")
+        group_student_names = (request.form.get("group_student_names") or "").strip()
+        schedule_note = ""
+        if allow_unassigned_teacher_schedule:
+            schedule_note = (
+                f"Temporary teacher-created schedule for unassigned student: {student_name}. "
+                f"Teacher note: {temporary_schedule_note}"
+            )
+
+        cursor.execute("""
+        SELECT
+            id,
+            name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            is_group
+        FROM course_types
+        WHERE id = ?
+        """, (course_type_id,))
+
+        course = cursor.fetchone()
+
+        if not course:
+            conn.close()
+            return "<h1>Course Type not found</h1>"
+
+        course_id = course[0]
+        course_name = course[1]
+        duration = course[2]
+        student_billing_method = course[3]
+        student_price = course[4]
+        teacher_billing_method = course[5]
+        teacher_pay = course[6]
+        is_group = course[7]
+
+        is_custom_program = "custom" in (course_name or "").lower()
+        if is_custom_program and custom_duration:
+            duration = int(float(custom_duration))
+        if is_custom_program:
+            is_group = 1 if lesson_format == "group" else 0
+
+        effective_pricing = get_final_pricing(
+            student_name,
+            teacher,
+            course_type_id,
+            group_size if is_group else None,
+            duration_override=duration
+        )
+
+        if not effective_pricing:
+            conn.close()
+            return "<h1>Final pricing not found</h1>"
+
+        course_id = effective_pricing["course_id"]
+        course_name = effective_pricing["course_name"]
+        if not is_custom_program:
+            duration = effective_pricing["duration"]
+
+        student_billing_method = effective_pricing["student_billing_method"]
+        student_price = effective_pricing["student_price"]
+
+        teacher_billing_method = effective_pricing["teacher_billing_method"]
+        teacher_pay = effective_pricing["teacher_pay"]
+
+        student_charge_amount = effective_pricing["student_charge_amount"]
+        teacher_pay_amount = effective_pricing["teacher_pay_amount"]
+        if not is_custom_program:
+            is_group = effective_pricing["is_group"]
+        if is_custom_program:
+            student_charge_amount = calculate_course_amount(student_billing_method, student_price, duration)
+            teacher_pay_amount = calculate_course_amount(teacher_billing_method, teacher_pay, duration)
+            custom_note = f"Custom Program: {duration} mins, {'group' if is_group else 'private'}."
+            if is_group:
+                custom_note += f" Group size: {group_size or ''}. Students: {group_student_names or student_name}."
+            schedule_note = (schedule_note + " " + custom_note).strip()
+
+        if schedule_type == "one_time":
+            number_of_lessons = 1
+        elif package_type == "10":
+            number_of_lessons = 10
+        elif package_type == "12":
+            number_of_lessons = 12
+        else:
+            number_of_lessons = 24
+
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+        generated_count = 0
+        auto_link_student_teacher(cursor, student_name, teacher)
+
+        for i in range(number_of_lessons):
+            if schedule_type == "weekly":
+                lesson_date_obj = start_date_obj + timedelta(days=7 * i)
+            else:
+                lesson_date_obj = start_date_obj
+
+            lesson_date = lesson_date_obj.strftime("%Y-%m-%d")
+
+            cursor.execute("""
+            INSERT INTO schedule (
+                student_name,
+                teacher,
+                classroom,
+                weekday,
+                lesson_time,
+                schedule_type,
+                package_type,
+                start_date,
+                lesson_date,
+                course_type_id,
+                course_type_name,
+                duration,
+                student_billing_method,
+                student_price,
+                teacher_billing_method,
+                teacher_pay,
+                student_charge_amount,
+                teacher_pay_amount,
+                is_group,
+                notes,
+                group_size,
+                group_student_names,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                student_name,
+                teacher,
+                classroom,
+                weekday,
+                lesson_time,
+                schedule_type,
+                package_type,
+                start_date,
+                lesson_date,
+                course_id,
+                course_name,
+                duration,
+                student_billing_method,
+                student_price,
+                teacher_billing_method,
+                teacher_pay,
+                student_charge_amount,
+                teacher_pay_amount,
+                is_group,
+                schedule_note,
+                int(group_size or 0) if is_group else None,
+                group_student_names if is_group else None,
+                "scheduled"
+            ))
+
+            generated_count += 1
+
+        conn.commit()
+        conn.close()
+        back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
+
+        if allow_unassigned_teacher_schedule:
+            subject = f"Temporary Schedule Created - {student_name}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=None,
+                teacher_name=teacher,
+                thread_type="teacher_student_setup",
+                related_type=None,
+                related_id=None
+            )
+            body = (
+                f"{teacher} created a temporary schedule for {student_name}, but the student is not in their active enrollment list.\n\n"
+                f"Course: {course_name}\n"
+                f"Start Date: {start_date}\n"
+                f"Time: {lesson_time}\n"
+                f"Room: {classroom}\n\n"
+                f"Teacher note: {temporary_schedule_note}"
+            )
+            add_message(thread_id, "teacher", teacher, "owner", body)
+            create_notification(
+                "owner",
+                "owner",
+                "Temporary schedule needs owner review",
+                f"{teacher} created a temporary schedule for {student_name}. Please add/assign enrollment.",
+                f"/message_thread/{thread_id}",
+                related_type="teacher_student_setup"
+            )
+
+        student_charge_line = "" if require_teacher() and not require_owner() else f"<p>Student Charge Per Lesson: ${student_charge_amount}</p>"
+
+        return f"""
+        <h1>Schedule Generated!</h1>
+
+        <p>{generated_count} lesson(s) created for {student_name}.</p>
+        <p>Teacher: {teacher}</p>
+        <p>Room: {classroom}</p>
+        <p>Course: {course_name}</p>
+        <p>Duration: {duration} mins</p>
+        {student_charge_line}
+        <p>Start Date: {start_date}</p>
+        <p>Time: {lesson_time}</p>
+
+        <a href="{back_href}">Back</a><br>
+        <a href="/add_schedule">Add Another Schedule</a><br>
+        <a href="/course_types">Manage Course Types</a>
+        """
+
+    if require_teacher() and not require_owner():
+        teachers = [(session.get("teacher_name"),)]
+    else:
+        cursor.execute("""
+        SELECT teacher_name
+        FROM teachers
+        ORDER BY teacher_name
+        """)
+        teachers = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT room_name
+    FROM classrooms
+    ORDER BY room_name
+    """)
+    classrooms = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        id,
+        name,
+        duration,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group
+    FROM course_types
+    WHERE active = 1
+    ORDER BY name, duration
+    """)
+    course_types = cursor.fetchall()
+
+    if require_teacher() and not require_owner():
+        cursor.execute("""
+        SELECT DISTINCT student_name
+        FROM (
+            SELECT student_name
+            FROM enrollments
+            WHERE teacher_name = ?
+            AND status = 'active'
+            UNION
+            SELECT name AS student_name
+            FROM students
+            WHERE teacher = ?
+            UNION
+            SELECT student_name
+            FROM schedule
+            WHERE teacher = ?
+        )
+        WHERE student_name IS NOT NULL
+        AND student_name != ''
+        ORDER BY student_name
+        """, (
+            session.get("teacher_name"),
+            session.get("teacher_name"),
+            session.get("teacher_name")
+        ))
+        student_rows = cursor.fetchall()
+    else:
+        cursor.execute("SELECT name FROM students ORDER BY name")
+        student_rows = cursor.fetchall()
+
+    conn.close()
+
+    prefill_date = (request.args.get("prefill_date") or "").strip()
+    prefill_teacher = (request.args.get("prefill_teacher") or "").strip()
+    prefill_student = (request.args.get("prefill_student") or "").strip()
+    prefill_room = (request.args.get("prefill_room") or "").strip()
+    prefill_start = (request.args.get("prefill_start") or "").strip()
+    prefill_weekday = ""
+    if prefill_date:
+        try:
+            prefill_weekday = datetime.strptime(prefill_date, "%Y-%m-%d").strftime("%A")
+        except ValueError:
+            prefill_weekday = ""
+
+    teacher_options = ""
+    for teacher in teachers:
+        selected = "selected" if prefill_teacher and teacher[0] == prefill_teacher else ""
+        teacher_options += f"""
+        <option value="{teacher[0]}" {selected}>{teacher[0]}</option>
+        """
+
+    classroom_options = ""
+    for classroom in classrooms:
+        selected = "selected" if prefill_room and classroom[0] == prefill_room else ""
+        classroom_options += f"""
+        <option value="{classroom[0]}" {selected}>{classroom[0]}</option>
+        """
+
+    course_options = ""
+    for c in course_types:
+        group_label = "Group" if c[7] == 1 else "Single"
+
+        course_options += f"""
+        <option value="{c[0]}">
+            {c[1]} - {c[2]} mins - {group_label}
+        </option>
+        """
+
+    if not course_options:
+        course_options = '<option value="">No active course types found</option>'
+
+    student_options = "".join([
+        f'<option value="{escape(s[0])}" {"selected" if prefill_student and s[0] == prefill_student else ""}>{escape(s[0])}</option>'
+        for s in student_rows
+    ]) or '<option value="">No students found</option>'
+
+    back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else "/calendar"
+    teacher_disabled = "disabled" if require_teacher() and not require_owner() else ""
+    teacher_student_mode_html = ""
+    existing_student_input = f'<input name="student_name" value="{escape(prefill_student)}" required>'
+    new_student_request_html = ""
+    submit_label = "Generate Schedule"
+
+    if require_teacher() and not require_owner():
+        existing_student_input = f'<select id="student_name" name="student_name">{student_options}</select>'
+        teacher_student_mode_html = """
+                <div class="student-mode">
+                    <label><input type="radio" name="student_mode" value="existing" checked onchange="toggleStudentMode()"> Existing student</label>
+                    <label><input type="radio" name="student_mode" value="new" onchange="toggleStudentMode()"> New student - notify owner</label>
+                </div>
+        """
+        new_student_request_html = """
+                <div id="new-student-box" class="custom-box" style="display:none;">
+                    <b>New Student Request</b><br><br>
+                    Student Name:<br>
+                    <input name="new_student_name" placeholder="Student name">
+
+                    Parent Name:<br>
+                    <input name="new_parent_name" placeholder="Optional">
+
+                    Parent Contact:<br>
+                    <input name="new_parent_contact" placeholder="Phone or email, optional">
+
+                    Note to Owner:<br>
+                    <textarea name="new_student_note" placeholder="Please add this student/enrollment so I can schedule lessons."></textarea>
+                </div>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Add Schedule</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                max-width: 760px;
+            }}
+
+            input, select, textarea {{
+                width: 100%;
+                padding: 9px;
+                margin-top: 6px;
+                margin-bottom: 16px;
+                font-size: 14px;
+            }}
+            .student-mode {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                margin: 8px 0 16px;
+            }}
+            .student-mode label {{
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+                padding: 12px;
+                font-weight: 800;
+            }}
+            .student-mode input {{
+                width: auto;
+                margin: 0 6px 0 0;
+            }}
+            textarea {{
+                min-height: 92px;
+            }}
+            .custom-box {{
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                background: #f8f8ff;
+                padding: 14px;
+                margin: 6px 0 18px;
+            }}
+
+            button {{
+                background: #635bff;
+                color: white;
+                border: none;
+                padding: 10px 16px;
+                border-radius: 8px;
+                font-weight: bold;
+            }}
+
+            a {{
+                color: #635bff;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+
+            <h1>Add Schedule</h1>
+
+            <p>
+                <a href="{back_href}">Back</a> |
+                <a href="/course_types">Manage Course Types</a>
+            </p>
+
+            <form method="POST">
+
+                Student:<br>
+                {teacher_student_mode_html}
+                <div id="existing-student-box">
+                    {existing_student_input}
+                </div>
+                {new_student_request_html}
+
+                <div id="schedule-fields">
+                Teacher:<br>
+                <select name="teacher" {teacher_disabled}>
+                    {teacher_options}
+                </select>
+
+                Room:<br>
+                <select name="classroom">
+                    {classroom_options}
+                </select>
+
+                Course Type:<br>
+                <select name="course_type_id" id="course_type_id" onchange="toggleCustomProgram()">
+                    {course_options}
+                </select>
+
+                <div class="custom-box" id="custom-program-box">
+                    <b>Custom Program Options</b><br><br>
+                    Duration Minutes:<br>
+                    <input type="number" name="custom_duration" value="60" min="15" step="5">
+
+                    Lesson Format:<br>
+                    <select name="lesson_format" id="lesson_format" onchange="toggleGroupFields()">
+                        <option value="private">Private</option>
+                        <option value="group">Group</option>
+                    </select>
+
+                    <div id="group-fields">
+                        Group Size:<br>
+                        <input type="number" name="group_size" min="2" step="1" placeholder="Example: 3">
+
+                        Group Student Names:<br>
+                        <textarea name="group_student_names" placeholder="Write all students in this group, separated by commas."></textarea>
+                    </div>
+                </div>
+
+                Day of Week:<br>
+                <select name="weekday">
+                    <option value="Monday" {"selected" if prefill_weekday=="Monday" else ""}>Monday</option>
+                    <option value="Tuesday" {"selected" if prefill_weekday=="Tuesday" else ""}>Tuesday</option>
+                    <option value="Wednesday" {"selected" if prefill_weekday=="Wednesday" else ""}>Wednesday</option>
+                    <option value="Thursday" {"selected" if prefill_weekday=="Thursday" else ""}>Thursday</option>
+                    <option value="Friday" {"selected" if prefill_weekday=="Friday" else ""}>Friday</option>
+                    <option value="Saturday" {"selected" if prefill_weekday=="Saturday" else ""}>Saturday</option>
+                    <option value="Sunday" {"selected" if prefill_weekday=="Sunday" else ""}>Sunday</option>
+                </select>
+
+                Time:<br>
+                <input type="time" name="lesson_time" value="{escape(prefill_start)}" required>
+
+                Schedule Type:<br>
+                <select name="schedule_type">
+                    <option value="one_time">One Time</option>
+                    <option value="weekly">Weekly</option>
+                </select>
+
+                Package:<br>
+                <select name="package_type">
+                    <option value="10">10 Lessons</option>
+                    <option value="12">12 Lessons</option>
+                    <option value="unlimited">Unlimited</option>
+                </select>
+
+                Start Date:<br>
+                <input type="date" name="start_date" value="{escape(prefill_date)}" required>
+                </div>
+
+                <button id="submit-button" type="submit">{submit_label}</button>
+
+            </form>
+
+        </div>
+        <script>
+            function selectedCourseText() {{
+                const select = document.getElementById("course_type_id");
+                return select && select.options[select.selectedIndex] ? select.options[select.selectedIndex].text.toLowerCase() : "";
+            }}
+            function toggleCustomProgram() {{
+                const box = document.getElementById("custom-program-box");
+                const isCustom = selectedCourseText().includes("custom");
+                box.style.display = isCustom ? "block" : "none";
+                toggleGroupFields();
+            }}
+            function toggleGroupFields() {{
+                const groupFields = document.getElementById("group-fields");
+                const format = document.getElementById("lesson_format");
+                groupFields.style.display = format && format.value === "group" ? "block" : "none";
+            }}
+            function toggleStudentMode() {{
+                const selected = document.querySelector("input[name='student_mode']:checked");
+                const mode = selected ? selected.value : "existing";
+                const existingBox = document.getElementById("existing-student-box");
+                const newBox = document.getElementById("new-student-box");
+                const existingInput = document.getElementById("student_name");
+                const newStudentInput = document.querySelector("input[name='new_student_name']");
+                const scheduleFields = document.getElementById("schedule-fields");
+                const submitButton = document.getElementById("submit-button");
+                if (!newBox || !existingBox) return;
+                if (mode === "new") {{
+                    existingBox.style.display = "none";
+                    newBox.style.display = "block";
+                    if (existingInput) existingInput.removeAttribute("required");
+                    if (newStudentInput) newStudentInput.setAttribute("required", "required");
+                    if (scheduleFields) {{
+                        scheduleFields.style.display = "none";
+                        scheduleFields.querySelectorAll("input, select, textarea").forEach(el => el.disabled = true);
+                    }}
+                    submitButton.textContent = "Send New Student Request to Owner";
+                }} else {{
+                    existingBox.style.display = "block";
+                    newBox.style.display = "none";
+                    if (existingInput) existingInput.setAttribute("required", "required");
+                    if (newStudentInput) newStudentInput.removeAttribute("required");
+                    if (scheduleFields) {{
+                        scheduleFields.style.display = "block";
+                        scheduleFields.querySelectorAll("input, select, textarea").forEach(el => el.disabled = false);
+                    }}
+                    submitButton.textContent = "Generate Schedule";
+                }}
+            }}
+            toggleCustomProgram();
+            toggleStudentMode();
+        </script>
+    </body>
+    </html>
+    """
+
+
+@app.route("/room_schedule")
+def room_schedule():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        lesson_date,
+        lesson_time,
+        classroom,
+        student_name,
+        teacher,
+        location
+    FROM schedule
+    ORDER BY lesson_date, classroom, lesson_time
+    """)
+
+    schedules = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for s in schedules:
+        rows += f"""
+        <tr>
+            <td>{s[0]}</td>
+            <td>{s[1]}</td>
+            <td>{s[2]}</td>
+            <td><a href="/student/{s[3]}">{s[3]}</a></td>
+            <td>{s[4]}</td>
+            <td>{s[5]}</td>
+        </tr>
+        """
+
+    return f"""
+    <h1>Room Schedule</h1>
+
+    <p>This page helps teachers and owner find available rooms.</p>
+
+    <table border="1" cellpadding="8">
+        <tr>
+            <th>Date</th>
+            <th>Time</th>
+            <th>Room</th>
+            <th>Student</th>
+            <th>Teacher</th>
+            <th>Location</th>
+        </tr>
+
+        {rows}
+    </table>
+
+    <br>
+
+    <a href="/calendar">Back to Calendar</a>
+    """
+
+@app.route("/room_availability", methods=["GET", "POST"])
+def room_availability():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    selected_date = request.form.get("selected_date")
+
+    if not selected_date:
+        selected_date = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT room_name
+    FROM classrooms
+    ORDER BY room_name
+    """)
+    rooms = [row[0] for row in cursor.fetchall()]
+
+    time_slots = [
+        "09:00", "09:30",
+        "10:00", "10:30",
+        "11:00", "11:30",
+        "12:00", "12:30",
+        "13:00", "13:30",
+        "14:00", "14:30",
+        "15:00", "15:30",
+        "16:00", "16:30",
+        "17:00", "17:30",
+        "18:00", "18:30",
+        "19:00", "19:30",
+        "20:00"
+    ]
+
+    header_cells = ""
+    for room in rooms:
+        header_cells += f"<th>{room}</th>"
+
+    table_rows = ""
+
+    for time_slot in time_slots:
+        row_html = f"<tr><td class='time-cell'>{time_slot}</td>"
+
+        for room in rooms:
+            slot_start = datetime.strptime(time_slot, "%H:%M")
+            slot_end = slot_start + timedelta(minutes=30)
+
+            cursor.execute("""
+            SELECT student_name, teacher, lesson_time
+            FROM schedule
+            WHERE lesson_date = ?
+            AND classroom = ?
+            """, (selected_date, room))
+
+            all_bookings = cursor.fetchall()
+            bookings = []
+
+            for booking in all_bookings:
+                booking_time = datetime.strptime(booking[2], "%H:%M")
+
+                if slot_start <= booking_time < slot_end:
+                    bookings.append(booking)
+
+            if len(bookings) == 0:
+                cell_class = "available"
+                cell_content = "Available"
+
+            elif len(bookings) == 1:
+                cell_class = "occupied"
+
+                student_name = bookings[0][0]
+                teacher = bookings[0][1]
+                actual_time = bookings[0][2]
+
+                cell_content = f"""
+                {actual_time}<br>
+                <b>Occupied</b>
+                """
+
+            else:
+                cell_class = "conflict"
+
+                conflict_items = ""
+                for booking in bookings:
+                    student_name = booking[0]
+                    teacher = booking[1]
+                    actual_time = booking[2]
+
+                    conflict_items += f"""
+                    {actual_time}<br>
+                    """
+
+                cell_content = f"""
+                <strong>CONFLICT</strong><br>
+                {conflict_items}
+                """
+
+            row_html += f"""
+            <td class="{cell_class}">
+                {cell_content}
+            </td>
+            """
+
+        row_html += "</tr>"
+        table_rows += row_html
+
+    conn.close()
+
+    return f"""
+    <html>
+    <head>
+        <title>Room Availability</title>
+
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+
+            h1 {{
+                margin-bottom: 20px;
+            }}
+
+            form {{
+                margin-bottom: 25px;
+            }}
+
+            input, button {{
+                padding: 8px;
+                font-size: 14px;
+            }}
+
+            button {{
+                background: #5b5cff;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 9px 16px;
+                font-weight: bold;
+            }}
+
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+
+            th {{
+                background: #eeeeff;
+                padding: 12px;
+                border: 1px solid #ddd;
+            }}
+
+            td {{
+                padding: 12px;
+                border: 1px solid #ddd;
+                text-align: center;
+                min-width: 120px;
+            }}
+
+            .time-cell {{
+                font-weight: bold;
+                background: #f5f5f5;
+            }}
+
+            .available {{
+                background: #e8f8ed;
+                color: #1b7f3a;
+                font-weight: bold;
+            }}
+
+            .occupied {{
+                background: #e5e5e5;
+                color: #333;
+            }}
+
+            .conflict {{
+                background: #ffdddd;
+                color: #b00020;
+                font-weight: bold;
+            }}
+
+            .legend {{
+                margin-top: 20px;
+            }}
+
+            .legend span {{
+                display: inline-block;
+                padding: 8px 12px;
+                border-radius: 6px;
+                margin-right: 10px;
+                font-weight: bold;
+            }}
+
+            .green {{
+                background: #e8f8ed;
+                color: #1b7f3a;
+            }}
+
+            .gray {{
+                background: #e5e5e5;
+                color: #333;
+            }}
+
+            .red {{
+                background: #ffdddd;
+                color: #b00020;
+            }}
+
+            a.button {{
+                display: inline-block;
+                margin-top: 25px;
+                background: #5b5cff;
+                color: white;
+                padding: 10px 16px;
+                border-radius: 6px;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Room Availability</h1>
+
+            <form method="POST">
+                Date:
+                <input type="date" name="selected_date" value="{selected_date}">
+                <button type="submit">View</button>
+            </form>
+
+            <div class="legend">
+                <span class="green">Available</span>
+                <span class="gray">Occupied</span>
+                <span class="red">Conflict</span>
+            </div>
+
+            <table>
+                <tr>
+                    <th>Time</th>
+                    {header_cells}
+                </tr>
+                {table_rows}
+            </table>
+
+            <a class="button" href="/calendar">Back to Calendar</a>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route("/teacher_dashboard")
+def teacher_dashboard():
+
+    if session.get("user_role") != "teacher":
+        return redirect("/teacher_login")
+
+    ensure_v321_schema()
+
+    teacher_name = session.get("teacher_name")
+    unread_messages = get_unread_message_count("teacher", teacher_name)
+    missing_homework_count = get_missing_homework_count(teacher_name)
+    today_obj = date.today()
+    today = today_obj.strftime("%Y-%m-%d")
+    selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
+    view = request.args.get("view", "home")
+    selected_week = request.args.get("week")
+    if selected_week:
+        week_start = datetime.strptime(selected_week, "%Y-%m-%d").date()
+    else:
+        week_start = today_obj - timedelta(days=today_obj.weekday())
+    week_end = week_start + timedelta(days=6)
+
+    month_year = int(selected_month[:4])
+    month_num = int(selected_month[5:7])
+    month_start = date(month_year, month_num, 1)
+    if month_num == 12:
+        month_end = date(month_year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end = date(month_year, month_num + 1, 1) - timedelta(days=1)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE s.teacher = ?
+    AND s.lesson_date LIKE ?
+    ORDER BY s.lesson_date, s.lesson_time
+    """, (teacher_name, selected_month + "%"))
+    lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE s.teacher = ?
+    AND s.lesson_date >= ?
+    AND s.lesson_date <= ?
+    ORDER BY s.lesson_date, s.lesson_time
+    """, (teacher_name, week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
+    week_lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(teacher_pay_amount), 0),
+        COUNT(*)
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date >= ?
+    AND lesson_date <= ?
+    """, (teacher_name, month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")))
+    payroll_summary = cursor.fetchone()
+
+    cursor.execute("SELECT COALESCE(hourly_rate, 0) FROM teachers WHERE teacher_name=?", (teacher_name,))
+    rate_row = cursor.fetchone()
+    teacher_rate = rate_row[0] if rate_row else 0
+    conn.close()
+
+    completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
+    today_lessons = [lesson for lesson in lessons if lesson[1] == today]
+    actual_payroll = round(payroll_summary[0] or 0, 2)
+    projected_payroll = round(payroll_summary[1] or 0, 2)
+    pending_count = unread_messages + missing_homework_count
+    today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
+    homework_badge = hstudio_badge(missing_homework_count)
+
+    def status_label(status):
+        raw_status = (status or "scheduled").lower().strip()
+        label_overrides = {
+            "excused_24h": "Cancel > 24h",
+            "excused": "Cancel > 24h",
+            "teacher_cancelled": "Teacher Cancel",
+            "teacher_cancel": "Teacher Cancel",
+            "cancel_3h": "Cancel < 3h",
+            "cancel_12h": "Cancel < 12h",
+            "cancel_24h": "Cancel < 24h",
+        }
+        if raw_status in label_overrides:
+            return label_overrides[raw_status]
+        key = hstudio_status_key(raw_status)
+        if key == "present":
+            return "Present"
+        if key == "noshow":
+            return "No show"
+        if key == "cancelled":
+            return "Cancelled"
+        return "Scheduled"
+
+    def lesson_row(lesson):
+        key = hstudio_status_key(lesson[5])
+        return f"""
+        <a class="td-lesson-row {key}" href="/add_lesson/{lesson[3]}">
+            <div class="td-date">{hstudio_date_short(lesson[1])}</div>
+            <div>
+                <div class="td-student">{escape(lesson[3] or '-')}</div>
+                <div class="td-meta">{lesson[2] or '-'} · {escape(lesson[4] or '-')}</div>
+            </div>
+            <div class="td-status">{status_label(lesson[5])}</div>
+        </a>
+        """
+
+    def status_options(current_status):
+        options = [
+            ("scheduled", "Scheduled"),
+            ("present", "Present"),
+            ("no_show", "No Show"),
+            ("cancel_3h", "Cancel < 3h"),
+            ("cancel_12h", "Cancel < 12h"),
+            ("cancel_24h", "Cancel < 24h"),
+            ("excused_24h", "Cancel > 24h"),
+            ("teacher_cancelled", "Teacher Cancel"),
+            ("makeup", "Makeup"),
+        ]
+        current_status = current_status or "scheduled"
+        return "".join(
+            f'<option value="{value}" {"selected" if value == current_status else ""}>{label}</option>'
+            for value, label in options
+        )
+
+    schedule_return_url = f"/teacher_dashboard?view=schedule&week={week_start.strftime('%Y-%m-%d')}"
+
+    def lesson_color_class(lesson):
+        course_name = (lesson[7] or "").lower()
+        schedule_type = (lesson[10] or "").lower()
+        try:
+            minutes = int(float(lesson[6] or 30))
+        except (TypeError, ValueError):
+            minutes = 30
+        try:
+            group_size = int(float(lesson[9] or 0))
+        except (TypeError, ValueError):
+            group_size = 0
+        is_group = bool(lesson[8]) or "group" in course_name
+        if "trial" in course_name or "trial" in schedule_type:
+            return "trial"
+        if is_group:
+            return "group-large" if group_size >= 4 else "group-small"
+        if minutes <= 30:
+            return "private-30"
+        if minutes <= 45:
+            return "private-45"
+        if minutes <= 60:
+            return "private-60"
+        return "private-long"
+
+    def teacher_time_range(time_text, duration):
+        return format_lesson_time_range(time_text, duration)
+
+    def _t_status_dot(st):
+        if st == "present":   return "sd-present"
+        if st in ("no_show","no-show"): return "sd-noshow"
+        if st and st.startswith("cancel"): return "sd-cancelled"
+        if st in ("excused_24h","excused"): return "sd-excused"
+        return "sd-scheduled"
+
+    def _t_status_label(st):
+        if st == "present":
+            return "Present"
+        if st in ("no_show", "no-show"):
+            return "No show"
+        if st and st.startswith("cancel"):
+            return "Cancelled"
+        if st in ("excused_24h", "excused"):
+            return "Excused"
+        return "Scheduled"
+
+    TEACHER_CAL_CSS = """
+    <style>
+    :root{
+        --blue:#185FA5;--blue-bg:#E6F1FB;
+        --green:#3B6D11;--green-bg:#EAF3DE;
+        --purple:#534AB7;--purple-bg:#EEEDFE;
+        --pink:#993556;--pink-bg:#FBEAF0;
+        --amber:#854F0B;--amber-bg:#FAEEDA;
+        --coral:#993C1D;--coral-bg:#FAECE7;
+        --s-present:#639922;--s-scheduled:#378ADD;
+        --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
+    }
+    .t-status-badge{display:inline-flex;align-items:center;gap:4px;
+                    border-radius:999px;padding:2px 7px;font-size:9px;
+                    line-height:1;font-weight:900;color:#fff;
+                    box-shadow:0 1px 2px rgba(0,0,0,.18)}
+    .t-status-badge:before{content:"";width:6px;height:6px;border-radius:50%;
+                           background:currentColor;filter:brightness(0) invert(1)}
+    .sd-present  {background:var(--s-present)}
+    .sd-scheduled{background:var(--s-scheduled)}
+    .sd-noshow   {background:var(--s-noshow)}
+    .sd-cancelled{background:var(--s-cancelled)}
+    .sd-excused  {background:var(--s-excused)}
+    .calendar-event{border-left:4px solid var(--blue)}
+    .calendar-event{cursor:grab;user-select:none}
+    .calendar-event.dragging{opacity:.35}
+    .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
+    .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:2px 8px}
+    .calendar-day-head strong:hover{background:rgba(24,95,165,.14)}
+    .teacher-rs-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:9999}
+    .teacher-rs-overlay.show{display:flex}
+    .teacher-rs-modal{background:#fff;color:#172033;border-radius:14px;padding:20px;width:330px;box-shadow:0 18px 60px rgba(0,0,0,.28)}
+    .teacher-rs-modal h3{margin:0 0 6px;font-size:18px}
+    .teacher-rs-modal p{margin:0 0 14px;color:#667085;font-size:13px;line-height:1.45}
+    .teacher-rs-option{border:1px solid #D9DEE8;border-radius:10px;padding:10px;margin:8px 0;display:flex;gap:8px;cursor:pointer}
+    .teacher-rs-option.sel{border-color:var(--blue);background:var(--blue-bg)}
+    .teacher-rs-buttons{display:flex;gap:8px;margin-top:14px}
+    .teacher-rs-buttons button{flex:1;border:1px solid #D9DEE8;border-radius:10px;padding:9px 10px;font-weight:700;cursor:pointer}
+    .teacher-rs-ok{background:var(--blue);border-color:var(--blue)!important;color:white}
+    </style>
+    """
+
+    def calendar_event(lesson):
+        time_range = teacher_time_range(lesson[2], lesson[6])
+        dot = _t_status_dot(lesson[5] or "scheduled")
+        status_text = _t_status_label(lesson[5] or "scheduled")
+        course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
+        course_style = course_calendar_style(course_color)
+        return f"""
+        <div class="calendar-event"
+             draggable="true" style="border-left-width:3px;{course_style}"
+             data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
+             data-time="{escape(str(lesson[2] or ''))}"
+            data-student="{escape(str(lesson[3] or ''))}"
+            data-teacher="{escape(str(teacher_name or ''))}">
+            <div class="event-top">
+                <span class="event-time">
+                  <span class="t-status-badge {dot}">{status_text}</span>
+                  <span style="display:block;margin-top:3px">{time_range}</span>
+                </span>
+            </div>
+            <a class="event-student" href="/add_lesson/{lesson[3]}">{escape(lesson[3] or '-')}</a>
+            <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
+            <form method="POST" action="/update_lesson_status" class="event-status-form">
+                <input type="hidden" name="schedule_id" value="{lesson[0]}">
+                <input type="hidden" name="return_to" value="{schedule_return_url}">
+                <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
+                <button type="submit">Save</button>
+            </form>
+        </div>
+        """
+
+    if view in ("schedule", "week"):
+        schedule_mode = request.args.get("mode", "week")
+        if schedule_mode not in ("week", "month"):
+            schedule_mode = "week"
+
+        if schedule_mode == "month":
+            month_grid_start = month_start - timedelta(days=month_start.weekday())
+            month_grid_end = month_end + timedelta(days=(6 - month_end.weekday()))
+            by_date = {}
+            for lesson in lessons:
+                by_date.setdefault(lesson[1], []).append(lesson)
+            day_columns = ""
+            current_day = month_grid_start
+            while current_day <= month_grid_end:
+                day_key = current_day.strftime("%Y-%m-%d")
+                day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+                if not day_events:
+                    day_events = "<div class='calendar-empty'>No lessons</div>"
+                day_columns += f"""
+                <section class="calendar-day {'today' if day_key == today else ''}" data-date="{day_key}">
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
+                    {day_events}
+                </section>
+                """
+                current_day += timedelta(days=1)
+            prev_month_date = (month_start - timedelta(days=1)).strftime("%Y-%m")
+            next_month_date = (month_end + timedelta(days=1)).strftime("%Y-%m")
+            controls = f"""
+                <a href="/teacher_dashboard?view=schedule&mode=month&month={prev_month_date}">Previous</a>
+                <a href="/teacher_dashboard?view=schedule&mode=month&month={next_month_date}">Next</a>
+                <form method="GET" class="schedule-controls">
+                    <input type="hidden" name="view" value="schedule">
+                    <input type="hidden" name="mode" value="month">
+                    <input type="month" name="month" value="{selected_month}">
+                    <button type="submit">View</button>
+                </form>
+            """
+        else:
+            by_date = {}
+            for lesson in week_lessons:
+                by_date.setdefault(lesson[1], []).append(lesson)
+            day_columns = ""
+            for offset in range(7):
+                current_day = week_start + timedelta(days=offset)
+                day_key = current_day.strftime("%Y-%m-%d")
+                day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+                if not day_events:
+                    day_events = "<div class='calendar-empty'>No lessons</div>"
+                day_columns += f"""
+                <section class="calendar-day {'today' if day_key == today else ''}" data-date="{day_key}">
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
+                    {day_events}
+                </section>
+                """
+            prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
+            next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+            controls = f"""
+                <a href="/teacher_dashboard?view=schedule&mode=week&week={prev_week}">Previous</a>
+                <a href="/teacher_dashboard?view=schedule&mode=week&week={next_week}">Next</a>
+                <form method="GET" class="schedule-controls">
+                    <input type="hidden" name="view" value="schedule">
+                    <input type="hidden" name="mode" value="week">
+                    <input type="date" name="week" value="{week_start.strftime('%Y-%m-%d')}">
+                    <button type="submit">View</button>
+                </form>
+            """
+
+        week_active = "active" if schedule_mode == "week" else ""
+        month_active = "active" if schedule_mode == "month" else ""
+        content = f"""
+            <div class="schedule-head">
+                <div class="schedule-title">
+                    <h1>My Schedule</h1>
+                    <p>Daily lessons, class time, and attendance status.</p>
+                </div>
+                <div class="schedule-controls">
+                    <div class="schedule-tabs">
+                        <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
+                        <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
+                    </div>
+                    {controls}
+                </div>
+            </div>
+            {TEACHER_CAL_CSS}
+        <div class="calendar-grid">{day_columns}</div>
+        <div class="teacher-rs-overlay" id="teacherRsOverlay">
+            <div class="teacher-rs-modal">
+                <h3>Move lesson</h3>
+                <p id="teacherRsText">Choose how to apply this schedule change.</p>
+                <label class="teacher-rs-option sel" id="teacherOptOnce" onclick="teacherScope('once')">
+                    <input type="radio" name="teacher_scope" value="once" checked>
+                    <span><b>This lesson only</b><br><small>Move just this class.</small></span>
+                </label>
+                <label class="teacher-rs-option" id="teacherOptForward" onclick="teacherScope('forward')">
+                    <input type="radio" name="teacher_scope" value="forward">
+                    <span><b>This and all future lessons</b><br><small>Shift this lesson and future recurring lessons.</small></span>
+                </label>
+                <div class="teacher-rs-buttons">
+                    <button type="button" onclick="teacherCloseRs()">Cancel</button>
+                    <button type="button" class="teacher-rs-ok" onclick="teacherConfirmRs()">Confirm</button>
+                </div>
+            </div>
+        </div>
+        <script>
+        let teacherDrag = null;
+        function teacherAddOnDate(dateStr) {{
+            window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
+        }}
+        document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
+            card.addEventListener("dragstart", e => {{
+                teacherDrag = {{
+                    id: card.dataset.id,
+                    from: card.dataset.date,
+                    student: card.dataset.student
+                }};
+                card.classList.add("dragging");
+                e.dataTransfer.effectAllowed = "move";
+            }});
+            card.addEventListener("dragend", () => {{
+                card.classList.remove("dragging");
+                document.querySelectorAll(".calendar-day.drop-active").forEach(day => day.classList.remove("drop-active"));
+            }});
+        }});
+        document.querySelectorAll(".calendar-day[data-date]").forEach(day => {{
+            day.addEventListener("dragover", e => {{
+                if (!teacherDrag) return;
+                e.preventDefault();
+                day.classList.add("drop-active");
+            }});
+            day.addEventListener("dragleave", () => day.classList.remove("drop-active"));
+            day.addEventListener("drop", e => {{
+                e.preventDefault();
+                day.classList.remove("drop-active");
+                if (!teacherDrag || teacherDrag.from === day.dataset.date) return;
+                teacherDrag.to = day.dataset.date;
+                document.getElementById("teacherRsText").innerHTML = `Moving <b>${{teacherDrag.student}}</b><br>${{teacherDrag.from}} &rarr; ${{teacherDrag.to}}`;
+                teacherScope("once");
+                document.getElementById("teacherRsOverlay").classList.add("show");
+            }});
+        }});
+        function teacherScope(scope) {{
+            document.getElementById("teacherOptOnce").classList.toggle("sel", scope === "once");
+            document.getElementById("teacherOptForward").classList.toggle("sel", scope === "forward");
+            document.querySelector('[name="teacher_scope"][value="once"]').checked = scope === "once";
+            document.querySelector('[name="teacher_scope"][value="forward"]').checked = scope === "forward";
+        }}
+        function teacherCloseRs() {{
+            document.getElementById("teacherRsOverlay").classList.remove("show");
+            teacherDrag = null;
+        }}
+        function teacherConfirmRs() {{
+            if (!teacherDrag) return;
+            const scope = document.querySelector('[name="teacher_scope"]:checked').value;
+            fetch("/reschedule_schedule", {{
+                method: "POST",
+                headers: {{"Content-Type": "application/json"}},
+                body: JSON.stringify({{
+                    schedule_id: teacherDrag.id,
+                    new_date: teacherDrag.to,
+                    scope
+                }})
+            }})
+            .then(r => r.json())
+            .then(data => {{
+                if (!data.ok) {{
+                    alert(data.error || "Could not move lesson.");
+                    return;
+                }}
+                location.reload();
+            }})
+            .catch(() => alert("Network error"));
+        }}
+        </script>
+        """
+        return hstudio_teacher_dark_shell(
+            teacher_name or "Teacher",
+            unread_messages,
+            content,
+            active="schedule",
+            missing_homework_count=missing_homework_count
+        )
+
+    today_html = "".join(lesson_row(lesson) for lesson in today_lessons)
+    if not today_html:
+        today_html = "<div class='td-empty'>No lessons scheduled today.</div>"
+
+    rate_display = f"{hstudio_money_whole(teacher_rate)} / lesson" if teacher_rate else "Course rule"
+    note_student = today_lessons[0][3] if today_lessons else (lessons[0][3] if lessons else "")
+    note_href = f"/add_lesson/{note_student}" if note_student else "/teacher_dashboard"
+    content = f"""
+        <div class="td-greeting">
+            <h1>Hello, {escape(teacher_name or 'Teacher')}</h1>
+            <span>{today_label}</span>
+        </div>
+
+        <div class="td-kpis">
+            <div class="td-kpi">
+                <div class="td-kpi-label">Lessons This Month</div>
+                <div class="td-kpi-value green">{completed_count}</div>
+                <div class="td-kpi-sub">Completed</div>
+            </div>
+            <div class="td-kpi">
+                <div class="td-kpi-label">Payroll This Month</div>
+                <div class="td-kpi-value">{hstudio_money_whole(actual_payroll)}</div>
+                <div class="td-kpi-sub">Projected {hstudio_money_whole(projected_payroll)}</div>
+            </div>
+            <div class="td-kpi">
+                <div class="td-kpi-label">Pending Items</div>
+                <div class="td-kpi-value gold">{pending_count}</div>
+                <div class="td-kpi-sub">{unread_messages} unread message(s) · {missing_homework_count} missing homework</div>
+            </div>
+        </div>
+
+        <div class="td-layout">
+            <section class="td-card td-records">
+                <h2>Today</h2>
+                {today_html}
+                <a class="td-down" href="/teacher_dashboard?view=schedule"><i class="ti ti-arrow-down"></i></a>
+            </section>
+            <div class="td-stack">
+                <section class="td-card">
+                    <h2>Quick Actions</h2>
+                    <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i>This Week</a>
+                    <a class="td-action" href="/teacher_dashboard?view=schedule&mode=month"><i class="ti ti-calendar-month"></i>This Month</a>
+                    <a class="td-action" href="/teacher_missing_homework"><i class="ti ti-alert-circle"></i>Missing Homework {homework_badge}</a>
+                    <a class="td-action" href="/teacher_lesson_notes"><i class="ti ti-notes"></i>Write Lesson Notes</a>
+                    <a class="td-action" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i>Reschedule</a>
+                    <a class="td-action" href="/open_slots"><i class="ti ti-clock-plus"></i>Open Slot Settings</a>
+                    <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>Request a Sub</a>
+                </section>
+                <section class="td-card">
+                    <h2>Payroll Summary · {month_start.strftime("%B")}</h2>
+                    <div class="td-pay-row"><span>Completed Lessons</span><strong>{completed_count}</strong></div>
+                    <div class="td-pay-row"><span>Lesson Rate</span><strong>{rate_display}</strong></div>
+                    <div class="td-pay-row"><span>Settled Payroll</span><strong class="green">{hstudio_money_whole(actual_payroll)} settled</strong></div>
+                    <div class="td-pay-row"><span>Projected Total</span><strong class="gold">{hstudio_money_whole(projected_payroll)}</strong></div>
+                </section>
+            </div>
+        </div>
+    """
+    return hstudio_teacher_dark_shell(
+        teacher_name or "Teacher",
+        unread_messages,
+        content,
+        active="home",
+        missing_homework_count=missing_homework_count
+    )
+
+
+@app.route("/teacher_missing_homework/save", methods=["POST"])
+def teacher_missing_homework_save():
+    if session.get("user_role") != "teacher":
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    schedule_id = request.form.get("schedule_id")
+    lesson_content = (request.form.get("lesson_content") or "").strip() or "Lesson note"
+    performance = (request.form.get("performance") or "").strip()
+    homework = (request.form.get("homework") or "").strip()
+
+    if not schedule_id or not homework:
+        return redirect("/teacher_missing_homework?error=1")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    filters = ["id = ?", "LOWER(COALESCE(status, '')) = 'present'"]
+    params = [schedule_id]
+    if teacher_name:
+        filters.append("teacher = ?")
+        params.append(teacher_name)
+
+    cursor.execute(f"""
+        SELECT student_name, lesson_date
+        FROM schedule
+        WHERE {" AND ".join(filters)}
+    """, params)
+    schedule_row = cursor.fetchone()
+    if not schedule_row:
+        conn.close()
+        return redirect("/teacher_missing_homework?error=1")
+
+    student_name, lesson_date = schedule_row
+
+    cursor.execute("""
+        SELECT id
+        FROM lessons
+        WHERE LOWER(TRIM(student_name)) = LOWER(TRIM(?))
+        AND lesson_date = ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (student_name, lesson_date))
+    lesson_row = cursor.fetchone()
+
+    if lesson_row:
+        cursor.execute("""
+            UPDATE lessons
+            SET lesson_content = ?, performance = ?, homework = ?
+            WHERE id = ?
+        """, (lesson_content, performance, homework, lesson_row[0]))
+    else:
+        cursor.execute("""
+            INSERT INTO lessons (student_name, lesson_content, performance, homework, lesson_date)
+            VALUES (?, ?, ?, ?, ?)
+        """, (student_name, lesson_content, performance, homework, lesson_date))
+
+    conn.commit()
+    conn.close()
+    return redirect("/teacher_missing_homework?saved=1")
+
+
+@app.route("/teacher_missing_homework")
+def teacher_missing_homework():
+    if session.get("user_role") != "teacher":
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    unread_messages = get_unread_message_count("teacher", teacher_name)
+    missing_homework_count = get_missing_homework_count(teacher_name)
+    lessons = get_missing_homework_lessons(teacher_name=teacher_name)
+
+    rows = ""
+    for lesson in lessons:
+        schedule_id = escape(str(lesson[0] or ""))
+        student_display = escape(str(lesson[1] or "-"))
+        date_display = escape(str(lesson[3] or "-"))
+        time_display = escape(str(lesson[4] or "-"))
+        room_display = escape(str(lesson[5] or "-"))
+        rows += f"""
+        <tr>
+            <td>{date_display}</td>
+            <td>{time_display}</td>
+            <td>{student_display}</td>
+            <td>{room_display}</td>
+            <td>
+                <button type="button" class="mini-button js-homework-button"
+                    data-schedule-id="{schedule_id}"
+                    data-student="{student_display}"
+                    data-date="{date_display}"
+                    data-time="{time_display}"
+                    data-room="{room_display}">
+                    Add Homework
+                </button>
+            </td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='5'>No missing homework right now.</td></tr>"
+
+    notice = ""
+    if request.args.get("saved"):
+        notice = """<div class="td-toast success">Homework saved. This lesson was removed from the missing list.</div>"""
+    elif request.args.get("error"):
+        notice = """<div class="td-toast error">Homework was not saved. Please choose a valid lesson and enter homework.</div>"""
+
+    content = f"""
+        <div class="schedule-head">
+            <div class="schedule-title">
+                <h1>Missing Homework</h1>
+                <p>Present lessons that still need homework notes for parents.</p>
+            </div>
+            <div class="schedule-controls">
+                <a href="/teacher_dashboard">Home</a>
+                <a href="/teacher_lesson_notes">Lesson Records</a>
+            </div>
+        </div>
+        {notice}
+        <section class="td-card">
+            <table class="teacher-homework-table">
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Student</th>
+                    <th>Room</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </section>
+        <div class="homework-modal" id="homeworkModal" aria-hidden="true">
+            <div class="homework-dialog" role="dialog" aria-modal="true" aria-labelledby="homeworkModalTitle">
+                <div class="homework-dialog-head">
+                    <div>
+                        <h2 id="homeworkModalTitle">Add homework</h2>
+                        <p id="homeworkLessonMeta">Select a lesson.</p>
+                    </div>
+                    <button type="button" class="homework-close" onclick="closeHomeworkModal()">&times;</button>
+                </div>
+                <form method="post" action="/teacher_missing_homework/save" class="homework-form">
+                    <input type="hidden" name="schedule_id" id="homeworkScheduleId">
+                    <label>
+                        <span>Lesson note</span>
+                        <input type="text" name="lesson_content" id="lessonContent" placeholder="Optional note for parent">
+                    </label>
+                    <label>
+                        <span>Performance</span>
+                        <select name="performance">
+                            <option value="Excellent focus and progress">Excellent focus and progress</option>
+                            <option value="Strong effort with steady growth">Strong effort with steady growth</option>
+                            <option value="Good participation, keep practicing">Good participation, keep practicing</option>
+                            <option value="Building consistency and confidence">Building consistency and confidence</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Homework</span>
+                        <textarea name="homework" id="homeworkText" rows="5" required placeholder="Write homework clearly for the parent and student."></textarea>
+                    </label>
+                    <div class="homework-actions">
+                        <button type="button" class="homework-secondary" onclick="closeHomeworkModal()">Cancel</button>
+                        <button type="submit" class="homework-primary">Save Homework</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <style>
+            .teacher-homework-table {{ width:100%; border-collapse:collapse; }}
+            .teacher-homework-table th, .teacher-homework-table td {{ border-bottom:1px solid var(--td-line); padding:12px; text-align:left; }}
+            .teacher-homework-table th {{ color:var(--td-muted); font-weight:500; font-size:13px; }}
+            .mini-button {{ border:0; cursor:pointer; display:inline-block; padding:8px 11px; border-radius:8px; background:var(--td-red-soft); color:var(--td-red); font-weight:600; font:inherit; }}
+            .td-toast {{ margin:0 0 14px; border-radius:10px; padding:10px 12px; font-weight:600; }}
+            .td-toast.success {{ background:#ecfdf3; color:#166534; border:1px solid #bbf7d0; }}
+            .td-toast.error {{ background:#fff1f2; color:#b91c1c; border:1px solid #fecdd3; }}
+            .homework-modal {{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,.42); z-index:1000; padding:18px; }}
+            .homework-modal.show {{ display:flex; }}
+            .homework-dialog {{ width:min(620px, 100%); background:#fff; color:#111827; border:1px solid #dfe5ef; border-radius:14px; box-shadow:0 22px 60px rgba(15,23,42,.22); overflow:hidden; }}
+            .homework-dialog-head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:18px 20px 14px; border-bottom:1px solid #e5e7eb; }}
+            .homework-dialog-head h2 {{ margin:0; font-size:22px; line-height:1.2; }}
+            .homework-dialog-head p {{ margin:5px 0 0; color:#667085; font-size:14px; }}
+            .homework-close {{ border:0; background:#f3f4f6; color:#4b5563; border-radius:9px; width:34px; height:34px; font-size:24px; line-height:1; cursor:pointer; }}
+            .homework-form {{ padding:18px 20px 20px; display:grid; gap:13px; }}
+            .homework-form label {{ display:grid; gap:6px; color:#4b5563; font-size:13px; font-weight:700; }}
+            .homework-form input, .homework-form select, .homework-form textarea {{ width:100%; border:1px solid #d8dee9; border-radius:10px; padding:10px 11px; font:inherit; color:#111827; background:#fff; }}
+            .homework-form textarea {{ resize:vertical; min-height:130px; }}
+            .homework-actions {{ display:flex; justify-content:flex-end; gap:10px; padding-top:4px; }}
+            .homework-secondary, .homework-primary {{ border:0; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; }}
+            .homework-secondary {{ background:#f3f4f6; color:#374151; }}
+            .homework-primary {{ background:#2563eb; color:#fff; }}
+        </style>
+        <script>
+            const homeworkModal = document.getElementById("homeworkModal");
+            const homeworkScheduleId = document.getElementById("homeworkScheduleId");
+            const homeworkLessonMeta = document.getElementById("homeworkLessonMeta");
+            const lessonContent = document.getElementById("lessonContent");
+            const homeworkText = document.getElementById("homeworkText");
+
+            function closeHomeworkModal() {{
+                homeworkModal.classList.remove("show");
+                homeworkModal.setAttribute("aria-hidden", "true");
+            }}
+
+            document.querySelectorAll(".js-homework-button").forEach((button) => {{
+                button.addEventListener("click", () => {{
+                    homeworkScheduleId.value = button.dataset.scheduleId;
+                    homeworkLessonMeta.textContent = button.dataset.student + " - " + button.dataset.date + " " + button.dataset.time + " - " + button.dataset.room;
+                    lessonContent.value = "";
+                    homeworkText.value = "";
+                    homeworkModal.classList.add("show");
+                    homeworkModal.setAttribute("aria-hidden", "false");
+                    homeworkText.focus();
+                }});
+            }});
+
+            homeworkModal.addEventListener("click", (event) => {{
+                if (event.target === homeworkModal) {{
+                    closeHomeworkModal();
+                }}
+            }});
+
+            document.addEventListener("keydown", (event) => {{
+                if (event.key === "Escape") {{
+                    closeHomeworkModal();
+                }}
+            }});
+        </script>
+    """
+    return hstudio_teacher_dark_shell(
+        teacher_name or "Teacher",
+        unread_messages,
+        content,
+        active="homework",
+        missing_homework_count=missing_homework_count
+    )
+
+@app.route("/teacher_login", methods=["GET", "POST"])
+def teacher_login():
+
+    if request.method == "POST":
+
+        username = request.form.get("username")
+        password = request.form.get("password")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        SELECT username, role, display_name, linked_teacher_name
+        FROM users
+        WHERE username = ?
+        AND password = ?
+        AND role = 'teacher'
+        """, (username, password))
+
+        user = cursor.fetchone()
+        conn.close()
+
+        if user:
+            session.clear()
+            session["user_role"] = user[1]
+            session["username"] = user[0]
+            session["display_name"] = user[2]
+            session["teacher_name"] = user[3]
+
+            return redirect("/teacher_dashboard")
+
+        return """
+        <h2>Login Failed</h2>
+        <p>Please check your username and password.</p>
+        <a href="/teacher_login">Try Again</a>
+        """
+
+    return """
+    <h1>Teacher Login</h1>
+
+    <form method="POST">
+
+        Username:<br>
+        <input name="username"><br><br>
+
+        Password:<br>
+        <input type="password" name="password"><br><br>
+
+        <button type="submit">
+            Login
+        </button>
+
+    </form>
+    """
+
+@app.route("/teacher_logout")
+def teacher_logout():
+    session.clear()
+    return redirect("/teacher_login")
+
+
+# =========================
+# V26.5 Stabilization
+# Unified lesson status application
+# =========================
+
+def get_parent_cancel_status(lesson_date, lesson_time):
+    lesson_datetime_str = lesson_date + " " + lesson_time
+
+    try:
+        lesson_datetime = datetime.strptime(
+            lesson_datetime_str,
+            "%Y-%m-%d %H:%M"
+        )
+    except ValueError:
+        lesson_datetime = datetime.strptime(
+            lesson_datetime_str,
+            "%Y-%m-%d %I:%M %p"
+        )
+
+    hours_before = (lesson_datetime - datetime.now()).total_seconds() / 3600
+
+    if hours_before < 3:
+        return "cancel_3h"
+    if hours_before < 12:
+        return "cancel_12h"
+    if hours_before < 24:
+        return "cancel_24h"
+    return "excused_24h"
+
+
+def get_hours_before_lesson(lesson_date, lesson_time):
+    lesson_datetime_str = lesson_date + " " + lesson_time
+
+    try:
+        lesson_datetime = datetime.strptime(lesson_datetime_str, "%Y-%m-%d %H:%M")
+    except ValueError:
+        lesson_datetime = datetime.strptime(lesson_datetime_str, "%Y-%m-%d %I:%M %p")
+
+    return (lesson_datetime - datetime.now()).total_seconds() / 3600
+
+
+def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    renewal_events = []
+
+    cursor.execute("""
+    SELECT
+        student_name,
+        charge_lessons,
+        enrollment_id,
+        student_charge_amount,
+        teacher_pay_amount,
+        lesson_date,
+        lesson_time
+    FROM schedule
+    WHERE id = ?
+    """, (schedule_id,))
+
+    lesson = cursor.fetchone()
+
+    if not lesson:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found"}
+
+    student_name = lesson[0]
+
+    if allowed_student_name and student_name != allowed_student_name:
+        conn.close()
+        return {"ok": False, "error": "Permission denied"}
+
+    previous_charge_lessons = lesson[1] if lesson[1] is not None else 0
+    enrollment_id = lesson[2]
+    student_charge_amount = lesson[3] or 0
+    teacher_pay_amount = lesson[4] or 0
+    lesson_date = lesson[5] or ""
+    payroll_month = lesson_date[:7]
+
+    if payroll_month and is_payroll_locked(payroll_month):
+        conn.close()
+        return {"ok": False, "error": f"Payroll is locked for {payroll_month}"}
+
+    business_rule = get_business_rule(status)
+
+    student_charge_percent = business_rule["student_charge_percent"]
+    teacher_pay_percent = business_rule["teacher_pay_percent"]
+    deduct_lesson = business_rule["deduct_lesson"]
+
+    student_charge_units = student_charge_percent / 100
+    teacher_pay_units = teacher_pay_percent / 100
+
+    revenue_amount = round(student_charge_amount * student_charge_units, 2)
+    payroll_amount = round(teacher_pay_amount * teacher_pay_units, 2)
+    profit_amount = round(revenue_amount - payroll_amount, 2)
+
+    new_charge_lessons = 1 if deduct_lesson == 1 else 0
+    lesson_delta = new_charge_lessons - previous_charge_lessons
+
+    cancelled_at = None
+    cancellation_reason = None
+    if status.startswith("cancel") or status == "excused_24h":
+        cancelled_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cancellation_reason = reason
+
+    cursor.execute("""
+    UPDATE schedule
+    SET status = ?,
+        charge_lessons = ?,
+        student_charge_units = ?,
+        teacher_pay_units = ?,
+        revenue_amount = ?,
+        payroll_amount = ?,
+        profit_amount = ?,
+        cancellation_reason = ?,
+        cancelled_at = ?
+    WHERE id = ?
+    """, (
+        status,
+        new_charge_lessons,
+        student_charge_units,
+        teacher_pay_units,
+        revenue_amount,
+        payroll_amount,
+        profit_amount,
+        cancellation_reason,
+        cancelled_at,
+        schedule_id,
+    ))
+
+    if lesson_delta != 0:
+        if enrollment_id:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = lessons_left - ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                lesson_delta,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                enrollment_id
+            ))
+            renewal_events = maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name)
+        else:
+            cursor.execute("""
+            UPDATE students
+            SET lessons_left = lessons_left - ?
+            WHERE name = ?
+            """, (
+                lesson_delta,
+                student_name
+            ))
+
+    try:
+        cursor.execute("""
+        DELETE FROM student_ledger
+        WHERE related_schedule_id = ?
+        """, (schedule_id,))
+    except:
+        pass
+
+    try:
+        cursor.execute("""
+        INSERT INTO student_ledger (
+            student_name,
+            entry_type,
+            amount,
+            description,
+            related_invoice_id,
+            related_payment_id,
+            related_schedule_id,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            student_name,
+            status,
+            -revenue_amount,
+            f"{business_rule['rule_label']} | Actor: {actor} | Student Charge: {student_charge_percent}% | Teacher Pay: {teacher_pay_percent}% | Deduct Lesson: {deduct_lesson} | Revenue: ${revenue_amount} | Payroll: ${payroll_amount} | Profit: ${profit_amount}",
+            None,
+            None,
+            schedule_id,
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ))
+    except:
+        pass
+
+    conn.commit()
+    conn.close()
+
+    for event in renewal_events:
+        if event.get("parent_id"):
+            create_notification(
+                "parent",
+                str(event["parent_id"]),
+                event["title"],
+                event["body"],
+                event["link"]
+            )
+        create_notification(
+            "owner",
+            "owner",
+            event["title"],
+            event["body"],
+            event["link"]
+        )
+
+    return {
+        "ok": True,
+        "student_name": student_name,
+        "status": status,
+        "charge_lessons": new_charge_lessons,
+        "revenue_amount": revenue_amount,
+        "payroll_amount": payroll_amount,
+        "profit_amount": profit_amount,
+    }
+
+
+@app.route("/parent_cancel", methods=["GET", "POST"])
+def parent_cancel():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    student_name = session["parent_student_name"]
+
+    if request.method == "POST":
+        schedule_id = request.form.get("schedule_id")
+        reason = request.form.get("reason")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        SELECT student_name, lesson_date, lesson_time
+        FROM schedule
+        WHERE id = ?
+        """, (schedule_id,))
+
+        lesson = cursor.fetchone()
+        conn.close()
+
+        if not lesson:
+            return "<h1>Lesson not found</h1>"
+
+        if lesson[0] != student_name:
+            return "<h1>Permission denied</h1>"
+
+        cancel_status = get_parent_cancel_status(lesson[1], lesson[2])
+        result = apply_lesson_status(
+            schedule_id,
+            cancel_status,
+            actor="parent",
+            reason=reason,
+            allowed_student_name=student_name
+        )
+
+        if not result["ok"]:
+            return f"""
+            <h1>Cancellation Not Submitted</h1>
+            <p>{result["error"]}</p>
+            <p><a href="/parent_dashboard">Back to Parent Portal</a></p>
+            """
+
+        log_parent_activity(
+            session.get("parent_id"),
+            result["student_name"],
+            "cancel_lesson",
+            f"Parent cancelled lesson #{schedule_id}; status {result['status']}; charge {result['charge_lessons']} lesson(s).",
+            schedule_id
+        )
+
+        return f"""
+        <h1>Cancellation Submitted</h1>
+        <p>Student: {result["student_name"]}</p>
+        <p>Status: {result["status"]}</p>
+        <p>Charge: {result["charge_lessons"]} lesson(s)</p>
+        <p><b>Need a makeup time?</b> Please submit a reschedule request from the parent app so the owner can approve a new slot.</p>
+        <p><a href="/parent_reschedule">Request Reschedule</a></p>
+        <p><a href="/parent_dashboard">Back to Parent Portal</a></p>
+        """
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT id, lesson_date, lesson_time, teacher, classroom, status
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    AND (status IS NULL OR status = '' OR status = 'scheduled')
+    ORDER BY lesson_date, lesson_time
+    """, (student_name, today))
+
+    lessons = cursor.fetchall()
+    conn.close()
+
+    lessons_html = ""
+
+    for lesson in lessons:
+        lessons_html += f"""
+        <form method="POST" style="border:1px solid #ddd; padding:15px; margin:15px 0;">
+            <p><b>{lesson[1]} {lesson[2]}</b></p>
+            <p>Teacher: {lesson[3]}</p>
+            <p>Room: {lesson[4]}</p>
+            <p>Status: {lesson[5] or "scheduled"}</p>
+
+            <input type="hidden" name="schedule_id" value="{lesson[0]}">
+
+            Reason:<br>
+            <input name="reason"><br><br>
+
+            <button type="submit">Cancel This Lesson</button>
+        </form>
+        """
+
+    if not lessons:
+        lessons_html = "<p>No upcoming lessons found.</p>"
+
+    return f"""
+    <h1>Parent Cancel Lesson</h1>
+    <p>Student: {student_name}</p>
+    <p><b>If you want to move the lesson instead of cancelling it, please use Reschedule first.</b></p>
+    <p><a href="/parent_reschedule">Go to Reschedule</a></p>
+
+    <hr>
+
+    {lessons_html}
+
+    <br>
+    <a href="/parent_dashboard">Back to Parent Portal</a>
+    """
+
+@app.route("/update_lesson_status", methods=["POST"])
+def update_lesson_status():
+
+    if not (require_owner() or require_teacher()):
+        return redirect("/teacher_login")
+
+    schedule_id = request.form.get("schedule_id")
+    status = request.form.get("status")
+    return_to = request.form.get("return_to") or "/teacher_dashboard"
+    if require_owner():
+        if not return_to.startswith("/calendar"):
+            return_to = "/calendar"
+        actor = "owner"
+        back_link = "/calendar"
+        back_label = "Back to Calendar"
+    else:
+        if not return_to.startswith("/teacher_dashboard"):
+            return_to = "/teacher_dashboard"
+        actor = f"teacher:{session.get('teacher_name')}"
+        back_link = "/teacher_dashboard"
+        back_label = "Back to Teacher Dashboard"
+
+    result = apply_lesson_status(
+        schedule_id,
+        status,
+        actor=actor
+    )
+
+    if not result["ok"]:
+        return f"""
+        <h1>Lesson Status Not Updated</h1>
+        <p>{result["error"]}</p>
+        <p><a href="{back_link}">{back_label}</a></p>
+        """
+
+    return redirect(return_to)
+
+
+def ensure_owner_calendar_detail_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(schedule)")
+    columns = {row[1] for row in cursor.fetchall()}
+    additions = [
+        ("parent_lesson_reminder_enabled", "INTEGER DEFAULT 0"),
+        ("practice_reminder_enabled", "INTEGER DEFAULT 0"),
+        ("low_balance_alert_enabled", "INTEGER DEFAULT 0"),
+        ("owner_calendar_updated_at", "TEXT"),
+    ]
+    for column_name, column_sql in additions:
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE schedule ADD COLUMN {column_name} {column_sql}")
+    conn.commit()
+    conn.close()
+
+
+def get_parent_ids_for_student(cursor, student_name):
+    cursor.execute("""
+    SELECT parent_id
+    FROM parent_students
+    WHERE student_name = ?
+    AND active = 1
+    """, (student_name,))
+    return [row[0] for row in cursor.fetchall()]
+
+
+def notify_lesson_parents(student_name, title, body, related_type, related_id):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    parent_ids = get_parent_ids_for_student(cursor, student_name)
+    conn.close()
+    for parent_id in parent_ids:
+        create_notification(
+            "parent",
+            str(parent_id),
+            title,
+            body,
+            "/parent_dashboard",
+            related_type=related_type,
+            related_id=related_id
+        )
+    return len(parent_ids)
+
+
+def owner_calendar_matching_where(scope, lesson):
+    schedule_id, student_name, teacher, lesson_date, lesson_time, classroom, course_type_name = lesson
+    base = [
+        "student_name = ?",
+        "teacher = ?",
+        "lesson_time = ?",
+        "COALESCE(course_type_name, '') = ?",
+    ]
+    params = [student_name, teacher, lesson_time, course_type_name or ""]
+    if scope == "following":
+        base.append("lesson_date >= ?")
+        params.append(lesson_date)
+    return " AND ".join(base), params
+
+
+@app.route("/owner_schedule_action", methods=["POST"])
+def owner_schedule_action():
+    ensure_owner_calendar_detail_schema()
+    if not require_owner():
+        return {"ok": False, "error": "Owner login required"}, 401
+
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip()
+    schedule_id = data.get("schedule_id")
+    if not schedule_id:
+        return {"ok": False, "error": "schedule_id required"}, 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        teacher,
+        lesson_date,
+        lesson_time,
+        classroom,
+        COALESCE(course_type_name, ''),
+        COALESCE(status, 'scheduled'),
+        COALESCE(parent_lesson_reminder_enabled, 0),
+        COALESCE(practice_reminder_enabled, 0),
+        COALESCE(low_balance_alert_enabled, 0),
+        COALESCE(duration, 30)
+    FROM schedule
+    WHERE id = ?
+    """, (schedule_id,))
+    lesson = cursor.fetchone()
+
+    if not lesson:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found"}, 404
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if action == "save_details":
+        status = (data.get("status") or lesson[7] or "scheduled").strip()
+        notes = (data.get("notes") or "").strip()
+        parent_reminder = 1 if data.get("parent_lesson_reminder_enabled") else 0
+        practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
+        low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
+
+        cursor.execute("""
+        UPDATE schedule
+        SET notes = ?,
+            parent_lesson_reminder_enabled = ?,
+            practice_reminder_enabled = ?,
+            low_balance_alert_enabled = ?,
+            owner_calendar_updated_at = ?
+        WHERE id = ?
+        """, (
+            notes,
+            parent_reminder,
+            practice_reminder,
+            low_balance_alert,
+            now_text,
+            schedule_id
+        ))
+        conn.commit()
+        conn.close()
+
+        if status != lesson[7]:
+            status_result = apply_lesson_status(schedule_id, status, actor="owner")
+            if not status_result.get("ok"):
+                return {"ok": False, "error": status_result.get("error", "Attendance status was not updated")}, 400
+
+        queued = 0
+        if parent_reminder and not lesson[8]:
+            queued += notify_lesson_parents(
+                lesson[1],
+                "Lesson reminder",
+                f"{lesson[1]} has a lesson on {lesson[3]} at {lesson[4]} with {lesson[2]} in {lesson[5] or 'the studio'}.",
+                "owner_lesson_reminder",
+                int(schedule_id)
+            )
+        if practice_reminder and not lesson[9]:
+            queued += notify_lesson_parents(
+                lesson[1],
+                "Practice reminder",
+                f"Practice reminder for {lesson[1]}. {notes or 'Please review the latest lesson notes and homework.'}",
+                "owner_practice_reminder",
+                int(schedule_id)
+            )
+        if low_balance_alert and not lesson[10]:
+            queued += notify_lesson_parents(
+                lesson[1],
+                "Low lesson balance",
+                f"{lesson[1]}'s lesson package is running low. Please renew the package when convenient.",
+                "owner_low_balance_alert",
+                int(schedule_id)
+            )
+
+        suffix = f" {queued} parent reminder(s) queued." if queued else ""
+        return {"ok": True, "message": "Lesson saved." + suffix}
+
+    if action == "reschedule":
+        new_date = (data.get("new_date") or "").strip()
+        new_time = (data.get("new_time") or lesson[4] or "").strip()
+        classroom = (data.get("classroom") or lesson[5] or "").strip()
+        scope = (data.get("scope") or "once").strip()
+        try:
+            duration = int(float(data.get("duration") or lesson[11] or 30))
+        except (TypeError, ValueError):
+            duration = int(lesson[11] or 30)
+
+        try:
+            new_date_obj = datetime.strptime(new_date, "%Y-%m-%d").date()
+        except ValueError:
+            conn.close()
+            return {"ok": False, "error": "Invalid reschedule date"}, 400
+        if not parse_lesson_time_value(new_time):
+            conn.close()
+            return {"ok": False, "error": "Invalid reschedule time"}, 400
+
+        old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
+        day_delta = (new_date_obj - old_date_obj).days
+
+        if scope == "once":
+            cursor.execute("""
+            UPDATE schedule
+            SET lesson_date = ?,
+                weekday = ?,
+                lesson_time = ?,
+                classroom = ?,
+                duration = ?,
+                status = 'scheduled',
+                owner_calendar_updated_at = ?
+            WHERE id = ?
+            """, (
+                new_date,
+                new_date_obj.strftime("%A"),
+                new_time,
+                classroom,
+                duration,
+                now_text,
+                schedule_id
+            ))
+            moved = cursor.rowcount
+        elif scope == "forward":
+            where_sql, params = owner_calendar_matching_where("following", lesson[:7])
+            cursor.execute(f"""
+            SELECT id, lesson_date
+            FROM schedule
+            WHERE {where_sql}
+            ORDER BY lesson_date, lesson_time
+            """, params)
+            rows = cursor.fetchall()
+            moved = 0
+            for row_id, row_date in rows:
+                shifted = datetime.strptime(row_date, "%Y-%m-%d").date() + timedelta(days=day_delta)
+                cursor.execute("""
+                UPDATE schedule
+                SET lesson_date = ?,
+                    weekday = ?,
+                    lesson_time = ?,
+                    classroom = ?,
+                    duration = ?,
+                    status = 'scheduled',
+                    owner_calendar_updated_at = ?
+                WHERE id = ?
+                """, (
+                    shifted.strftime("%Y-%m-%d"),
+                    shifted.strftime("%A"),
+                    new_time,
+                    classroom,
+                    duration,
+                    now_text,
+                    row_id
+                ))
+                moved += cursor.rowcount
+        else:
+            conn.close()
+            return {"ok": False, "error": "Invalid reschedule scope"}, 400
+
+        conn.commit()
+        conn.close()
+        if lesson[2]:
+            create_notification(
+                "teacher",
+                lesson[2],
+                "Lesson rescheduled",
+                f"{lesson[1]}'s lesson moved to {new_date} at {new_time}.",
+                "/teacher_dashboard?view=schedule",
+                related_type="owner_reschedule",
+                related_id=int(schedule_id)
+            )
+        return {"ok": True, "message": f"Rescheduled {moved} lesson(s)."}
+
+    if action == "delete":
+        scope = (data.get("scope") or "current").strip()
+        deleted = 0
+        if scope == "current":
+            cursor.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
+            deleted = cursor.rowcount
+        elif scope == "following":
+            where_sql, params = owner_calendar_matching_where("following", lesson[:7])
+            cursor.execute(f"DELETE FROM schedule WHERE {where_sql}", params)
+            deleted = cursor.rowcount
+        elif scope == "range":
+            start_date = (data.get("start_date") or "").strip()
+            end_date = (data.get("end_date") or "").strip()
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+                datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                conn.close()
+                return {"ok": False, "error": "Invalid delete date range"}, 400
+            if start_date > end_date:
+                conn.close()
+                return {"ok": False, "error": "Start date must be before end date"}, 400
+            where_sql, params = owner_calendar_matching_where("current", lesson[:7])
+            params.extend([start_date, end_date])
+            cursor.execute(f"""
+            DELETE FROM schedule
+            WHERE {where_sql}
+            AND lesson_date BETWEEN ? AND ?
+            """, params)
+            deleted = cursor.rowcount
+        else:
+            conn.close()
+            return {"ok": False, "error": "Invalid delete scope"}, 400
+
+        conn.commit()
+        conn.close()
+        return {"ok": True, "message": f"Deleted {deleted} lesson(s)."}
+
+    conn.close()
+    return {"ok": False, "error": "Unknown action"}, 400
+
+@app.route("/invoices")
+def invoices():
+
+    if not require_owner():
+        return redirect("/owner_login")
+    
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at
+    FROM invoices
+    ORDER BY id DESC
+    """)
+
+    invoices = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for invoice in invoices:
+        if invoice[4] == "paid":
+            action_html = "Paid"
+        else:
+            action_html = f'<a href="/pay_invoice/{invoice[0]}">Mark Paid</a>'
+
+        rows += f"""
+        <tr>
+            <td>{invoice[0]}</td>
+            <td>{invoice[1]}</td>
+            <td>{invoice[2]}</td>
+            <td>${invoice[3]}</td>
+            <td>{invoice[4]}</td>
+            <td>{invoice[5]}</td>
+            <td>{invoice[6]}</td>
+            <td>{action_html}</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Invoices</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+
+            th {{
+                background: #eeeeff;
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+
+            td {{
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+
+            a.button {{
+                display: inline-block;
+                margin-top: 25px;
+                background: #5b5cff;
+                color: white;
+                padding: 10px 16px;
+                border-radius: 6px;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Invoices</h1>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Student</th>
+                    <th>Charge Lessons</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Type</th>
+                    <th>Created At</th>
+                    <th>Action</th>
+                </tr>
+
+                {rows}
+            </table>
+
+            <a class="button" href="/">Back Home</a>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
+def pay_invoice(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        enrollment_id
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    if invoice[4] == "paid":
+        conn.close()
+        return f"""
+        <h1>Invoice Already Paid</h1>
+        <p>Invoice #{invoice_id} is already marked as paid.</p>
+        <p><a href="/invoices">Back to Invoices</a></p>
+        """
+
+    if request.method == "POST":
+        payment_date = request.form.get("payment_date")
+        payment_method = request.form.get("payment_method")
+
+        if not payment_date:
+            payment_date = date.today().strftime("%Y-%m-%d")
+
+        if not payment_method:
+            payment_method = "Manual"
+
+        student_name = invoice[1]
+        amount = invoice[3]
+        enrollment_id = invoice[7]
+
+        cursor.execute("""
+        INSERT INTO payments
+        (
+            student_name,
+            amount,
+            lessons_added,
+            payment_method,
+            payment_date,
+            enrollment_id,
+            package_name,
+            notes,
+            visible_to_parent
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            student_name,
+            amount,
+            0,
+            payment_method,
+            payment_date,
+            enrollment_id,
+            "Tuition Invoice",
+            f"Invoice #{invoice_id} paid",
+            1
+        ))
+
+        payment_id = cursor.lastrowid
+
+        cursor.execute("""
+        UPDATE invoices
+        SET status = ?
+        WHERE id = ?
+        """, ("paid", invoice_id))
+
+        cursor.execute("""
+        INSERT INTO student_ledger (
+            student_name,
+            entry_type,
+            amount,
+            description,
+            related_invoice_id,
+            related_payment_id,
+            related_schedule_id,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            student_name,
+            "invoice_payment",
+            amount,
+            f"Invoice #{invoice_id} paid",
+            invoice_id,
+            payment_id,
+            None,
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return f"""
+        <h1>Invoice Paid!</h1>
+        <p>Invoice #{invoice_id}</p>
+        <p>Student: {student_name}</p>
+        <p>Amount: ${amount}</p>
+        <p>Payment Method: {payment_method}</p>
+        <p>Payment Date: {payment_date}</p>
+        <p><a href="/invoices">Back to Invoices</a></p>
+        <p><a href="/student_ledger/{student_name}">View Student Ledger</a></p>
+        """
+
+    conn.close()
+
+    return f"""
+    <h1>Pay Invoice #{invoice[0]}</h1>
+
+    <p>Student: {invoice[1]}</p>
+    <p>Charge Lessons: {invoice[2]}</p>
+    <p>Amount: ${invoice[3]}</p>
+    <p>Type: {invoice[5]}</p>
+    <p>Status: {invoice[4]}</p>
+
+    <form method="POST">
+        Payment Date:<br>
+        <input type="date" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}"><br><br>
+
+        Payment Method:<br>
+        <input name="payment_method" value="Manual"><br><br>
+
+        <button type="submit">Confirm Payment</button>
+    </form>
+
+    <p><a href="/invoices">Back to Invoices</a></p>
+    """
+
+@app.route("/owner_settings", methods=["GET", "POST"])
+def owner_settings():
+
+    if not require_owner():
+        return redirect("/owner_login")
+    
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        free_cancel_per_package = request.form.get("free_cancel_per_package")
+        default_lesson_rate = request.form.get("default_lesson_rate")
+        cancel_3h_charge = request.form.get("cancel_3h_charge")
+        cancel_12h_charge = request.form.get("cancel_12h_charge")
+        cancel_24h_charge = request.form.get("cancel_24h_charge")
+        owner_email = request.form.get("owner_email")
+        owner_phone = request.form.get("owner_phone")
+
+        settings_to_update = {
+            "free_cancel_per_package": free_cancel_per_package,
+            "default_lesson_rate": default_lesson_rate,
+            "cancel_3h_charge": cancel_3h_charge,
+            "cancel_12h_charge": cancel_12h_charge,
+            "cancel_24h_charge": cancel_24h_charge,
+            "owner_email": owner_email,
+            "owner_phone": owner_phone,
+        }
+
+        for key, value in settings_to_update.items():
+            cursor.execute("""
+            INSERT OR REPLACE INTO settings (key, value)
+            VALUES (?, ?)
+            """, (key, value))
+
+        conn.commit()
+        conn.close()
+
+        return """
+        <h1>Settings Saved!</h1>
+        <p><a href="/owner_settings">Back to Settings</a></p>
+        <p><a href="/">Back Home</a></p>
+        """
+
+    cursor.execute("""
+    SELECT key, value
+    FROM settings
+    """)
+
+    settings_rows = cursor.fetchall()
+    conn.close()
+
+    settings = {}
+    for row in settings_rows:
+        settings[row[0]] = row[1]
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Settings</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                max-width: 700px;
+            }}
+
+            label {{
+                font-weight: bold;
+            }}
+
+            input {{
+                width: 100%;
+                padding: 10px;
+                margin: 8px 0 20px 0;
+                font-size: 15px;
+            }}
+
+            button {{
+                background: #5b5cff;
+                color: white;
+                border: none;
+                padding: 10px 16px;
+                border-radius: 6px;
+                font-weight: bold;
+            }}
+
+            a {{
+                color: #5b5cff;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Owner Billing Settings</h1>
+
+            <form method="POST">
+
+                <label>Free Cancel Per Package</label>
+                <input name="free_cancel_per_package" value="{settings.get('free_cancel_per_package', '1')}">
+
+                <label>Default Lesson Rate ($)</label>
+                <input name="default_lesson_rate" value="{settings.get('default_lesson_rate', '50')}">
+
+                <label>Cancel Within 3 Hours Charge</label>
+                <input name="cancel_3h_charge" value="{settings.get('cancel_3h_charge', '1')}">
+
+                <label>Cancel Within 12 Hours Charge</label>
+                <input name="cancel_12h_charge" value="{settings.get('cancel_12h_charge', '0.75')}">
+
+                <label>Cancel Within 24 Hours Charge</label>
+                <input name="cancel_24h_charge" value="{settings.get('cancel_24h_charge', '0.5')}">
+
+                <label>Owner Notification Email</label>
+                <input name="owner_email" value="{settings.get('owner_email', '')}">
+
+                <label>Owner Notification Phone</label>
+                <input name="owner_phone" value="{settings.get('owner_phone', '')}">
+
+                <button type="submit">Save Settings</button>
+
+            </form>
+
+            <br>
+            <a href="/">Back Home</a>
+        </div>
+    </body>
+    </html>
+    """
+@app.route("/student_ledger/<name>")
+def student_ledger(name):
+    if not require_owner():
+        if not require_parent():
+            return redirect("/parent_login")
+        if not parent_can_access_student(session.get("parent_id"), name):
+            return "<h1>Permission denied</h1>"
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        entry_type,
+        amount,
+        description,
+        created_at
+    FROM student_ledger
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+
+    entries = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COALESCE(SUM(amount), 0)
+    FROM student_ledger
+    WHERE student_name = ?
+    """, (name,))
+
+    balance = cursor.fetchone()[0]
+
+    conn.close()
+
+    rows = ""
+
+    for entry in entries:
+        rows += f"""
+        <tr>
+            <td>{entry[3]}</td>
+            <td>{entry[0]}</td>
+            <td>${entry[1]}</td>
+            <td>{entry[2]}</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Student Ledger</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+
+            .balance {{
+                font-size: 28px;
+                font-weight: bold;
+                margin: 20px 0;
+            }}
+
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+
+            th {{
+                background: #eeeeff;
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+
+            td {{
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+
+            a.button {{
+                display: inline-block;
+                margin-top: 25px;
+                background: #5b5cff;
+                color: white;
+                padding: 10px 16px;
+                border-radius: 6px;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>{name} Ledger</h1>
+
+            <div class="balance">
+                Balance: ${balance}
+            </div>
+
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Amount</th>
+                    <th>Description</th>
+                </tr>
+
+                {rows}
+            </table>
+
+            <a class="button" href="/student/{name}">Back to Student</a>
+        </div>
+    </body>
+    </html>
+    """
+@app.route("/parent_portal")
+def parent_portal():
+    if require_parent():
+        return redirect("/parent_dashboard")
+    return redirect("/parent_login")
+
+
+# =========================
+# V27 Parent Pro
+# Parent profiles, multi-student access, and parent activity logs
+# =========================
+
+def ensure_v27_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_name TEXT,
+        email TEXT UNIQUE,
+        phone TEXT,
+        password TEXT DEFAULT '1234',
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        relationship TEXT DEFAULT 'Parent',
+        active INTEGER DEFAULT 1,
+        created_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_parent_students_unique
+    ON parent_students(parent_id, student_name)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_activity_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        action_type TEXT,
+        description TEXT,
+        related_schedule_id INTEGER,
+        created_at TEXT
+    )
+    """)
+
+    cursor.execute("PRAGMA table_info(students)")
+    student_columns = [row[1] for row in cursor.fetchall()]
+    if "parent_phone" not in student_columns:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_phone TEXT")
+    if "active" not in student_columns:
+        cursor.execute("ALTER TABLE students ADD COLUMN active INTEGER DEFAULT 1")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    SELECT name, parent_name, parent_email, parent_phone
+    FROM students
+    WHERE (
+        parent_email IS NOT NULL
+        AND parent_email != ''
+    )
+    OR (
+        parent_phone IS NOT NULL
+        AND parent_phone != ''
+    )
+    """)
+
+    students = cursor.fetchall()
+
+    for student in students:
+        student_name = student[0]
+        parent_name = student[1] or (student[2].split("@")[0] if student[2] and "@" in student[2] else "Parent")
+        parent_email = student[2] or f"phone-{student[3]}@hmusic.local"
+        parent_phone = student[3]
+
+        cursor.execute("""
+        INSERT OR IGNORE INTO parent_profiles (
+            parent_name,
+            email,
+            phone,
+            password,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            parent_name,
+            parent_email,
+            parent_phone,
+            "1234",
+            1,
+            now,
+            now
+        ))
+
+        cursor.execute("""
+        UPDATE parent_profiles
+        SET parent_name = COALESCE(NULLIF(parent_name, ''), ?),
+            phone = COALESCE(NULLIF(phone, ''), ?),
+            updated_at = ?
+        WHERE email = ?
+        """, (
+            parent_name,
+            parent_phone,
+            now,
+            parent_email
+        ))
+
+        cursor.execute("""
+        SELECT id
+        FROM parent_profiles
+        WHERE email = ?
+        """, (parent_email,))
+
+        parent = cursor.fetchone()
+
+        if parent:
+            cursor.execute("""
+            INSERT OR IGNORE INTO parent_students (
+                parent_id,
+                student_name,
+                relationship,
+                active,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """, (
+                parent[0],
+                student_name,
+                "Parent",
+                1,
+                now
+            ))
+
+    conn.commit()
+    conn.close()
+
+
+def sync_parent_profile_for_student(cursor, student_name, parent_name=None, parent_email=None, parent_phone=None):
+    if not parent_email and not parent_phone:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
+    display_name = parent_name or (email_key.split("@")[0] if "@" in email_key else "Parent")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO parent_profiles (
+        parent_name,
+        email,
+        phone,
+        password,
+        active,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        display_name,
+        email_key,
+        parent_phone,
+        "1234",
+        1,
+        now,
+        now
+    ))
+
+    cursor.execute("""
+    UPDATE parent_profiles
+    SET parent_name = ?,
+        phone = ?,
+        updated_at = ?
+    WHERE email = ?
+    """, (
+        display_name,
+        parent_phone,
+        now,
+        email_key
+    ))
+
+    cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (email_key,))
+    parent = cursor.fetchone()
+    if not parent:
+        return
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO parent_students (
+        parent_id,
+        student_name,
+        relationship,
+        active,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        parent[0],
+        student_name,
+        "Parent",
+        1,
+        now
+    ))
+
+
+def teacher_can_access_student_record(cursor, student_name, teacher_name):
+    if not student_name or not teacher_name:
+        return False
+
+    cursor.execute("""
+    SELECT 1
+    FROM students
+    WHERE name = ?
+    AND teacher = ?
+    LIMIT 1
+    """, (student_name, teacher_name))
+    if cursor.fetchone():
+        return True
+
+    cursor.execute("""
+    SELECT 1
+    FROM enrollments
+    WHERE student_name = ?
+    AND teacher_name = ?
+    AND status = 'active'
+    LIMIT 1
+    """, (student_name, teacher_name))
+    if cursor.fetchone():
+        return True
+
+    cursor.execute("""
+    SELECT 1
+    FROM schedule
+    WHERE student_name = ?
+    AND teacher = ?
+    LIMIT 1
+    """, (student_name, teacher_name))
+    return cursor.fetchone() is not None
+
+
+def auto_link_student_teacher(cursor, student_name, teacher_name):
+    if not student_name or not teacher_name:
+        return
+
+    cursor.execute("""
+    SELECT teacher
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    current_teacher = (row[0] or "").strip()
+    if not current_teacher:
+        cursor.execute("""
+        UPDATE students
+        SET teacher = ?
+        WHERE name = ?
+        """, (teacher_name, student_name))
+
+
+def get_parent_students(parent_id):
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        s.name,
+        s.teacher,
+        s.parent_email,
+        s.lessons_left
+    FROM parent_students ps
+    JOIN students s
+        ON ps.student_name = s.name
+    WHERE ps.parent_id = ?
+    AND ps.active = 1
+    ORDER BY s.name
+    """, (parent_id,))
+
+    students = cursor.fetchall()
+    conn.close()
+
+    return students
+
+
+def parent_can_access_student(parent_id, student_name):
+    if not parent_id:
+        return session.get("parent_student_name") == student_name
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id
+    FROM parent_students
+    WHERE parent_id = ?
+    AND student_name = ?
+    AND active = 1
+    """, (parent_id, student_name))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return row is not None
+
+
+def log_parent_activity(parent_id, student_name, action_type, description, related_schedule_id=None):
+    if not parent_id:
+        return
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO parent_activity_logs (
+        parent_id,
+        student_name,
+        action_type,
+        description,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        parent_id,
+        student_name,
+        action_type,
+        description,
+        related_schedule_id,
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+@app.route("/v27_setup")
+def v27_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM parent_profiles")
+    parent_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM parent_students")
+    link_count = cursor.fetchone()[0]
+
+    conn.close()
+
+    return f"""
+    <h1>V27 Parent Pro Setup Complete</h1>
+    <p>Parent Profiles: {parent_count}</p>
+    <p>Parent Student Links: {link_count}</p>
+    <p>Default seeded parent password: 1234</p>
+    <p><a href="/parent_login">Parent Login</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+
+@app.route("/parents")
+def parents():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        p.id,
+        p.parent_name,
+        p.email,
+        p.phone,
+        p.active,
+        COUNT(ps.id),
+        MAX(a.created_at)
+    FROM parent_profiles p
+    LEFT JOIN parent_students ps
+        ON p.id = ps.parent_id
+        AND ps.active = 1
+    LEFT JOIN parent_activity_logs a
+        ON p.id = a.parent_id
+    GROUP BY p.id, p.parent_name, p.email, p.phone, p.active
+    ORDER BY p.parent_name, p.email
+    """)
+
+    parents_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for p in parents_data:
+        status = "Active" if p[4] == 1 else "Inactive"
+        rows += f"""
+        <tr>
+            <td><a href="/parent_admin/{p[0]}">{p[1] or ''}</a></td>
+            <td>{p[2] or ''}</td>
+            <td>{p[3] or ''}</td>
+            <td>{p[5] or 0}</td>
+            <td>{status}</td>
+            <td>{p[6] or ''}</td>
+            <td><a href="/edit_parent_admin/{p[0]}">Edit</a></td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='7'>No parent profiles yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Parent Management</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .actions {{
+                margin-bottom: 20px;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #5b5cff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #eeeeff;
+            }}
+            a {{
+                color: #5b5cff;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Parent Management</h1>
+
+            <div class="actions">
+                <a class="button" href="/">Home</a>
+                <a class="button" href="/add_parent">Add Parent</a>
+                <a class="button" href="/v27_setup">Run V27 Setup</a>
+            </div>
+
+            <table>
+                <tr>
+                    <th>Parent</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Students</th>
+                    <th>Status</th>
+                    <th>Last Activity</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_parent", methods=["GET", "POST"])
+def add_parent():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    if request.method == "POST":
+        parent_name = request.form.get("parent_name")
+        email = request.form.get("email")
+        phone = request.form.get("phone")
+        password = request.form.get("password") or "1234"
+        active = request.form.get("active") or "1"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT OR IGNORE INTO parent_profiles (
+            parent_name,
+            email,
+            phone,
+            password,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            parent_name,
+            email,
+            phone,
+            password,
+            int(active),
+            now,
+            now
+        ))
+
+        cursor.execute("""
+        SELECT id
+        FROM parent_profiles
+        WHERE email = ?
+        """, (email,))
+        parent = cursor.fetchone()
+
+        conn.commit()
+        conn.close()
+
+        if parent:
+            return redirect(f"/parent_admin/{parent[0]}")
+
+        return redirect("/parents")
+
+    return """
+    <html>
+    <head>
+        <title>Add Parent</title>
+        <style>
+            body { font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }
+            .container { background:white; padding:30px; border-radius:12px; max-width:680px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }
+            input, select { width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }
+            button, a.button { display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Add Parent</h1>
+            <form method="POST">
+                Parent Name:<br>
+                <input name="parent_name" required>
+
+                Email:<br>
+                <input type="email" name="email" required>
+
+                Phone:<br>
+                <input name="phone">
+
+                Password:<br>
+                <input name="password" value="1234">
+
+                Active:<br>
+                <select name="active">
+                    <option value="1">Active</option>
+                    <option value="0">Inactive</option>
+                </select>
+
+                <button type="submit">Create Parent</button>
+                <a class="button" href="/parents">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_admin/<int:parent_id>")
+def parent_admin(parent_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, parent_name, email, phone, password, active, created_at, updated_at
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+    parent = cursor.fetchone()
+
+    if not parent:
+        conn.close()
+        return "<h1>Parent not found</h1>"
+
+    cursor.execute("""
+    SELECT id, student_name, relationship, active, created_at
+    FROM parent_students
+    WHERE parent_id = ?
+    ORDER BY active DESC, student_name
+    """, (parent_id,))
+    linked_students = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT name, teacher, parent_email
+    FROM students
+    WHERE name NOT IN (
+        SELECT student_name
+        FROM parent_students
+        WHERE parent_id = ?
+        AND active = 1
+    )
+    ORDER BY name
+    """, (parent_id,))
+    available_students = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT student_name, action_type, description, created_at
+    FROM parent_activity_logs
+    WHERE parent_id = ?
+    ORDER BY id DESC
+    LIMIT 20
+    """, (parent_id,))
+    activities = cursor.fetchall()
+
+    conn.close()
+
+    linked_rows = ""
+    for s in linked_students:
+        status = "Active" if s[3] == 1 else "Inactive"
+        unlink_action = ""
+        if s[3] == 1:
+            unlink_action = f"""
+            <form method="POST" action="/unlink_parent_student/{s[0]}" style="display:inline;">
+                <button type="submit">Unlink</button>
+            </form>
+            """
+
+        linked_rows += f"""
+        <tr>
+            <td>{s[1]}</td>
+            <td>{s[2]}</td>
+            <td>{status}</td>
+            <td>{s[4]}</td>
+            <td>{unlink_action}</td>
+        </tr>
+        """
+
+    if not linked_rows:
+        linked_rows = "<tr><td colspan='5'>No linked students.</td></tr>"
+
+    student_options = ""
+    for s in available_students:
+        label = f"{s[0]} | Teacher: {s[1] or ''} | Current Email: {s[2] or ''}"
+        student_options += f'<option value="{s[0]}">{label}</option>'
+
+    if not student_options:
+        student_options = '<option value="">No available students</option>'
+
+    activity_rows = ""
+    for a in activities:
+        activity_rows += f"""
+        <tr>
+            <td>{a[3]}</td>
+            <td>{a[0] or ''}</td>
+            <td>{a[1]}</td>
+            <td>{a[2]}</td>
+        </tr>
+        """
+
+    if not activity_rows:
+        activity_rows = "<tr><td colspan='4'>No activity yet.</td></tr>"
+
+    status = "Active" if parent[5] == 1 else "Inactive"
+
+    return f"""
+    <html>
+    <head>
+        <title>Parent Detail</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 14px;
+                margin: 20px 0;
+            }}
+            .card {{
+                background: #f5f5ff;
+                padding: 16px;
+                border-radius: 10px;
+                border: 1px solid #ddd;
+            }}
+            .label {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+            .value {{
+                font-size: 20px;
+                font-weight: bold;
+                margin-top: 6px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 14px 0 28px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #eeeeff;
+            }}
+            select, input {{
+                padding: 9px;
+                font-size: 14px;
+                margin-right: 8px;
+            }}
+            a.button, button {{
+                display: inline-block;
+                background: #5b5cff;
+                color: white;
+                border: none;
+                padding: 9px 13px;
+                border-radius: 7px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 7px;
+                cursor: pointer;
+            }}
+            .danger {{
+                background: #dc2626;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>{parent[1] or 'Parent Detail'}</h1>
+
+            <a class="button" href="/parents">Back</a>
+            <a class="button" href="/edit_parent_admin/{parent[0]}">Edit Parent</a>
+            <a class="button" href="/parent_login">Parent Login</a>
+
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Email</div>
+                    <div class="value" style="font-size:15px;">{parent[2] or ''}</div>
+                </div>
+                <div class="card">
+                    <div class="label">Phone</div>
+                    <div class="value">{parent[3] or ''}</div>
+                </div>
+                <div class="card">
+                    <div class="label">Password</div>
+                    <div class="value">{parent[4] or ''}</div>
+                </div>
+                <div class="card">
+                    <div class="label">Status</div>
+                    <div class="value">{status}</div>
+                </div>
+            </div>
+
+            <h2>Link Student</h2>
+            <form method="POST" action="/link_parent_student/{parent[0]}">
+                <select name="student_name">
+                    {student_options}
+                </select>
+                Relationship:
+                <input name="relationship" value="Parent">
+                <button type="submit">Link Student</button>
+            </form>
+
+            <h2>Linked Students</h2>
+            <table>
+                <tr>
+                    <th>Student</th>
+                    <th>Relationship</th>
+                    <th>Status</th>
+                    <th>Linked At</th>
+                    <th>Action</th>
+                </tr>
+                {linked_rows}
+            </table>
+
+            <h2>Parent Activity</h2>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Student</th>
+                    <th>Action</th>
+                    <th>Description</th>
+                </tr>
+                {activity_rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/edit_parent_admin/<int:parent_id>", methods=["GET", "POST"])
+def edit_parent_admin(parent_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        parent_name = request.form.get("parent_name")
+        phone = request.form.get("phone")
+        password = request.form.get("password")
+        active = request.form.get("active") or "1"
+
+        cursor.execute("""
+        UPDATE parent_profiles
+        SET parent_name = ?,
+            phone = ?,
+            password = ?,
+            active = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            parent_name,
+            phone,
+            password,
+            int(active),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            parent_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect(f"/parent_admin/{parent_id}")
+
+    cursor.execute("""
+    SELECT id, parent_name, email, phone, password, active
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+    parent = cursor.fetchone()
+    conn.close()
+
+    if not parent:
+        return "<h1>Parent not found</h1>"
+
+    active_selected = "selected" if parent[5] == 1 else ""
+    inactive_selected = "selected" if parent[5] == 0 else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Edit Parent</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:680px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input, select {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Edit Parent</h1>
+            <form method="POST">
+                Parent Name:<br>
+                <input name="parent_name" value="{parent[1] or ''}">
+
+                Email:<br>
+                <input value="{parent[2] or ''}" disabled>
+
+                Phone:<br>
+                <input name="phone" value="{parent[3] or ''}">
+
+                Password:<br>
+                <input name="password" value="{parent[4] or ''}">
+
+                Active:<br>
+                <select name="active">
+                    <option value="1" {active_selected}>Active</option>
+                    <option value="0" {inactive_selected}>Inactive</option>
+                </select>
+
+                <button type="submit">Save Parent</button>
+                <a class="button" href="/parent_admin/{parent[0]}">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/link_parent_student/<int:parent_id>", methods=["POST"])
+def link_parent_student(parent_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    student_name = request.form.get("student_name")
+    relationship = request.form.get("relationship") or "Parent"
+
+    if not student_name:
+        return redirect(f"/parent_admin/{parent_id}")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT email
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+    parent = cursor.fetchone()
+
+    if not parent:
+        conn.close()
+        return "<h1>Parent not found</h1>"
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO parent_students (
+        parent_id,
+        student_name,
+        relationship,
+        active,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        parent_id,
+        student_name,
+        relationship,
+        1,
+        now
+    ))
+
+    cursor.execute("""
+    UPDATE parent_students
+    SET relationship = ?,
+        active = 1
+    WHERE parent_id = ?
+    AND student_name = ?
+    """, (
+        relationship,
+        parent_id,
+        student_name
+    ))
+
+    cursor.execute("""
+    UPDATE students
+    SET parent_email = ?
+    WHERE name = ?
+    AND (parent_email IS NULL OR parent_email = '')
+    """, (
+        parent[0],
+        student_name
+    ))
+
+    cursor.execute("""
+    INSERT INTO parent_activity_logs (
+        parent_id,
+        student_name,
+        action_type,
+        description,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        parent_id,
+        student_name,
+        "owner_link_student",
+        f"Owner linked {student_name} to parent profile.",
+        None,
+        now
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/parent_admin/{parent_id}")
+
+
+@app.route("/unlink_parent_student/<int:link_id>", methods=["POST"])
+def unlink_parent_student(link_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT parent_id, student_name
+    FROM parent_students
+    WHERE id = ?
+    """, (link_id,))
+    link = cursor.fetchone()
+
+    if not link:
+        conn.close()
+        return "<h1>Link not found</h1>"
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    UPDATE parent_students
+    SET active = 0
+    WHERE id = ?
+    """, (link_id,))
+
+    cursor.execute("""
+    INSERT INTO parent_activity_logs (
+        parent_id,
+        student_name,
+        action_type,
+        description,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        link[0],
+        link[1],
+        "owner_unlink_student",
+        f"Owner unlinked {link[1]} from parent profile.",
+        None,
+        now
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/parent_admin/{link[0]}")
+
+
+
+# =========================
+# V28 Reschedule Workflow
+# Parent request + owner approval
+# =========================
+
+def ensure_v28_schema():
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS reschedule_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        original_schedule_id INTEGER,
+        original_date TEXT,
+        original_time TEXT,
+        original_teacher TEXT,
+        original_classroom TEXT,
+        requested_date TEXT,
+        requested_time TEXT,
+        reason TEXT,
+        status TEXT DEFAULT 'pending',
+        owner_note TEXT,
+        reviewed_by TEXT,
+        reviewed_at TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cursor.execute("PRAGMA table_info(reschedule_requests)")
+    existing_columns = [row[1] for row in cursor.fetchall()]
+    for column_name, column_sql in [
+        ("requested_teacher", "requested_teacher TEXT"),
+        ("requested_classroom", "requested_classroom TEXT"),
+        ("requested_slot_source", "requested_slot_source TEXT"),
+        ("approved_teacher", "approved_teacher TEXT"),
+        ("approved_classroom", "approved_classroom TEXT"),
+        ("backup_date_2", "backup_date_2 TEXT"),
+        ("backup_time_2", "backup_time_2 TEXT"),
+        ("backup_date_3", "backup_date_3 TEXT"),
+        ("backup_time_3", "backup_time_3 TEXT"),
+        ("batch_group_id", "batch_group_id TEXT"),
+        ("affected_schedule_ids", "affected_schedule_ids TEXT"),
+        ("affected_teachers", "affected_teachers TEXT")
+    ]:
+        if column_name not in existing_columns:
+            cursor.execute(f"ALTER TABLE reschedule_requests ADD COLUMN {column_sql}")
+
+    conn.commit()
+    conn.close()
+
+
+
+
+def parse_lesson_time_value(time_text):
+    if not time_text:
+        return None
+
+    for fmt in ("%H:%M", "%I:%M %p"):
+        try:
+            return datetime.strptime(time_text.strip(), fmt)
+        except ValueError:
+            pass
+
+    return None
+
+
+def minutes_from_time_text(time_text):
+    parsed = parse_lesson_time_value(time_text)
+    if not parsed:
+        return None
+    return parsed.hour * 60 + parsed.minute
+
+
+def time_text_from_minutes(minutes):
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours:02d}:{mins:02d}"
+
+
+def format_display_time(time_text):
+    parsed = parse_lesson_time_value(time_text)
+    if not parsed:
+        return time_text or ""
+    return parsed.strftime("%I:%M%p").lstrip("0")
+
+
+def format_lesson_time_range(time_text, duration_minutes=None):
+    start_minutes = minutes_from_time_text(time_text)
+    if start_minutes is None:
+        return time_text or ""
+    try:
+        duration = int(float(duration_minutes or 30))
+    except (TypeError, ValueError):
+        duration = 30
+    start_label = format_display_time(time_text)
+    end_label = format_display_time(time_text_from_minutes(start_minutes + duration))
+    return f"{start_label}-{end_label}"
+
+
+def ensure_v282_schema():
+    ensure_v28_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_open_slots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher TEXT,
+        slot_date TEXT,
+        slot_time TEXT,
+        classroom TEXT,
+        source TEXT DEFAULT 'manual',
+        active INTEGER DEFAULT 1,
+        notes TEXT,
+        created_by TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def get_auto_open_slots(teachers=None, start_date=None, days_ahead=60, step_minutes=30):
+    ensure_v28_schema()
+
+    if not start_date:
+        start_date = date.today().strftime("%Y-%m-%d")
+
+    end_date = (datetime.strptime(start_date, "%Y-%m-%d").date() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    params = [start_date, end_date]
+    teacher_filter = ""
+
+    if teachers:
+        teacher_filter = "AND teacher IN (" + ",".join(["?"] * len(teachers)) + ")"
+        params.extend(teachers)
+
+    cursor.execute(f"""
+    SELECT teacher, lesson_date, lesson_time, duration, classroom, status
+    FROM schedule
+    WHERE lesson_date >= ?
+    AND lesson_date <= ?
+    {teacher_filter}
+    AND teacher IS NOT NULL
+    AND teacher != ''
+    ORDER BY teacher, lesson_date, lesson_time
+    """, params)
+
+    lessons = cursor.fetchall()
+    conn.close()
+
+    by_teacher_day = {}
+
+    for lesson in lessons:
+        status = lesson[5] or "scheduled"
+        if str(status).startswith("cancel") or status in ("excused_24h", "teacher_cancelled"):
+            continue
+
+        start_minute = minutes_from_time_text(lesson[2])
+        if start_minute is None:
+            continue
+
+        try:
+            duration = int(lesson[3] or 30)
+        except:
+            duration = 30
+
+        key = (lesson[0], lesson[1])
+        by_teacher_day.setdefault(key, []).append({
+            "start": start_minute,
+            "end": start_minute + duration,
+            "classroom": lesson[4] or "",
+        })
+
+    slots = []
+
+    for key, day_lessons in by_teacher_day.items():
+        if len(day_lessons) < 2:
+            continue
+
+        teacher, slot_date = key
+        day_lessons = sorted(day_lessons, key=lambda item: item["start"])
+
+        for i in range(len(day_lessons) - 1):
+            current_end = day_lessons[i]["end"]
+            next_start = day_lessons[i + 1]["start"]
+
+            slot_minute = current_end
+            while slot_minute + step_minutes <= next_start:
+                slots.append({
+                    "teacher": teacher,
+                    "slot_date": slot_date,
+                    "slot_time": time_text_from_minutes(slot_minute),
+                    "classroom": day_lessons[i]["classroom"] or day_lessons[i + 1]["classroom"],
+                    "source": "auto_gap",
+                    "notes": "Auto gap between first and last lessons",
+                })
+                slot_minute += step_minutes
+
+    return slots
+
+
+def get_manual_open_slots(teachers=None, start_date=None, days_ahead=60):
+    ensure_v282_schema()
+
+    if not start_date:
+        start_date = date.today().strftime("%Y-%m-%d")
+
+    end_date = (datetime.strptime(start_date, "%Y-%m-%d").date() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    params = [start_date, end_date]
+    teacher_filter = ""
+
+    if teachers:
+        teacher_filter = "AND teacher IN (" + ",".join(["?"] * len(teachers)) + ")"
+        params.extend(teachers)
+
+    cursor.execute(f"""
+    SELECT id, teacher, slot_date, slot_time, classroom, source, active, notes, created_by, created_at
+    FROM teacher_open_slots
+    WHERE slot_date >= ?
+    AND slot_date <= ?
+    {teacher_filter}
+    ORDER BY slot_date, slot_time, teacher
+    """, params)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    slots = []
+    for row in rows:
+        slots.append({
+            "id": row[0],
+            "teacher": row[1],
+            "slot_date": row[2],
+            "slot_time": row[3],
+            "classroom": row[4] or "",
+            "source": row[5] or "manual",
+            "active": row[6],
+            "notes": row[7] or "",
+            "created_by": row[8] or "",
+            "created_at": row[9] or "",
+        })
+
+    return slots
+
+
+def find_manual_open_slot(teacher, slot_date, slot_time, classroom=None):
+    ensure_v282_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    params = [teacher, slot_date, slot_time]
+    classroom_filter = ""
+    if classroom:
+        classroom_filter = "AND COALESCE(classroom, '') = ?"
+        params.append(classroom)
+
+    cursor.execute(f"""
+    SELECT id
+    FROM teacher_open_slots
+    WHERE teacher = ?
+    AND slot_date = ?
+    AND slot_time = ?
+    {classroom_filter}
+    AND source = 'manual'
+    AND active = 1
+    ORDER BY id DESC
+    LIMIT 1
+    """, params)
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def mark_manual_open_slot_used(teacher, slot_date, slot_time, classroom=None, request_id=None):
+    slot_id = find_manual_open_slot(teacher, slot_date, slot_time, classroom)
+    if not slot_id:
+        return False
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    UPDATE teacher_open_slots
+    SET active = 0,
+        notes = COALESCE(notes, '') || ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        f" | used by reschedule #{request_id}" if request_id else " | used by reschedule",
+        now,
+        slot_id
+    ))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_open_slot_display_status(slot):
+    if slot.get("source") != "manual":
+        return "Available"
+
+    notes = slot.get("notes", "") or ""
+    if "used by reschedule" in notes:
+        return "Used"
+    if slot.get("active", 1) == 1:
+        return "Available"
+    return "Inactive"
+
+
+def is_manual_slot_used(slot):
+    return slot.get("source") == "manual" and "used by reschedule" in (slot.get("notes", "") or "")
+
+
+def get_available_open_slots(teachers=None, include_inactive_manual=False):
+    auto_slots = get_auto_open_slots(teachers=teachers)
+    manual_slots = get_manual_open_slots(teachers=teachers)
+
+    combined = []
+    seen = set()
+
+    for slot in auto_slots:
+        key = (slot["teacher"], slot["slot_date"], slot["slot_time"])
+        seen.add(key)
+        combined.append(slot)
+
+    for slot in manual_slots:
+        if slot["active"] != 1 and not include_inactive_manual:
+            continue
+        key = (slot["teacher"], slot["slot_date"], slot["slot_time"])
+        if key in seen and slot["active"] != 1:
+            combined = [s for s in combined if (s["teacher"], s["slot_date"], s["slot_time"]) != key]
+            continue
+        if key not in seen:
+            combined.append(slot)
+            seen.add(key)
+
+    combined.sort(key=lambda s: (s["slot_date"], s["slot_time"], s["teacher"]))
+    return combined
+
+
+
+
+# =========================
+# V29 Message Center
+# Unified threads, messages, and notifications
+# =========================
+
+def ensure_v29_schema():
+    ensure_v282_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS message_threads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT,
+        student_name TEXT,
+        parent_id INTEGER,
+        teacher_name TEXT,
+        thread_type TEXT,
+        related_type TEXT,
+        related_id INTEGER,
+        status TEXT DEFAULT 'open',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id INTEGER,
+        sender_role TEXT,
+        sender_name TEXT,
+        recipient_role TEXT,
+        body TEXT,
+        channel TEXT DEFAULT 'in_app',
+        read_at TEXT,
+        created_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_role TEXT,
+        user_key TEXT,
+        title TEXT,
+        body TEXT,
+        link_url TEXT,
+        read_at TEXT,
+        created_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS message_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        original_filename TEXT,
+        stored_filename TEXT,
+        mime_type TEXT,
+        file_size INTEGER,
+        created_at TEXT
+    )
+    """)
+
+    os.makedirs(HMUSIC_UPLOAD_DIR, exist_ok=True)
+
+    conn.commit()
+    conn.close()
+
+
+def get_or_create_message_thread(subject, student_name=None, parent_id=None, teacher_name=None, thread_type="general", related_type=None, related_id=None):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if related_type and related_id:
+        cursor.execute("""
+        SELECT id
+        FROM message_threads
+        WHERE related_type = ?
+        AND related_id = ?
+        LIMIT 1
+        """, (related_type, related_id))
+        existing = cursor.fetchone()
+
+        if existing:
+            conn.close()
+            return existing[0]
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    INSERT INTO message_threads (
+        subject,
+        student_name,
+        parent_id,
+        teacher_name,
+        thread_type,
+        related_type,
+        related_id,
+        status,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        subject,
+        student_name,
+        parent_id,
+        teacher_name,
+        thread_type,
+        related_type,
+        related_id,
+        "open",
+        now,
+        now
+    ))
+
+    thread_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    return thread_id
+
+
+def add_message(thread_id, sender_role, sender_name, recipient_role, body):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    INSERT INTO messages (
+        thread_id,
+        sender_role,
+        sender_name,
+        recipient_role,
+        body,
+        channel,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        thread_id,
+        sender_role,
+        sender_name,
+        recipient_role,
+        body,
+        "in_app",
+        now
+    ))
+
+    message_id = cursor.lastrowid
+
+    cursor.execute("""
+    UPDATE message_threads
+    SET updated_at = ?
+    WHERE id = ?
+    """, (now, thread_id))
+
+    conn.commit()
+    conn.close()
+
+    return message_id
+
+
+def safe_upload_filename(filename):
+    safe = ""
+    for ch in filename:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe += ch
+        else:
+            safe += "_"
+    return safe or "attachment"
+
+
+def save_message_attachments(message_id, files):
+    ensure_v29_schema()
+
+    if not files:
+        return
+
+    os.makedirs(HMUSIC_UPLOAD_DIR, exist_ok=True)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    for file in files:
+        if not file or not file.filename:
+            continue
+
+        original_filename = file.filename
+        safe_name = safe_upload_filename(original_filename)
+        stored_filename = f"{message_id}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+        file_path = os.path.join(HMUSIC_UPLOAD_DIR, stored_filename)
+        file.save(file_path)
+        file_size = os.path.getsize(file_path)
+
+        cursor.execute("""
+        INSERT INTO message_attachments (
+            message_id,
+            original_filename,
+            stored_filename,
+            mime_type,
+            file_size,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            message_id,
+            original_filename,
+            stored_filename,
+            file.mimetype,
+            file_size,
+            now
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO notifications (
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+
+    conn.commit()
+    conn.close()
+
+    queue_notification_delivery(
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        "push",
+        related_type=related_type,
+        related_id=related_id
+    )
+    queue_notification_delivery(
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        "email",
+        related_type=related_type,
+        related_id=related_id
+    )
+    if should_queue_sms_notification(title):
+        queue_sms_if_available(
+            user_role,
+            user_key,
+            title,
+            body,
+            link_url,
+            related_type=related_type,
+            related_id=related_id
+        )
+
+
+def ensure_v33_schema():
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS notification_delivery_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_role TEXT,
+        user_key TEXT,
+        channel TEXT,
+        destination TEXT,
+        title TEXT,
+        body TEXT,
+        link_url TEXT,
+        related_type TEXT,
+        related_id INTEGER,
+        status TEXT DEFAULT 'pending',
+        provider_response TEXT,
+        created_at TEXT,
+        sent_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def should_queue_sms_notification(title):
+    title = (title or "").lower()
+    important_keywords = [
+        "message",
+        "lesson reminder",
+        "payment",
+        "invoice",
+        "reschedule",
+        "student setup"
+    ]
+    return any(keyword in title for keyword in important_keywords)
+
+
+def get_notification_destination(cursor, user_role, user_key, channel):
+    if channel == "push":
+        return f"{user_role}:{user_key}"
+
+    if channel == "email":
+        if user_role == "parent":
+            cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "teacher":
+            cursor.execute("SELECT email FROM teachers WHERE teacher_name = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "owner":
+            cursor.execute("SELECT value FROM settings WHERE key = 'owner_email'")
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+    if channel == "sms":
+        if user_role == "parent":
+            cursor.execute("SELECT phone FROM parent_profiles WHERE id = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "teacher":
+            cursor.execute("SELECT phone FROM teachers WHERE teacher_name = ?", (user_key,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        if user_role == "owner":
+            cursor.execute("SELECT value FROM settings WHERE key = 'owner_phone'")
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+    return None
+
+
+def queue_notification_delivery(user_role, user_key, title, body, link_url, channel="push", related_type=None, related_id=None):
+    ensure_v33_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    destination = get_notification_destination(cursor, user_role, user_key, channel)
+
+    if not destination:
+        conn.close()
+        return None
+
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        user_role,
+        str(user_key),
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        "pending",
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+
+    queue_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return queue_id
+
+
+def queue_sms_if_available(user_role, user_key, title, body, link_url, related_type=None, related_id=None):
+    return queue_notification_delivery(
+        user_role,
+        user_key,
+        title,
+        body,
+        link_url,
+        "sms",
+        related_type=related_type,
+        related_id=related_id
+    )
+
+
+def send_email_delivery(destination, title, body, link_url):
+    smtp_host = os.environ.get("HMUSIC_SMTP_HOST")
+    smtp_port = int(os.environ.get("HMUSIC_SMTP_PORT", "587"))
+    smtp_user = os.environ.get("HMUSIC_SMTP_USER")
+    smtp_password = os.environ.get("HMUSIC_SMTP_PASSWORD")
+    from_email = os.environ.get("HMUSIC_FROM_EMAIL") or smtp_user
+
+    if not smtp_host or not smtp_user or not smtp_password or not from_email:
+        return False, "SMTP not configured. Add HMUSIC_SMTP_HOST, HMUSIC_SMTP_USER, HMUSIC_SMTP_PASSWORD, and HMUSIC_FROM_EMAIL."
+
+    message = EmailMessage()
+    message["Subject"] = title or "H-Music Notification"
+    message["From"] = from_email
+    message["To"] = destination
+    message.set_content(
+        f"{body or ''}\n\nOpen: {link_url or '/'}\n\nH-Music"
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(message)
+
+    return True, "Email sent via SMTP."
+
+
+def mark_delivery_status(queue_id, status, provider_response=None):
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE notification_delivery_queue
+    SET status = ?,
+        provider_response = ?,
+        sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END
+    WHERE id = ?
+    """, (
+        status,
+        provider_response,
+        status,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        queue_id
+    ))
+    conn.commit()
+    conn.close()
+
+
+def create_lesson_reminders_for_date(target_date):
+    ensure_v33_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
+    FROM schedule
+    WHERE lesson_date = ?
+    AND COALESCE(status, 'scheduled') = 'scheduled'
+    ORDER BY lesson_time
+    """, (target_date,))
+    lessons = cursor.fetchall()
+
+    created = 0
+    for lesson in lessons:
+        schedule_id, student_name, teacher, lesson_date, lesson_time, classroom = lesson
+
+        cursor.execute("""
+        SELECT parent_id
+        FROM parent_students
+        WHERE student_name = ?
+        AND active = 1
+        """, (student_name,))
+        parent_rows = cursor.fetchall()
+
+        for parent_row in parent_rows:
+            parent_id = parent_row[0]
+            cursor.execute("""
+            SELECT id
+            FROM notification_delivery_queue
+            WHERE user_role = 'parent'
+            AND user_key = ?
+            AND related_type = 'lesson_reminder'
+            AND related_id = ?
+            LIMIT 1
+            """, (str(parent_id), schedule_id))
+            existing = cursor.fetchone()
+            if existing:
+                continue
+
+            title = "Lesson reminder"
+            body = f"{student_name} has a lesson tomorrow at {lesson_time} with {teacher} in {classroom}."
+            link = "/parent_dashboard"
+            conn.commit()
+            create_notification(
+                "parent",
+                str(parent_id),
+                title,
+                body,
+                link,
+                related_type="lesson_reminder",
+                related_id=schedule_id
+            )
+            created += 1
+
+    conn.close()
+    return created
+
+
+def create_autopay_due_notifications(target_date=None):
+    ensure_v321_schema()
+    ensure_billing_schema()
+    target_date = target_date or date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        e.id,
+        e.student_name,
+        e.autopay_pending_invoice_id,
+        e.autopay_charge_due_date,
+        i.amount,
+        i.status
+    FROM enrollments e
+    JOIN invoices i
+        ON e.autopay_pending_invoice_id = i.id
+    WHERE e.auto_renew_enabled = 1
+    AND e.autopay_charge_status = 'pending'
+    AND e.autopay_charge_due_date <= ?
+    AND COALESCE(i.status, 'unpaid') != 'paid'
+    ORDER BY e.autopay_charge_due_date, e.student_name
+    """, (target_date,))
+    rows = cursor.fetchall()
+
+    processed = 0
+    for row in rows:
+        enrollment_id, student_name, invoice_id, due_date, amount, invoice_status = row
+        parent_id = get_primary_parent_for_student(cursor, student_name)
+
+        def mark_for_review(status, invoice_autopay_status, parent_title, parent_body, owner_title, owner_body):
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            cursor.execute("""
+            UPDATE enrollments
+            SET autopay_charge_status = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (status, now, enrollment_id))
+            cursor.execute("""
+            UPDATE invoices
+            SET autopay_status = ?
+            WHERE id = ?
+            AND status != 'paid'
+            """, (invoice_autopay_status, invoice_id))
+            conn.commit()
+
+            if parent_id and parent_title:
+                create_notification(
+                    "parent",
+                    str(parent_id),
+                    parent_title,
+                    parent_body,
+                    f"/parent_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+            create_notification(
+                "owner",
+                "owner",
+                owner_title,
+                owner_body,
+                f"/pay_invoice/{invoice_id}",
+                related_type="invoice",
+                related_id=invoice_id
+            )
+
+        if not parent_id:
+            mark_for_review(
+                "pending_owner_review",
+                "missing_parent",
+                None,
+                None,
+                "AutoPay needs review",
+                f"{student_name}'s AutoPay invoice #{invoice_id} is due, but no linked parent was found."
+            )
+            processed += 1
+            continue
+
+        if not configure_stripe():
+            mark_for_review(
+                "pending_owner_review",
+                "stripe_missing",
+                "AutoPay setup needs attention",
+                f"{student_name}'s next package invoice is ready, but Stripe is not configured yet.",
+                "AutoPay Stripe configuration missing",
+                f"{student_name}'s AutoPay invoice #{invoice_id} cannot be charged until Stripe is configured."
+            )
+            processed += 1
+            continue
+
+        payment_method_id, billing_autopay_enabled, saved_customer_id, billing_status = get_saved_stripe_payment_method(cursor, parent_id)
+        if not payment_method_id or billing_autopay_enabled != 1:
+            mark_for_review(
+                "pending_owner_review",
+                "needs_payment_method",
+                "AutoPay payment method needed",
+                f"{student_name}'s next package is ready. Please connect or confirm your bank payment method for AutoPay.",
+                "AutoPay payment method missing",
+                f"{student_name}'s AutoPay invoice #{invoice_id} is due, but the parent does not have a saved payment method."
+            )
+            processed += 1
+            continue
+
+        customer_id = get_or_create_stripe_customer(cursor, parent_id)
+        conn.commit()
+
+        if not customer_id:
+            mark_for_review(
+                "pending_owner_review",
+                "customer_missing",
+                "AutoPay setup needs attention",
+                f"{student_name}'s next package is ready, but Stripe could not confirm your customer profile.",
+                "AutoPay customer missing",
+                f"{student_name}'s AutoPay invoice #{invoice_id} is due, but Stripe customer creation failed."
+            )
+            processed += 1
+            continue
+
+        if saved_customer_id and customer_id != saved_customer_id:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            cursor.execute("""
+            UPDATE parent_billing_profiles
+            SET stripe_payment_method_id = NULL,
+                status = 'needs_reconnect_test',
+                updated_at = ?
+            WHERE parent_id = ?
+            """, (now, parent_id))
+            conn.commit()
+            mark_for_review(
+                "pending_owner_review",
+                "needs_payment_method",
+                "Please reconnect AutoPay",
+                f"{student_name}'s saved bank setup needs to be reconnected before AutoPay can run.",
+                "AutoPay reconnect needed",
+                f"{student_name}'s AutoPay invoice #{invoice_id} could not run because the saved Stripe customer changed."
+            )
+            processed += 1
+            continue
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        UPDATE enrollments
+        SET autopay_charge_status = 'processing',
+            updated_at = ?
+        WHERE id = ?
+        """, (now, enrollment_id))
+        cursor.execute("""
+        UPDATE invoices
+        SET status = 'stripe_processing',
+            autopay_status = 'autopay_attempting'
+        WHERE id = ?
+        AND status != 'paid'
+        """, (invoice_id,))
+
+        conn.commit()
+
+        try:
+            payment_intent = stripe.PaymentIntent.create(
+                amount=int(round(float(amount or 0) * 100)),
+                currency="usd",
+                customer=customer_id,
+                payment_method=payment_method_id,
+                confirm=True,
+                off_session=True,
+                description=f"H-Music AutoPay - {student_name} invoice #{invoice_id}",
+                metadata={
+                    "invoice_id": str(invoice_id),
+                    "parent_id": str(parent_id),
+                    "enrollment_id": str(enrollment_id),
+                    "source": "autopay"
+                }
+            )
+            payment_status = payment_intent.get("status")
+
+            if payment_status == "succeeded":
+                cursor.execute("""
+                UPDATE enrollments
+                SET autopay_charge_status = 'charged',
+                    updated_at = ?
+                WHERE id = ?
+                """, (datetime.now().strftime("%Y-%m-%d %H:%M"), enrollment_id))
+                cursor.execute("""
+                UPDATE invoices
+                SET stripe_payment_intent_id = ?,
+                    autopay_status = 'paid_test'
+                WHERE id = ?
+                """, (payment_intent.get("id"), invoice_id))
+                conn.commit()
+                finalize_stripe_invoice_payment(
+                    invoice_id,
+                    payment_intent_id=payment_intent.get("id"),
+                    source="autopay_due_check"
+                )
+                create_notification(
+                    "parent",
+                    str(parent_id),
+                    "AutoPay processed",
+                    f"{student_name}'s next package AutoPay payment of ${amount} was processed.",
+                    f"/parent_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+                create_notification(
+                    "owner",
+                    "owner",
+                    "AutoPay processed",
+                    f"{student_name}'s AutoPay invoice #{invoice_id} was charged successfully.",
+                    f"/pay_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+            elif payment_status in ("processing", "requires_capture"):
+                cursor.execute("""
+                UPDATE invoices
+                SET stripe_payment_intent_id = ?,
+                    autopay_status = ?
+                WHERE id = ?
+                """, (payment_intent.get("id"), payment_status, invoice_id))
+                conn.commit()
+                create_notification(
+                    "owner",
+                    "owner",
+                    "AutoPay processing",
+                    f"{student_name}'s AutoPay invoice #{invoice_id} is processing in Stripe.",
+                    f"/pay_invoice/{invoice_id}",
+                    related_type="invoice",
+                    related_id=invoice_id
+                )
+            else:
+                mark_for_review(
+                    "pending_owner_review",
+                    f"autopay_{payment_status}",
+                    "AutoPay needs confirmation",
+                    f"{student_name}'s AutoPay could not finish automatically. H-Music will review the payment.",
+                    "AutoPay needs review",
+                    f"{student_name}'s AutoPay invoice #{invoice_id} returned Stripe status: {payment_status}."
+                )
+        except Exception as exc:
+            error_text = str(exc)[:240]
+            mark_for_review(
+                "pending_owner_review",
+                "autopay_failed",
+                "AutoPay needs confirmation",
+                f"{student_name}'s AutoPay could not finish automatically. H-Music will review the payment.",
+                "AutoPay failed",
+                f"{student_name}'s AutoPay invoice #{invoice_id} failed: {error_text}"
+            )
+
+        processed += 1
+
+    conn.close()
+    return processed
+
+
+def create_autopay_due_notifications_legacy(target_date=None):
+    ensure_v321_schema()
+    target_date = target_date or date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        e.id,
+        e.student_name,
+        e.autopay_pending_invoice_id,
+        e.autopay_charge_due_date,
+        i.amount
+    FROM enrollments e
+    JOIN invoices i
+        ON e.autopay_pending_invoice_id = i.id
+    WHERE e.auto_renew_enabled = 1
+    AND e.autopay_charge_status = 'pending'
+    AND e.autopay_charge_due_date <= ?
+    ORDER BY e.autopay_charge_due_date, e.student_name
+    """, (target_date,))
+    rows = cursor.fetchall()
+
+    created = 0
+    for row in rows:
+        enrollment_id, student_name, invoice_id, due_date, amount = row
+        parent_id = get_primary_parent_for_student(cursor, student_name)
+        cursor.execute("""
+        UPDATE enrollments
+        SET autopay_charge_status = 'pending_owner_review',
+            updated_at = ?
+        WHERE id = ?
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"), enrollment_id))
+
+        conn.commit()
+
+        if parent_id:
+            create_notification(
+                "parent",
+                str(parent_id),
+                "AutoPay payment reminder",
+                f"{student_name}'s next package AutoPay is due today for ${amount}. The owner will confirm Stripe processing.",
+                f"/parent_invoice/{invoice_id}",
+                related_type="invoice",
+                related_id=invoice_id
+            )
+        create_notification(
+            "owner",
+            "owner",
+            "AutoPay due today",
+            f"{student_name}'s AutoPay invoice #{invoice_id} is due today for ${amount}. Review Stripe processing.",
+            f"/pay_invoice/{invoice_id}",
+            related_type="invoice",
+            related_id=invoice_id
+        )
+        created += 1
+
+    conn.close()
+    return created
+
+
+@app.route("/run_lesson_reminders")
+def run_lesson_reminders():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    target_date = request.args.get("date") or (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    created = create_lesson_reminders_for_date(target_date)
+
+    return f"""
+    <h1>Lesson Reminders Queued</h1>
+    <p>Date: {target_date}</p>
+    <p>Created: {created}</p>
+    <p><a href="/notification_queue">Notification Queue</a></p>
+    <p><a href="/">Home</a></p>
+    """
+
+
+@app.route("/run_autopay_checks")
+def run_autopay_checks():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    target_date = request.args.get("date") or date.today().strftime("%Y-%m-%d")
+    processed = create_autopay_due_notifications(target_date)
+
+    return f"""
+    <h1>AutoPay Checks Processed</h1>
+    <p>Date: {target_date}</p>
+    <p>Due AutoPay records processed: {processed}</p>
+    <p><a href="/billing_settings">Billing Settings</a></p>
+    <p><a href="/notification_queue">Notification Queue</a></p>
+    <p><a href="/">Home</a></p>
+    """
+
+
+@app.route("/notification_queue")
+def notification_queue():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, channel, user_role, user_key, destination, title, status, created_at, link_url, provider_response
+    FROM notification_delivery_queue
+    ORDER BY id DESC
+    LIMIT 100
+    """)
+    rows_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in rows_data:
+        actions = f'<a href="{r[8]}">Open</a>'
+        if r[6] == "pending":
+            actions += f"""
+            <form method="POST" action="/notification_queue/{r[0]}/send" style="display:inline;">
+                <button type="submit">Send</button>
+            </form>
+            <form method="POST" action="/notification_queue/{r[0]}/mark_sent" style="display:inline;">
+                <button type="submit">Mark Sent</button>
+            </form>
+            """
+        rows += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]}</td>
+            <td>{r[2]}:{r[3]}</td>
+            <td>{r[4]}</td>
+            <td>{r[5]}</td>
+            <td>{r[6]}</td>
+            <td>{r[7]}</td>
+            <td>{r[9] or ''}</td>
+            <td>{actions}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='9'>No queued notifications yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Notification Queue</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
+            th {{ background:#eeeeff; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            button {{ background:#111827; color:white; border:none; border-radius:7px; padding:7px 10px; font-weight:800; margin:2px; }}
+            .hint {{ color:#6b7280; max-width:900px; line-height:1.45; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Notification Queue</h1>
+            <p class="hint">App notifications are visible inside the parent app badge. Email can send now if SMTP environment variables are configured. SMS rows are queued for the next provider step, such as Twilio.</p>
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
+            <a class="button" href="/billing_settings">Billing Settings</a>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Channel</th>
+                    <th>User</th>
+                    <th>Destination</th>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Provider Response</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/notification_queue/<int:queue_id>/mark_sent", methods=["POST"])
+def notification_queue_mark_sent(queue_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    mark_delivery_status(queue_id, "sent", "Marked sent manually by owner.")
+    return redirect("/notification_queue")
+
+
+@app.route("/notification_queue/<int:queue_id>/send", methods=["POST"])
+def notification_queue_send(queue_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT channel, destination, title, body, link_url
+    FROM notification_delivery_queue
+    WHERE id = ?
+    """, (queue_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return redirect("/notification_queue")
+
+    channel, destination, title, body, link_url = row
+    if channel == "email":
+        try:
+            sent, response = send_email_delivery(destination, title, body, link_url)
+        except Exception as exc:
+            sent = False
+            response = f"Email send failed: {exc}"
+        mark_delivery_status(queue_id, "sent" if sent else "failed", response)
+    elif channel == "push":
+        mark_delivery_status(queue_id, "sent", "In-app notification queued. Browser push provider not connected yet.")
+    elif channel == "sms":
+        mark_delivery_status(queue_id, "failed", "SMS provider not configured yet. Connect Twilio or another SMS provider next.")
+    else:
+        mark_delivery_status(queue_id, "failed", f"Unsupported channel: {channel}")
+
+    return redirect("/notification_queue")
+
+
+@app.route("/billing_settings")
+def billing_settings():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        p.id,
+        p.parent_name,
+        p.email,
+        p.phone,
+        COALESCE(b.status, 'not_connected'),
+        COALESCE(b.autopay_enabled, 0),
+        COALESCE(b.ach_enabled, 0),
+        b.updated_at
+    FROM parent_profiles p
+    LEFT JOIN parent_billing_profiles b
+        ON p.id = b.parent_id
+    ORDER BY p.parent_name, p.email
+    """)
+    rows_data = cursor.fetchall()
+    cursor.execute("""
+    SELECT
+        created_at,
+        event_type,
+        status,
+        COALESCE(related_invoice_id, ''),
+        COALESCE(related_parent_id, ''),
+        COALESCE(message, '')
+    FROM stripe_webhook_events
+    ORDER BY id DESC
+    LIMIT 10
+    """)
+    webhook_events = cursor.fetchall()
+    conn.close()
+
+    stripe_secret_ready = "Configured" if os.environ.get("STRIPE_SECRET_KEY") else "Missing"
+    stripe_webhook_ready = "Configured" if os.environ.get("STRIPE_WEBHOOK_SECRET") else "Missing"
+    smtp_ready = "Configured" if os.environ.get("HMUSIC_SMTP_HOST") else "Missing"
+
+    rows = ""
+    for r in rows_data:
+        rows += f"""
+        <tr>
+            <td>{r[1] or ''}</td>
+            <td>{r[2] or ''}</td>
+            <td>{r[3] or ''}</td>
+            <td>{r[4]}</td>
+            <td>{"On" if r[5] else "Off"}</td>
+            <td>{"Connected" if r[6] else "Not connected"}</td>
+            <td>{r[7] or ''}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='7'>No parent profiles yet.</td></tr>"
+
+    webhook_rows = ""
+    for event_row in webhook_events:
+        webhook_rows += f"""
+        <tr>
+            <td>{escape(str(event_row[0] or ""))}</td>
+            <td>{escape(str(event_row[1] or ""))}</td>
+            <td>{escape(str(event_row[2] or ""))}</td>
+            <td>{escape(str(event_row[3] or ""))}</td>
+            <td>{escape(str(event_row[4] or ""))}</td>
+            <td>{escape(str(event_row[5] or ""))}</td>
+        </tr>
+        """
+
+    if not webhook_rows:
+        webhook_rows = "<tr><td colspan='6'>No Stripe webhook events received yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Billing Settings</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            .cards {{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:18px 0; }}
+            .card {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:22px; font-weight:900; margin-top:4px; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
+            th {{ background:#eeeeff; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:800; margin-right:8px; }}
+            .hint {{ color:#6b7280; line-height:1.45; max-width:900px; }}
+            @media(max-width:760px) {{ .cards {{ grid-template-columns:1fr; }} table {{ display:block; overflow-x:auto; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Stripe / ACH Billing Setup</h1>
+            <p class="hint">This page tracks which parents requested bank AutoPay. Real bank collection should happen through Stripe-hosted setup or SetupIntent; H-Music should not store bank account numbers.</p>
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/owner_settings">Owner Settings</a>
+            <a class="button" href="/notification_queue">Notification Queue</a>
+            <a class="button" href="/run_autopay_checks">Run AutoPay Checks</a>
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Stripe Secret Key</div>
+                    <div class="value">{stripe_secret_ready}</div>
+                </div>
+                <div class="card">
+                    <div class="label">Stripe Webhook Secret</div>
+                    <div class="value">{stripe_webhook_ready}</div>
+                </div>
+                <div class="card">
+                    <div class="label">SMTP Email</div>
+                    <div class="value">{smtp_ready}</div>
+                </div>
+            </div>
+            <table>
+                <tr>
+                    <th>Parent</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Setup Status</th>
+                    <th>AutoPay</th>
+                    <th>ACH</th>
+                    <th>Updated</th>
+                </tr>
+                {rows}
+            </table>
+            <h2>Recent Stripe Webhook Events</h2>
+            <p class="hint">Use this to confirm Stripe is calling H-Music after checkout, bank setup, or ACH settlement.</p>
+            <table>
+                <tr>
+                    <th>Received</th>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Invoice</th>
+                    <th>Parent</th>
+                    <th>Message</th>
+                </tr>
+                {webhook_rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def get_message_identity():
+    if require_owner():
+        return "owner", "owner"
+    if require_parent():
+        return "parent", str(session.get("parent_id"))
+    if require_teacher():
+        return "teacher", session.get("teacher_name")
+    return None, None
+
+
+def get_unread_message_count(viewer_role, viewer_key):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if viewer_role == "teacher":
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM messages m
+        JOIN message_threads t
+            ON m.thread_id = t.id
+        WHERE m.recipient_role = 'teacher'
+        AND m.read_at IS NULL
+        AND t.teacher_name = ?
+        """, (viewer_key,))
+    elif viewer_role == "parent":
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM messages m
+        JOIN message_threads t
+            ON m.thread_id = t.id
+        WHERE m.recipient_role = 'parent'
+        AND m.read_at IS NULL
+        AND t.parent_id = ?
+        """, (viewer_key,))
+    else:
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM messages
+        WHERE recipient_role = ?
+        AND read_at IS NULL
+        """, (viewer_role,))
+
+    count = cursor.fetchone()[0] or 0
+    conn.close()
+    return count
+
+
+def get_unread_notification_count(user_role, user_key):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM notifications
+    WHERE user_role = ?
+    AND user_key = ?
+    AND read_at IS NULL
+    """, (user_role, str(user_key)))
+    count = cursor.fetchone()[0] or 0
+    conn.close()
+    return count
+
+
+def mark_notifications_read(user_role, user_key):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE notifications
+    SET read_at = ?
+    WHERE user_role = ?
+    AND user_key = ?
+    AND read_at IS NULL
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        user_role,
+        str(user_key)
+    ))
+    conn.commit()
+    conn.close()
+
+
+def ensure_billing_schema():
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_billing_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER UNIQUE,
+        stripe_customer_id TEXT,
+        stripe_setup_session_id TEXT,
+        stripe_setup_intent_id TEXT,
+        stripe_payment_method_id TEXT,
+        autopay_enabled INTEGER DEFAULT 0,
+        ach_enabled INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'not_connected',
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("parent_billing_profiles", "stripe_setup_session_id", "stripe_setup_session_id TEXT")
+    add_column_if_missing("parent_billing_profiles", "stripe_setup_intent_id", "stripe_setup_intent_id TEXT")
+    add_column_if_missing("parent_billing_profiles", "stripe_payment_method_id", "stripe_payment_method_id TEXT")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stripe_event_id TEXT,
+        event_type TEXT,
+        related_invoice_id INTEGER,
+        related_parent_id INTEGER,
+        status TEXT,
+        message TEXT,
+        created_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def record_stripe_webhook_event(event_id, event_type, status, message="", invoice_id=None, parent_id=None):
+    ensure_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO stripe_webhook_events (
+        stripe_event_id,
+        event_type,
+        related_invoice_id,
+        related_parent_id,
+        status,
+        message,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event_id,
+        event_type,
+        invoice_id,
+        parent_id,
+        status,
+        message,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_stripe_secret_key():
+    return os.environ.get("STRIPE_SECRET_KEY")
+
+
+def stripe_is_configured():
+    return stripe is not None and bool(get_stripe_secret_key())
+
+
+def configure_stripe():
+    if not stripe_is_configured():
+        return False
+    stripe.api_key = get_stripe_secret_key()
+    return True
+
+
+def get_or_create_stripe_customer(cursor, parent_id):
+    cursor.execute("""
+    SELECT parent_name, email, phone
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+    parent = cursor.fetchone()
+
+    if not parent:
+        return None
+
+    cursor.execute("""
+    SELECT stripe_customer_id
+    FROM parent_billing_profiles
+    WHERE parent_id = ?
+    """, (parent_id,))
+    row = cursor.fetchone()
+
+    if not configure_stripe():
+        return None
+
+    if row and row[0]:
+        try:
+            existing_customer = stripe.Customer.retrieve(row[0])
+            if not existing_customer.get("deleted"):
+                return row[0]
+        except Exception:
+            # A saved live-mode customer cannot be reused with a test-mode key.
+            # Create a fresh customer for the currently configured Stripe mode.
+            pass
+
+    customer = stripe.Customer.create(
+        name=parent[0] or None,
+        email=parent[1] or None,
+        phone=parent[2] or None,
+        metadata={"parent_id": str(parent_id), "app": "hmusic-crm"}
+    )
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO parent_billing_profiles (
+        parent_id,
+        stripe_customer_id,
+        status,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, 'customer_created', ?, ?)
+    ON CONFLICT(parent_id) DO UPDATE SET
+        stripe_customer_id = excluded.stripe_customer_id,
+        status = 'customer_created',
+        updated_at = excluded.updated_at
+    """, (
+        parent_id,
+        customer.id,
+        now,
+        now
+    ))
+
+    return customer.id
+
+
+def get_saved_stripe_payment_method(cursor, parent_id):
+    cursor.execute("""
+    SELECT
+        stripe_payment_method_id,
+        autopay_enabled,
+        stripe_customer_id,
+        status
+    FROM parent_billing_profiles
+    WHERE parent_id = ?
+    """, (parent_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        return None, 0, None, None
+
+    return row[0], row[1] or 0, row[2], row[3]
+
+
+def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, payment_intent_id=None, source="stripe_checkout"):
+    ensure_v321_schema()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    payment_date = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        enrollment_id,
+        stripe_checkout_session_id,
+        stripe_payment_intent_id
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return False
+
+    if invoice[4] == "paid":
+        conn.close()
+        return True
+
+    student_name = invoice[1]
+    amount = invoice[3] or 0
+    enrollment_id = invoice[7]
+    checkout_session_id = checkout_session_id or invoice[8]
+    payment_intent_id = payment_intent_id or invoice[9]
+
+    cursor.execute("""
+    INSERT INTO payments
+    (
+        student_name,
+        amount,
+        lessons_added,
+        payment_method,
+        payment_date,
+        enrollment_id,
+        package_name,
+        notes,
+        visible_to_parent
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        student_name,
+        amount,
+        0,
+        "Stripe Test Mode",
+        payment_date,
+        enrollment_id,
+        "Tuition Invoice",
+        f"Invoice #{invoice_id} paid via Stripe test mode ({source})",
+        1
+    ))
+
+    payment_id = cursor.lastrowid
+
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'paid',
+        stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+        stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+        autopay_status = 'paid_test'
+    WHERE id = ?
+    """, (
+        checkout_session_id,
+        payment_intent_id,
+        invoice_id
+    ))
+
+    cursor.execute("""
+    INSERT INTO student_ledger (
+        student_name,
+        entry_type,
+        amount,
+        description,
+        related_invoice_id,
+        related_payment_id,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        student_name,
+        "invoice_payment",
+        amount,
+        f"Invoice #{invoice_id} paid via Stripe test mode",
+        invoice_id,
+        payment_id,
+        None,
+        now
+    ))
+
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+    conn.commit()
+    conn.close()
+
+    create_invoice_message_event(
+        invoice_id,
+        "stripe_paid",
+        parent_id=parent_id,
+        student_name=student_name,
+        amount=amount
+    )
+
+    return True
+
+
+def public_url_for(path):
+    base_url = (os.environ.get("HMUSIC_PUBLIC_URL") or request.url_root.rstrip("/")).rstrip("/")
+    return f"{base_url}{path}"
+
+
+def mark_message_thread_read(thread_id):
+    viewer_role, viewer_key = get_message_identity()
+    if not viewer_role:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    UPDATE messages
+    SET read_at = ?
+    WHERE thread_id = ?
+    AND recipient_role = ?
+    AND read_at IS NULL
+    """, (now, thread_id, viewer_role))
+
+    cursor.execute("""
+    UPDATE notifications
+    SET read_at = ?
+    WHERE link_url = ?
+    AND user_role = ?
+    AND user_key = ?
+    AND read_at IS NULL
+    """, (now, f"/message_thread/{thread_id}", viewer_role, viewer_key))
+
+    conn.commit()
+    conn.close()
+
+
+def get_message_inbox_threads(viewer_role, viewer_key=None):
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    where_sql = ""
+    params = []
+
+    if viewer_role == "parent":
+        where_sql = "WHERE t.parent_id = ?"
+        params.append(int(viewer_key))
+    elif viewer_role == "teacher":
+        where_sql = "WHERE t.teacher_name = ?"
+        params.append(viewer_key)
+
+    cursor.execute(f"""
+    SELECT
+        t.id,
+        t.subject,
+        t.student_name,
+        COALESCE(p.parent_name, ''),
+        COALESCE(t.teacher_name, ''),
+        COALESCE(t.thread_type, 'general'),
+        COALESCE(t.status, 'open'),
+        COALESCE(t.updated_at, ''),
+        COALESCE((
+            SELECT body
+            FROM messages lm
+            WHERE lm.thread_id = t.id
+            ORDER BY lm.id DESC
+            LIMIT 1
+        ), ''),
+        COALESCE((
+            SELECT COUNT(*)
+            FROM messages um
+            WHERE um.thread_id = t.id
+            AND um.recipient_role = ?
+            AND um.read_at IS NULL
+        ), 0),
+        COALESCE((
+            SELECT COUNT(*)
+            FROM message_attachments ma
+            JOIN messages am
+                ON ma.message_id = am.id
+            WHERE am.thread_id = t.id
+        ), 0)
+    FROM message_threads t
+    LEFT JOIN parent_profiles p
+        ON t.parent_id = p.id
+    {where_sql}
+    ORDER BY t.updated_at DESC, t.id DESC
+    """, [viewer_role] + params)
+
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None):
+    rows = ""
+    for t in rows_data:
+        unread_badge = f"<span class='status-badge unread'>{t[9]} unread</span>" if t[9] else "<span class='status-badge read'>Read</span>"
+        attachment_badge = f"<span class='badge'>{t[10]} files</span>" if t[10] else ""
+        latest = t[8] or ""
+        if len(latest) > 120:
+            latest = latest[:117] + "..."
+
+        rows += f"""
+        <tr class="{'is-unread' if t[9] else ''}">
+            <td>{unread_badge} {attachment_badge}</td>
+            <td><a href="/message_thread/{t[0]}">{t[1]}</a><div class="subtle">#{t[0]}</div></td>
+            <td>{t[2] or ''}</td>
+            <td>{t[3] or ''}</td>
+            <td>{t[4] or ''}</td>
+            <td><span class="badge type">{t[5]}</span></td>
+            <td>{t[7]}</td>
+            <td>{latest}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='8'>No messages yet.</td></tr>"
+
+    action_buttons = f'<a class="button" href="{back_href}">{back_label}</a>'
+    if new_href and new_label:
+        action_buttons += f' <a class="button" href="{new_href}">{new_label}</a>'
+    if notifications_href:
+        action_buttons += f' <a class="button" href="{notifications_href}">Notifications</a>'
+
+    is_parent_app = back_href.startswith("/parent") or new_href == "/new_parent_message"
+    bottom_nav_html = parent_bottom_nav("messages") if is_parent_app else ""
+    page_padding = "calc(96px + env(safe-area-inset-bottom))" if is_parent_app else "40px"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta(title) if is_parent_app else f"<title>{title}</title>"}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px {page_padding}; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 18px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }}
+            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:12px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin:0; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
+            th {{ background:#eeeeff; }}
+            a {{ color:#4f46e5; font-weight:bold; }}
+            .subtle {{ color:#6b7280; font-size:12px; margin-top:4px; }}
+            .badge {{ display:inline-block; padding:3px 8px; border-radius:999px; background:#eef2ff; color:#374151; font-size:12px; font-weight:bold; }}
+            .badge.unread {{ background:#fee2e2; color:#991b1b; }}
+            .status-badge {{ display:inline-block; padding:5px 10px; border-radius:999px; font-size:12px; font-weight:900; }}
+            .status-badge.unread {{ background:#dc2626; color:white; }}
+            .status-badge.read {{ background:#eef2ff; color:#111827; }}
+            .badge.type {{ background:#e0f2fe; color:#075985; }}
+            tr.is-unread td {{ background:#fff7ed; }}
+            .parent-bottom-nav {{
+                position: fixed; left: 0; right: 0; bottom: 0;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255,255,255,.96); border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,.08); z-index: 20;
+            }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{
+                table {{ display:block; overflow-x:auto; font-size:12px; }}
+                .actions {{ display:grid; grid-template-columns:1fr; }}
+                a.button {{ text-align:center; }}
+            }}
+            @media (min-width:900px) {{
+                body {{ padding:32px; }}
+                .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>{title}</h1>
+            <div class="actions">{action_buttons}</div>
+
+            <table>
+                <tr>
+                    <th>Status</th>
+                    <th>Subject</th>
+                    <th>Student</th>
+                    <th>Parent</th>
+                    <th>Teacher</th>
+                    <th>Type</th>
+                    <th>Updated</th>
+                    <th>Latest</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+        {bottom_nav_html}
+    </body>
+    </html>
+    """
+
+
+def user_can_view_thread(thread_id):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT parent_id, teacher_name
+    FROM message_threads
+    WHERE id = ?
+    """, (thread_id,))
+    thread = cursor.fetchone()
+    conn.close()
+
+    if not thread:
+        return False
+
+    if require_owner():
+        return True
+
+    if require_parent() and session.get("parent_id") == thread[0]:
+        return True
+
+    if require_teacher() and session.get("teacher_name") == thread[1]:
+        return True
+
+    return False
+
+
+def create_reschedule_message_event(request_id, event_type, body, parent_id=None, student_name=None, teacher_name=None):
+    subject = f"Reschedule Request #{request_id}"
+    if student_name:
+        subject += f" - {student_name}"
+
+    thread_id = get_or_create_message_thread(
+        subject,
+        student_name=student_name,
+        parent_id=parent_id,
+        teacher_name=teacher_name,
+        thread_type="reschedule",
+        related_type="reschedule_request",
+        related_id=request_id
+    )
+
+    if event_type == "submitted":
+        if require_teacher():
+            add_message(thread_id, "teacher", session.get("teacher_name", "Teacher"), "owner", body)
+            create_notification("owner", "owner", "New teacher reschedule request", body, f"/reschedule_request/{request_id}")
+        else:
+            add_message(thread_id, "parent", session.get("parent_name", "Parent"), "owner", body)
+            create_notification("owner", "owner", "New reschedule request", body, f"/reschedule_request/{request_id}")
+            if teacher_name:
+                create_notification("teacher", teacher_name, "New student reschedule request", body, f"/message_thread/{thread_id}")
+    elif event_type == "approved":
+        recipient_role = "parent" if parent_id else "teacher"
+        add_message(thread_id, "owner", "Owner", recipient_role, body)
+        if parent_id:
+            create_notification("parent", str(parent_id), "Reschedule approved", body, f"/message_thread/{thread_id}")
+        if teacher_name:
+            create_notification("teacher", teacher_name, "Reschedule approved", body, f"/message_thread/{thread_id}")
+    elif event_type == "rejected":
+        recipient_role = "parent" if parent_id else "teacher"
+        add_message(thread_id, "owner", "Owner", recipient_role, body)
+        if parent_id:
+            create_notification("parent", str(parent_id), "Reschedule rejected", body, f"/message_thread/{thread_id}")
+        if teacher_name:
+            create_notification("teacher", teacher_name, "Reschedule rejected", body, f"/message_thread/{thread_id}")
+
+
+def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=None, student_name=None, amount=None):
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        i.student_name,
+        i.amount,
+        i.charge_lessons,
+        i.status,
+        i.due_date,
+        COALESCE(i.notes, '')
+    FROM invoices i
+    WHERE i.id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return None
+
+    student_name = student_name or invoice[0]
+    amount = amount if amount is not None else invoice[1]
+    parent_id = parent_id or get_primary_parent_for_student(cursor, student_name)
+    conn.close()
+
+    subject = f"Tuition Invoice #{invoice_id} - {student_name}"
+    thread_id = get_or_create_message_thread(
+        subject,
+        student_name=student_name,
+        parent_id=parent_id,
+        teacher_name=None,
+        thread_type="tuition_invoice",
+        related_type="invoice",
+        related_id=invoice_id
+    )
+
+    if event_type == "sent":
+        message_body = body or (
+            f"Tuition invoice #{invoice_id} for {student_name} is ready. "
+            f"Amount due: ${amount}. Please open the invoice in the parent app."
+        )
+        if parent_id:
+            add_message(thread_id, "owner", "Owner", "parent", message_body)
+            create_notification(
+                "parent",
+                str(parent_id),
+                "Tuition invoice sent",
+                f"{student_name} has a tuition invoice due: ${amount}.",
+                f"/message_thread/{thread_id}"
+            )
+    elif event_type == "paid_notice":
+        parent_name = session.get("parent_name", "Parent")
+        message_body = body or (
+            f"{parent_name} marked invoice #{invoice_id} for {student_name} as paid / ready for confirmation. "
+            f"Amount: ${amount}. Owner confirmation: /pay_invoice/{invoice_id}"
+        )
+        add_message(thread_id, "parent", parent_name, "owner", message_body)
+        create_notification(
+            "owner",
+            "owner",
+            "Parent payment notice",
+            f"{parent_name} marked invoice #{invoice_id} for {student_name} as paid / ready for confirmation.",
+            f"/message_thread/{thread_id}"
+        )
+    elif event_type == "stripe_paid":
+        message_body = body or (
+            f"Stripe test payment completed for invoice #{invoice_id}. "
+            f"Student: {student_name}. Amount: ${amount}."
+        )
+        add_message(thread_id, "system", "H-Music", "owner", message_body)
+        create_notification(
+            "owner",
+            "owner",
+            "Stripe invoice paid",
+            f"Invoice #{invoice_id} for {student_name} was paid in Stripe test mode.",
+            f"/message_thread/{thread_id}"
+        )
+        if parent_id:
+            create_notification(
+                "parent",
+                str(parent_id),
+                "Payment received",
+                f"Payment received for {student_name}: ${amount}.",
+                f"/message_thread/{thread_id}"
+            )
+
+    return thread_id
+
+
+@app.route("/messages")
+def messages():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    rows = get_message_inbox_threads("owner", "owner")
+    return render_message_inbox(
+        "Message Center",
+        "/",
+        "Home",
+        rows,
+        new_href="/new_owner_message",
+        new_label="New Message",
+        notifications_href="/notifications"
+    )
+
+
+@app.route("/new_owner_message", methods=["GET", "POST"])
+def new_owner_message():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        recipient_mode = request.form.get("recipient_mode", "parent")
+        student_name = (request.form.get("student_name") or "").strip() or None
+        subject_input = (request.form.get("subject") or "").strip()
+        body = (request.form.get("body") or "").strip()
+        files = request.files.getlist("attachments")
+        has_attachment = any([f and f.filename for f in files])
+
+        if not body and not has_attachment:
+            conn.close()
+            return "<h1>Message required</h1><a href='/new_owner_message'>Back</a>"
+
+        if recipient_mode == "parent":
+            parent_id_raw = request.form.get("parent_id")
+            try:
+                parent_id = int(parent_id_raw)
+            except (TypeError, ValueError):
+                conn.close()
+                return "<h1>Please choose a parent.</h1><a href='/new_owner_message'>Back</a>"
+
+            cursor.execute("SELECT parent_name, email FROM parent_profiles WHERE id = ?", (parent_id,))
+            parent = cursor.fetchone()
+            if not parent:
+                conn.close()
+                return "<h1>Parent not found.</h1><a href='/new_owner_message'>Back</a>"
+
+            parent_label = parent[0] or parent[1] or f"Parent #{parent_id}"
+            subject = subject_input or f"Owner / Parent Message - {student_name or parent_label}"
+            conn.close()
+
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=parent_id,
+                teacher_name=None,
+                thread_type="owner_parent"
+            )
+            message_id = add_message(thread_id, "owner", "Owner", "parent", body)
+            save_message_attachments(message_id, files)
+            create_notification(
+                "parent",
+                str(parent_id),
+                "New message from H-Music",
+                body or "New attachment",
+                f"/message_thread/{thread_id}"
+            )
+            return redirect(f"/message_thread/{thread_id}")
+
+        if recipient_mode == "teacher":
+            teacher_name = (request.form.get("teacher_name") or "").strip()
+            cursor.execute("SELECT teacher_name FROM teachers WHERE teacher_name = ?", (teacher_name,))
+            teacher = cursor.fetchone()
+            if not teacher:
+                conn.close()
+                return "<h1>Please choose a teacher.</h1><a href='/new_owner_message'>Back</a>"
+
+            subject = subject_input or f"Owner / Teacher Message - {student_name or teacher_name}"
+            conn.close()
+
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=None,
+                teacher_name=teacher_name,
+                thread_type="owner_teacher"
+            )
+            message_id = add_message(thread_id, "owner", "Owner", "teacher", body)
+            save_message_attachments(message_id, files)
+            create_notification(
+                "teacher",
+                teacher_name,
+                "New message from Owner",
+                body or "New attachment",
+                f"/message_thread/{thread_id}"
+            )
+            return redirect(f"/message_thread/{thread_id}")
+
+        conn.close()
+        return "<h1>Invalid recipient.</h1><a href='/new_owner_message'>Back</a>"
+
+    cursor.execute("""
+        SELECT id, COALESCE(parent_name, ''), COALESCE(email, '')
+        FROM parent_profiles
+        ORDER BY parent_name, email
+    """)
+    parents = cursor.fetchall()
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teachers = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT name, COALESCE(teacher, '') FROM students ORDER BY name")
+    students = cursor.fetchall()
+    conn.close()
+
+    parent_options = "".join([
+        f'<option value="{p[0]}">{escape(p[1] or p[2] or f"Parent #{p[0]}")} | {escape(p[2] or "")}</option>'
+        for p in parents
+    ]) or '<option value="">No parents found</option>'
+    teacher_options = "".join([
+        f'<option value="{escape(t)}">{escape(t)}</option>'
+        for t in teachers
+    ]) or '<option value="">No teachers found</option>'
+    student_options = '<option value="">No student / general message</option>' + "".join([
+        f'<option value="{escape(s[0])}">{escape(s[0])} | Teacher: {escape(s[1] or "")}</option>'
+        for s in students
+    ])
+
+    return f"""
+    <html>
+    <head>
+        <title>New Owner Message</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .container {{ background:white; padding:32px; border-radius:16px; max-width:820px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            h1 {{ font-size:32px; margin:0 0 22px; }}
+            input, select, textarea {{ width:100%; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:150px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
+            .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .recipient-options input {{ width:auto; margin:0 6px 0 0; }}
+            .subtle {{ color:#6b7280; font-size:13px; margin-top:-10px; margin-bottom:14px; }}
+            @media (max-width:760px) {{
+                body {{ padding:16px; }}
+                .recipient-options {{ grid-template-columns:1fr; }}
+                .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
+                .form-actions button, .form-actions a {{ text-align:center; }}
+            }}
+        </style>
+        <script>
+            function toggleOwnerRecipient() {{
+                const mode = document.querySelector("input[name='recipient_mode']:checked").value;
+                const parentBlock = document.getElementById("parent-recipient-block");
+                const teacherBlock = document.getElementById("teacher-recipient-block");
+                const parentSelect = document.getElementById("parent-select");
+                const teacherSelect = document.getElementById("teacher-select");
+                if (mode === "teacher") {{
+                    parentBlock.style.display = "none";
+                    teacherBlock.style.display = "block";
+                    parentSelect.removeAttribute("required");
+                    teacherSelect.setAttribute("required", "required");
+                }} else {{
+                    parentBlock.style.display = "block";
+                    teacherBlock.style.display = "none";
+                    parentSelect.setAttribute("required", "required");
+                    teacherSelect.removeAttribute("required");
+                }}
+            }}
+        </script>
+    </head>
+    <body onload="toggleOwnerRecipient()">
+        <div class="container">
+            <h1>New Owner Message</h1>
+            <form method="POST" enctype="multipart/form-data">
+                Send To:<br>
+                <div class="recipient-options">
+                    <label><input type="radio" name="recipient_mode" value="parent" checked onchange="toggleOwnerRecipient()">Parent</label>
+                    <label><input type="radio" name="recipient_mode" value="teacher" onchange="toggleOwnerRecipient()">Teacher</label>
+                </div>
+
+                <div id="parent-recipient-block">
+                    Parent:<br>
+                    <select id="parent-select" name="parent_id" required>{parent_options}</select>
+                </div>
+
+                <div id="teacher-recipient-block" style="display:none;">
+                    Teacher:<br>
+                    <select id="teacher-select" name="teacher_name">{teacher_options}</select>
+                </div>
+
+                Student (optional):<br>
+                <select name="student_name">{student_options}</select>
+
+                Subject (optional):<br>
+                <input name="subject" placeholder="Leave blank to auto-create subject">
+                <div class="subtle">Examples: Tuition question, schedule update, reminder, lesson follow-up.</div>
+
+                Message:<br>
+                <textarea name="body" rows="6" placeholder="Write your message here."></textarea>
+
+                Attachments:<br>
+                <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
+
+                <div class="form-actions">
+                    <button type="submit">Send Message</button>
+                    <a class="button" href="/messages">Back</a>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_messages")
+def parent_messages():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    parent_id = session.get("parent_id")
+    rows = get_message_inbox_threads("parent", str(parent_id))
+    return render_message_inbox(
+        "Parent Messages",
+        "/parent_dashboard",
+        "Back to Dashboard",
+        rows,
+        new_href="/new_parent_message",
+        new_label="New Message"
+    )
+
+
+@app.route("/new_parent_message", methods=["GET", "POST"])
+def new_parent_message():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v29_schema()
+
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        student_name = request.form.get("student_name")
+        teacher_name = request.form.get("teacher_name")
+        recipient_mode = request.form.get("recipient_mode", "teacher")
+        body = request.form.get("body")
+        files = request.files.getlist("attachments")
+
+        if not parent_can_access_student(parent_id, student_name):
+            conn.close()
+            return "<h1>Permission denied</h1>"
+
+        if recipient_mode == "director":
+            subject = f"Parent / Director Message - {student_name}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name,
+                parent_id=parent_id,
+                teacher_name=None,
+                thread_type="parent_director",
+                related_type="parent_director",
+                related_id=None
+            )
+
+            message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "owner", body or "")
+            save_message_attachments(message_id, files)
+            create_notification("owner", "owner", "New parent message to Director", body or "Parent sent a message.", f"/message_thread/{thread_id}")
+
+            conn.close()
+            return redirect(f"/message_thread/{thread_id}")
+
+        if not teacher_name:
+            conn.close()
+            return "<h1>Please choose a teacher or send only to Director.</h1>"
+
+        subject = f"Parent / Teacher Message - {student_name}"
+        thread_id = get_or_create_message_thread(
+            subject,
+            student_name=student_name,
+            parent_id=parent_id,
+            teacher_name=teacher_name,
+            thread_type="parent_teacher",
+            related_type="parent_teacher",
+            related_id=None
+        )
+
+        message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "teacher", body or "")
+        save_message_attachments(message_id, files)
+        create_notification("teacher", teacher_name, "New parent message", body or "Parent sent a message.", f"/message_thread/{thread_id}")
+        create_notification("owner", "owner", "Parent messaged teacher", f"{session.get('parent_name', 'Parent')} messaged {teacher_name} about {student_name}.", f"/message_thread/{thread_id}")
+
+        conn.close()
+        return redirect(f"/message_thread/{thread_id}")
+
+    cursor.execute("""
+    SELECT s.name, s.teacher
+    FROM parent_students ps
+    JOIN students s
+        ON ps.student_name = s.name
+    WHERE ps.parent_id = ?
+    AND ps.active = 1
+    ORDER BY s.name
+    """, (parent_id,))
+    linked_students = cursor.fetchall()
+
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teachers = cursor.fetchall()
+    conn.close()
+
+    student_options = "".join([f'<option value="{s[0]}">{s[0]} | Primary Teacher: {s[1] or ""}</option>' for s in linked_students])
+    teacher_options = "".join([f'<option value="{t[0]}">{t[0]}</option>' for t in teachers])
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("New Message")}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:760px; margin:0 auto; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 22px; }}
+            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:130px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
+            .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .recipient-options input {{ width:auto; min-height:auto; margin:0 6px 0 0; }}
+            @media (max-width:760px) {{ .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }} .form-actions button, .form-actions a {{ text-align:center; }} }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
+        </style>
+        <script>
+            function toggleRecipientMode() {{
+                const selected = document.querySelector("input[name='recipient_mode']:checked");
+                const mode = selected ? selected.value : "teacher";
+                const teacherBlock = document.getElementById("teacher-recipient-block");
+                const teacherSelect = document.getElementById("teacher-select");
+                if (mode === "director") {{
+                    teacherBlock.style.display = "none";
+                    teacherSelect.removeAttribute("required");
+                }} else {{
+                    teacherBlock.style.display = "block";
+                    teacherSelect.setAttribute("required", "required");
+                }}
+            }}
+        </script>
+    </head>
+    <body onload="toggleRecipientMode()">
+        <div class="container">
+            <h1>New Message</h1>
+            <form method="POST" enctype="multipart/form-data">
+                Student:<br>
+                <select name="student_name" required>{student_options}</select>
+
+                Send To:<br>
+                <div class="recipient-options">
+                    <label><input type="radio" name="recipient_mode" value="teacher" checked onchange="toggleRecipientMode()">Teacher</label>
+                    <label><input type="radio" name="recipient_mode" value="director" onchange="toggleRecipientMode()">Only to Director</label>
+                </div>
+
+                <div id="teacher-recipient-block">
+                    Teacher:<br>
+                    <select id="teacher-select" name="teacher_name" required>{teacher_options}</select>
+                </div>
+
+                Message:<br>
+                <textarea name="body" rows="5" required></textarea>
+
+                Attachments:<br>
+                <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
+
+                <div class="form-actions">
+                    <button type="submit">Send Message</button>
+                    <a class="button" href="/parent_messages">Back</a>
+                </div>
+            </form>
+        </div>
+        {parent_bottom_nav("messages")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/new_teacher_message", methods=["GET", "POST"])
+def new_teacher_message():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    ensure_v29_schema()
+
+    teacher_name = session.get("teacher_name")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        recipient_mode = request.form.get("recipient_mode", "parent")
+        student_name = request.form.get("student_name")
+        parent_id = request.form.get("parent_id")
+        body = request.form.get("body")
+        files = request.files.getlist("attachments")
+
+        if recipient_mode == "director":
+            subject = "Teacher / Administrator Message"
+            if student_name:
+                subject += f" - {student_name}"
+            thread_id = get_or_create_message_thread(
+                subject,
+                student_name=student_name or None,
+                parent_id=None,
+                teacher_name=teacher_name,
+                thread_type="teacher_director",
+                related_type=None,
+                related_id=None
+            )
+            message_id = add_message(thread_id, "teacher", teacher_name, "owner", body or "")
+            save_message_attachments(message_id, files)
+            create_notification("owner", "owner", "New teacher message to Administrator", body or "Teacher sent a message.", f"/message_thread/{thread_id}")
+
+            conn.close()
+            return redirect(f"/message_thread/{thread_id}")
+
+        cursor.execute("""
+        SELECT id
+        FROM schedule
+        WHERE teacher = ?
+        AND student_name = ?
+        LIMIT 1
+        """, (teacher_name, student_name))
+        teaches_student = cursor.fetchone()
+
+        if not teaches_student:
+            conn.close()
+            return "<h1>Permission denied</h1>"
+
+        subject = f"Teacher / Parent Message - {student_name}"
+        thread_id = get_or_create_message_thread(
+            subject,
+            student_name=student_name,
+            parent_id=int(parent_id),
+            teacher_name=teacher_name,
+            thread_type="parent_teacher",
+            related_type="parent_teacher",
+            related_id=None
+        )
+
+        message_id = add_message(thread_id, "teacher", teacher_name, "parent", body or "")
+        save_message_attachments(message_id, files)
+        create_notification("parent", str(parent_id), "New teacher message", body or "Teacher sent a message.", f"/message_thread/{thread_id}")
+
+        conn.close()
+        return redirect(f"/message_thread/{thread_id}")
+
+    cursor.execute("""
+    SELECT DISTINCT s.student_name, ps.parent_id, p.parent_name
+    FROM schedule s
+    JOIN parent_students ps
+        ON s.student_name = ps.student_name
+        AND ps.active = 1
+    JOIN parent_profiles p
+        ON ps.parent_id = p.id
+    WHERE s.teacher = ?
+    ORDER BY s.student_name
+    """, (teacher_name,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    options = "".join([f'<option value="{r[0]}|{r[1]}">{r[0]} | Parent: {r[2]}</option>' for r in rows])
+
+    return f"""
+    <html>
+    <head>
+        <title>New Message to Parent</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:760px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
+            .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
+            .recipient-options input {{ width:auto; margin:0 6px 0 0; }}
+        </style>
+        <script>
+            function splitStudentParent(value) {{
+                const parts = value.split("|");
+                document.getElementById("student_name").value = parts[0] || "";
+                document.getElementById("parent_id").value = parts[1] || "";
+            }}
+            function toggleTeacherRecipientMode() {{
+                const selected = document.querySelector("input[name='recipient_mode']:checked");
+                const mode = selected ? selected.value : "parent";
+                const parentBlock = document.getElementById("parent-recipient-block");
+                const studentSelect = document.getElementById("student-parent-select");
+                if (mode === "director") {{
+                    parentBlock.style.display = "none";
+                    studentSelect.removeAttribute("required");
+                }} else {{
+                    parentBlock.style.display = "block";
+                    studentSelect.setAttribute("required", "required");
+                }}
+            }}
+        </script>
+    </head>
+    <body onload="toggleTeacherRecipientMode()">
+        <div class="container">
+            <h1>New Message</h1>
+            <form method="POST" enctype="multipart/form-data">
+                Send To:<br>
+                <div class="recipient-options">
+                    <label><input type="radio" name="recipient_mode" value="parent" checked onchange="toggleTeacherRecipientMode()">Parent</label>
+                    <label><input type="radio" name="recipient_mode" value="director" onchange="toggleTeacherRecipientMode()">Administrator</label>
+                </div>
+
+                <div id="parent-recipient-block">
+                    Student / Parent:<br>
+                    <select id="student-parent-select" onchange="splitStudentParent(this.value)" required>
+                        <option value="">Select student</option>
+                        {options}
+                    </select>
+                </div>
+                <input type="hidden" id="student_name" name="student_name">
+                <input type="hidden" id="parent_id" name="parent_id">
+
+                Message:<br>
+                <textarea name="body" rows="5" required></textarea>
+
+                Attachments:<br>
+                <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
+
+                <button type="submit">Send Message</button>
+                <a class="button" href="/teacher_messages">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/message_thread/<int:thread_id>", methods=["GET", "POST"])
+def message_thread(thread_id):
+    if not user_can_view_thread(thread_id):
+        return "<h1>Permission denied</h1>"
+
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, subject, student_name, thread_type, status, updated_at, parent_id, teacher_name
+    FROM message_threads
+    WHERE id = ?
+    """, (thread_id,))
+    thread_for_reply = cursor.fetchone()
+    conn.close()
+
+    if request.method == "POST":
+        body = request.form.get("body")
+        files = request.files.getlist("attachments")
+
+        if body or any([f and f.filename for f in files]):
+            if require_owner():
+                sender_role = "owner"
+                sender_name = "Owner"
+                if thread_for_reply and thread_for_reply[6]:
+                    recipient_role = "parent"
+                    notify_role = "parent"
+                    notify_key = str(thread_for_reply[6])
+                elif thread_for_reply and thread_for_reply[7]:
+                    recipient_role = "teacher"
+                    notify_role = "teacher"
+                    notify_key = thread_for_reply[7]
+                else:
+                    recipient_role = "owner"
+                    notify_role = None
+                    notify_key = None
+            elif require_parent():
+                sender_role = "parent"
+                sender_name = session.get("parent_name", "Parent")
+                recipient_role = "teacher" if thread_for_reply and thread_for_reply[7] else "owner"
+                notify_role = "teacher" if thread_for_reply and thread_for_reply[7] else "owner"
+                notify_key = thread_for_reply[7] if thread_for_reply and thread_for_reply[7] else "owner"
+            else:
+                sender_role = "teacher"
+                sender_name = session.get("teacher_name", "Teacher")
+                recipient_role = "parent" if thread_for_reply and thread_for_reply[6] else "owner"
+                notify_role = "parent" if thread_for_reply and thread_for_reply[6] else "owner"
+                notify_key = str(thread_for_reply[6]) if thread_for_reply and thread_for_reply[6] else "owner"
+
+            message_id = add_message(thread_id, sender_role, sender_name, recipient_role, body or "")
+            save_message_attachments(message_id, files)
+
+            if notify_key:
+                create_notification(notify_role, notify_key, "New message", body or "New attachment", f"/message_thread/{thread_id}")
+
+        return redirect(f"/message_thread/{thread_id}")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, subject, student_name, thread_type, status, updated_at, parent_id
+    FROM message_threads
+    WHERE id = ?
+    """, (thread_id,))
+    thread = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT id, sender_role, sender_name, recipient_role, body, created_at
+    FROM messages
+    WHERE thread_id = ?
+    ORDER BY id ASC
+    """, (thread_id,))
+    message_rows = cursor.fetchall()
+
+    message_ids = [str(m[0]) for m in message_rows]
+    attachments_by_message = {}
+    if message_ids:
+        cursor.execute(f"""
+        SELECT message_id, original_filename, stored_filename, mime_type
+        FROM message_attachments
+        WHERE message_id IN ({",".join(["?"] * len(message_ids))})
+        ORDER BY id ASC
+        """, message_ids)
+
+        for a in cursor.fetchall():
+            attachments_by_message.setdefault(a[0], []).append(a)
+
+    conn.close()
+
+    mark_message_thread_read(thread_id)
+
+    messages_html = ""
+    for m in message_rows:
+        attachment_html = ""
+        for a in attachments_by_message.get(m[0], []):
+            file_url = f"/message_uploads/{a[2]}"
+            mime_type = a[3] or ""
+            if mime_type.startswith("image/"):
+                attachment_html += f"<div class='attachment'><img src='{file_url}' style='max-width:360px; border-radius:8px;'></div>"
+            elif mime_type.startswith("video/"):
+                attachment_html += f"<div class='attachment'><video src='{file_url}' controls style='max-width:480px; border-radius:8px;'></video></div>"
+            else:
+                attachment_html += f"<div class='attachment'><a href='{file_url}'>{a[1]}</a></div>"
+
+        messages_html += f"""
+        <div class="message">
+            <div class="meta">{m[5]} | {m[2]} ({m[1]}) to {m[3]}</div>
+            <div class="body">{m[4]}</div>
+            {attachment_html}
+        </div>
+        """
+
+    if not messages_html:
+        messages_html = "<p>No messages yet.</p>"
+
+    if require_owner():
+        back_link = "/messages"
+    elif require_teacher():
+        back_link = "/teacher_messages"
+    else:
+        back_link = "/parent_messages"
+
+    is_parent_app = back_link == "/parent_messages"
+    thread_head = parent_app_meta(thread[1]) if is_parent_app else f"<title>{thread[1]}</title>"
+    bottom_nav_html = parent_bottom_nav("messages") if is_parent_app else ""
+    page_padding = "calc(96px + env(safe-area-inset-bottom))" if is_parent_app else "40px"
+
+    return f"""
+    <html>
+    <head>
+        {thread_head}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px {page_padding}; max-width:900px; margin:0 auto; }}
+            h1 {{ font-size:28px; line-height:1.12; margin:0 0 10px; }}
+            .message {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:12px 0; background:#fafafa; overflow:hidden; }}
+            .meta {{ color:#6b7280; font-size:13px; margin-bottom:8px; }}
+            .body {{ font-size:15px; white-space:pre-wrap; }}
+            textarea {{ width:100%; min-height:120px; padding:12px 14px; margin:12px 0; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            input[type=file] {{ width:100%; margin:8px 0 18px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; min-height:48px; }}
+            .attachment img, .attachment video {{ max-width:100% !important; height:auto; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>{thread[1]}</h1>
+            <p>Student: {thread[2] or ''} | Type: {thread[3]} | Status: {thread[4]}</p>
+            <a class="button" href="{back_link}">Back</a>
+
+            {messages_html}
+
+            <h2>Reply</h2>
+            <form method="POST" enctype="multipart/form-data">
+                <textarea name="body" rows="4"></textarea>
+                Attachments:<br>
+                <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt"><br><br>
+                <button type="submit">Send Reply</button>
+            </form>
+        </div>
+        {bottom_nav_html}
+    </body>
+    </html>
+    """
+
+
+
+
+@app.route("/message_uploads/<filename>")
+def message_upload(filename):
+    if not (require_owner() or require_parent() or require_teacher()):
+        return redirect("/owner_login")
+    return send_from_directory(HMUSIC_UPLOAD_DIR, filename)
+
+
+def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_schedule_id=None, duration=30):
+    target_start = minutes_from_time_text(lesson_time)
+    if target_start is None:
+        return {"has_conflict": False, "message": ""}
+
+    try:
+        duration = int(duration or 30)
+    except:
+        duration = 30
+
+    target_end = target_start + duration
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, student_name, teacher, classroom, lesson_time, duration, status
+    FROM schedule
+    WHERE lesson_date = ?
+    AND id != ?
+    AND (
+        teacher = ?
+        OR classroom = ?
+    )
+    """, (
+        lesson_date,
+        exclude_schedule_id or -1,
+        teacher,
+        classroom
+    ))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    for row in rows:
+        status = row[6] or "scheduled"
+        if str(status).startswith("cancel") or status in ("excused_24h", "teacher_cancelled"):
+            continue
+
+        row_start = minutes_from_time_text(row[4])
+        if row_start is None:
+            continue
+
+        try:
+            row_duration = int(row[5] or 30)
+        except:
+            row_duration = 30
+
+        row_end = row_start + row_duration
+
+        if max(target_start, row_start) < min(target_end, row_end):
+            conflict_type = "teacher" if row[2] == teacher else "classroom"
+            return {
+                "has_conflict": True,
+                "message": f"{conflict_type.title()} conflict with {row[1]} at {row[4]} in {row[3]}."
+            }
+
+    return {"has_conflict": False, "message": ""}
+
+
+@app.route("/teacher_messages")
+def teacher_messages():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    rows = get_message_inbox_threads("teacher", teacher_name)
+    return render_message_inbox(
+        "Teacher Messages",
+        "/teacher_dashboard",
+        "Back to Dashboard",
+        rows,
+        new_href="/new_teacher_message",
+        new_label="New Message"
+    )
+
+
+@app.route("/teacher_reschedule", methods=["GET", "POST"])
+def teacher_reschedule():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    ensure_v29_schema()
+
+    teacher_name = session.get("teacher_name")
+
+    if request.method == "POST":
+        schedule_id = request.form.get("schedule_id")
+        preferred_slot = request.form.get("preferred_slot")
+        requested_date = request.form.get("requested_date")
+        requested_time = request.form.get("requested_time")
+        reason = request.form.get("reason")
+        requested_teacher = None
+        requested_classroom = None
+        requested_slot_source = None
+
+        if preferred_slot:
+            slot_parts = preferred_slot.split("|")
+            if len(slot_parts) >= 4:
+                requested_teacher = slot_parts[0]
+                requested_date = slot_parts[1]
+                requested_time = slot_parts[2]
+                requested_classroom = slot_parts[3]
+                requested_slot_source = slot_parts[4] if len(slot_parts) >= 5 else None
+
+        if not requested_date or not requested_time:
+            return "<h1>Please choose an open slot or enter a backup requested date and time.</h1>"
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        SELECT id, student_name, lesson_date, lesson_time, teacher, classroom, status
+        FROM schedule
+        WHERE id = ?
+        AND teacher = ?
+        """, (schedule_id, teacher_name))
+        lesson = cursor.fetchone()
+
+        if not lesson:
+            conn.close()
+            return "<h1>Lesson not found or permission denied.</h1>"
+
+        if lesson[6] not in (None, "", "scheduled"):
+            conn.close()
+            return "<h1>Only scheduled lessons can be rescheduled.</h1>"
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO reschedule_requests (
+            parent_id,
+            student_name,
+            original_schedule_id,
+            original_date,
+            original_time,
+            original_teacher,
+            original_classroom,
+            requested_date,
+            requested_time,
+            requested_teacher,
+            requested_classroom,
+            requested_slot_source,
+            reason,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            None,
+            lesson[1],
+            lesson[0],
+            lesson[2],
+            lesson[3],
+            lesson[4],
+            lesson[5],
+            requested_date,
+            requested_time,
+            requested_teacher,
+            requested_classroom,
+            requested_slot_source,
+            reason,
+            "pending",
+            now,
+            now
+        ))
+
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        create_reschedule_message_event(
+            request_id,
+            "submitted",
+            f"{teacher_name} requested a reschedule for {lesson[1]} from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}. Reason: {reason or ''}",
+            parent_id=None,
+            student_name=lesson[1],
+            teacher_name=teacher_name
+        )
+
+        return f"""
+        <h1>Teacher Reschedule Request Submitted</h1>
+        <p>Request #{request_id}</p>
+        <p>Student: {lesson[1]}</p>
+        <p>Requested Time: {requested_date} {requested_time}</p>
+        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        """
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT id, lesson_date, lesson_time, student_name, classroom, status
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date >= ?
+    AND (status IS NULL OR status = '' OR status = 'scheduled')
+    ORDER BY lesson_date, lesson_time
+    """, (teacher_name, today))
+    lessons = cursor.fetchall()
+    conn.close()
+
+    open_slots = get_available_open_slots(teachers=[teacher_name])
+
+    lesson_options = ""
+    for l in lessons:
+        lesson_options += f"<option value='{l[0]}'>{l[1]} {l[2]} | {l[3]} | {l[4]}</option>"
+    if not lesson_options:
+        lesson_options = "<option value=''>No upcoming scheduled lessons</option>"
+
+    open_slot_options = '<option value="">Use backup date/time instead</option>'
+    for slot in open_slots:
+        value = f"{slot['teacher']}|{slot['slot_date']}|{slot['slot_time']}|{slot['classroom']}|{slot['source']}"
+        open_slot_options += f"<option value='{value}'>{slot['slot_date']} {slot['slot_time']} | {slot['classroom']} | {slot['source']}</option>"
+    if not open_slot_options:
+        open_slot_options = "<option value=''>No open slots found</option>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Teacher Reschedule Request</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:900px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Teacher Reschedule Request</h1>
+            <form method="POST">
+                Current Lesson:<br>
+                <select name="schedule_id" required>{lesson_options}</select>
+
+                Preferred Open Slot:<br>
+                <select name="preferred_slot" required>{open_slot_options}</select>
+
+                Backup Requested Date:<br>
+                <input type="date" name="requested_date">
+
+                Backup Requested Time:<br>
+                <input type="time" name="requested_time">
+
+                Reason:<br>
+                <textarea name="reason" rows="4"></textarea>
+
+                <button type="submit">Submit Request</button>
+                <a class="button" href="/teacher_dashboard">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/notifications")
+def notifications():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, title, body, link_url, read_at, created_at
+    FROM notifications
+    WHERE user_role = 'owner'
+    ORDER BY id DESC
+    LIMIT 50
+    """)
+    rows_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for n in rows_data:
+        read_status = "Unread" if not n[4] else "Read"
+        rows += f"""
+        <tr>
+            <td>{n[5]}</td>
+            <td><a href="{n[3]}">{n[1]}</a></td>
+            <td>{n[2]}</td>
+            <td>{read_status}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='4'>No notifications.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Notifications</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
+            th {{ background:#eeeeff; }}
+            a {{ color:#5b5cff; font-weight:bold; }}
+            a.button {{ display:inline-block; background:#5b5cff; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Notifications</h1>
+            <a class="button" href="/messages">Message Center</a>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Title</th>
+                    <th>Body</th>
+                    <th>Status</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_reschedule", methods=["GET", "POST"])
+def parent_reschedule():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v282_schema()
+
+    parent_id = session.get("parent_id")
+    student_name = session.get("parent_student_name")
+
+    if not student_name:
+        return redirect("/parent_dashboard")
+
+    if parent_id and not parent_can_access_student(parent_id, student_name):
+        return "<h1>Permission denied</h1>"
+
+    if request.method == "POST":
+        schedule_id = request.form.get("schedule_id")
+        preferred_slot = request.form.get("preferred_slot")
+        requested_date = request.form.get("requested_date")
+        requested_time = request.form.get("requested_time")
+        backup_date_2 = request.form.get("backup_date_2")
+        backup_time_2 = request.form.get("backup_time_2")
+        backup_date_3 = request.form.get("backup_date_3")
+        backup_time_3 = request.form.get("backup_time_3")
+        reason = request.form.get("reason")
+        requested_teacher = None
+        requested_classroom = None
+        requested_slot_source = None
+
+        if preferred_slot:
+            slot_parts = preferred_slot.split("|")
+            if len(slot_parts) >= 4:
+                requested_teacher = slot_parts[0]
+                requested_date = slot_parts[1]
+                requested_time = slot_parts[2]
+                requested_classroom = slot_parts[3]
+                requested_slot_source = slot_parts[4] if len(slot_parts) >= 5 else None
+
+        if not preferred_slot and (not requested_date or not requested_time):
+            requested_date = requested_date or ""
+            requested_time = requested_time or ""
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        SELECT id, student_name, lesson_date, lesson_time, teacher, classroom, status
+        FROM schedule
+        WHERE id = ?
+        """, (schedule_id,))
+
+        lesson = cursor.fetchone()
+
+        if not lesson:
+            conn.close()
+            return "<h1>Lesson not found</h1>"
+
+        if lesson[1] != student_name:
+            conn.close()
+            return "<h1>Permission denied</h1>"
+
+        if lesson[6] not in (None, "", "scheduled"):
+            conn.close()
+            return "<h1>Only scheduled lessons can be rescheduled.</h1>"
+
+        hours_before = get_hours_before_lesson(lesson[2], lesson[3])
+        is_last_minute = hours_before < 24
+        last_minute_note = ""
+        if is_last_minute:
+            last_minute_note = " This is within 24 hours and may use the same last-minute fee logic as late cancellation. First last-minute exception may be free per package if available."
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO reschedule_requests (
+            parent_id,
+            student_name,
+            original_schedule_id,
+            original_date,
+            original_time,
+            original_teacher,
+            original_classroom,
+            requested_date,
+            requested_time,
+            requested_teacher,
+            requested_classroom,
+            requested_slot_source,
+            backup_date_2,
+            backup_time_2,
+            backup_date_3,
+            backup_time_3,
+            reason,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            parent_id,
+            student_name,
+            lesson[0],
+            lesson[2],
+            lesson[3],
+            lesson[4],
+            lesson[5],
+            requested_date,
+            requested_time,
+            requested_teacher,
+            requested_classroom,
+            requested_slot_source,
+            backup_date_2,
+            backup_time_2,
+            backup_date_3,
+            backup_time_3,
+            reason,
+            "pending",
+            now,
+            now
+        ))
+
+        request_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        log_parent_activity(
+            parent_id,
+            student_name,
+            "reschedule_request",
+            f"Parent requested reschedule for lesson #{schedule_id} from {lesson[2]} {lesson[3]} to {requested_date} {requested_time}.{last_minute_note}",
+            schedule_id
+        )
+
+        backup_summary = []
+        for label, backup_date, backup_time in [
+            ("Backup 1", requested_date, requested_time),
+            ("Backup 2", backup_date_2, backup_time_2),
+            ("Backup 3", backup_date_3, backup_time_3),
+        ]:
+            if backup_date or backup_time:
+                backup_summary.append(f"{label}: {backup_date or 'any date'} {backup_time or 'any time'}")
+        backup_summary_text = "; ".join(backup_summary) if backup_summary else "No backup times provided."
+
+        create_reschedule_message_event(
+            request_id,
+            "submitted",
+            f"{student_name} requested a reschedule from {lesson[2]} {lesson[3]}. Preferred: {requested_date or 'not specified'} {requested_time or ''}. {backup_summary_text}{last_minute_note} Reason: {reason or ''}",
+            parent_id=parent_id,
+            student_name=student_name,
+            teacher_name=lesson[4]
+        )
+
+        warning_html = ""
+        if is_last_minute:
+            warning_html = """
+            <p><b>Last-minute reschedule notice:</b> This request is within 24 hours. A last-minute reschedule fee may apply, using the same policy as late cancellation. The first exception may be free per package if still available.</p>
+            """
+
+        return f"""
+        <h1>Reschedule Request Submitted</h1>
+        <p>Request #{request_id}</p>
+        <p>Student: {student_name}</p>
+        <p>Requested Time: {requested_date or 'Not specified'} {requested_time or ''}</p>
+        {warning_html}
+        <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
+        """
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT id, lesson_date, lesson_time, teacher, classroom, status
+    FROM schedule
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    AND (status IS NULL OR status = '' OR status = 'scheduled')
+    ORDER BY lesson_date, lesson_time
+    """, (student_name, today))
+    lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, original_date, original_time, requested_date, requested_time, status, created_at
+    FROM reschedule_requests
+    WHERE student_name = ?
+    AND parent_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (student_name, parent_id))
+    requests = cursor.fetchall()
+
+    open_slots = get_available_open_slots()
+
+    conn.close()
+
+    lesson_options = ""
+    for l in lessons:
+        notice = ""
+        try:
+            if get_hours_before_lesson(l[1], l[2]) < 24:
+                notice = " | within 24h: last-minute fee may apply"
+        except Exception:
+            notice = ""
+        lesson_options += f"""
+        <option value="{l[0]}">{l[1]} {l[2]} | {l[3]} | {l[4]}{notice}</option>
+        """
+
+    if not lesson_options:
+        lesson_options = '<option value="">No upcoming scheduled lessons</option>'
+
+    open_slot_options = '<option value="">Use backup date/time instead</option>'
+    for slot in open_slots:
+        value = f"{slot['teacher']}|{slot['slot_date']}|{slot['slot_time']}|{slot['classroom']}|{slot['source']}"
+        open_slot_options += f"""
+        <option value="{value}">{slot['slot_date']} {slot['slot_time']} | {slot['teacher']} | {slot['classroom']} | {slot['source']}</option>
+        """
+
+    if len(open_slots) == 0:
+        open_slot_options += '<option value="" disabled>No open slots found</option>'
+
+    request_rows = ""
+    for r in requests:
+        request_rows += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]} {r[2]}</td>
+            <td>{r[3]} {r[4]}</td>
+            <td>{r[5]}</td>
+            <td>{r[6]}</td>
+        </tr>
+        """
+
+    if not request_rows:
+        request_rows = "<tr><td colspan='5'>No reschedule requests yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Request Reschedule")}
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:900px; margin:0 auto; }}
+            h1 {{ font-size:30px; line-height:1.08; margin:0 0 24px; }}
+            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 18px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:120px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:16px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
+            th {{ background:#eeeeff; }}
+            .backup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:8px; }}
+            .backup-title {{ font-weight:900; margin:14px 0 4px; }}
+            .hint {{ color:#6b7280; font-size:13px; margin-top:-4px; }}
+            .form-actions {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
+            .parent-bottom-nav {{
+                position: fixed; left: 0; right: 0; bottom: 0;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255,255,255,.96); border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,.08); z-index: 20;
+            }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{
+                table {{ display:block; overflow-x:auto; font-size:12px; }}
+                .backup-grid {{ grid-template-columns:1fr; gap:0; }}
+                .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
+                .form-actions button, .form-actions a {{ text-align:center; }}
+            }}
+            @media (min-width:900px) {{
+                body {{ padding:32px; }}
+                .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Request Reschedule - {student_name}</h1>
+            <p><b>Policy:</b> Please request reschedules at least 24 hours before class. Within 24 hours, a last-minute reschedule fee may apply. The first exception may be free per package if available.</p>
+            <p><a class="button" href="/parent_reschedule_group">Coordinate multiple lessons / siblings</a></p>
+
+            <form method="POST">
+                Current Lesson:<br>
+                <select name="schedule_id" required>
+                    {lesson_options}
+                </select>
+
+                Preferred Open Slot:<br>
+                <select name="preferred_slot">
+                    {open_slot_options}
+                </select>
+
+                <div class="backup-title">Backup Option 1</div>
+                <div class="hint">Optional if you selected an open slot.</div>
+                <div class="backup-grid">
+                    <div>
+                        Backup Requested Date:<br>
+                        <input type="date" name="requested_date">
+                    </div>
+                    <div>
+                        Backup Requested Time:<br>
+                        <input type="time" name="requested_time">
+                    </div>
+                </div>
+
+                <div class="backup-title">Backup Option 2</div>
+                <div class="backup-grid">
+                    <div>
+                        Backup Requested Date:<br>
+                        <input type="date" name="backup_date_2">
+                    </div>
+                    <div>
+                        Backup Requested Time:<br>
+                        <input type="time" name="backup_time_2">
+                    </div>
+                </div>
+
+                <div class="backup-title">Backup Option 3</div>
+                <div class="backup-grid">
+                    <div>
+                        Backup Requested Date:<br>
+                        <input type="date" name="backup_date_3">
+                    </div>
+                    <div>
+                        Backup Requested Time:<br>
+                        <input type="time" name="backup_time_3">
+                    </div>
+                </div>
+
+                Reason:<br>
+                <textarea name="reason" rows="4"></textarea>
+
+                <div class="form-actions">
+                    <button type="submit">Submit Request</button>
+                    <a class="button" href="/parent_dashboard">Back</a>
+                </div>
+            </form>
+
+            <h2>Recent Requests</h2>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Original</th>
+                    <th>Requested</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+                {request_rows}
+            </table>
+        </div>
+        {parent_bottom_nav("reschedule")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_reschedule_group", methods=["GET", "POST"])
+def parent_reschedule_group():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v282_schema()
+
+    parent_id = session.get("parent_id")
+    if not parent_id:
+        return redirect("/parent_dashboard")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        schedule_ids = request.form.getlist("schedule_ids")
+        requested_date = request.form.get("requested_date")
+        requested_time = request.form.get("requested_time")
+        backup_date_2 = request.form.get("backup_date_2")
+        backup_time_2 = request.form.get("backup_time_2")
+        backup_date_3 = request.form.get("backup_date_3")
+        backup_time_3 = request.form.get("backup_time_3")
+        reason = (request.form.get("reason") or "").strip()
+
+        if len(schedule_ids) < 2:
+            conn.close()
+            return "<h1>Please select at least two lessons to coordinate.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+        placeholders = ",".join(["?"] * len(schedule_ids))
+        cursor.execute(f"""
+        SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom, s.status
+        FROM schedule s
+        JOIN parent_students ps
+            ON ps.student_name = s.student_name
+            AND ps.active = 1
+            AND ps.parent_id = ?
+        WHERE s.id IN ({placeholders})
+        ORDER BY s.lesson_date, s.lesson_time
+        """, [parent_id] + schedule_ids)
+        selected_lessons = cursor.fetchall()
+
+        if len(selected_lessons) != len(schedule_ids):
+            conn.close()
+            return "<h1>Permission denied or lesson not found.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+        invalid = [l for l in selected_lessons if l[6] not in (None, "", "scheduled")]
+        if invalid:
+            conn.close()
+            return "<h1>Only scheduled lessons can be coordinated.</h1><p><a href='/parent_reschedule_group'>Back</a></p>"
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        batch_group_id = f"batch-{parent_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        affected_schedule_ids = ",".join([str(l[0]) for l in selected_lessons])
+        affected_teachers = ", ".join(sorted(set([l[4] or "" for l in selected_lessons if l[4]])))
+        affected_students = ", ".join(sorted(set([l[1] or "" for l in selected_lessons if l[1]])))
+        request_ids = []
+
+        for lesson in selected_lessons:
+            batch_reason = (
+                f"[Coordinated family request {batch_group_id}] "
+                f"Affected students: {affected_students}. Affected teachers: {affected_teachers}. "
+                f"{reason}"
+            ).strip()
+            cursor.execute("""
+            INSERT INTO reschedule_requests (
+                parent_id,
+                student_name,
+                original_schedule_id,
+                original_date,
+                original_time,
+                original_teacher,
+                original_classroom,
+                requested_date,
+                requested_time,
+                backup_date_2,
+                backup_time_2,
+                backup_date_3,
+                backup_time_3,
+                reason,
+                status,
+                created_at,
+                updated_at,
+                batch_group_id,
+                affected_schedule_ids,
+                affected_teachers
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                parent_id,
+                lesson[1],
+                lesson[0],
+                lesson[2],
+                lesson[3],
+                lesson[4],
+                lesson[5],
+                requested_date,
+                requested_time,
+                backup_date_2,
+                backup_time_2,
+                backup_date_3,
+                backup_time_3,
+                batch_reason,
+                "pending",
+                now,
+                now,
+                batch_group_id,
+                affected_schedule_ids,
+                affected_teachers
+            ))
+            request_ids.append(cursor.lastrowid)
+
+        conn.commit()
+        conn.close()
+
+        summary = (
+            f"Family coordinated reschedule request for {affected_students}. "
+            f"Target: {requested_date or 'not specified'} {requested_time or ''}. "
+            f"Affected teachers: {affected_teachers}. Request IDs: {', '.join(str(x) for x in request_ids)}."
+        )
+        create_notification("owner", "owner", "Coordinated reschedule request", summary, "/owner_reschedule_requests")
+        for teacher in sorted(set([l[4] for l in selected_lessons if l[4]])):
+            create_notification("teacher", teacher, "Coordinated reschedule request", summary, "/teacher_messages")
+
+        return f"""
+        <h1>Coordinated Reschedule Submitted</h1>
+        <p>{summary}</p>
+        <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
+        """
+
+    today_obj = date.today()
+    week_param = request.args.get("week")
+    try:
+        week_start = datetime.strptime(week_param, "%Y-%m-%d").date() if week_param else today_obj - timedelta(days=today_obj.weekday())
+    except ValueError:
+        week_start = today_obj - timedelta(days=today_obj.weekday())
+    week_days = [week_start + timedelta(days=i) for i in range(7)]
+    week_end = week_days[-1]
+    prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
+    next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+    today = today_obj.strftime("%Y-%m-%d")
+    cursor.execute("""
+    SELECT
+        s.id,
+        s.student_name,
+        s.lesson_date,
+        s.lesson_time,
+        s.teacher,
+        s.classroom,
+        COALESCE(s.course_type_name, ''),
+        COALESCE(s.duration, 30),
+        COALESCE(s.is_group, 0),
+        COALESCE(c.display_color, '')
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    JOIN parent_students ps
+        ON ps.student_name = s.student_name
+        AND ps.active = 1
+        AND ps.parent_id = ?
+    WHERE s.lesson_date >= ?
+    AND (s.status IS NULL OR s.status = '' OR s.status = 'scheduled')
+    ORDER BY s.student_name, s.lesson_date, s.lesson_time
+    """, (parent_id, today))
+    lessons = cursor.fetchall()
+
+    teachers = sorted(set([l[4] for l in lessons if l[4]]))
+    open_slots = get_available_open_slots(teachers=teachers) if teachers else []
+    conn.close()
+
+    grouped_lessons = {}
+    for lesson in lessons:
+        group_key = f"{lesson[1]}|{lesson[4]}|{lesson[6] or 'Lesson'}"
+        if group_key not in grouped_lessons:
+            grouped_lessons[group_key] = lesson
+
+    calendar_lessons = []
+    for lesson in grouped_lessons.values():
+        course_color = normalize_hex_color(lesson[9]) or default_course_color(lesson[6], lesson[7], lesson[8])
+        calendar_lessons.append({
+            "id": lesson[0],
+            "student": lesson[1] or "",
+            "date": lesson[2] or "",
+            "time": lesson[3] or "",
+            "teacher": lesson[4] or "",
+            "room": lesson[5] or "",
+            "course": lesson[6] or "Lesson",
+            "duration": lesson[7] or 30,
+            "color": course_color,
+            "bg": course_color_background(course_color),
+            "text": course_color_text(course_color),
+            "border": course_color,
+        })
+
+    slot_data = []
+    for slot in open_slots:
+        if not slot.get("teacher") or not slot.get("slot_date") or not slot.get("slot_time"):
+            continue
+        slot_date = slot["slot_date"]
+        if slot_date < week_start.strftime("%Y-%m-%d") or slot_date > week_end.strftime("%Y-%m-%d"):
+            continue
+        slot_data.append({
+            "teacher": slot["teacher"],
+            "date": slot_date,
+            "time": slot["slot_time"],
+            "room": slot.get("classroom", ""),
+            "source": slot.get("source", "open_slot"),
+        })
+
+    default_times = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00", "17:00"]
+    time_set = set(default_times)
+    for lesson in calendar_lessons:
+        if week_start.strftime("%Y-%m-%d") <= lesson["date"] <= week_end.strftime("%Y-%m-%d"):
+            time_set.add(lesson["time"])
+    for slot in slot_data:
+        time_set.add(slot["time"])
+
+    def sort_time_value(value):
+        mins = minutes_from_time_text(value)
+        return mins if mins is not None else 9999
+
+    calendar_times = sorted(time_set, key=sort_time_value)
+    day_data = [{"key": d.strftime("%Y-%m-%d"), "label": d.strftime("%a"), "display": d.strftime("%-m/%-d")} for d in week_days]
+    lessons_json = json.dumps(calendar_lessons)
+    slots_json = json.dumps(slot_data)
+    days_json = json.dumps(day_data)
+    times_json = json.dumps(calendar_times)
+    empty_state = "true" if not calendar_lessons else "false"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Coordinate Lessons")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f5f5f7; margin:0; color:#1c1c1e; }}
+            .page {{ min-height:100vh; padding:max(18px, env(safe-area-inset-top)) 14px calc(96px + env(safe-area-inset-bottom)); max-width:980px; margin:0 auto; }}
+            .topbar {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; }}
+            h1 {{ font-size:26px; line-height:1.08; margin:0; }}
+            .sub {{ color:#636366; line-height:1.45; margin:6px 0 0; }}
+            .week-nav a {{ display:inline-block; padding:8px 10px; border:1px solid #e5e5ea; border-radius:999px; background:white; color:#4f46e5; font-weight:800; text-decoration:none; margin-left:6px; }}
+            .wrap {{ display:grid; grid-template-columns:220px 1fr; gap:14px; align-items:start; }}
+            .card, .cal-wrap, .bottom-bar {{ background:#fff; border:1px solid #e5e5ea; border-radius:12px; }}
+            .card {{ padding:14px; }}
+            .student-row {{ display:flex; align-items:center; gap:9px; padding:9px 10px; background:#f2f2f7; border-radius:8px; margin-bottom:12px; }}
+            .avatar {{ width:34px; height:34px; border-radius:50%; background:#e8e6ff; color:#5e5ce6; display:flex; align-items:center; justify-content:center; font-weight:800; }}
+            .sname {{ font-size:13px; font-weight:800; }}
+            .sage {{ font-size:11px; color:#8e8e93; }}
+            .sec {{ font-size:10px; font-weight:800; color:#8e8e93; text-transform:uppercase; letter-spacing:.06em; margin:10px 0 8px; }}
+            .legend-item {{ display:flex; gap:8px; padding:8px; border-radius:8px; border:1px solid transparent; margin-bottom:6px; cursor:pointer; background:#fff; }}
+            .legend-item.active {{ border-color:#e5e5ea; background:#f2f2f7; }}
+            .legend-item.dimmed {{ opacity:.38; }}
+            .leg-color {{ width:10px; height:10px; border-radius:2px; margin-top:3px; flex:0 0 auto; }}
+            .leg-name {{ font-size:12px; font-weight:800; }}
+            .leg-teacher, .leg-now {{ font-size:11px; color:#8e8e93; }}
+            .hint-row {{ display:flex; align-items:center; gap:7px; margin-bottom:4px; font-size:11px; color:#636366; }}
+            .swatch {{ width:10px; height:10px; border-radius:2px; flex:0 0 auto; }}
+            .cal-wrap {{ overflow:hidden; }}
+            .filter-row {{ display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid #e5e5ea; flex-wrap:wrap; background:#fafafa; }}
+            .filter-label {{ font-size:11px; color:#8e8e93; font-weight:700; }}
+            .filter-btn {{ padding:5px 11px; border-radius:20px; font-size:11px; border:1px solid #e5e5ea; color:#636366; cursor:pointer; background:#fff; font-family:inherit; }}
+            .filter-btn.on {{ background:#e8e6ff; border-color:#9d9bf5; color:#3634a3; font-weight:800; }}
+            .cal-header, .cal-row {{ display:grid; grid-template-columns:52px repeat(7, minmax(82px, 1fr)); }}
+            .cal-header {{ border-bottom:1px solid #e5e5ea; background:#fafafa; }}
+            .cal-hcell {{ padding:7px 4px; text-align:center; font-size:11px; color:#636366; font-weight:700; border-right:1px solid #e5e5ea; }}
+            .cal-hcell.today-col {{ color:#5e5ce6; }}
+            .today-badge {{ background:#5e5ce6; color:white; border-radius:10px; padding:1px 6px; font-size:9px; margin-left:3px; }}
+            .time-cell {{ height:44px; border-bottom:1px solid #f2f2f7; font-size:10px; color:#c7c7cc; text-align:right; padding:4px 6px 0 0; border-right:1px solid #e5e5ea; background:#fafafa; }}
+            .cell {{ height:44px; border-bottom:1px solid #f2f2f7; border-right:1px solid #e5e5ea; position:relative; padding:2px 3px; overflow:hidden; }}
+            .cell:last-child, .cal-hcell:last-child {{ border-right:none; }}
+            .ev, .avail {{ border-radius:4px; padding:3px 5px; font-size:10px; line-height:1.25; width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
+            .ev {{ font-weight:800; border-left:2px solid transparent; }}
+            .ev-piano, .avail-piano {{ background:#e8e6ff; color:#3634a3; border-color:#9d9bf5; }}
+            .ev-guitar, .avail-guitar {{ background:#d1f2e0; color:#1c7a3a; border-color:#30d158; }}
+            .ev-ukulele, .avail-ukulele {{ background:#fff3d0; color:#7d5200; border-color:#ff9f0a; }}
+            .ev-voice, .avail-voice {{ background:#e0f2fe; color:#075985; border-color:#38bdf8; }}
+            .ev-drum, .avail-drum {{ background:#fee2e2; color:#991b1b; border-color:#f87171; }}
+            .ev-violin, .avail-violin {{ background:#f3e8ff; color:#6b21a8; border-color:#c084fc; }}
+            .avail {{ cursor:pointer; border:1.5px dashed; margin-top:1px; }}
+            .avail-all {{ background:#d1f2e0; border:2px solid #1c7a3a; color:#0d3d1d; font-weight:900; }}
+            .avail-both {{ background:#e8f9ef; border:1.5px solid #30d158; color:#1c7a3a; font-weight:800; }}
+            .selected-slot {{ outline:2.5px solid #5e5ce6; outline-offset:-1px; }}
+            .bottom-bar {{ display:none; margin-top:10px; padding:12px 14px; }}
+            .bottom-bar.show {{ display:block; }}
+            .confirm-inner {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }}
+            .confirm-text {{ font-size:14px; font-weight:900; flex:1; min-width:180px; }}
+            .confirm-sub {{ font-size:11px; color:#636366; margin-top:2px; }}
+            .btn-ok, .btn-cancel {{ padding:10px 14px; border-radius:8px; font-size:13px; cursor:pointer; font-family:inherit; font-weight:800; }}
+            .btn-ok {{ background:#5e5ce6; color:white; border:none; }}
+            .btn-ok:disabled {{ opacity:.45; cursor:not-allowed; }}
+            .btn-cancel {{ background:white; border:1px solid #e5e5ea; color:#636366; }}
+            .empty {{ padding:18px; color:#636366; background:white; border:1px solid #e5e5ea; border-radius:12px; }}
+            .hidden-form {{ display:none; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (max-width:760px) {{
+                .page {{ padding-left:10px; padding-right:10px; }}
+                .topbar {{ display:block; }}
+                .week-nav {{ margin-top:10px; }}
+                .wrap {{ grid-template-columns:1fr; }}
+                .cal-wrap {{ overflow-x:auto; }}
+                .cal-header, .cal-row {{ min-width:680px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <div class="topbar">
+                <div>
+                    <h1>Coordinate Multiple Lessons</h1>
+                    <p class="sub">Select lessons on the left, then choose a shared open slot on the calendar.</p>
+                </div>
+                <div class="week-nav">
+                    <a href="/parent_reschedule_group?week={prev_week}">Prev</a>
+                    <a href="/parent_reschedule_group?week={next_week}">Next</a>
+                </div>
+            </div>
+            <div id="emptyState" class="empty" style="display:none;">No upcoming scheduled lessons were found for this family account.</div>
+            <div class="wrap" id="calendarApp">
+                <div class="sidebar">
+                    <div class="card">
+                        <div class="student-row">
+                            <div class="avatar" id="familyAvatar">H</div>
+                            <div><div class="sname">Family Lessons</div><div class="sage">{week_start.strftime('%b %-d')} - {week_end.strftime('%b %-d')}</div></div>
+                        </div>
+                        <div class="sec">Lessons</div>
+                        <div id="lessonList"></div>
+                    </div>
+                    <div class="card">
+                        <div class="sec">Legend</div>
+                        <div class="hint-row"><div class="swatch" style="background:#f5f4ff;border:1.5px dashed #9d9bf5"></div><span>Single teacher slot</span></div>
+                        <div class="hint-row"><div class="swatch" style="background:#d1f2e0;border:2px solid #1c7a3a"></div><span><b>All selected teachers free</b></span></div>
+                        <div style="font-size:11px;color:#8e8e93;line-height:1.5;margin-top:8px">Tap a lesson to include/exclude it. Use filters to inspect one teacher's slots.</div>
+                    </div>
+                </div>
+                <div>
+                    <div class="cal-wrap">
+                        <div class="filter-row" id="filterRow"></div>
+                        <div class="cal-header" id="calHeader"></div>
+                        <div id="calGrid"></div>
+                    </div>
+                    <div class="bottom-bar" id="bottomBar">
+                        <div class="confirm-inner">
+                            <div style="flex:1">
+                                <div class="confirm-text" id="confirmText"></div>
+                                <div class="confirm-sub" id="confirmSub"></div>
+                            </div>
+                            <button class="btn-cancel" onclick="clearSelection()" type="button">Cancel</button>
+                            <button class="btn-ok" id="confirmButton" onclick="submitSelection()" type="button">Confirm · Notify teachers</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <form class="hidden-form" id="batchForm" method="POST">
+                <div id="selectedInputs"></div>
+                <input type="date" name="requested_date" id="requestedDate">
+                <input type="time" name="requested_time" id="requestedTime">
+                <textarea name="reason" id="requestReason">Coordinated family calendar request.</textarea>
+            </form>
+        </div>
+        <script>
+            const LESSONS = {lessons_json};
+            const SLOTS = {slots_json};
+            const DAYS = {days_json};
+            const TIMES = {times_json};
+            let activeIds = new Set(LESSONS.map(l => String(l.id)));
+            let viewMode = "all";
+            let selectedSlot = null;
+
+            function selectedLessons() {{
+                return LESSONS.filter(l => activeIds.has(String(l.id)));
+            }}
+            function selectedTeachers() {{
+                return [...new Set(selectedLessons().map(l => l.teacher).filter(Boolean))];
+            }}
+            function slotsForTeacherDateTime(teacher, date, time) {{
+                return SLOTS.filter(s => s.teacher === teacher && s.date === date && s.time === time);
+            }}
+            function activeSlotTeachers(date, time) {{
+                return selectedTeachers().filter(t => slotsForTeacherDateTime(t, date, time).length > 0);
+            }}
+            function setView(mode) {{
+                viewMode = mode;
+                selectedSlot = null;
+                render();
+            }}
+            function toggleLesson(id) {{
+                const key = String(id);
+                if (activeIds.has(key) && activeIds.size > 1) activeIds.delete(key);
+                else activeIds.add(key);
+                selectedSlot = null;
+                render();
+            }}
+            function pickSlot(date, time, teachers, mode) {{
+                selectedSlot = {{date, time, teachers, mode}};
+                render();
+                const names = selectedLessons().filter(l => teachers.includes(l.teacher)).map(l => `${{l.course}} (${{l.teacher}})`);
+                document.getElementById("confirmText").textContent = `Move to ${{date}}, ${{time}}`;
+                document.getElementById("confirmSub").textContent = `Lessons affected: ${{names.join(" + ") || "None"}}`;
+                const button = document.getElementById("confirmButton");
+                button.disabled = selectedLessons().filter(l => teachers.includes(l.teacher)).length < 2;
+                button.textContent = button.disabled ? "Select at least 2 lessons" : "Confirm · Notify teachers";
+                document.getElementById("bottomBar").classList.add("show");
+            }}
+            function clearSelection() {{
+                selectedSlot = null;
+                document.getElementById("bottomBar").classList.remove("show");
+                render();
+            }}
+            function submitSelection() {{
+                if (!selectedSlot) return;
+                const affected = selectedLessons().filter(l => selectedSlot.teachers.includes(l.teacher));
+                if (affected.length < 2) return;
+                const inputs = document.getElementById("selectedInputs");
+                inputs.innerHTML = "";
+                affected.forEach(l => {{
+                    const input = document.createElement("input");
+                    input.type = "hidden";
+                    input.name = "schedule_ids";
+                    input.value = l.id;
+                    inputs.appendChild(input);
+                }});
+                document.getElementById("requestedDate").value = selectedSlot.date;
+                document.getElementById("requestedTime").value = selectedSlot.time;
+                document.getElementById("requestReason").value = `Coordinated family calendar request. Calendar mode: ${{selectedSlot.mode}}.`;
+                document.getElementById("batchForm").submit();
+            }}
+            function renderLessonList() {{
+                const box = document.getElementById("lessonList");
+                box.innerHTML = "";
+                LESSONS.forEach(l => {{
+                    const row = document.createElement("div");
+                    const active = activeIds.has(String(l.id));
+                    row.className = "legend-item " + (active ? "active" : "dimmed");
+                    row.onclick = () => toggleLesson(l.id);
+                    row.innerHTML = `<div class="leg-color" style="background:${{l.color || "#5E5CE6"}}"></div>
+                        <div><div class="leg-name">${{l.course}}</div><div class="leg-teacher">${{l.student}} · ${{l.teacher}}</div><div class="leg-now">Now: ${{l.date}} ${{l.time}}</div></div>`;
+                    box.appendChild(row);
+                }});
+            }}
+            function renderFilters() {{
+                const row = document.getElementById("filterRow");
+                row.innerHTML = `<span class="filter-label">Show:</span>`;
+                const all = document.createElement("button");
+                all.type = "button";
+                all.className = "filter-btn " + (viewMode === "all" ? "on" : "");
+                all.textContent = "All teachers free";
+                all.onclick = () => setView("all");
+                row.appendChild(all);
+                selectedLessons().forEach(l => {{
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "filter-btn " + (viewMode === String(l.id) ? "on" : "");
+                    btn.textContent = `${{l.course}} · ${{l.teacher}}`;
+                    btn.onclick = () => setView(String(l.id));
+                    row.appendChild(btn);
+                }});
+            }}
+            function renderHeader() {{
+                const header = document.getElementById("calHeader");
+                header.innerHTML = `<div class="time-cell" style="border-bottom:none"></div>`;
+                const today = new Date().toISOString().slice(0,10);
+                DAYS.forEach(d => {{
+                    const cell = document.createElement("div");
+                    cell.className = "cal-hcell " + (d.key === today ? "today-col" : "");
+                    cell.innerHTML = `${{d.label}}<br><span>${{d.display}}</span>` + (d.key === today ? `<span class="today-badge">Today</span>` : "");
+                    header.appendChild(cell);
+                }});
+            }}
+            function renderGrid() {{
+                const grid = document.getElementById("calGrid");
+                grid.innerHTML = "";
+                TIMES.forEach(time => {{
+                    const row = document.createElement("div");
+                    row.className = "cal-row";
+                    const timeCell = document.createElement("div");
+                    timeCell.className = "time-cell";
+                    timeCell.textContent = time;
+                    row.appendChild(timeCell);
+                    DAYS.forEach(day => {{
+                        const cell = document.createElement("div");
+                        cell.className = "cell";
+                        LESSONS.filter(l => l.date === day.key && l.time === time).forEach(l => {{
+                            const ev = document.createElement("div");
+                            ev.className = "ev";
+                            ev.style.background = l.bg || "#eef2ff";
+                            ev.style.color = l.text || "#3730a3";
+                            ev.style.borderLeftColor = l.border || l.color || "#5E5CE6";
+                            ev.textContent = l.course;
+                            cell.appendChild(ev);
+                        }});
+                        if (viewMode === "all") {{
+                            const teachers = activeSlotTeachers(day.key, time);
+                            const selectedTeacherCount = selectedTeachers().length;
+                            if (selectedTeacherCount && teachers.length === selectedTeacherCount) {{
+                                const slot = document.createElement("div");
+                                slot.className = selectedTeacherCount >= 2 ? "avail avail-all" : "avail avail-both";
+                                slot.textContent = selectedTeacherCount >= 2 ? "All free" : "Free";
+                                if (selectedSlot && selectedSlot.date === day.key && selectedSlot.time === time) slot.classList.add("selected-slot");
+                                slot.onclick = () => pickSlot(day.key, time, teachers, "all");
+                                cell.appendChild(slot);
+                            }}
+                        }} else {{
+                            const lesson = LESSONS.find(l => String(l.id) === viewMode);
+                            if (lesson && slotsForTeacherDateTime(lesson.teacher, day.key, time).length) {{
+                                const slot = document.createElement("div");
+                                slot.className = "avail";
+                                slot.style.background = lesson.bg || "#eef2ff";
+                                slot.style.color = lesson.text || "#3730a3";
+                                slot.style.borderColor = lesson.border || lesson.color || "#5E5CE6";
+                                slot.textContent = lesson.course;
+                                if (selectedSlot && selectedSlot.date === day.key && selectedSlot.time === time) slot.classList.add("selected-slot");
+                                slot.onclick = () => pickSlot(day.key, time, [lesson.teacher], "single");
+                                cell.appendChild(slot);
+                            }}
+                        }}
+                        row.appendChild(cell);
+                    }});
+                    grid.appendChild(row);
+                }});
+            }}
+            function render() {{
+                document.getElementById("emptyState").style.display = {empty_state} ? "block" : "none";
+                document.getElementById("calendarApp").style.display = {empty_state} ? "none" : "grid";
+                renderLessonList();
+                renderFilters();
+                renderHeader();
+                renderGrid();
+            }}
+            render();
+        </script>
+        {parent_bottom_nav("reschedule")}
+    </body>
+    </html>
+    """
+
+
+
+
+@app.route("/open_slots")
+def open_slots():
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
+    ensure_v282_schema()
+
+    teacher_filter = request.args.get("teacher")
+    status_filter = request.args.get("status", "available")
+    source_filter = request.args.get("source", "all")
+    teachers = None
+
+    if require_teacher() and not require_owner():
+        teachers = [session.get("teacher_name")]
+        teacher_filter = session.get("teacher_name")
+    elif teacher_filter:
+        teachers = [teacher_filter]
+
+    slots = get_available_open_slots(teachers=teachers, include_inactive_manual=True)
+
+    filtered_slots = []
+    for slot in slots:
+        display_status = get_open_slot_display_status(slot)
+        source = slot.get("source", "auto_gap")
+        if status_filter != "all" and display_status.lower() != status_filter:
+            continue
+        if source_filter != "all" and source != source_filter:
+            continue
+        filtered_slots.append(slot)
+
+    summary = {"Available": 0, "Used": 0, "Inactive": 0, "auto_gap": 0, "manual": 0}
+    for slot in slots:
+        summary[get_open_slot_display_status(slot)] = summary.get(get_open_slot_display_status(slot), 0) + 1
+        source = slot.get("source", "auto_gap")
+        summary[source] = summary.get(source, 0) + 1
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teacher_rows = cursor.fetchall()
+    conn.close()
+
+    teacher_options = '<option value="">All Teachers</option>'
+    for t in teacher_rows:
+        selected = "selected" if teacher_filter == t[0] else ""
+        teacher_options += f'<option value="{t[0]}" {selected}>{t[0]}</option>'
+
+    status_options = ""
+    for value, label in [("available", "Available"), ("used", "Used"), ("inactive", "Inactive"), ("all", "All")]:
+        selected = "selected" if status_filter == value else ""
+        status_options += f'<option value="{value}" {selected}>{label}</option>'
+
+    source_options = ""
+    for value, label in [("all", "All Sources"), ("manual", "Manual"), ("auto_gap", "Auto Gap")]:
+        selected = "selected" if source_filter == value else ""
+        source_options += f'<option value="{value}" {selected}>{label}</option>'
+
+    rows = ""
+    for slot in filtered_slots:
+        display_status = get_open_slot_display_status(slot)
+        status_class = display_status.lower()
+        source = slot.get("source", "auto_gap")
+        action = ""
+        if source == "manual" and slot.get("id"):
+            if display_status == "Used":
+                action = "<span class='muted'>Locked</span>"
+            elif display_status == "Available":
+                action = f"""
+                <form method="POST" action="/toggle_open_slot/{slot['id']}" style="display:inline;">
+                    <button type="submit">Deactivate</button>
+                </form>
+                """
+            else:
+                action = f"""
+                <form method="POST" action="/toggle_open_slot/{slot['id']}" style="display:inline;">
+                    <button type="submit">Reactivate</button>
+                </form>
+                """
+        else:
+            action = "<span class='muted'>Auto</span>"
+
+        rows += f"""
+        <tr>
+            <td>{slot['slot_date']}</td>
+            <td>{slot['slot_time']}</td>
+            <td>{slot['teacher']}</td>
+            <td>{slot['classroom']}</td>
+            <td><span class="badge source">{source}</span></td>
+            <td><span class="badge {status_class}">{display_status}</span></td>
+            <td>{slot.get('notes', '')}</td>
+            <td>{action}</td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='8'>No open slots found.</td></tr>"
+
+    add_link = "/add_open_slot"
+    back_link = "/teacher_dashboard" if require_teacher() and not require_owner() else "/"
+
+    return f"""
+    <html>
+    <head>
+        <title>Open Slots</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; color:#111827; }}
+            .container {{ background:white; padding:30px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            a.button, button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:9px 13px; border-radius:7px; text-decoration:none; font-weight:bold; margin-right:7px; cursor:pointer; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
+            th {{ background:#eeeeff; }}
+            select {{ padding:9px; font-size:14px; margin-right:8px; }}
+            .summary {{ display:grid; grid-template-columns:repeat(5, 1fr); gap:12px; margin:18px 0; }}
+            .summary-card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:8px; padding:12px; }}
+            .label {{ color:#6b7280; font-size:12px; }}
+            .value {{ font-size:22px; font-weight:bold; margin-top:4px; }}
+            .badge {{ display:inline-block; padding:4px 8px; border-radius:999px; background:#eef2ff; font-size:12px; font-weight:bold; }}
+            .badge.available {{ background:#dcfce7; color:#166534; }}
+            .badge.used {{ background:#fee2e2; color:#991b1b; }}
+            .badge.inactive {{ background:#e5e7eb; color:#374151; }}
+            .badge.source {{ background:#e0f2fe; color:#075985; }}
+            .muted {{ color:#6b7280; font-size:13px; }}
+            @media (max-width: 760px) {{
+                body {{ padding:14px; }}
+                .summary {{ grid-template-columns:repeat(2, 1fr); }}
+                table {{ font-size:12px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Teacher Open Slots</h1>
+            <p class="muted">Available slots are shown to parents during reschedule. Used manual slots are locked after approval. Auto gaps are generated between a teacher's first and last lesson of the day.</p>
+
+            <a class="button" href="{back_link}">Back</a>
+            <a class="button" href="{add_link}">Add Manual Slot</a>
+
+            <div class="summary">
+                <div class="summary-card"><div class="label">Available</div><div class="value">{summary.get('Available', 0)}</div></div>
+                <div class="summary-card"><div class="label">Used</div><div class="value">{summary.get('Used', 0)}</div></div>
+                <div class="summary-card"><div class="label">Inactive</div><div class="value">{summary.get('Inactive', 0)}</div></div>
+                <div class="summary-card"><div class="label">Manual</div><div class="value">{summary.get('manual', 0)}</div></div>
+                <div class="summary-card"><div class="label">Auto Gap</div><div class="value">{summary.get('auto_gap', 0)}</div></div>
+            </div>
+
+            <form method="GET" action="/open_slots" style="margin-top:18px;">
+                Teacher:
+                <select name="teacher">
+                    {teacher_options}
+                </select>
+                Status:
+                <select name="status">
+                    {status_options}
+                </select>
+                Source:
+                <select name="source">
+                    {source_options}
+                </select>
+                <button type="submit">Filter</button>
+            </form>
+
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Teacher</th>
+                    <th>Room</th>
+                    <th>Source</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_open_slot", methods=["GET", "POST"])
+def add_open_slot():
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
+    ensure_v282_schema()
+
+    fixed_teacher = None
+    if require_teacher() and not require_owner():
+        fixed_teacher = session.get("teacher_name")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        teacher = fixed_teacher or request.form.get("teacher")
+        slot_date = request.form.get("slot_date")
+        slot_time = request.form.get("slot_time")
+        classroom = request.form.get("classroom")
+        notes = request.form.get("notes")
+
+        if not teacher or not slot_date or not slot_time or not classroom:
+            conn.close()
+            return "<h1>Teacher, date, time, and classroom are required.</h1>"
+
+        cursor.execute("""
+        SELECT id, active, notes
+        FROM teacher_open_slots
+        WHERE teacher = ?
+        AND slot_date = ?
+        AND slot_time = ?
+        AND classroom = ?
+        AND source = 'manual'
+        ORDER BY id DESC
+        LIMIT 1
+        """, (teacher, slot_date, slot_time, classroom))
+        existing_slot = cursor.fetchone()
+
+        if existing_slot:
+            conn.close()
+            return "<h1>This manual open slot already exists.</h1><p><a href='/open_slots?status=all'>Back to Open Slots</a></p>"
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        created_by = "owner" if require_owner() else f"teacher:{fixed_teacher}"
+
+        cursor.execute("""
+        INSERT INTO teacher_open_slots (
+            teacher,
+            slot_date,
+            slot_time,
+            classroom,
+            source,
+            active,
+            notes,
+            created_by,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            teacher,
+            slot_date,
+            slot_time,
+            classroom,
+            "manual",
+            1,
+            notes,
+            created_by,
+            now,
+            now
+        ))
+
+        conn.commit()
+        conn.close()
+        return redirect(request.referrer or "/open_slots")
+
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teacher_rows = cursor.fetchall()
+    cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
+    classroom_rows = cursor.fetchall()
+    conn.close()
+
+    if fixed_teacher:
+        teacher_input = f"""
+        Teacher:<br>
+        <input name="teacher" value="{fixed_teacher}" disabled>
+        """
+    else:
+        teacher_options = "".join([f'<option value="{t[0]}">{t[0]}</option>' for t in teacher_rows])
+        teacher_input = f"""
+        Teacher:<br>
+        <select name="teacher">{teacher_options}</select>
+        """
+
+    classroom_options = "".join([f'<option value="{c[0]}">{c[0]}</option>' for c in classroom_rows])
+    today = date.today().strftime("%Y-%m-%d")
+
+    return f"""
+    <html>
+    <head>
+        <title>Add Open Slot</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:700px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Add Manual Open Slot</h1>
+            <form method="POST">
+                {teacher_input}
+
+                Date:<br>
+                <input type="date" name="slot_date" value="{today}" required>
+
+                Time:<br>
+                <input type="time" name="slot_time" required>
+
+                Classroom:<br>
+                <select name="classroom">{classroom_options}</select>
+
+                Notes:<br>
+                <textarea name="notes" rows="4"></textarea>
+
+                <button type="submit">Add Slot</button>
+                <a class="button" href="/open_slots">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/toggle_open_slot/<int:slot_id>", methods=["POST"])
+def toggle_open_slot(slot_id):
+    if not (require_owner() or require_teacher()):
+        return redirect("/owner_login")
+
+    ensure_v282_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT teacher, active, notes
+    FROM teacher_open_slots
+    WHERE id = ?
+    """, (slot_id,))
+    slot = cursor.fetchone()
+
+    if not slot:
+        conn.close()
+        return "<h1>Open slot not found</h1>"
+
+    if require_teacher() and not require_owner() and slot[0] != session.get("teacher_name"):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    if "used by reschedule" in (slot[2] or ""):
+        conn.close()
+        return "<h1>Used open slots are locked and cannot be reactivated.</h1>"
+
+    new_active = 0 if slot[1] == 1 else 1
+
+    cursor.execute("""
+    UPDATE teacher_open_slots
+    SET active = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        new_active,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        slot_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/open_slots")
+
+
+@app.route("/owner_reschedule_requests")
+def owner_reschedule_requests():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v28_schema()
+
+    status_filter = request.args.get("status", "pending")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if status_filter == "all":
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, requested_date, requested_time, status, created_at
+        FROM reschedule_requests
+        ORDER BY id DESC
+        """)
+    else:
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, requested_date, requested_time, status, created_at
+        FROM reschedule_requests
+        WHERE status = ?
+        ORDER BY id DESC
+        """, (status_filter,))
+
+    requests_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in requests_data:
+        rows += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]}</td>
+            <td>{r[2]} {r[3]}</td>
+            <td>{r[4]} {r[5]}</td>
+            <td>{r[6]}</td>
+            <td>{r[7]}</td>
+            <td><a href="/reschedule_request/{r[0]}">Review</a></td>
+        </tr>
+        """
+
+    if not rows:
+        rows = "<tr><td colspan='7'>No reschedule requests found.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Reschedule Requests</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            a.button {{ display:inline-block; background:#5b5cff; color:white; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; }}
+            th {{ background:#eeeeff; }}
+            a {{ color:#5b5cff; font-weight:bold; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Reschedule Requests</h1>
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/owner_reschedule_requests?status=pending">Pending</a>
+            <a class="button" href="/owner_reschedule_requests?status=approved">Approved</a>
+            <a class="button" href="/owner_reschedule_requests?status=rejected">Rejected</a>
+            <a class="button" href="/owner_reschedule_requests?status=all">All</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Student</th>
+                    <th>Original</th>
+                    <th>Requested</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/reschedule_request/<int:request_id>")
+def reschedule_request_detail(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v28_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        parent_id,
+        student_name,
+        original_schedule_id,
+        original_date,
+        original_time,
+        original_teacher,
+        original_classroom,
+        requested_date,
+        requested_time,
+        reason,
+        status,
+        owner_note,
+        reviewed_by,
+        reviewed_at,
+        created_at,
+        requested_teacher,
+        requested_classroom,
+        requested_slot_source,
+        approved_teacher,
+        approved_classroom,
+        backup_date_2,
+        backup_time_2,
+        backup_date_3,
+        backup_time_3
+    FROM reschedule_requests
+    WHERE id = ?
+    """, (request_id,))
+    r = cursor.fetchone()
+    conn.close()
+
+    if not r:
+        return "<h1>Reschedule request not found</h1>"
+
+    conn2 = sqlite3.connect("hmusic.db")
+    cursor2 = conn2.cursor()
+    cursor2.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teacher_rows = cursor2.fetchall()
+    conn2.close()
+
+    teacher_options = ""
+    requested_teacher = r[16] or r[6]
+    requested_classroom = r[17] or r[7]
+    requested_slot_source = r[18] or "backup"
+    backup_option_1 = f"{r[8] or ''} {r[9] or ''}".strip() or "Not provided"
+    backup_option_2 = f"{r[21] or ''} {r[22] or ''}".strip() or "Not provided"
+    backup_option_3 = f"{r[23] or ''} {r[24] or ''}".strip() or "Not provided"
+
+    for t in teacher_rows:
+        selected = "selected" if t[0] == requested_teacher else ""
+        teacher_options += f'<option value="{t[0]}" {selected}>{t[0]}</option>'
+
+    pending_actions = ""
+    if r[11] == "pending":
+        pending_actions = f"""
+        <h2>Approve</h2>
+        <form method="POST" action="/approve_reschedule/{r[0]}">
+            Actual Teacher:<br>
+            <select name="approved_teacher">
+                {teacher_options}
+            </select>
+
+            Approved Date:<br>
+            <input type="date" name="approved_date" value="{r[8]}" required>
+
+            Approved Time:<br>
+            <input type="time" name="approved_time" value="{r[9]}" required>
+
+            Approved Room:<br>
+            <input name="approved_classroom" value="{requested_classroom or ''}" required>
+
+            Owner Note:<br>
+            <textarea name="owner_note" rows="3"></textarea>
+
+            <button type="submit">Approve and Update Schedule</button>
+        </form>
+
+        <h2>Reject</h2>
+        <form method="POST" action="/reject_reschedule/{r[0]}">
+            Reject Reason:<br>
+            <textarea name="owner_note" rows="3" required></textarea>
+            <button class="danger" type="submit">Reject Request</button>
+        </form>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Review Reschedule Request</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:40px; }}
+            .container {{ background:white; padding:30px; border-radius:12px; max-width:820px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
+            .grid {{ display:grid; grid-template-columns:repeat(2, 1fr); gap:14px; margin:18px 0; }}
+            .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:20px; font-weight:bold; margin-top:6px; }}
+            input, textarea {{ width:100%; padding:10px; margin:8px 0 16px; font-size:15px; }}
+            button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; margin-right:8px; }}
+            .danger {{ background:#dc2626; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Reschedule Request #{r[0]}</h1>
+            <a class="button" href="/owner_reschedule_requests">Back</a>
+
+            <div class="grid">
+                <div class="card"><div class="label">Student</div><div class="value">{r[2]}</div></div>
+                <div class="card"><div class="label">Status</div><div class="value">{r[11]}</div></div>
+                <div class="card"><div class="label">Original</div><div class="value">{r[4]} {r[5]}</div></div>
+                <div class="card"><div class="label">Requested</div><div class="value">{r[8]} {r[9]}</div></div>
+                <div class="card"><div class="label">Original Teacher</div><div class="value">{r[6]}</div></div>
+                <div class="card"><div class="label">Original Room</div><div class="value">{r[7]}</div></div>
+                <div class="card"><div class="label">Preferred Teacher</div><div class="value">{requested_teacher or ''}</div></div>
+                <div class="card"><div class="label">Preferred Room</div><div class="value">{requested_classroom or ''}</div></div>
+                <div class="card"><div class="label">Slot Source</div><div class="value">{requested_slot_source}</div></div>
+                <div class="card"><div class="label">Backup Option 1</div><div class="value">{backup_option_1}</div></div>
+                <div class="card"><div class="label">Backup Option 2</div><div class="value">{backup_option_2}</div></div>
+                <div class="card"><div class="label">Backup Option 3</div><div class="value">{backup_option_3}</div></div>
+            </div>
+
+            <p><b>Reason:</b> {r[10] or ''}</p>
+            <p><b>Owner Note:</b> {r[12] or ''}</p>
+            <p><b>Reviewed:</b> {r[13] or ''} {r[14] or ''}</p>
+
+            {pending_actions}
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/approve_reschedule/<int:request_id>", methods=["POST"])
+def approve_reschedule(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v28_schema()
+
+    approved_teacher = request.form.get("approved_teacher")
+    approved_date = request.form.get("approved_date")
+    approved_time = request.form.get("approved_time")
+    approved_classroom = request.form.get("approved_classroom")
+    owner_note = request.form.get("owner_note")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        rr.id,
+        rr.parent_id,
+        rr.student_name,
+        rr.original_schedule_id,
+        rr.status,
+        rr.original_teacher,
+        rr.original_classroom,
+        COALESCE(s.duration, 30),
+        rr.requested_teacher,
+        rr.requested_classroom,
+        rr.requested_slot_source
+    FROM reschedule_requests rr
+    LEFT JOIN schedule s
+        ON rr.original_schedule_id = s.id
+    WHERE rr.id = ?
+    """, (request_id,))
+    r = cursor.fetchone()
+
+    if not r:
+        conn.close()
+        return "<h1>Reschedule request not found</h1>"
+
+    if r[4] != "pending":
+        conn.close()
+        return "<h1>This request has already been reviewed.</h1>"
+
+    actual_teacher = approved_teacher or r[8] or r[5]
+    actual_classroom = approved_classroom or r[9] or r[6]
+
+    if not approved_date or not approved_time or not actual_teacher or not actual_classroom:
+        conn.close()
+        return "<h1>Approved teacher, date, time, and room are required.</h1>"
+
+    conflict = schedule_has_conflict(
+        actual_teacher,
+        actual_classroom,
+        approved_date,
+        approved_time,
+        exclude_schedule_id=r[3],
+        duration=r[7]
+    )
+
+    if conflict["has_conflict"]:
+        conn.close()
+        return f"""
+        <h1>Cannot Approve Reschedule</h1>
+        <p>{conflict["message"]}</p>
+        <p><a href="/reschedule_request/{request_id}">Back to Request</a></p>
+        """
+
+    cursor.execute("""
+    UPDATE schedule
+    SET teacher = ?,
+        lesson_date = ?,
+        lesson_time = ?,
+        classroom = ?,
+        status = 'scheduled'
+    WHERE id = ?
+    """, (
+        actual_teacher,
+        approved_date,
+        approved_time,
+        actual_classroom,
+        r[3]
+    ))
+
+    cursor.execute("""
+    UPDATE reschedule_requests
+    SET requested_date = ?,
+        requested_time = ?,
+        status = 'approved',
+        owner_note = ?,
+        approved_teacher = ?,
+        approved_classroom = ?,
+        reviewed_by = ?,
+        reviewed_at = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        approved_date,
+        approved_time,
+        owner_note,
+        actual_teacher,
+        actual_classroom,
+        "owner",
+        now,
+        now,
+        request_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    if r[10] == "manual":
+        mark_manual_open_slot_used(actual_teacher, approved_date, approved_time, actual_classroom, request_id)
+
+    log_parent_activity(
+        r[1],
+        r[2],
+        "reschedule_approved",
+        f"Owner approved reschedule request #{request_id}; teacher {actual_teacher}; room {actual_classroom}; new time {approved_date} {approved_time}.",
+        r[3]
+    )
+
+    create_reschedule_message_event(
+        request_id,
+        "approved",
+        f"Your reschedule request was approved. Teacher: {actual_teacher}. Room: {actual_classroom}. New lesson time: {approved_date} {approved_time}. {owner_note or ''}",
+        parent_id=r[1],
+        student_name=r[2],
+        teacher_name=actual_teacher
+    )
+
+    return redirect(f"/reschedule_request/{request_id}")
+
+
+@app.route("/reject_reschedule/<int:request_id>", methods=["POST"])
+def reject_reschedule(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v28_schema()
+
+    owner_note = request.form.get("owner_note")
+    if not owner_note or not owner_note.strip():
+        return "<h1>Reject reason is required.</h1>"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, parent_id, student_name, original_schedule_id, status, original_teacher
+    FROM reschedule_requests
+    WHERE id = ?
+    """, (request_id,))
+    r = cursor.fetchone()
+
+    if not r:
+        conn.close()
+        return "<h1>Reschedule request not found</h1>"
+
+    if r[4] != "pending":
+        conn.close()
+        return "<h1>This request has already been reviewed.</h1>"
+
+    cursor.execute("""
+    UPDATE reschedule_requests
+    SET status = 'rejected',
+        owner_note = ?,
+        reviewed_by = ?,
+        reviewed_at = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        owner_note,
+        "owner",
+        now,
+        now,
+        request_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    log_parent_activity(
+        r[1],
+        r[2],
+        "reschedule_rejected",
+        f"Owner rejected reschedule request #{request_id}.",
+        r[3]
+    )
+
+    create_reschedule_message_event(
+        request_id,
+        "rejected",
+        f"Your reschedule request was rejected. {owner_note or ''}",
+        parent_id=r[1],
+        student_name=r[2],
+        teacher_name=r[5]
+    )
+
+    return redirect(f"/reschedule_request/{request_id}")
+
+
+@app.route("/parent_login", methods=["GET", "POST"])
+def parent_login():
+    ensure_v27_schema()
+    native_app = request.args.get("native_app") == "1" or session.get("parent_native_app") == 1
+    if native_app:
+        session["parent_native_app"] = 1
+
+    if request.method == "POST":
+        parent_email = request.form.get("parent_email")
+        password = request.form.get("password")
+        student_name = request.form.get("student_name")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        if parent_email and password:
+            cursor.execute("""
+            SELECT id, parent_name, email
+            FROM parent_profiles
+            WHERE lower(email) = lower(?)
+            AND password = ?
+            AND active = 1
+            """, (parent_email, password))
+
+            parent = cursor.fetchone()
+
+            if parent:
+                cursor.execute("""
+                SELECT student_name
+                FROM parent_students
+                WHERE parent_id = ?
+                AND active = 1
+                ORDER BY student_name
+                LIMIT 1
+                """, (parent[0],))
+
+                linked_student = cursor.fetchone()
+                conn.close()
+
+                session.clear()
+                if native_app:
+                    session["parent_native_app"] = 1
+                session["parent_id"] = parent[0]
+                session["parent_name"] = parent[1]
+                session["parent_email"] = parent[2]
+
+                if linked_student:
+                    session["parent_student_name"] = linked_student[0]
+
+                return redirect("/parent_dashboard")
+
+        if student_name and parent_email:
+            cursor.execute("""
+            SELECT name, parent_email
+            FROM students
+            WHERE name = ?
+            AND parent_email = ?
+            """, (student_name, parent_email))
+
+            student = cursor.fetchone()
+
+            if student:
+                cursor.execute("""
+                SELECT id, parent_name, email
+                FROM parent_profiles
+                WHERE email = ?
+                """, (parent_email,))
+
+                parent = cursor.fetchone()
+                conn.close()
+
+                session.clear()
+                if native_app:
+                    session["parent_native_app"] = 1
+
+                if parent:
+                    session["parent_id"] = parent[0]
+                    session["parent_name"] = parent[1]
+                    session["parent_email"] = parent[2]
+
+                session["parent_student_name"] = student[0]
+                return redirect("/parent_dashboard")
+
+        conn.close()
+
+        return f"""
+        <html>
+        <head>
+            {parent_app_meta("Login Failed")}
+            <style>
+                * {{ box-sizing: border-box; }}
+                body {{
+                    margin: 0;
+                    background: #f7f7fb;
+                    color: #111827;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                }}
+                .container {{
+                    min-height: 100vh;
+                    max-width: 520px;
+                    margin: 0 auto;
+                    background: white;
+                    padding: max(32px, env(safe-area-inset-top)) 22px max(32px, env(safe-area-inset-bottom));
+                }}
+                .brand-mark {{
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 16px;
+                    margin-bottom: 18px;
+                    background: {PARENT_APP_ICON_BG} url("/hmusic-icon.png") center / cover no-repeat;
+                    color: transparent;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-family: Georgia, "Times New Roman", serif;
+                    font-size: 28px;
+                    font-weight: 700;
+                }}
+                h1 {{ font-size: 32px; margin: 0 0 12px; }}
+                p {{ color: #6b7280; line-height: 1.5; }}
+                a.button {{
+                    display: inline-block;
+                    background: #4f46e5;
+                    color: white;
+                    padding: 12px 16px;
+                    border-radius: 8px;
+                    text-decoration: none;
+                    font-weight: 800;
+                    margin-top: 12px;
+                }}
+                @media (min-width: 760px) {{
+                    body {{ padding: 40px; }}
+                    .container {{
+                        min-height: auto;
+                        padding: 34px;
+                        border-radius: 16px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    }}
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="brand-mark">Hf</div>
+                <h1>Login failed</h1>
+                <p>Please check the parent email and password, then try again.</p>
+                <a class="button" href="/parent_login">Back to Login</a>
+            </div>
+        </body>
+        </html>
+        """
+
+    install_link_html = "" if native_app else '<p class="install-link"><a href="/app_install">Install on phone</a></p>'
+
+    return """
+    <html>
+    <head>
+        """ + parent_app_meta("H-Music Parent Login") + """
+        <style>
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #f7f7fb;
+                margin: 0;
+                color: #111827;
+            }
+            .container {
+                background: white;
+                min-height: 100vh;
+                padding: max(28px, env(safe-area-inset-top)) 22px max(28px, env(safe-area-inset-bottom));
+                max-width: 520px;
+                margin: 0 auto;
+            }
+            .brand {
+                margin: 30px 0 28px;
+            }
+            .brand-mark {
+                width: 56px;
+                height: 56px;
+                border-radius: 16px;
+                margin-bottom: 18px;
+                background: """ + PARENT_APP_ICON_BG + """ url("/hmusic-icon.png") center / cover no-repeat;
+                color: transparent;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 28px;
+                font-weight: 700;
+            }
+            h1 {
+                font-size: 34px;
+                line-height: 1.05;
+                margin: 0;
+            }
+            h3 {
+                margin-top: 0;
+            }
+            input {
+                width: 100%;
+                min-height: 48px;
+                padding: 12px 14px;
+                margin: 8px 0 18px;
+                font-size: 16px;
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+            }
+            button {
+                background: #4f46e5;
+                color: white;
+                border: none;
+                min-height: 48px;
+                padding: 12px 18px;
+                border-radius: 10px;
+                font-weight: bold;
+                font-size: 16px;
+                width: 100%;
+            }
+            .section {
+                border-top: 1px solid #eee;
+                margin-top: 28px;
+                padding-top: 24px;
+            }
+            details.section summary {
+                cursor: pointer;
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 700;
+                list-style: none;
+            }
+            details.section summary::-webkit-details-marker {
+                display: none;
+            }
+            details.section summary::after {
+                content: " +";
+            }
+            details.section[open] summary::after {
+                content: " -";
+            }
+            .hint {
+                color: #6b7280;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            .subtitle {
+                color: #4b5563;
+                font-size: 16px;
+                line-height: 1.55;
+                margin: 12px 0 22px;
+            }
+            .install-link {
+                margin: 0 0 20px;
+            }
+            a {
+                color: #4f46e5;
+                font-weight: bold;
+            }
+            @media (min-width: 760px) {
+                body {
+                    padding: 40px;
+                }
+                .container {
+                    min-height: auto;
+                    padding: 34px;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }
+                button {
+                    width: auto;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="brand">
+                <div class="brand-mark">Hf</div>
+                <h1>H-Music</h1>
+                <p class="hint">Parent App</p>
+            </div>
+            <p class="subtitle">Access your child's lessons, messages, reschedule requests, and account history.</p>
+            """ + install_link_html + """
+
+            <form method="POST">
+                Parent Email:<br>
+                <input name="parent_email" required>
+
+                Password:<br>
+                <input type="password" name="password" required>
+
+                <button type="submit">Login</button>
+            </form>
+
+            <details class="section">
+                <summary>Legacy login</summary>
+                <form method="POST">
+                    Student Name:<br>
+                    <input name="student_name">
+
+                    Parent Email:<br>
+                    <input name="parent_email">
+
+                    <button type="submit">Login with Student</button>
+                </form>
+            </details>
+
+            <br>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_dashboard")
+def parent_dashboard():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v27_schema()
+
+    parent_id = session.get("parent_id")
+    unread_messages = get_unread_message_count("parent", parent_id) if parent_id else 0
+    unread_notifications = get_unread_notification_count("parent", str(parent_id)) if parent_id else 0
+    message_label = f"Messages ({unread_messages})" if unread_messages else "Messages"
+    linked_students = get_parent_students(parent_id) if parent_id else []
+    payment_notice = request.args.get("payment_notice")
+
+    requested_student = request.args.get("student_name")
+    current_student = session.get("parent_student_name")
+
+    if requested_student and parent_can_access_student(parent_id, requested_student):
+        current_student = requested_student
+        session["parent_student_name"] = current_student
+
+    if not current_student and linked_students:
+        current_student = linked_students[0][0]
+        session["parent_student_name"] = current_student
+
+    if not current_student:
+        return """
+        <h1>No linked student found</h1>
+        <p>Please ask the owner to link this parent profile to a student.</p>
+        <p><a href="/parent_logout">Logout</a></p>
+        """
+
+    if parent_id and not parent_can_access_student(parent_id, current_student):
+        session.pop("parent_student_name", None)
+        return redirect("/parent_dashboard")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, teacher, parent_email, lessons_left
+    FROM students
+    WHERE name = ?
+    """, (current_student,))
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        session.clear()
+        return redirect("/parent_login")
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT
+        s.lesson_date,
+        s.lesson_time,
+        s.teacher,
+        s.classroom,
+        COALESCE(s.location, ''),
+        COALESCE(s.duration, 30),
+        s.status,
+        COALESCE(c.display_color, ''),
+        COALESCE(s.course_type_name, ''),
+        COALESCE(s.is_group, 0)
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE student_name = ?
+    AND lesson_date >= ?
+    AND (status IS NULL OR status='scheduled')
+    ORDER BY s.lesson_date, s.lesson_time
+    LIMIT 3
+    """, (current_student, today))
+    upcoming_lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT lesson_date, lesson_content, performance, homework
+    FROM lessons
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (current_student,))
+    lesson_history = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, amount, status, invoice_type, created_at
+    FROM invoices
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (current_student,))
+    invoices = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT payment_date, amount, lessons_added, payment_method
+    FROM payments
+    WHERE student_name = ?
+    AND COALESCE(visible_to_parent, 1) = 1
+    AND COALESCE(payment_method, '') != 'Not Recorded'
+    ORDER BY id DESC
+    LIMIT 10
+    """, (current_student,))
+    payments = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT entry_type, amount, description, created_at
+    FROM student_ledger
+    WHERE student_name = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (current_student,))
+    ledger_entries = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COALESCE(SUM(amount), 0)
+    FROM student_ledger
+    WHERE student_name = ?
+    """, (current_student,))
+    balance = cursor.fetchone()[0]
+
+    activity_entries = []
+    if parent_id:
+        cursor.execute("""
+        SELECT student_name, action_type, description, created_at
+        FROM parent_activity_logs
+        WHERE parent_id = ?
+        ORDER BY id DESC
+        LIMIT 10
+        """, (parent_id,))
+        activity_entries = cursor.fetchall()
+
+    conn.close()
+
+    student_tabs = ""
+    if linked_students:
+        for linked in linked_students:
+            active = "active" if linked[0] == current_student else ""
+            student_tabs += f"""
+            <a class="student-tab {active}" href="/parent_dashboard?student_name={linked[0]}">{linked[0]}</a>
+            """
+
+    upcoming_rows = ""
+    upcoming_cards = ""
+    for l in upcoming_lessons:
+        time_range = format_lesson_time_range(l[1], l[5])
+        location_room = " / ".join([part for part in [l[4], l[3]] if part])
+        lesson_date = escape(str(l[0] or ""))
+        lesson_time = escape(str(time_range or ""))
+        lesson_teacher = escape(str(l[2] or ""))
+        lesson_place = escape(str(location_room or "TBD"))
+        lesson_status = escape(str(l[6] or "scheduled"))
+        course_color = normalize_hex_color(l[7]) or default_course_color(l[8], l[5], l[9])
+        lesson_style = (
+            f"--course-color:{course_color};"
+            f"background:{course_color_background(course_color)};"
+            f"border-color:{course_color_border(course_color)};"
+            f"color:{course_color_text(course_color)};"
+        )
+        upcoming_cards += f"""
+        <div class="lesson-card" style="{lesson_style}">
+            <div>
+                <div class="lesson-date">{lesson_date}</div>
+                <div class="lesson-main">{lesson_time}</div>
+                <div class="lesson-meta">{lesson_teacher} · {lesson_place}</div>
+            </div>
+            <span class="status-chip">{lesson_status}</span>
+        </div>
+        """
+        upcoming_rows += f"""
+        <tr>
+            <td>{l[0]}</td>
+            <td>{time_range}</td>
+            <td>{l[2]}</td>
+            <td>{location_room or "TBD"}</td>
+            <td>{l[6] or "scheduled"}</td>
+        </tr>
+        """
+
+    if not upcoming_rows:
+        upcoming_rows = "<tr><td colspan='5'>No upcoming lessons.</td></tr>"
+        upcoming_cards = """
+        <div class="empty-card">No upcoming lessons.</div>
+        """
+
+    lesson_rows = ""
+    lesson_note_cards = ""
+    for l in lesson_history:
+        lesson_rows += f"""
+        <tr>
+            <td>{l[0]}</td>
+            <td>{l[1]}</td>
+            <td>{l[2]}</td>
+            <td>{l[3]}</td>
+        </tr>
+        """
+
+    for l in lesson_history[:3]:
+        lesson_date = escape(str(l[0] or ""))
+        lesson_content = escape(str(l[1] or "No lesson notes yet."))
+        performance = escape(str(l[2] or ""))
+        homework = escape(str(l[3] or "No homework assigned yet."))
+        performance_line = f'<div class="note-performance">{performance}</div>' if performance else ""
+        lesson_note_cards += f"""
+        <div class="note-card">
+            <div class="note-date">{lesson_date}</div>
+            {performance_line}
+            <div class="note-section">
+                <strong>Lesson Notes</strong>
+                <p>{lesson_content}</p>
+            </div>
+            <div class="note-section">
+                <strong>Homework</strong>
+                <p>{homework}</p>
+            </div>
+        </div>
+        """
+
+    if not lesson_rows:
+        lesson_rows = "<tr><td colspan='4'>No lesson history.</td></tr>"
+        lesson_note_cards = """
+        <div class="empty-card">No lesson notes or homework yet.</div>
+        """
+
+    invoice_rows = ""
+    tuition_due_total = 0
+    tuition_due_count = 0
+    first_unpaid_invoice_id = None
+    for inv in invoices:
+        action = "Paid"
+        if inv[2] != "paid":
+            if first_unpaid_invoice_id is None:
+                first_unpaid_invoice_id = inv[0]
+            action = f'<a class="mini-pay-button" href="/parent_invoice/{inv[0]}">View / Pay</a>'
+            tuition_due_count += 1
+            tuition_due_total += inv[1] or 0
+
+        invoice_rows += f"""
+        <tr>
+            <td>{inv[0]}</td>
+            <td>${inv[1]}</td>
+            <td>{inv[2]}</td>
+            <td>{inv[3]}</td>
+            <td>{inv[4]}</td>
+            <td>{action}</td>
+        </tr>
+        """
+
+    if not invoice_rows:
+        invoice_rows = "<tr><td colspan='6'>No invoices yet. If this is a new enrollment, the owner can create a tuition invoice from the enrollment page.</td></tr>"
+
+    tuition_alert = ""
+    notice_alert = ""
+    app_notification_alert = ""
+    if payment_notice == "sent":
+        notice_alert = """
+        <div class="notice-alert">
+            Payment notice sent. The owner will confirm after payment is received.
+        </div>
+        """
+    if unread_notifications:
+        app_notification_alert = f"""
+        <div class="app-notification-alert">
+            <div>
+                <strong>App Notifications</strong><br>
+                {unread_notifications} unread update(s).
+            </div>
+            <a href="/parent_notifications">View</a>
+        </div>
+        """
+
+    if tuition_due_count:
+        tuition_pay_link = f"/parent_invoice/{first_unpaid_invoice_id}" if first_unpaid_invoice_id else "#invoices"
+        tuition_alert = f"""
+        <div class="tuition-alert">
+            <div>
+                <strong>Tuition Due</strong><br>
+                {tuition_due_count} open invoice(s), ${round(tuition_due_total, 2)} total.
+            </div>
+            <a href="{tuition_pay_link}">View / Pay</a>
+        </div>
+        """
+
+    payment_rows = ""
+    for p in payments:
+        payment_rows += f"""
+        <tr>
+            <td>{p[0]}</td>
+            <td>${p[1]}</td>
+            <td>{p[2]}</td>
+            <td>{p[3]}</td>
+        </tr>
+        """
+
+    if not payment_rows:
+        payment_rows = "<tr><td colspan='4'>No payments.</td></tr>"
+
+    ledger_rows = ""
+    for e in ledger_entries:
+        ledger_rows += f"""
+        <tr>
+            <td>{e[3]}</td>
+            <td>{e[0]}</td>
+            <td>${e[1]}</td>
+            <td>{e[2]}</td>
+        </tr>
+        """
+
+    if not ledger_rows:
+        ledger_rows = "<tr><td colspan='4'>No ledger entries.</td></tr>"
+
+    activity_rows = ""
+    for a in activity_entries:
+        activity_rows += f"""
+        <tr>
+            <td>{a[3]}</td>
+            <td>{a[0]}</td>
+            <td>{a[1]}</td>
+            <td>{a[2]}</td>
+        </tr>
+        """
+
+    if not activity_rows:
+        activity_rows = "<tr><td colspan='4'>No parent activity yet.</td></tr>"
+
+    next_lesson_title = "No upcoming lessons"
+    next_lesson_meta = "Your next scheduled lesson will appear here."
+    if upcoming_lessons:
+        next_lesson = upcoming_lessons[0]
+        next_time_range = format_lesson_time_range(next_lesson[1], next_lesson[5])
+        next_location_room = " / ".join([part for part in [next_lesson[4], next_lesson[3]] if part])
+        next_lesson_title = f"{escape(str(next_lesson[0] or ''))} · {escape(str(next_time_range or ''))}"
+        next_lesson_meta = f"{escape(str(next_lesson[2] or ''))} · {escape(str(next_location_room or 'TBD'))}"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("H-Music Parent App")}
+        <style>
+            * {{
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #fbfbff;
+                margin: 0;
+                color: #111827;
+            }}
+            .container {{
+                background: white;
+                min-height: 100vh;
+                padding: max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
+                max-width: 880px;
+                margin: 0 auto;
+            }}
+            .top {{
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 16px;
+                margin-bottom: 18px;
+            }}
+            .top h1 {{
+                font-size: 32px;
+                line-height: 1.05;
+                margin: 0 0 8px;
+            }}
+            .top p {{
+                margin: 0;
+                color: #6b7280;
+            }}
+            .top-links {{
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }}
+            .student-tabs {{
+                margin: 18px 0 10px;
+                white-space: nowrap;
+                overflow-x: auto;
+                padding-bottom: 4px;
+            }}
+            .student-tab {{
+                display: inline-block;
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                border-radius: 999px;
+                margin-right: 8px;
+                text-decoration: none;
+                color: #111827;
+                font-weight: bold;
+            }}
+            .student-tab.active {{
+                background: #4f46e5;
+                color: white;
+                border-color: #4f46e5;
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 15px;
+                margin: 25px 0;
+            }}
+            .card {{
+                background: #f8f8ff;
+                padding: 18px;
+                border-radius: 16px;
+                border: 1px solid #e5e7eb;
+            }}
+            .tuition-alert {{
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                align-items: center;
+                background: #fff7ed;
+                border: 1px solid #fed7aa;
+                color: #9a3412;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 18px 0;
+            }}
+            .notice-alert {{
+                background: #ecfdf5;
+                border: 1px solid #bbf7d0;
+                color: #166534;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 18px 0;
+                font-weight: 800;
+            }}
+            .app-notification-alert {{
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                align-items: center;
+                background: #eef2ff;
+                border: 1px solid #c7d2fe;
+                color: #3730a3;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 18px 0;
+            }}
+            .tuition-alert a {{
+                background: #ea580c;
+                color: white;
+                padding: 10px 12px;
+                border-radius: 8px;
+                text-decoration: none;
+                white-space: nowrap;
+            }}
+            .mini-pay-button {{
+                display: inline-block;
+                background: #4f46e5;
+                color: white !important;
+                padding: 8px 10px;
+                border-radius: 8px;
+                text-decoration: none;
+                white-space: nowrap;
+                font-size: 14px;
+            }}
+            .app-notification-alert a {{
+                background: #4f46e5;
+                color: white;
+                padding: 10px 12px;
+                border-radius: 8px;
+                text-decoration: none;
+                white-space: nowrap;
+            }}
+            .label {{
+                color: #666;
+                font-size: 14px;
+            }}
+            .value {{
+                font-size: 24px;
+                font-weight: bold;
+                margin-top: 8px;
+                overflow-wrap: anywhere;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 15px 0 35px;
+            }}
+            th {{
+                background: #eeeeff;
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+            td {{
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+            .actions {{
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin: 20px 0 30px;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #4f46e5;
+                color: white;
+                padding: 10px 16px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+            button.install-button {{
+                background: #111827;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 12px;
+                font-weight: 800;
+            }}
+            a {{
+                color: #4f46e5;
+                font-weight: bold;
+            }}
+            .app-hero {{
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 14px;
+                margin-bottom: 18px;
+            }}
+            .brand-lockup {{
+                display: flex;
+                gap: 12px;
+                align-items: center;
+                margin-bottom: 22px;
+            }}
+            .brand-mark {{
+                width: 54px;
+                height: 54px;
+                border-radius: 16px;
+                background: #050505 url("/hmusic-icon.png") center / cover no-repeat;
+                flex: 0 0 auto;
+            }}
+            .brand-copy strong {{
+                display: block;
+                font-size: 22px;
+                line-height: 1;
+            }}
+            .brand-copy span {{
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 700;
+            }}
+            .hero-title h1 {{
+                font-size: 34px;
+                line-height: 1.02;
+                margin: 0 0 8px;
+            }}
+            .hero-title p {{
+                color: #6b7280;
+                margin: 0;
+                font-weight: 700;
+            }}
+            .hero-links {{
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }}
+            .summary-card {{
+                background: #eef2ff;
+                border-color: #c7d2fe;
+            }}
+            .summary-card .value {{
+                font-size: 36px;
+            }}
+            .summary-card.wide {{
+                grid-column: span 2;
+            }}
+            .lesson-list {{
+                display: grid;
+                gap: 10px;
+                margin: 12px 0 26px;
+            }}
+            .lesson-card {{
+                display: flex;
+                justify-content: space-between;
+                gap: 14px;
+                align-items: center;
+                position: relative;
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 12px 12px 12px 22px;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+            }}
+            .lesson-card:before {{
+                content: "";
+                position: absolute;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                width: 8px;
+                background: var(--course-color, #60a5fa);
+                border-radius: 16px 0 0 16px;
+            }}
+            .lesson-date {{
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            .lesson-main {{
+                font-size: 18px;
+                font-weight: 900;
+                margin-top: 2px;
+            }}
+            .lesson-meta {{
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 700;
+                margin-top: 2px;
+            }}
+            .status-chip {{
+                background: #eef2ff;
+                color: #3730a3;
+                border-radius: 999px;
+                padding: 6px 10px;
+                font-size: 12px;
+                font-weight: 900;
+                white-space: nowrap;
+            }}
+            .notes-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 12px;
+                margin: 12px 0 28px;
+            }}
+            .note-card, .empty-card {{
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 14px;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            }}
+            .note-date {{
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 900;
+                margin-bottom: 8px;
+            }}
+            .note-performance {{
+                display: inline-block;
+                background: #ecfdf5;
+                color: #166534;
+                border-radius: 999px;
+                padding: 5px 9px;
+                font-size: 12px;
+                font-weight: 900;
+                margin-bottom: 10px;
+            }}
+            .note-section {{
+                margin-top: 8px;
+            }}
+            .note-section strong {{
+                display: block;
+                font-size: 13px;
+                color: #111827;
+                margin-bottom: 4px;
+            }}
+            .note-section p {{
+                margin: 0;
+                color: #4b5563;
+                line-height: 1.45;
+                font-size: 14px;
+            }}
+            .desktop-table {{
+                margin-top: 12px;
+            }}
+            .secondary-actions {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 10px;
+                margin: 10px 0 28px;
+            }}
+            .secondary-action {{
+                display: block;
+                background: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 14px;
+                text-decoration: none;
+                color: #111827;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            }}
+            .secondary-action strong {{
+                display: block;
+                font-size: 16px;
+                margin-bottom: 4px;
+            }}
+            .secondary-action span {{
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            .records-panel {{
+                border: 1px solid #e5e7eb;
+                border-radius: 18px;
+                background: #ffffff;
+                margin: 6px 0 28px;
+                overflow: hidden;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            }}
+            .records-panel summary {{
+                cursor: pointer;
+                list-style: none;
+                padding: 16px;
+                font-weight: 900;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }}
+            .records-panel summary::-webkit-details-marker {{
+                display: none;
+            }}
+            .records-panel summary::after {{
+                content: "+";
+                color: #4f46e5;
+                font-size: 24px;
+                line-height: 1;
+            }}
+            .records-panel[open] summary::after {{
+                content: "-";
+            }}
+            .records-content {{
+                border-top: 1px solid #e5e7eb;
+                padding: 16px;
+            }}
+            .records-content h2 {{
+                font-size: 22px;
+                margin-top: 24px;
+            }}
+            .records-content h2:first-child {{
+                margin-top: 0;
+            }}
+            .parent-bottom-nav {{
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255, 255, 255, 0.96);
+                border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,0.08);
+                z-index: 20;
+            }}
+            .parent-bottom-nav a {{
+                text-align: center;
+                text-decoration: none;
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 9px 4px;
+                border-radius: 8px;
+            }}
+            .parent-bottom-nav a.active {{
+                color: #4f46e5;
+                background: #eef2ff;
+            }}
+            @media (max-width: 760px) {{
+                .top {{
+                    align-items: flex-start;
+                }}
+                .cards {{
+                    grid-template-columns: 1fr 1fr;
+                    gap: 10px;
+                    margin: 18px 0;
+                }}
+                .app-hero {{
+                    display: block;
+                }}
+                .hero-links {{
+                    justify-content: flex-start;
+                    margin-top: 12px;
+                }}
+                .card {{
+                    padding: 14px;
+                }}
+                .summary-card.wide,
+                .card:nth-child(4) {{
+                    grid-column: 1 / -1;
+                }}
+                .value {{
+                    font-size: 20px;
+                }}
+                table {{
+                    display: block;
+                    overflow-x: auto;
+                    font-size: 12px;
+                }}
+                .actions {{
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                }}
+                .secondary-actions {{
+                    grid-template-columns: 1fr;
+                }}
+                a.button {{
+                    text-align: center;
+                    margin: 0;
+                }}
+                .notes-grid {{
+                    grid-template-columns: 1fr;
+                }}
+                .desktop-table,
+                .records-content table {{
+                    display: none;
+                }}
+                .records-content {{
+                    padding: 0 16px 16px;
+                }}
+                .records-content h2 {{
+                    display: none;
+                }}
+            }}
+            @media (min-width: 900px) {{
+                body {{
+                    padding: 32px;
+                }}
+                .container {{
+                    min-height: auto;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                    padding: 32px;
+                }}
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+
+            <div class="brand-lockup">
+                <div class="brand-mark" aria-label="H-Music"></div>
+                <div class="brand-copy">
+                    <strong>H-Music</strong>
+                    <span>Parent App</span>
+                </div>
+            </div>
+
+            <div class="app-hero">
+                <div class="hero-title">
+                    <h1>{student[0]}</h1>
+                    <p>Welcome, {session.get("parent_name", "Parent")}</p>
+                </div>
+                <div class="hero-links">
+                    <button class="install-button" data-install-app hidden onclick="installParentApp()">Install App</button>
+                    <a href="/app_install">App Help</a>
+                    <a href="/parent_logout">Logout</a>
+                </div>
+            </div>
+
+            <div class="student-tabs">
+                {student_tabs}
+            </div>
+
+            {tuition_alert}
+            {notice_alert}
+            {app_notification_alert}
+
+            <div class="cards">
+                <div class="card summary-card">
+                    <div class="label">Lessons Left</div>
+                    <div class="value">{student[3]}</div>
+                </div>
+
+                <div class="card summary-card wide">
+                    <div class="label">Next Lesson</div>
+                    <div class="value" style="font-size:20px;">{next_lesson_title}</div>
+                    <div class="lesson-meta">{next_lesson_meta}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Teacher</div>
+                    <div class="value">{student[1]}</div>
+                </div>
+            </div>
+
+            <div class="actions">
+                <a class="button" href="/parent_reschedule">Reschedule Lesson</a>
+                <a class="button" href="/parent_messages">{message_label}</a>
+                <a class="button" href="/parent_cancel">Cancel Lesson</a>
+                <a class="button" href="/parent_billing">Billing / AutoPay</a>
+            </div>
+
+            <h2>Upcoming Lessons</h2>
+            <div class="lesson-list">
+                {upcoming_cards}
+            </div>
+
+            <h2>Lesson Notes / Homework</h2>
+            <div class="notes-grid">
+                {lesson_note_cards}
+            </div>
+
+            <h2>More</h2>
+            <div class="secondary-actions">
+                <a class="secondary-action" href="/parent_billing">
+                    <strong>Billing</strong>
+                    <span>Invoices, AutoPay, payment setup</span>
+                </a>
+                <a class="secondary-action" href="/student_ledger/{student[0]}">
+                    <strong>Full Ledger</strong>
+                    <span>Complete account history</span>
+                </a>
+                <a class="secondary-action" href="/parent_notifications">
+                    <strong>Updates</strong>
+                    <span>App notices and reminders</span>
+                </a>
+            </div>
+
+            <details class="records-panel">
+                <summary>Account Records</summary>
+                <div class="records-content">
+                    <h2 id="invoices">Invoices</h2>
+                    <table>
+                        <tr>
+                            <th>ID</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Type</th>
+                            <th>Created</th>
+                            <th>Action</th>
+                        </tr>
+                        {invoice_rows}
+                    </table>
+
+                    <h2>Payments</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Amount</th>
+                            <th>Lessons Added</th>
+                            <th>Method</th>
+                        </tr>
+                        {payment_rows}
+                    </table>
+
+                    <h2>Recent Ledger</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Description</th>
+                        </tr>
+                        {ledger_rows}
+                    </table>
+
+                    <h2>Parent Activity</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Student</th>
+                            <th>Action</th>
+                            <th>Description</th>
+                        </tr>
+                        {activity_rows}
+                    </table>
+
+                    <h2>Lesson History</h2>
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Lesson Content</th>
+                            <th>Performance</th>
+                            <th>Homework</th>
+                        </tr>
+                        {lesson_rows}
+                    </table>
+                </div>
+            </details>
+
+        </div>
+        {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_notifications", methods=["GET", "POST"])
+def parent_notifications():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    parent_id = session.get("parent_id")
+    if request.method == "POST":
+        mark_notifications_read("parent", str(parent_id))
+        return redirect("/parent_notifications")
+
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, title, body, link_url, read_at, created_at
+    FROM notifications
+    WHERE user_role = 'parent'
+    AND user_key = ?
+    ORDER BY id DESC
+    LIMIT 50
+    """, (str(parent_id),))
+    rows_data = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for item in rows_data:
+        status = "Unread" if not item[4] else "Read"
+        rows += f"""
+        <div class="notice {'unread' if not item[4] else ''}">
+            <div class="notice-top">
+                <strong>{item[1]}</strong>
+                <span>{status} · {item[5]}</span>
+            </div>
+            <p>{item[2] or ''}</p>
+            <a href="{item[3] or '/parent_dashboard'}">Open</a>
+        </div>
+        """
+
+    if not rows:
+        rows = "<p class='muted'>No app notifications yet.</p>"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Notifications")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; max-width:760px; margin:0 auto; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
+            h1 {{ font-size:30px; margin:0 0 18px; }}
+            .notice {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:12px 0; background:#fff; }}
+            .notice.unread {{ border-color:#4f46e5; background:#eef2ff; }}
+            .notice-top {{ display:flex; justify-content:space-between; gap:12px; }}
+            .notice-top span {{ color:#6b7280; font-size:12px; white-space:nowrap; }}
+            .notice p {{ color:#374151; line-height:1.45; }}
+            a, button {{ font-weight:850; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:8px; padding:12px 16px; text-decoration:none; margin-right:8px; }}
+            .secondary {{ background:#111827 !important; }}
+            .muted {{ color:#6b7280; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>App Notifications</h1>
+            <form method="POST" style="margin-bottom:14px;">
+                <button type="submit">Mark All Read</button>
+                <a class="button secondary" href="/parent_dashboard">Back</a>
+            </form>
+            {rows}
+        </div>
+        {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_billing", methods=["GET", "POST"])
+def parent_billing():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if action == "start_stripe_setup":
+            if not configure_stripe():
+                conn.close()
+                return redirect("/parent_billing?stripe_missing=1")
+
+            try:
+                customer_id = get_or_create_stripe_customer(cursor, parent_id)
+                checkout_session = stripe.checkout.Session.create(
+                    mode="setup",
+                    customer=customer_id,
+                    payment_method_types=["us_bank_account"],
+                    success_url=public_url_for("/stripe/setup/success") + "?session_id={CHECKOUT_SESSION_ID}",
+                    cancel_url=public_url_for("/parent_billing?cancelled=1"),
+                    metadata={"parent_id": str(parent_id)}
+                )
+                cursor.execute("""
+                INSERT INTO parent_billing_profiles (
+                    parent_id,
+                    stripe_customer_id,
+                    stripe_setup_session_id,
+                    autopay_enabled,
+                    ach_enabled,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, 1, 0, 'setup_started', ?, ?, ?)
+                ON CONFLICT(parent_id) DO UPDATE SET
+                    stripe_customer_id = excluded.stripe_customer_id,
+                    stripe_setup_session_id = excluded.stripe_setup_session_id,
+                    autopay_enabled = 1,
+                    status = 'setup_started',
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                """, (
+                    parent_id,
+                    customer_id,
+                    checkout_session.id,
+                    "Stripe test-mode ACH setup session created.",
+                    now,
+                    now
+                ))
+                conn.commit()
+                conn.close()
+                return redirect(checkout_session.url)
+            except Exception as exc:
+                conn.rollback()
+                conn.close()
+                return f"""
+                <h1>Stripe Setup Failed</h1>
+                <p>{escape(str(exc))}</p>
+                <p><a href="/parent_billing">Back to Billing</a></p>
+                """
+
+        if action == "request_autopay":
+            cursor.execute("""
+            INSERT INTO parent_billing_profiles (
+                parent_id,
+                autopay_enabled,
+                ach_enabled,
+                status,
+                notes,
+                created_at,
+                updated_at
+            )
+            VALUES (?, 1, 0, 'requested', ?, ?, ?)
+            ON CONFLICT(parent_id) DO UPDATE SET
+                autopay_enabled = 1,
+                status = 'requested',
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """, (
+                parent_id,
+                "Parent requested Stripe ACH/autopay setup.",
+                now,
+                now
+            ))
+            conn.commit()
+            conn.close()
+            create_notification(
+                "owner",
+                "owner",
+                "Autopay setup requested",
+                f"{session.get('parent_name', 'Parent')} requested bank/autopay setup.",
+                "/billing_settings",
+                related_type="billing",
+                related_id=parent_id
+            )
+            return redirect("/parent_billing?requested=1")
+
+    cursor.execute("""
+    SELECT autopay_enabled, ach_enabled, status, updated_at
+    FROM parent_billing_profiles
+    WHERE parent_id = ?
+    """, (parent_id,))
+    billing = cursor.fetchone()
+    conn.close()
+
+    status = billing[2] if billing else "not_connected"
+    autopay = "On" if billing and billing[0] else "Off"
+    ach = "Connected" if billing and billing[1] else "Not connected"
+    stripe_ready = stripe_is_configured()
+    requested_alert = ""
+    if request.args.get("requested") == "1":
+        requested_alert = "<div class='alert'>Request sent. The owner will send the secure Stripe setup link.</div>"
+    if request.args.get("connected") == "1":
+        requested_alert = "<div class='alert'>Bank setup completed in Stripe test mode.</div>"
+    if request.args.get("stripe_missing") == "1":
+        requested_alert = "<div class='warn'>Stripe is not configured yet. Add STRIPE_SECRET_KEY in Render first.</div>"
+    if request.args.get("cancelled") == "1":
+        requested_alert = "<div class='warn'>Stripe setup was cancelled. You can try again when ready.</div>"
+
+    stripe_button = ""
+    if stripe_ready:
+        stripe_button = """
+        <form method="POST">
+            <input type="hidden" name="action" value="start_stripe_setup">
+            <button type="submit">Connect Bank with Stripe Test Mode</button>
+        </form>
+        """
+    else:
+        stripe_button = """
+        <form method="POST">
+            <input type="hidden" name="action" value="request_autopay">
+            <button type="submit">Request Bank AutoPay Setup</button>
+        </form>
+        """
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Billing")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; max-width:760px; margin:0 auto; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
+            h1 {{ font-size:30px; margin:0 0 18px; }}
+            .card {{ border:1px solid #e5e7eb; border-radius:10px; padding:16px; margin:14px 0; background:#f8fafc; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:24px; font-weight:900; margin-top:4px; }}
+            .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:8px; padding:12px 16px; font-weight:850; text-decoration:none; margin-right:8px; }}
+            .secondary {{ background:#111827 !important; }}
+            .hint {{ color:#6b7280; line-height:1.45; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Billing & AutoPay</h1>
+            {requested_alert}
+            <p class="hint">For safety, H-Music does not store bank account details. Bank setup will happen through a secure Stripe page after the owner enables live billing.</p>
+            <div class="card">
+                <div class="label">Bank / ACH</div>
+                <div class="value">{ach}</div>
+            </div>
+            <div class="card">
+                <div class="label">AutoPay</div>
+                <div class="value">{autopay}</div>
+            </div>
+            <div class="card">
+                <div class="label">Setup Status</div>
+                <div class="value">{status}</div>
+            </div>
+            {stripe_button}
+            <p><a class="button secondary" href="/parent_dashboard">Back</a></p>
+        </div>
+        {parent_bottom_nav("profile")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/stripe/setup/success")
+def stripe_setup_success():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+    session_id = request.args.get("session_id")
+
+    if not session_id or not configure_stripe():
+        return redirect("/parent_billing")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        setup_intent_id = checkout_session.get("setup_intent")
+        payment_method_id = None
+        if setup_intent_id:
+            setup_intent = stripe.SetupIntent.retrieve(setup_intent_id)
+            payment_method_id = setup_intent.get("payment_method")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO parent_billing_profiles (
+            parent_id,
+            stripe_customer_id,
+            stripe_setup_session_id,
+            stripe_setup_intent_id,
+            stripe_payment_method_id,
+            autopay_enabled,
+            ach_enabled,
+            status,
+            notes,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 1, 1, 'connected_test', ?, ?, ?)
+        ON CONFLICT(parent_id) DO UPDATE SET
+            stripe_customer_id = COALESCE(excluded.stripe_customer_id, stripe_customer_id),
+            stripe_setup_session_id = excluded.stripe_setup_session_id,
+            stripe_setup_intent_id = excluded.stripe_setup_intent_id,
+            stripe_payment_method_id = excluded.stripe_payment_method_id,
+            autopay_enabled = 1,
+            ach_enabled = 1,
+            status = 'connected_test',
+            notes = excluded.notes,
+            updated_at = excluded.updated_at
+        """, (
+            parent_id,
+            checkout_session.get("customer"),
+            session_id,
+            setup_intent_id,
+            payment_method_id,
+            "Stripe test-mode ACH setup completed.",
+            now,
+            now
+        ))
+        conn.commit()
+        conn.close()
+
+        create_notification(
+            "owner",
+            "owner",
+            "Bank AutoPay connected",
+            f"{session.get('parent_name', 'Parent')} completed Stripe test-mode bank setup.",
+            "/billing_settings",
+            related_type="billing",
+            related_id=parent_id
+        )
+    except Exception as exc:
+        return f"""
+        <h1>Stripe Setup Check Failed</h1>
+        <p>{escape(str(exc))}</p>
+        <p><a href="/parent_billing">Back to Billing</a></p>
+        """
+
+    return redirect("/parent_billing?connected=1")
+
+
+@app.route("/stripe/webhook", methods=["POST"])
+def stripe_webhook():
+    ensure_billing_schema()
+
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature")
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+    if webhook_secret:
+        if stripe is None:
+            return Response("Stripe SDK missing", status=500)
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        except Exception as exc:
+            record_stripe_webhook_event(None, "unknown", "invalid_signature", str(exc))
+            return Response("Invalid signature", status=400)
+    else:
+        try:
+            event = request.get_json(force=True)
+        except Exception as exc:
+            record_stripe_webhook_event(None, "unknown", "invalid_payload", str(exc))
+            return Response("Invalid payload", status=400)
+
+    event_type = event.get("type")
+    event_id = event.get("id")
+    data_object = event.get("data", {}).get("object", {})
+    metadata = data_object.get("metadata", {}) or {}
+    record_stripe_webhook_event(
+        event_id,
+        event_type,
+        "received",
+        data_object.get("id") or "",
+        invoice_id=metadata.get("invoice_id"),
+        parent_id=metadata.get("parent_id")
+    )
+
+    if event_type == "checkout.session.completed" and data_object.get("mode") == "setup":
+        parent_id = metadata.get("parent_id")
+        if parent_id:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            setup_intent_id = data_object.get("setup_intent")
+            payment_method_id = None
+            if setup_intent_id and configure_stripe():
+                try:
+                    setup_intent = stripe.SetupIntent.retrieve(setup_intent_id)
+                    payment_method_id = setup_intent.get("payment_method")
+                except Exception:
+                    payment_method_id = None
+
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+            INSERT INTO parent_billing_profiles (
+                parent_id,
+                stripe_customer_id,
+                stripe_setup_session_id,
+                stripe_setup_intent_id,
+                stripe_payment_method_id,
+                autopay_enabled,
+                ach_enabled,
+                status,
+                notes,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 1, 1, 'connected_test', ?, ?, ?)
+            ON CONFLICT(parent_id) DO UPDATE SET
+                stripe_customer_id = COALESCE(excluded.stripe_customer_id, stripe_customer_id),
+                stripe_setup_session_id = excluded.stripe_setup_session_id,
+                stripe_setup_intent_id = excluded.stripe_setup_intent_id,
+                stripe_payment_method_id = COALESCE(excluded.stripe_payment_method_id, stripe_payment_method_id),
+                autopay_enabled = 1,
+                ach_enabled = 1,
+                status = 'connected_test',
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """, (
+                parent_id,
+                data_object.get("customer"),
+                data_object.get("id"),
+                setup_intent_id,
+                payment_method_id,
+                "Stripe webhook confirmed checkout setup completion.",
+                now,
+                now
+            ))
+            conn.commit()
+            conn.close()
+            record_stripe_webhook_event(
+                event_id,
+                event_type,
+                "setup_connected",
+                "Stripe setup checkout completed.",
+                parent_id=parent_id
+            )
+
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and data_object.get("mode") == "payment":
+        invoice_id = metadata.get("invoice_id")
+        if invoice_id:
+            if event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
+                finalize_stripe_invoice_payment(
+                    int(invoice_id),
+                    checkout_session_id=data_object.get("id"),
+                    payment_intent_id=data_object.get("payment_intent"),
+                    source=event_type
+                )
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "invoice_paid",
+                    "Invoice finalized from Stripe webhook.",
+                    invoice_id=invoice_id,
+                    parent_id=metadata.get("parent_id")
+                )
+            else:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                conn = sqlite3.connect("hmusic.db")
+                cursor = conn.cursor()
+                cursor.execute("""
+                UPDATE invoices
+                SET status = 'stripe_processing',
+                    stripe_checkout_session_id = ?,
+                    stripe_payment_intent_id = ?,
+                    autopay_status = COALESCE(autopay_status, 'processing')
+                WHERE id = ?
+                AND status != 'paid'
+                """, (
+                    data_object.get("id"),
+                    data_object.get("payment_intent"),
+                    invoice_id
+                ))
+                cursor.execute("""
+                INSERT INTO notification_delivery_queue (
+                    user_role,
+                    user_key,
+                    channel,
+                    destination,
+                    title,
+                    body,
+                    link_url,
+                    related_type,
+                    related_id,
+                    status,
+                    created_at
+                )
+                VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
+                """, (
+                    "Stripe payment processing",
+                    f"Stripe checkout completed for invoice #{invoice_id}. Await bank/payment settlement before final confirmation.",
+                    f"/pay_invoice/{invoice_id}",
+                    invoice_id,
+                    now
+                ))
+                conn.commit()
+                conn.close()
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "payment_processing",
+                    "Checkout completed, waiting for bank/payment settlement.",
+                    invoice_id=invoice_id,
+                    parent_id=metadata.get("parent_id")
+                )
+
+    if event_type == "payment_intent.succeeded":
+        invoice_id = metadata.get("invoice_id")
+        if invoice_id:
+            finalize_stripe_invoice_payment(
+                int(invoice_id),
+                payment_intent_id=data_object.get("id"),
+                source=event_type
+            )
+            record_stripe_webhook_event(
+                event_id,
+                event_type,
+                "invoice_paid",
+                "Invoice finalized from payment intent.",
+                invoice_id=invoice_id,
+                parent_id=metadata.get("parent_id")
+            )
+
+    return Response("ok", status=200)
+
+
+@app.route("/stripe/invoice/<int:invoice_id>/checkout")
+def stripe_invoice_checkout(invoice_id):
+    if not require_parent():
+        return redirect("/parent_login")
+
+    if not configure_stripe():
+        return redirect(f"/parent_invoice/{invoice_id}?stripe_missing=1")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, amount, status
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    if not parent_can_access_student(parent_id, invoice[1]):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    try:
+        customer_id = get_or_create_stripe_customer(cursor, parent_id)
+        checkout_session = stripe.checkout.Session.create(
+            mode="payment",
+            customer=customer_id,
+            payment_method_types=["card", "us_bank_account"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {
+                        "name": f"H-Music Tuition - {invoice[1]}",
+                    },
+                    "unit_amount": int(round((invoice[2] or 0) * 100)),
+                },
+                "quantity": 1,
+            }],
+            success_url=public_url_for("/stripe/invoice/success") + f"?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=public_url_for(f"/parent_invoice/{invoice_id}?cancelled=1"),
+            metadata={"invoice_id": str(invoice_id), "parent_id": str(parent_id)},
+            payment_intent_data={
+                "metadata": {"invoice_id": str(invoice_id), "parent_id": str(parent_id)}
+            }
+        )
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        UPDATE invoices
+        SET stripe_checkout_session_id = ?,
+            autopay_status = COALESCE(autopay_status, 'checkout_started')
+        WHERE id = ?
+        """, (checkout_session.id, invoice_id))
+        cursor.execute("""
+        INSERT INTO parent_billing_profiles (
+            parent_id,
+            stripe_customer_id,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, 'checkout_started', ?, ?)
+        ON CONFLICT(parent_id) DO UPDATE SET
+            stripe_customer_id = excluded.stripe_customer_id,
+            status = 'checkout_started',
+            updated_at = excluded.updated_at
+        """, (parent_id, customer_id, now, now))
+        conn.commit()
+        conn.close()
+        return redirect(checkout_session.url)
+    except Exception as exc:
+        conn.rollback()
+        conn.close()
+        return f"""
+        <h1>Stripe Checkout Failed</h1>
+        <p>{escape(str(exc))}</p>
+        <p><a href="/parent_invoice/{invoice_id}">Back to Invoice</a></p>
+        """
+
+
+@app.route("/stripe/invoice/success")
+def stripe_invoice_success():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    invoice_id = request.args.get("invoice_id")
+    session_id = request.args.get("session_id")
+    if not invoice_id or not session_id:
+        return redirect("/parent_dashboard")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id) if configure_stripe() else None
+        session_invoice_id = None
+        payment_intent_id = None
+        if checkout_session:
+            session_invoice_id = checkout_session.get("metadata", {}).get("invoice_id")
+            payment_intent_id = checkout_session.get("payment_intent")
+        if session_invoice_id and str(session_invoice_id) != str(invoice_id):
+            return redirect("/parent_dashboard")
+
+        if checkout_session and checkout_session.get("payment_status") == "paid":
+            finalized = finalize_stripe_invoice_payment(
+                int(invoice_id),
+                checkout_session_id=session_id,
+                payment_intent_id=payment_intent_id,
+                source="stripe_success_return"
+            )
+            if finalized:
+                return redirect(f"/parent_invoice/{invoice_id}?stripe_paid=1")
+    except Exception:
+        pass
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'stripe_processing',
+        stripe_checkout_session_id = ?,
+        autopay_status = 'processing'
+    WHERE id = ?
+    """, (session_id, invoice_id))
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/parent_invoice/{invoice_id}?stripe_processing=1")
+
+
+@app.route("/parent_invoice/<int:invoice_id>", methods=["GET", "POST"])
+def parent_invoice(invoice_id):
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v321_schema()
+
+    parent_id = session.get("parent_id")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        i.id,
+        i.student_name,
+        i.charge_lessons,
+        i.amount,
+        i.status,
+        i.invoice_type,
+        i.created_at,
+        i.enrollment_id,
+        i.due_date,
+        i.notes,
+        e.auto_renew_enabled,
+        e.auto_renew_lessons
+    FROM invoices i
+    LEFT JOIN enrollments e
+        ON i.enrollment_id = e.id
+    WHERE i.id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    if not parent_can_access_student(parent_id, invoice[1]):
+        conn.close()
+        return "<h1>Permission denied</h1>"
+
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "save_autorenew" and invoice[7]:
+            auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
+            auto_renew_lessons = float(request.form.get("auto_renew_lessons") or invoice[11] or invoice[2] or 10)
+            cursor.execute("""
+            UPDATE enrollments
+            SET auto_renew_enabled = ?,
+                auto_renew_lessons = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                auto_renew_enabled,
+                auto_renew_lessons,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                invoice[7]
+            ))
+            conn.commit()
+            conn.close()
+            return redirect(f"/parent_invoice/{invoice_id}")
+
+        if action == "notify_paid":
+            payment_note = (request.form.get("payment_note") or "").strip()
+            conn.close()
+            message_body = (
+                f"{session.get('parent_name', 'Parent')} marked invoice #{invoice_id} for {invoice[1]} as paid / ready for confirmation. "
+                f"Amount: ${invoice[3]}. Owner confirmation: /pay_invoice/{invoice_id}"
+            )
+            if payment_note:
+                message_body += f"\n\nParent note: {payment_note}"
+            create_invoice_message_event(
+                invoice_id,
+                "paid_notice",
+                message_body,
+                parent_id=parent_id,
+                student_name=invoice[1],
+                amount=invoice[3]
+            )
+            return redirect("/parent_dashboard?payment_notice=sent")
+
+    conn.close()
+
+    checked_yes = "selected" if invoice[10] == 1 else ""
+    checked_no = "" if invoice[10] == 1 else "selected"
+    auto_lessons = invoice[11] or invoice[2] or 10
+    stripe_payment_html = ""
+    stripe_status_alert = ""
+    if request.args.get("stripe_missing") == "1":
+        stripe_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
+    elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
+        stripe_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
+    elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
+        stripe_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
+    elif request.args.get("cancelled") == "1":
+        stripe_status_alert = "<div class='warn'>Stripe checkout was cancelled. You can try again or use the current studio payment method.</div>"
+
+    if invoice[4] not in ("paid", "stripe_processing"):
+        if stripe_is_configured():
+            stripe_payment_html = f"""
+            <p><a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout">Pay with Stripe Test Mode</a></p>
+            """
+        else:
+            stripe_payment_html = """
+            <p class="hint">Stripe test payment is not enabled yet. Please use the current studio payment method below.</p>
+            """
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Tuition Invoice")}
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:760px; margin:0 auto; }}
+            h1 {{ font-size:30px; margin:0 0 18px; }}
+            .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; margin:14px 0; }}
+            .label {{ color:#6b7280; font-size:13px; }}
+            .value {{ font-size:28px; font-weight:900; margin-top:4px; }}
+            .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
+            .hint {{ color:#6b7280; line-height:1.45; }}
+            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
+            textarea {{ min-height:100px; }}
+            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
+            .secondary {{ background:#111827 !important; }}
+            .stripe-button {{ background:#635bff !important; }}
+            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
+            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
+            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
+            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Tuition Invoice</h1>
+            {stripe_status_alert}
+            <div class="card">
+                <div class="label">Student</div>
+                <div class="value">{invoice[1]}</div>
+            </div>
+            <div class="card">
+                <div class="label">Amount Due</div>
+                <div class="value">${invoice[3]}</div>
+            </div>
+            <p><b>Status:</b> {invoice[4]}</p>
+            <p><b>Lessons:</b> {invoice[2]}</p>
+            <p><b>Due Date:</b> {invoice[8] or ''}</p>
+            <p>{invoice[9] or ''}</p>
+
+            <h2>Payment</h2>
+            {stripe_payment_html}
+            <p>Please pay with the studio's current tuition method. After sending payment, tap the button below so the owner can confirm and mark it paid.</p>
+            <form method="POST">
+                <input type="hidden" name="action" value="notify_paid">
+                Payment note (optional):<br>
+                <textarea name="payment_note" rows="3" placeholder="Example: Zelle sent today, check number, or payment reference."></textarea>
+                <button type="submit">I Paid / Notify Owner</button>
+                <a class="button secondary" href="/parent_dashboard">Back</a>
+            </form>
+
+            <h2>Auto-Renew</h2>
+            <form method="POST">
+                <input type="hidden" name="action" value="save_autorenew">
+                Auto-renew after package ends:<br>
+                <select name="auto_renew_enabled">
+                    <option value="0" {checked_no}>No - remind me first</option>
+                    <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
+                </select>
+                Lessons per renewal:<br>
+                <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
+                <button type="submit">Save Auto-Renew</button>
+            </form>
+        </div>
+        {parent_bottom_nav("home")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_profile", methods=["GET", "POST"])
+def parent_profile():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    ensure_v27_schema()
+    ensure_v321_schema()
+
+    parent_id = session.get("parent_id")
+
+    if not parent_id:
+        return """
+        <h1>Legacy Parent Session</h1>
+        <p>Please log in with a Parent Pro account to edit parent profile details.</p>
+        <p><a href="/parent_dashboard">Back to Parent Dashboard</a></p>
+        """
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        parent_name = (request.form.get("parent_name") or "").strip()
+        phone = (request.form.get("phone") or "").strip()
+        password = (request.form.get("password") or "").strip()
+        updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if password:
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET parent_name = ?,
+                phone = ?,
+                password = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                parent_name,
+                phone,
+                password,
+                updated_at,
+                parent_id
+            ))
+        else:
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET parent_name = ?,
+                phone = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                parent_name,
+                phone,
+                updated_at,
+                parent_id
+            ))
+
+        conn.commit()
+        conn.close()
+
+        session["parent_name"] = parent_name
+        log_parent_activity(parent_id, session.get("parent_student_name"), "profile_update", "Parent profile updated.")
+
+        return redirect("/parent_profile")
+
+    cursor.execute("""
+    SELECT parent_name, email, phone, password
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+
+    profile = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT student_name, relationship
+    FROM parent_students
+    WHERE parent_id = ?
+    AND active = 1
+    ORDER BY student_name
+    """, (parent_id,))
+
+    linked = cursor.fetchall()
+
+    linked_student_names = [row[0] for row in linked if row and row[0]]
+    invoice_records = []
+    if linked_student_names:
+        placeholders = ",".join(["?"] * len(linked_student_names))
+        cursor.execute(f"""
+        SELECT
+            i.id,
+            i.student_name,
+            i.charge_lessons,
+            i.amount,
+            i.status,
+            i.invoice_type,
+            i.created_at,
+            i.due_date,
+            s.lesson_date,
+            s.lesson_time
+        FROM invoices i
+        LEFT JOIN schedule s ON i.schedule_id = s.id
+        WHERE i.student_name IN ({placeholders})
+        ORDER BY COALESCE(i.created_at, '') DESC, i.id DESC
+        LIMIT 12
+        """, linked_student_names)
+        invoice_records = cursor.fetchall()
+    conn.close()
+
+    profile = profile or ("", "", "", "")
+
+    def clean_text(value, fallback="-"):
+        text = str(value or "").strip()
+        return escape(text if text else fallback)
+
+    def attr_text(value):
+        return escape(str(value or ""), quote=True)
+
+    def short_date(value):
+        text = str(value or "").strip()
+        if not text:
+            return "-"
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%b %d, %Y")
+        except Exception:
+            return clean_text(text)
+
+    def short_datetime(value):
+        text = str(value or "").strip()
+        if not text:
+            return "-"
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(text[:16], fmt).strftime("%b %d, %Y")
+            except Exception:
+                pass
+        return clean_text(text)
+
+    def lesson_count_label(value):
+        try:
+            number = float(value or 0)
+            return str(int(number)) if number.is_integer() else f"{number:g}"
+        except Exception:
+            return clean_text(value, "0")
+
+    def invoice_type_label(value):
+        text = str(value or "").replace("_", " ").strip().title()
+        return escape(text or "Package Invoice")
+
+    def invoice_status_badge(status):
+        status_text = str(status or "unpaid").strip().lower()
+        label = escape(status_text.replace("_", " ").title() or "Unpaid")
+        css_class = "paid" if status_text == "paid" else "open" if status_text in {"unpaid", "open", "pending", "processing", "stripe_processing"} else "muted"
+        return f'<span class="invoice-status {css_class}">{label}</span>'
+
+    linked_rows = ""
+    for item in linked:
+        linked_rows += f"<tr><td>{clean_text(item[0])}</td><td>{clean_text(item[1])}</td></tr>"
+
+    if not linked_rows:
+        linked_rows = "<tr><td colspan='2'>No linked students.</td></tr>"
+
+    invoice_cards = ""
+    for invoice in invoice_records:
+        invoice_id, student, lessons, amount, status, invoice_type, created_at, due_date, lesson_date, lesson_time = invoice
+        due_label = short_date(due_date) if due_date else "No due date"
+        lesson_line = ""
+        if lesson_date:
+            lesson_line = f"""
+                <div class="invoice-meta-line">
+                    <span>Linked lesson</span>
+                    <strong>{short_date(lesson_date)} {clean_text(lesson_time, "")}</strong>
+                </div>
+            """
+
+        invoice_cards += f"""
+            <a class="invoice-record" href="/parent_invoice/{invoice_id}">
+                <div class="invoice-record-head">
+                    <div>
+                        <div class="invoice-title">{clean_text(student)} · {invoice_type_label(invoice_type)}</div>
+                        <div class="invoice-subtitle">Created {short_datetime(created_at)} · Due {due_label}</div>
+                    </div>
+                    {invoice_status_badge(status)}
+                </div>
+                <div class="invoice-summary-grid">
+                    <div><span>Lessons</span><strong>{lesson_count_label(lessons)} lesson(s)</strong></div>
+                    <div><span>Amount</span><strong>{escape(owner_format_money(amount or 0))}</strong></div>
+                </div>
+                {lesson_line}
+            </a>
+        """
+
+    if not invoice_cards:
+        invoice_cards = '<div class="empty-invoice-record">No package invoice records yet.</div>'
+
+    invoice_count_label = f"{len(invoice_records)} shown" if invoice_records else "No records yet"
+
+    return f"""
+    <html>
+    <head>
+        {parent_app_meta("Parent Profile")}
+        <style>
+            * {{
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #f7f7fb;
+                margin: 0;
+                color: #111827;
+            }}
+            .container {{
+                background: white;
+                padding: max(18px, env(safe-area-inset-top)) 16px calc(88px + env(safe-area-inset-bottom));
+                min-height: 100vh;
+                max-width: 760px;
+                margin: 0 auto;
+            }}
+            h1 {{
+                font-size: 26px;
+                margin: 0 0 16px;
+            }}
+            h2 {{
+                font-size: 19px;
+                margin: 18px 0 8px;
+            }}
+            .field-label {{
+                display: block;
+                margin: 0 0 5px;
+                color: #111827;
+                font-size: 13px;
+                font-weight: 850;
+            }}
+            input {{
+                width: 100%;
+                min-height: 42px;
+                padding: 9px 12px;
+                margin: 0 0 12px;
+                font-size: 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 9px;
+            }}
+            button, a.button {{
+                display: inline-block;
+                background: #4f46e5;
+                color: white;
+                border: none;
+                padding: 10px 14px;
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 14px;
+                text-decoration: none;
+                min-height: 42px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 8px;
+                font-size: 13px;
+            }}
+            th, td {{
+                padding: 8px 9px;
+                border: 1px solid #ddd;
+                text-align: left;
+            }}
+            th {{
+                background: #eeeeff;
+            }}
+            .form-actions {{
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }}
+            .profile-section {{
+                margin-top: 22px;
+            }}
+            .section-heading {{
+                display: flex;
+                align-items: flex-end;
+                justify-content: space-between;
+                gap: 12px;
+                margin: 20px 0 6px;
+            }}
+            .section-heading h2 {{
+                margin: 0;
+                font-size: 19px;
+            }}
+            .section-heading span {{
+                color: #6b7280;
+                font-size: 11px;
+                font-weight: 850;
+            }}
+            .section-note {{
+                margin: 0 0 10px;
+                color: #6b7280;
+                font-size: 12px;
+                line-height: 1.35;
+            }}
+            .invoice-list {{
+                display: grid;
+                gap: 9px;
+                margin-top: 10px;
+            }}
+            .invoice-record {{
+                display: block;
+                color: #111827;
+                text-decoration: none;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 11px;
+                background: #ffffff;
+            }}
+            .invoice-record-head {{
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 10px;
+            }}
+            .invoice-title {{
+                font-size: 13px;
+                font-weight: 900;
+                line-height: 1.25;
+            }}
+            .invoice-subtitle {{
+                margin-top: 3px;
+                color: #6b7280;
+                font-size: 11px;
+                line-height: 1.25;
+            }}
+            .invoice-status {{
+                padding: 3px 7px;
+                border-radius: 999px;
+                font-size: 10px;
+                font-weight: 900;
+                white-space: nowrap;
+            }}
+            .invoice-status.open {{
+                color: #9a3412;
+                background: #ffedd5;
+            }}
+            .invoice-status.paid {{
+                color: #166534;
+                background: #dcfce7;
+            }}
+            .invoice-status.muted {{
+                color: #4b5563;
+                background: #f3f4f6;
+            }}
+            .invoice-summary-grid {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 7px;
+                margin-top: 9px;
+            }}
+            .invoice-summary-grid div {{
+                border: 1px solid #eef2f7;
+                border-radius: 10px;
+                padding: 7px 9px;
+                background: #f9fafb;
+            }}
+            .invoice-summary-grid span,
+            .invoice-meta-line span {{
+                display: block;
+                color: #6b7280;
+                font-size: 10px;
+                font-weight: 850;
+                letter-spacing: .02em;
+                text-transform: uppercase;
+            }}
+            .invoice-summary-grid strong,
+            .invoice-meta-line strong {{
+                display: block;
+                margin-top: 2px;
+                color: #111827;
+                font-size: 13px;
+            }}
+            .invoice-meta-line {{
+                margin-top: 8px;
+                padding-top: 8px;
+                border-top: 1px solid #eef2f7;
+            }}
+            .empty-invoice-record {{
+                padding: 11px;
+                border: 1px dashed #d1d5db;
+                border-radius: 12px;
+                color: #6b7280;
+                font-size: 12px;
+            }}
+            .parent-bottom-nav {{
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 4px;
+                padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+                background: rgba(255, 255, 255, 0.96);
+                border-top: 1px solid #e5e7eb;
+                box-shadow: 0 -4px 18px rgba(0,0,0,0.08);
+                z-index: 20;
+            }}
+            .parent-bottom-nav a {{
+                text-align: center;
+                text-decoration: none;
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 9px 4px;
+                border-radius: 8px;
+            }}
+            .parent-bottom-nav a.active {{
+                color: #4f46e5;
+                background: #eef2ff;
+            }}
+            @media (max-width: 760px) {{
+                table {{
+                    display: block;
+                    overflow-x: auto;
+                    font-size: 12px;
+                }}
+                .form-actions {{
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                }}
+                .form-actions button,
+                .form-actions a {{
+                    text-align: center;
+                }}
+            }}
+            @media (min-width: 900px) {{
+                body {{
+                    padding: 32px;
+                }}
+                .container {{
+                    min-height: auto;
+                    padding: 26px;
+                    border-radius: 16px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Parent Profile</h1>
+
+            <form method="POST">
+                <label class="field-label" for="parent_name">Parent Name</label>
+                <input id="parent_name" name="parent_name" value="{attr_text(profile[0])}">
+
+                <label class="field-label" for="email">Email</label>
+                <input id="email" value="{attr_text(profile[1])}" disabled>
+
+                <label class="field-label" for="phone">Phone</label>
+                <input id="phone" name="phone" value="{attr_text(profile[2])}">
+
+                <label class="field-label" for="password">New Password</label>
+                <input id="password" type="password" name="password" value="" placeholder="Leave blank to keep current password" autocomplete="new-password">
+
+                <div class="form-actions">
+                    <button type="submit">Save Profile</button>
+                    <a class="button" href="/parent_dashboard">Back</a>
+                </div>
+            </form>
+
+            <div class="profile-section">
+                <h2>Linked Students</h2>
+                <table>
+                    <tr>
+                        <th>Student</th>
+                        <th>Relationship</th>
+                    </tr>
+                    {linked_rows}
+                </table>
+            </div>
+
+            <div class="profile-section">
+                <div class="section-heading">
+                    <h2>Package & Invoice Records</h2>
+                    <span>{invoice_count_label}</span>
+                </div>
+                <p class="section-note">Package invoices, lesson counts, dates, and fees. Credits stay separate.</p>
+                <div class="invoice-list">
+                    {invoice_cards}
+                </div>
+            </div>
+        </div>
+        {parent_bottom_nav("profile")}
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_logout")
+def parent_logout():
+    session.pop("parent_id", None)
+    session.pop("parent_name", None)
+    session.pop("parent_email", None)
+    session.pop("parent_student_name", None)
+    return redirect("/parent_login")
+
+@app.route("/executive_dashboard")
+def executive_dashboard():
+
+    if not require_owner():
+        return redirect("/owner_login")
+
+    selected_month = request.args.get("month")
+
+    if not selected_month:
+        selected_month = date.today().strftime("%Y-%m")
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT key, value FROM settings")
+    settings = {row[0]: row[1] for row in cursor.fetchall()}
+
+    lesson_rate = float(settings.get("default_lesson_rate", 50))
+
+    # Core student metrics
+    cursor.execute("SELECT COUNT(*) FROM students")
+    total_students = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM students
+    WHERE lessons_left > 0
+    """)
+    active_students = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM students
+    WHERE lessons_left <= 2
+    """)
+    low_balance_count = cursor.fetchone()[0] or 0
+
+    # Revenue from payments
+    cursor.execute("""
+    SELECT COALESCE(SUM(amount), 0)
+    FROM payments
+    WHERE payment_date LIKE ?
+    """, (selected_month + "%",))
+    payment_revenue = cursor.fetchone()[0] or 0
+
+    # Unpaid invoices
+    cursor.execute("""
+    SELECT COALESCE(SUM(amount), 0)
+    FROM invoices
+    WHERE status = 'unpaid'
+    """)
+    unpaid_invoice_total = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM invoices
+    WHERE status = 'unpaid'
+    """)
+    unpaid_invoice_count = cursor.fetchone()[0] or 0
+
+    # Today metrics
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM schedule
+    WHERE lesson_date = ?
+    """, (today,))
+    today_lessons = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM schedule
+    WHERE lesson_date = ?
+    AND status = 'present'
+    """, (today,))
+    today_completed = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM schedule
+    WHERE lesson_date = ?
+    AND status IN ('no_show', 'cancel_3h', 'cancel_12h', 'cancel_24h')
+    """, (today,))
+    today_issue_count = cursor.fetchone()[0] or 0
+
+    # Monthly payroll / margin by teacher
+    cursor.execute("""
+    SELECT
+        s.teacher,
+        COALESCE(SUM(s.charge_lessons), 0),
+        COALESCE(t.hourly_rate, 30)
+    FROM schedule s
+    LEFT JOIN teachers t
+        ON s.teacher = t.teacher_name
+    WHERE s.status IN ('present', 'no_show', 'cancel_3h', 'cancel_12h', 'cancel_24h')
+    AND s.lesson_date LIKE ?
+    GROUP BY s.teacher, t.hourly_rate
+    ORDER BY s.teacher
+    """, (selected_month + "%",))
+
+    teacher_rows = cursor.fetchall()
+
+    total_units = 0
+    total_revenue = 0
+    total_payroll = 0
+
+    teacher_html = ""
+
+    for row in teacher_rows:
+        teacher = row[0]
+        units = row[1] or 0
+        teacher_rate = row[2] or 30
+
+        revenue = units * lesson_rate
+        payroll = units * teacher_rate
+        margin = revenue - payroll
+        margin_pct = 0
+        if revenue > 0:
+            margin_pct = round((margin / revenue) * 100, 1)
+
+        total_units += units
+        total_revenue += revenue
+        total_payroll += payroll
+
+        teacher_html += f"""
+        <tr>
+            <td><a href="/payroll/{teacher}?month={selected_month}">{teacher}</a></td>
+            <td>{units}</td>
+            <td>${teacher_rate}</td>
+            <td>${revenue}</td>
+            <td>${payroll}</td>
+            <td>${margin}</td>
+            <td>{margin_pct}%</td>
+        </tr>
+        """
+
+    if not teacher_html:
+        teacher_html = "<tr><td colspan='7'>No payroll data for this month.</td></tr>"
+
+    total_margin = total_revenue - total_payroll
+    total_margin_pct = 0
+    if total_revenue > 0:
+        total_margin_pct = round((total_margin / total_revenue) * 100, 1)
+
+    # Low balance students
+    cursor.execute("""
+    SELECT name, lessons_left, parent_email
+    FROM students
+    WHERE lessons_left <= 2
+    ORDER BY lessons_left ASC
+    LIMIT 10
+    """)
+    low_students = cursor.fetchall()
+
+    low_students_html = ""
+    for s in low_students:
+        low_students_html += f"""
+        <tr>
+            <td><a href="/student/{s[0]}">{s[0]}</a></td>
+            <td>{s[1]}</td>
+            <td>{s[2]}</td>
+        </tr>
+        """
+
+    if not low_students_html:
+        low_students_html = "<tr><td colspan='3'>No low balance students.</td></tr>"
+
+    # Unpaid invoice table
+    cursor.execute("""
+    SELECT id, student_name, amount, invoice_type, created_at
+    FROM invoices
+    WHERE status = 'unpaid'
+    ORDER BY id DESC
+    LIMIT 10
+    """)
+    unpaid_invoices = cursor.fetchall()
+
+    unpaid_html = ""
+    for inv in unpaid_invoices:
+        unpaid_html += f"""
+        <tr>
+            <td>{inv[0]}</td>
+            <td><a href="/student/{inv[1]}">{inv[1]}</a></td>
+            <td>${inv[2]}</td>
+            <td>{inv[3]}</td>
+            <td>{inv[4]}</td>
+            <td><a href="/pay_invoice/{inv[0]}">Mark Paid</a></td>
+        </tr>
+        """
+
+    if not unpaid_html:
+        unpaid_html = "<tr><td colspan='6'>No unpaid invoices.</td></tr>"
+
+    # Today's schedule
+    cursor.execute("""
+    SELECT lesson_time, student_name, teacher, classroom, status
+    FROM schedule
+    WHERE lesson_date = ?
+    ORDER BY lesson_time
+    """, (today,))
+    today_schedule = cursor.fetchall()
+
+    today_rows = ""
+    for l in today_schedule:
+        today_rows += f"""
+        <tr>
+            <td>{l[0]}</td>
+            <td><a href="/student/{l[1]}">{l[1]}</a></td>
+            <td>{l[2]}</td>
+            <td>{l[3]}</td>
+            <td>{l[4] or "scheduled"}</td>
+        </tr>
+        """
+
+    if not today_rows:
+        today_rows = "<tr><td colspan='5'>No lessons today.</td></tr>"
+
+    conn.close()
+
+    return f"""
+    <html>
+    <head>
+        <title>Executive Dashboard Pro</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                max-width: 1250px;
+                margin: auto;
+            }}
+            .header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 25px;
+            }}
+            .header p {{
+                color: #666;
+                margin-top: 6px;
+            }}
+            .card-grid {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 15px;
+                margin-bottom: 25px;
+            }}
+            .card {{
+                background: white;
+                padding: 20px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                border: 1px solid #e5e7eb;
+            }}
+            .label {{
+                color: #666;
+                font-size: 14px;
+            }}
+            .value {{
+                font-size: 28px;
+                font-weight: bold;
+                margin-top: 8px;
+            }}
+            .sub {{
+                color: #777;
+                font-size: 13px;
+                margin-top: 5px;
+            }}
+            .section {{
+                background: white;
+                padding: 25px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                margin-bottom: 25px;
+            }}
+            .two-col {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 15px;
+            }}
+            th {{
+                background: #eeeeff;
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+            td {{
+                padding: 10px;
+                border: 1px solid #ddd;
+            }}
+            input, button {{
+                padding: 8px;
+                font-size: 14px;
+            }}
+            button {{
+                background: #5b5cff;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+            }}
+            a.button {{
+                display: inline-block;
+                margin-right: 10px;
+                background: #5b5cff;
+                color: white;
+                padding: 10px 16px;
+                border-radius: 6px;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+            a {{
+                color: #5b5cff;
+                font-weight: bold;
+            }}
+            .danger {{
+                color: #b00020;
+            }}
+            .good {{
+                color: #137333;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+
+            <div class="header">
+                <div>
+                    <h1>Executive Dashboard Pro</h1>
+                    <p>Owner command center for H-Music operations</p>
+                </div>
+
+                <div>
+                    <a class="button" href="/">Home</a>
+                    <a class="button" href="/payroll?month={selected_month}">Payroll</a>
+                    <a class="button" href="/invoices">Invoices</a>
+                    <a class="button" href="/calendar">Calendar</a>
+                    <a class="button" href="/owner_backup">Backup</a>
+                </div>
+            </div>
+
+            <form method="GET">
+                Month:
+                <input type="month" name="month" value="{selected_month}">
+                <button type="submit">View</button>
+            </form>
+
+            <h2>Business Snapshot</h2>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="label">Total Students</div>
+                    <div class="value">{total_students}</div>
+                    <div class="sub">All students in CRM</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Active Students</div>
+                    <div class="value">{active_students}</div>
+                    <div class="sub">Lessons left above 0</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Need Renewal</div>
+                    <div class="value danger">{low_balance_count}</div>
+                    <div class="sub">Students with ≤ 2 lessons</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Unpaid Invoices</div>
+                    <div class="value danger">{unpaid_invoice_count}</div>
+                    <div class="sub">${unpaid_invoice_total} outstanding</div>
+                </div>
+            </div>
+
+            <h2>Monthly Finance</h2>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="label">Payment Revenue</div>
+                    <div class="value">${payment_revenue}</div>
+                    <div class="sub">Actual received this month</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Earned Revenue</div>
+                    <div class="value">${total_revenue}</div>
+                    <div class="sub">Based on completed/charged units</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Payroll</div>
+                    <div class="value">${total_payroll}</div>
+                    <div class="sub">Estimated teacher pay</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Gross Margin</div>
+                    <div class="value good">${total_margin}</div>
+                    <div class="sub">{total_margin_pct}% margin</div>
+                </div>
+            </div>
+
+            <h2>Today</h2>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="label">Today's Lessons</div>
+                    <div class="value">{today_lessons}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Completed Today</div>
+                    <div class="value">{today_completed}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Today's Issues</div>
+                    <div class="value danger">{today_issue_count}</div>
+                    <div class="sub">No shows / late cancels</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Paid Lesson Units</div>
+                    <div class="value">{total_units}</div>
+                    <div class="sub">Selected month</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Teacher Profitability</h2>
+                <table>
+                    <tr>
+                        <th>Teacher</th>
+                        <th>Units</th>
+                        <th>Teacher Rate</th>
+                        <th>Earned Revenue</th>
+                        <th>Payroll</th>
+                        <th>Margin</th>
+                        <th>Margin %</th>
+                    </tr>
+                    {teacher_html}
+                </table>
+            </div>
+
+            <div class="section">
+                <h2>Today's Schedule</h2>
+                <table>
+                    <tr>
+                        <th>Time</th>
+                        <th>Student</th>
+                        <th>Teacher</th>
+                        <th>Room</th>
+                        <th>Status</th>
+                    </tr>
+                    {today_rows}
+                </table>
+            </div>
+
+            <div class="two-col">
+                <div class="section">
+                    <h2>Action Required: Low Lesson Balance</h2>
+                    <table>
+                        <tr>
+                            <th>Student</th>
+                            <th>Lessons Left</th>
+                            <th>Parent Email</th>
+                        </tr>
+                        {low_students_html}
+                    </table>
+                </div>
+
+                <div class="section">
+                    <h2>Action Required: Unpaid Invoices</h2>
+                    <table>
+                        <tr>
+                            <th>ID</th>
+                            <th>Student</th>
+                            <th>Amount</th>
+                            <th>Type</th>
+                            <th>Action</th>
+                        </tr>
+                        {unpaid_html}
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </body>
+    </html>
+    """
+@app.route("/owner_dashboard")
+def owner_dashboard():
+    if not require_owner():
+        return redirect("/owner_login")
+    return redirect("/")
+
+
+@app.route("/owner_login", methods=["GET", "POST"])
+def owner_login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        SELECT username, role, display_name
+        FROM users
+        WHERE username = ?
+        AND password = ?
+        AND role = 'owner'
+        """, (username, password))
+
+        user = cursor.fetchone()
+        conn.close()
+
+        if user:
+            session.clear()
+            session["user_role"] = user[1]
+            session["username"] = user[0]
+            session["display_name"] = user[2]
+            return redirect("/executive_dashboard")
+
+        return """
+        <h2>Login Failed</h2>
+        <p>Please check your username and password.</p>
+        <a href="/owner_login">Try Again</a>
+        """
+
+    return """
+    <h1>Owner Login</h1>
+
+    <form method="POST">
+        Username:<br>
+        <input name="username"><br><br>
+
+        Password:<br>
+        <input type="password" name="password"><br><br>
+
+        <button type="submit">Login</button>
+    </form>
+    """
+
+
+@app.route("/owner_logout")
+def owner_logout():
+    session.clear()
+    return redirect("/owner_login")
+
+def ensure_v145_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS renewal_email_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        parent_email TEXT,
+        lessons_left REAL,
+        sent_at TEXT,
+        status TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sub_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER,
+        teacher_name TEXT,
+        student_name TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        classroom TEXT,
+        reason TEXT,
+        status TEXT DEFAULT 'pending',
+        substitute_teacher TEXT,
+        created_at TEXT,
+        assigned_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+@app.route("/v145_setup")
+def v145_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    return """
+    <h1>V14.5 Setup Complete</h1>
+    <p>Renewal Email + Sub Request tables are ready.</p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/renewal_emails")
+def renewal_emails():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, parent_email, lessons_left
+    FROM students
+    WHERE lessons_left <=2
+    ORDER BY lessons_left ASC
+    """)
+
+    students = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for s in students:
+        rows += f"""
+        <tr>
+            <td><a href="/student/{s[0]}">{s[0]}</a></td>
+            <td>{s[1]}</td>
+            <td>{s[2]}</td>
+            <td>
+                <a href="/send_renewal_email/{s[0]}">
+                    Send Renewal Email
+                </a>
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <h1>Auto Renewal Email Queue</h1>
+    <p>Students with 2 or fewer lessons left.</p>
+
+    <table border="1" cellpadding="8">
+        <tr>
+            <th>Student</th>
+            <th>Parent Email</th>
+            <th>Lessons Left</th>
+            <th>Action</th>
+        </tr>
+        {rows}
+    </table>
+
+    <br>
+    <a href="/">Back Home</a>
+    <a href="/executive_dashboard">Executive Dashboard</a>
+    """
+
+
+@app.route("/send_renewal_email/<student_name>")
+def send_renewal_email(student_name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, parent_email, lessons_left
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    name = student[0]
+    parent_email = student[1]
+    lessons_left = student[2]
+
+    email_text = f"""
+Dear Parent,
+
+This is a friendly reminder that {name} currently has {lessons_left} lesson(s) remaining.
+
+To avoid any interruption in scheduling, please renew the lesson package when convenient.
+
+Thank you,
+H-Music
+"""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"{name}'s Lesson Package Renewal Reminder"
+    msg["From"] = "huangzhenwei606@gmail.com"
+    msg["To"] = parent_email
+    msg.set_content(email_text)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(
+            "huangzhenwei606@gmail.com",
+            os.getenv("GMAIL_APP_PASSWORD")
+        )
+        smtp.send_message(msg)
+
+    cursor.execute("""
+    INSERT INTO renewal_email_logs (
+        student_name,
+        parent_email,
+        lessons_left,
+        sent_at,
+        status
+    )
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        name,
+        parent_email,
+        lessons_left,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "sent"
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <h1>Renewal Email Sent</h1>
+    <p>Student: {name}</p>
+    <p>To: {parent_email}</p>
+    <pre>{email_text}</pre>
+    <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
+    """
+
+
+@app.route("/teacher_sub_request", methods=["GET", "POST"])
+def teacher_sub_request():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    ensure_v145_schema()
+
+    teacher_name = session.get("teacher_name")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        schedule_id = request.form.get("schedule_id")
+        reason = request.form.get("reason")
+
+        cursor.execute("""
+        SELECT id, student_name, lesson_date, lesson_time, classroom
+        FROM schedule
+        WHERE id = ?
+        AND teacher = ?
+        """, (schedule_id, teacher_name))
+
+        lesson = cursor.fetchone()
+
+        if not lesson:
+            conn.close()
+            return "<h1>Lesson not found</h1>"
+
+        cursor.execute("""
+        INSERT INTO sub_requests (
+            schedule_id,
+            teacher_name,
+            student_name,
+            lesson_date,
+            lesson_time,
+            classroom,
+            reason,
+            status,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            lesson[0],
+            teacher_name,
+            lesson[1],
+            lesson[2],
+            lesson[3],
+            lesson[4],
+            reason,
+            "pending",
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return """
+        <h1>Sub Request Submitted</h1>
+        <p>Owner will review and assign a substitute teacher.</p>
+        <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+        """
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT id, lesson_date, lesson_time, student_name, classroom
+    FROM schedule
+    WHERE teacher = ?
+    AND lesson_date >= ?
+    ORDER BY lesson_date, lesson_time
+    LIMIT 30
+    """, (teacher_name, today))
+
+    lessons = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for l in lessons:
+        rows += f"""
+        <form method="POST" style="border:1px solid #ddd; padding:15px; margin:12px 0;">
+            <p><b>{l[1]} {l[2]}</b></p>
+            <p>Student: {l[3]}</p>
+            <p>Room: {l[4]}</p>
+
+            <input type="hidden" name="schedule_id" value="{l[0]}">
+
+            Reason:<br>
+            <input name="reason" style="width:300px;"><br><br>
+
+            <button type="submit">Request Substitute</button>
+        </form>
+        """
+
+    return f"""
+    <h1>Teacher Sub Request</h1>
+    <p>Teacher: {teacher_name}</p>
+
+    {rows}
+
+    <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
+    """
+
+
+@app.route("/owner_sub_requests")
+def owner_sub_requests():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT teacher_name
+    FROM teachers
+    ORDER BY teacher_name
+    """)
+    teachers = cursor.fetchall()
+
+    teacher_options = ""
+    for t in teachers:
+        teacher_options += f"<option value='{t[0]}'>{t[0]}</option>"
+
+    cursor.execute("""
+    SELECT
+        id,
+        teacher_name,
+        student_name,
+        lesson_date,
+        lesson_time,
+        classroom,
+        reason,
+        status,
+        substitute_teacher
+    FROM sub_requests
+    ORDER BY id DESC
+    """)
+
+    requests = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for r in requests:
+        assign_form = ""
+
+        if r[7] == "pending":
+            assign_form = f"""
+            <form method="POST" action="/assign_sub_request/{r[0]}">
+                <select name="substitute_teacher">
+                    {teacher_options}
+                </select>
+                <button type="submit">Assign</button>
+            </form>
+            """
+        else:
+            assign_form = f"Assigned to {r[8]}"
+
+        rows += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]}</td>
+            <td>{r[2]}</td>
+            <td>{r[3]}</td>
+            <td>{r[4]}</td>
+            <td>{r[5]}</td>
+            <td>{r[6]}</td>
+            <td>{r[7]}</td>
+            <td>{assign_form}</td>
+        </tr>
+        """
+
+    return f"""
+    <h1>Owner Sub Requests</h1>
+
+    <table border="1" cellpadding="8">
+        <tr>
+            <th>ID</th>
+            <th>Original Teacher</th>
+            <th>Student</th>
+            <th>Date</th>
+            <th>Time</th>
+            <th>Room</th>
+            <th>Reason</th>
+            <th>Status</th>
+            <th>Assign</th>
+        </tr>
+        {rows}
+    </table>
+
+    <br>
+    <a href="/">Back Home</a>
+    <a href="/executive_dashboard">Executive Dashboard</a>
+    """
+
+
+@app.route("/assign_sub_request/<int:request_id>", methods=["POST"])
+def assign_sub_request(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    substitute_teacher = request.form.get("substitute_teacher")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT schedule_id
+    FROM sub_requests
+    WHERE id = ?
+    """, (request_id,))
+
+    result = cursor.fetchone()
+
+    if not result:
+        conn.close()
+        return "<h1>Sub request not found</h1>"
+
+    schedule_id = result[0]
+
+    cursor.execute("""
+    UPDATE schedule
+    SET teacher = ?
+    WHERE id = ?
+    """, (substitute_teacher, schedule_id))
+
+    cursor.execute("""
+    UPDATE sub_requests
+    SET status = ?,
+        substitute_teacher = ?,
+        assigned_at = ?
+    WHERE id = ?
+    """, (
+        "assigned",
+        substitute_teacher,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        request_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/owner_sub_requests")
+
+# =========================
+# V35.1 Lead / Trial Intake
+# Upgraded from V17 Inquiry CRM
+# =========================
+
+def v35_now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def v35_safe(value, default=""):
+    if value is None or value == "":
+        return default
+    return escape(str(value))
+
+
+def v35_add_column_if_missing(cursor, table_name, column_name, column_sql):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column_name not in columns:
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+
+def ensure_v17_schema():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS inquiries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        phone TEXT,
+        age TEXT,
+        instrument TEXT,
+        source TEXT,
+        status TEXT DEFAULT 'Inquiry',
+        trial_date TEXT,
+        trial_time TEXT,
+        trial_teacher TEXT,
+        notes TEXT,
+        converted_student_name TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    upgrades = [
+        ("student_name", "student_name TEXT"),
+        ("parent_name", "parent_name TEXT"),
+        ("parent_email", "parent_email TEXT"),
+        ("phone", "phone TEXT"),
+        ("age", "age TEXT"),
+        ("instrument", "instrument TEXT"),
+        ("source", "source TEXT"),
+        ("status", "status TEXT DEFAULT 'Inquiry'"),
+        ("trial_date", "trial_date TEXT"),
+        ("trial_time", "trial_time TEXT"),
+        ("trial_teacher", "trial_teacher TEXT"),
+        ("notes", "notes TEXT"),
+        ("converted_student_name", "converted_student_name TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+        ("program_interest", "program_interest TEXT"),
+        ("preferred_days", "preferred_days TEXT"),
+        ("preferred_times", "preferred_times TEXT"),
+        ("previous_experience", "previous_experience TEXT"),
+        ("experience_duration", "experience_duration TEXT"),
+        ("trial_location", "trial_location TEXT"),
+        ("trial_status", "trial_status TEXT DEFAULT 'Needs Review'"),
+        ("lead_temperature", "lead_temperature TEXT DEFAULT 'Warm'"),
+        ("ai_summary", "ai_summary TEXT"),
+        ("ai_recommendation", "ai_recommendation TEXT"),
+        ("ai_follow_up_draft", "ai_follow_up_draft TEXT"),
+        ("next_follow_up_at", "next_follow_up_at TEXT"),
+        ("follow_up_status", "follow_up_status TEXT DEFAULT 'New'"),
+        ("follow_up_notes", "follow_up_notes TEXT"),
+        ("owner_verified", "owner_verified INTEGER DEFAULT 0"),
+        ("converted_enrollment_id", "converted_enrollment_id INTEGER"),
+    ]
+    for column_name, column_sql in upgrades:
+        v35_add_column_if_missing(cursor, "inquiries", column_name, column_sql)
+
+    now = v35_now()
+    cursor.execute("UPDATE inquiries SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
+    cursor.execute("UPDATE inquiries SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''")
+    cursor.execute("UPDATE inquiries SET status = 'Inquiry' WHERE status IS NULL OR status = ''")
+    cursor.execute("UPDATE inquiries SET trial_status = 'Needs Review' WHERE trial_status IS NULL OR trial_status = ''")
+    cursor.execute("UPDATE inquiries SET lead_temperature = 'Warm' WHERE lead_temperature IS NULL OR lead_temperature = ''")
+    cursor.execute("UPDATE inquiries SET follow_up_status = 'New' WHERE follow_up_status IS NULL OR follow_up_status = ''")
+    cursor.execute("UPDATE inquiries SET owner_verified = 0 WHERE owner_verified IS NULL")
+
+    conn.commit()
+    conn.close()
+
+
+def build_v35_trial_plan(data):
+    student = (data.get("student_name") or "New student").strip()
+    parent = (data.get("parent_name") or "Parent").strip()
+    age = (data.get("age") or "age not provided").strip()
+    instrument = (data.get("instrument") or "music").strip()
+    program = (data.get("program_interest") or instrument or "Trial Lesson").strip()
+    preferred_days = (data.get("preferred_days") or "").strip()
+    preferred_times = (data.get("preferred_times") or "").strip()
+    source = (data.get("source") or "Unknown source").strip()
+    previous_experience = (data.get("previous_experience") or "").strip()
+    experience_duration = (data.get("experience_duration") or "").strip()
+    temp = (data.get("lead_temperature") or "Warm").strip()
+    notes = (data.get("notes") or "").strip()
+
+    missing = []
+    for label, key in [
+        ("parent email", "parent_email"),
+        ("phone", "phone"),
+        ("student age", "age"),
+        ("preferred day/time", "preferred_days"),
+    ]:
+        if not (data.get(key) or "").strip():
+            missing.append(label)
+
+    preferred = " / ".join([x for x in [preferred_days, preferred_times] if x]) or "No preference yet"
+    experience = "Previous learning: " + previous_experience
+    if previous_experience.lower() in ("yes", "y", "true") and experience_duration:
+        experience += f" ({experience_duration})"
+    elif experience_duration:
+        experience += f" - {experience_duration}"
+    summary = (
+        f"{student} is a {temp.lower()} trial lead for {program}. "
+        f"Parent: {parent}. Age: {age}. Source/referrer: {source}. Preferred time: {preferred}. {experience}."
+    )
+    if notes:
+        summary += f" Notes: {notes[:220]}"
+
+    recommendation = (
+        f"AI suggestion: schedule a trial for {program} with the best-fit teacher, then ask owner to verify teacher, room/location, and tuition before confirming. "
+        f"Priority: {'high' if temp.lower() == 'hot' else 'normal'}."
+    )
+    if missing:
+        recommendation += " Missing before final confirmation: " + ", ".join(missing) + "."
+
+    follow_up = (
+        f"Hi {parent}, thank you for reaching out to H-Music. We are reviewing a trial lesson option for {student}. "
+        f"Could you confirm your preferred days/times and whether {program} is the right program interest?"
+    )
+    return summary, recommendation, follow_up
+
+
+def v35_insert_trial_lead(data, public=False):
+    ensure_v17_schema()
+    fields = [
+        "student_name", "parent_name", "parent_email", "phone", "age", "instrument",
+        "program_interest", "preferred_days", "preferred_times", "source",
+        "previous_experience", "experience_duration",
+        "lead_temperature", "trial_location", "notes",
+    ]
+    clean = {key: (data.get(key, "") or "").strip() for key in fields}
+    if not clean["source"]:
+        clean["source"] = "Public Trial Form" if public else "Owner Entry"
+    if not clean["lead_temperature"]:
+        clean["lead_temperature"] = "Warm"
+
+    summary, recommendation, follow_up = build_v35_trial_plan(clean)
+    now = v35_now()
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO inquiries (
+            student_name, parent_name, parent_email, phone, age, instrument, source,
+            status, trial_date, trial_time, trial_teacher, notes, converted_student_name,
+            created_at, updated_at, program_interest, preferred_days, preferred_times,
+            previous_experience, experience_duration,
+            trial_location, trial_status, lead_temperature, ai_summary, ai_recommendation,
+            ai_follow_up_draft, next_follow_up_at, follow_up_status, follow_up_notes,
+            owner_verified, converted_enrollment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            clean["student_name"], clean["parent_name"], clean["parent_email"], clean["phone"],
+            clean["age"], clean["instrument"], clean["source"], "New Lead", "", "", "",
+            clean["notes"], "", now, now, clean["program_interest"], clean["preferred_days"],
+            clean["preferred_times"], clean["previous_experience"], clean["experience_duration"],
+            clean["trial_location"], "Needs Review", clean["lead_temperature"],
+            summary, recommendation, follow_up, "", "New", "", 0, None,
+        ),
+    )
+    inquiry_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    try:
+        subject = "New Public Trial Request" if public else "New Trial Lead"
+        create_notification(
+            "owner",
+            "owner",
+            subject,
+            f"{clean['student_name'] or 'New lead'} needs owner review.",
+            f"/inquiry/{inquiry_id}",
+            "trial_lead",
+            inquiry_id,
+        )
+    except Exception:
+        pass
+
+    return inquiry_id
+
+
+def v35_public_trial_form(error="", values=None):
+    values = values or {}
+
+    def val(name):
+        return v35_safe(values.get(name, ""))
+
+    program_options = []
+    for option in ["Group Class", "Private Class"]:
+        selected = "selected" if values.get("program_interest") == option else ""
+        program_options.append(f'<option value="{option}" {selected}>{option}</option>')
+    error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
+    return f"""
+    <html>
+    <head>
+        <title>H-Music Trial Request</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f6f7fb; color:#111827; }}
+            .wrap {{ max-width:860px; margin:0 auto; padding:34px 18px 56px; }}
+            .card {{ background:white; border-radius:18px; padding:34px; box-shadow:0 18px 44px rgba(15,23,42,.08); }}
+            .brand {{ display:flex; align-items:center; gap:14px; margin-bottom:22px; }}
+            .logo {{ width:58px; height:58px; border-radius:16px; background:#050505; display:grid; place-items:center; color:#d7a943; font-size:25px; font-weight:800; }}
+            h1 {{ font-size:38px; line-height:1.05; margin:0; }}
+            p {{ color:#667085; font-size:17px; line-height:1.5; }}
+            form {{ margin-top:24px; display:grid; gap:18px; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
+            label {{ font-weight:800; font-size:15px; display:grid; gap:8px; }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d7dce5; border-radius:12px; padding:14px 15px; font-size:16px; font-family:inherit; }}
+            .slot-title {{ margin:4px 0 -8px; font-weight:900; color:#374151; }}
+            textarea {{ min-height:120px; resize:vertical; }}
+            button {{ border:0; border-radius:13px; background:#4f46e5; color:white; padding:16px 20px; font-size:17px; font-weight:900; cursor:pointer; }}
+            .hint {{ background:#fff8db; border:1px solid #ffe08a; border-radius:14px; padding:14px 16px; color:#684b00; }}
+            .error {{ background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:12px; padding:13px 15px; font-weight:800; }}
+            @media (max-width:720px) {{ .card {{ padding:26px 20px; }} .grid {{ grid-template-columns:1fr; }} h1 {{ font-size:31px; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <div class="card">
+                <div class="brand"><div class="logo">H</div><div><h1>Trial Lesson Request</h1><p>H-Music will review your request and contact you with next steps.</p></div></div>
+                <div class="hint">Please share 1-3 preferred dates and times. We will match you with the best available teacher after owner review.</div>
+                {error_html}
+                <form method="post">
+                    <div class="grid">
+                        <label>Student Name *<input name="student_name" value="{val('student_name')}" required></label>
+                        <label>Student Age<input name="age" value="{val('age')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Parent Name *<input name="parent_name" value="{val('parent_name')}" required></label>
+                        <label>Parent Email<input type="email" name="parent_email" value="{val('parent_email')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Phone<input name="phone" value="{val('phone')}"></label>
+                        <label>Program Interest<select name="program_interest">{''.join(program_options)}</select></label>
+                    </div>
+                    <label>Instrument<input name="instrument" placeholder="Piano, voice, violin..." value="{val('instrument')}"></label>
+                    <div class="slot-title">Preferred Date / Time 1 *</div>
+                    <div class="grid">
+                        <label>Date<input type="date" name="preferred_date_1" value="{val('preferred_date_1')}" required></label>
+                        <label>Time<input type="time" name="preferred_time_1" value="{val('preferred_time_1')}" required></label>
+                    </div>
+                    <div class="slot-title">Preferred Date / Time 2</div>
+                    <div class="grid">
+                        <label>Date<input type="date" name="preferred_date_2" value="{val('preferred_date_2')}"></label>
+                        <label>Time<input type="time" name="preferred_time_2" value="{val('preferred_time_2')}"></label>
+                    </div>
+                    <div class="slot-title">Preferred Date / Time 3</div>
+                    <div class="grid">
+                        <label>Date<input type="date" name="preferred_date_3" value="{val('preferred_date_3')}"></label>
+                        <label>Time<input type="time" name="preferred_time_3" value="{val('preferred_time_3')}"></label>
+                    </div>
+                    <div class="grid">
+                        <label>Has the student learned before?<select name="previous_experience"><option value="No" {'selected' if values.get('previous_experience') == 'No' else ''}>No</option><option value="Yes" {'selected' if values.get('previous_experience') == 'Yes' else ''}>Yes</option></select></label>
+                        <label>If yes, how long?<input name="experience_duration" placeholder="Example: 6 months / 2 years" value="{val('experience_duration')}"></label>
+                    </div>
+                    <label>How did you hear about us? / Who referred you?<input name="source" placeholder="Google, Instagram, friend name, current family..." value="{val('source')}"></label>
+                    <label>Anything we should know?<textarea name="notes" placeholder="Goals, level, scheduling notes...">{val('notes')}</textarea></label>
+                    <button type="submit">Submit Trial Request</button>
+                </form>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def v35_public_trial_thank_you(inquiry_id, data):
+    return f"""
+    <html>
+    <head>
+        <title>Trial Request Received</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f6f7fb; color:#111827; }}
+            .wrap {{ max-width:720px; margin:0 auto; padding:56px 18px; }}
+            .card {{ background:white; border-radius:18px; padding:34px; box-shadow:0 18px 44px rgba(15,23,42,.08); }}
+            .logo {{ width:62px; height:62px; border-radius:17px; background:#050505; display:grid; place-items:center; color:#d7a943; font-size:27px; font-weight:800; margin-bottom:20px; }}
+            h1 {{ font-size:38px; margin:0 0 12px; }}
+            p {{ color:#667085; font-size:17px; line-height:1.55; }}
+            .box {{ background:#eef2ff; border-radius:14px; padding:14px 16px; color:#3730a3; font-weight:800; }}
+            a {{ color:#4f46e5; font-weight:800; }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap"><div class="card">
+            <div class="logo">H</div>
+            <h1>Thank you!</h1>
+            <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
+            <div class="box">Request #{inquiry_id}</div>
+            <p><a href="/">Back to H-Music</a></p>
+        </div></div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/trial", methods=["GET", "POST"])
+def public_trial_request():
+    ensure_v17_schema()
+    if request.method == "POST":
+        preferred_dates = []
+        preferred_times = []
+        for idx in range(1, 4):
+            date_value = request.form.get(f"preferred_date_{idx}", "").strip()
+            time_value = request.form.get(f"preferred_time_{idx}", "").strip()
+            if date_value or time_value:
+                preferred_dates.append(f"{idx}. {date_value or 'Date TBD'}")
+                preferred_times.append(f"{idx}. {time_value or 'Time TBD'}")
+        data = {
+            "student_name": request.form.get("student_name", "").strip(),
+            "parent_name": request.form.get("parent_name", "").strip(),
+            "parent_email": request.form.get("parent_email", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "age": request.form.get("age", "").strip(),
+            "instrument": request.form.get("instrument", "").strip(),
+            "program_interest": request.form.get("program_interest", "").strip(),
+            "preferred_days": "; ".join(preferred_dates),
+            "preferred_times": "; ".join(preferred_times),
+            "trial_location": request.form.get("trial_location", "").strip(),
+            "previous_experience": request.form.get("previous_experience", "").strip(),
+            "experience_duration": request.form.get("experience_duration", "").strip(),
+            "notes": request.form.get("notes", "").strip(),
+            "source": request.form.get("source", "").strip() or "Public Trial Form",
+            "lead_temperature": "Warm",
+        }
+        form_values = {**request.form, **data}
+        if not data["student_name"] or not data["parent_name"]:
+            return v35_public_trial_form("Please enter student and parent names.", form_values)
+        if not data["parent_email"] and not data["phone"]:
+            return v35_public_trial_form("Please enter either email or phone.", form_values)
+        if not data["preferred_days"] or not data["preferred_times"]:
+            return v35_public_trial_form("Please enter at least one preferred date and time.", form_values)
+        inquiry_id = v35_insert_trial_lead(data, public=True)
+        return v35_public_trial_thank_you(inquiry_id, data)
+    return v35_public_trial_form()
+
+
+@app.route("/trial_form")
+@app.route("/trial_request")
+def public_trial_alias():
+    return redirect("/trial")
+
+
+@app.route("/v17_setup")
+def v17_setup():
+    ensure_owner()
+    ensure_v17_schema()
+    return "Lead / Trial Intake setup complete."
+
+
+@app.route("/trial_leads")
+def trial_leads():
+    return inquiries()
+
+
+@app.route("/add_trial_lead", methods=["GET", "POST"])
+def add_trial_lead():
+    return add_inquiry()
+
+
+@app.route("/inquiries")
+def inquiries():
+    ensure_owner()
+    ensure_v17_schema()
+
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM inquiries ORDER BY datetime(updated_at) DESC, id DESC")
+    rows = cursor.fetchall()
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead', 'Inquiry')")
+    new_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE ai_recommendation IS NOT NULL AND COALESCE(owner_verified, 0) = 0")
+    ai_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status='Trial Scheduled' OR trial_status='Scheduled'")
+    scheduled_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Trial Completed', 'Follow Up') OR follow_up_status='Follow Up'")
+    follow_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Active Student', 'Converted')")
+    converted_count = cursor.fetchone()[0]
+    conn.close()
+    public_trial_url = request.host_url.rstrip("/") + "/trial"
+
+    cards = "".join([
+        f"<div class='metric'><span>New Leads</span><b>{new_count}</b></div>",
+        f"<div class='metric'><span>AI Suggested</span><b>{ai_count}</b></div>",
+        f"<div class='metric'><span>Trial Scheduled</span><b>{scheduled_count}</b></div>",
+        f"<div class='metric'><span>Follow Up</span><b>{follow_count}</b></div>",
+        f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
+    ])
+
+    body = ""
+    for r in rows:
+        verified = "Verified" if r["owner_verified"] else "Needs Review"
+        verify_class = "ok" if r["owner_verified"] else "warn"
+        contact = "<br>".join([x for x in [v35_safe(r["parent_email"]), v35_safe(r["phone"])] if x]) or "-"
+        trial_bits = [v35_safe(r["trial_date"]), v35_safe(r["trial_time"]), v35_safe(r["trial_teacher"]), v35_safe(r["trial_location"])]
+        trial = "<br>".join([x for x in trial_bits if x]) or v35_safe(r["trial_status"], "Needs Review")
+        program = v35_safe(r["program_interest"] or r["instrument"], "-")
+        preferred = "<br>".join([x for x in [v35_safe(r["preferred_days"]), v35_safe(r["preferred_times"])] if x]) or "-"
+        latest = v35_safe(r["ai_summary"] or r["notes"], "-")
+        body += f"""
+        <tr>
+            <td><a href="/inquiry/{r['id']}"><b>{v35_safe(r['student_name'], 'Unnamed')}</b></a><br><small>#{r['id']} {v35_safe(r['lead_temperature'], 'Warm')}</small></td>
+            <td>{v35_safe(r['parent_name'], '-')}<br><small>{contact}</small></td>
+            <td>{program}</td>
+            <td>{preferred}</td>
+            <td><span class="pill {verify_class}">{verified}</span><br><small>{latest}</small></td>
+            <td>{trial}</td>
+            <td><span class="pill">{v35_safe(r['status'], 'New Lead')}</span></td>
+            <td>{v35_safe(r['next_follow_up_at'], '-')}<br><small>{v35_safe(r['follow_up_status'], 'New')}</small></td>
+            <td>{v35_safe(r['updated_at'], '-')}</td>
+        </tr>
+        """
+
+    if not body:
+        body = "<tr><td colspan='9'>No trial leads yet.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Lead / Trial Intake</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .actions a {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border-radius:8px; text-decoration:none; font-weight:700; margin-left:8px; }}
+            .actions a.secondary {{ background:#111827; }}
+            .metrics {{ display:grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap:12px; margin:22px 0; }}
+            .share {{ display:flex; justify-content:space-between; gap:16px; align-items:center; border:1px solid #dbeafe; background:#eff6ff; border-radius:12px; padding:16px; margin:18px 0 24px; }}
+            .share p {{ margin:6px 0 10px; color:#4b5563; }}
+            .share code {{ display:block; background:white; border:1px solid #bfdbfe; border-radius:8px; padding:10px; color:#1d4ed8; font-weight:700; word-break:break-all; }}
+            .share a {{ flex:0 0 auto; display:inline-block; padding:11px 16px; border-radius:8px; background:#111827; color:white; text-decoration:none; font-weight:700; }}
+            .metric {{ background:#f2f2ff; border:1px solid #e0e0ff; border-radius:10px; padding:14px; }}
+            .metric span {{ display:block; color:#6b7280; font-size:13px; }}
+            .metric b {{ font-size:28px; }}
+            table {{ width:100%; border-collapse:collapse; background:white; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; vertical-align:top; text-align:left; }}
+            th {{ background:#ececff; }}
+            small {{ color:#6b7280; }}
+            .pill {{ display:inline-block; padding:5px 9px; border-radius:999px; background:#eef2ff; color:#3730a3; font-weight:700; font-size:12px; }}
+            .pill.ok {{ background:#dcfce7; color:#166534; }}
+            .pill.warn {{ background:#fef3c7; color:#92400e; }}
+        </style>
+    </head>
+    <body>
+        <div class="panel">
+            <div class="top">
+                <div>
+                    <h1>Lead / Trial Intake</h1>
+                    <p>New leads, AI trial suggestions, owner verification, trial scheduling, follow-up, and conversion.</p>
+                </div>
+                <div class="actions">
+                    <a class="secondary" href="/">Home</a>
+                    <a href="/add_trial_lead">Add Trial Lead</a>
+                </div>
+            </div>
+            <div class="metrics">{cards}</div>
+            <div class="share">
+                <div>
+                    <b>Public Trial Form</b>
+                    <p>Send this link to new families. Submitted forms create a lead, AI trial plan, and owner notification.</p>
+                    <code>{v35_safe(public_trial_url)}</code>
+                </div>
+                <a href="/trial" target="_blank">Open Form</a>
+            </div>
+            <table>
+                <tr>
+                    <th>Student</th><th>Parent / Contact</th><th>Program</th><th>Preferred</th><th>AI / Verify</th><th>Trial</th><th>Status</th><th>Follow Up</th><th>Updated</th>
+                </tr>
+                {body}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_inquiry", methods=["GET", "POST"])
+def add_inquiry():
+    ensure_owner()
+    ensure_v17_schema()
+
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_name AS name FROM teachers ORDER BY teacher_name")
+    teachers = cursor.fetchall()
+    conn.close()
+
+    if request.method == "POST":
+        data = {
+            "student_name": request.form.get("student_name", "").strip(),
+            "parent_name": request.form.get("parent_name", "").strip(),
+            "parent_email": request.form.get("parent_email", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "age": request.form.get("age", "").strip(),
+            "instrument": request.form.get("instrument", "").strip(),
+            "program_interest": request.form.get("program_interest", "").strip(),
+            "preferred_days": request.form.get("preferred_days", "").strip(),
+            "preferred_times": request.form.get("preferred_times", "").strip(),
+            "source": request.form.get("source", "").strip(),
+            "previous_experience": request.form.get("previous_experience", "").strip(),
+            "experience_duration": request.form.get("experience_duration", "").strip(),
+            "lead_temperature": request.form.get("lead_temperature", "Warm"),
+            "trial_location": request.form.get("trial_location", "").strip(),
+            "notes": request.form.get("notes", "").strip(),
+        }
+        inquiry_id = v35_insert_trial_lead(data, public=False)
+        return redirect(f"/inquiry/{inquiry_id}")
+
+    teacher_options = "".join(f"<option>{v35_safe(t['name'])}</option>" for t in teachers)
+    return f"""
+    <html>
+    <head>
+        <title>Add Trial Lead</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .panel {{ max-width:900px; background:white; border-radius:16px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            label {{ font-weight:700; display:block; margin-top:16px; }}
+            input, select, textarea {{ width:100%; padding:12px; border:1px solid #d1d5db; border-radius:8px; font-size:16px; box-sizing:border-box; }}
+            textarea {{ min-height:120px; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+            button, a.btn {{ display:inline-block; margin-top:20px; padding:12px 16px; background:#4f46e5; color:white; border:0; border-radius:8px; text-decoration:none; font-weight:700; }}
+            a.btn.secondary {{ background:#111827; }}
+        </style>
+    </head>
+    <body>
+        <div class="panel">
+            <h1>Add Trial Lead</h1>
+            <p>Create the lead first. The system will draft an AI trial plan and follow-up message for owner verification.</p>
+            <form method="POST">
+                <div class="grid">
+                    <div><label>Student Name</label><input name="student_name" required></div>
+                    <div><label>Age</label><input name="age"></div>
+                    <div><label>Parent Name</label><input name="parent_name"></div>
+                    <div><label>Parent Email</label><input name="parent_email" type="email"></div>
+                    <div><label>Phone</label><input name="phone"></div>
+                    <div><label>Source</label><input name="source" placeholder="Website / Referral / Walk-in / Instagram"></div>
+                    <div><label>Instrument</label><input name="instrument" placeholder="Piano / Voice / Violin"></div>
+                    <div><label>Program Interest</label><select name="program_interest"><option>Group Class</option><option>Private Class</option></select></div>
+                    <div><label>Previous Learning?</label><select name="previous_experience"><option>No</option><option>Yes</option></select></div>
+                    <div><label>If yes, how long?</label><input name="experience_duration" placeholder="6 months / 2 years"></div>
+                    <div><label>Preferred Days</label><input name="preferred_days" placeholder="Mon/Wed/Sat"></div>
+                    <div><label>Preferred Times</label><input name="preferred_times" placeholder="After 4pm / weekend morning"></div>
+                    <div><label>Lead Temperature</label><select name="lead_temperature"><option>Warm</option><option>Hot</option><option>Cold</option></select></div>
+                    <div><label>Preferred Trial Location / Room</label><input name="trial_location" placeholder="Room 1 / Online / Cupertino"></div>
+                </div>
+                <label>Notes</label><textarea name="notes" placeholder="Parent goals, student level, availability, questions..."></textarea>
+                <button type="submit">Create Lead + AI Trial Plan</button>
+                <a class="btn secondary" href="/trial_leads">Back</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/inquiry/<int:inquiry_id>")
+def inquiry_detail(inquiry_id):
+    ensure_owner()
+    ensure_v17_schema()
+
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
+    inquiry = cursor.fetchone()
+    cursor.execute("SELECT teacher_name AS name FROM teachers ORDER BY teacher_name")
+    teachers = cursor.fetchall()
+    conn.close()
+
+    if not inquiry:
+        return "Lead not found"
+
+    status_options = ["New Lead", "AI Suggested", "Trial Proposed", "Trial Scheduled", "Trial Completed", "Follow Up", "Active Student", "Inactive"]
+    follow_options = ["New", "Waiting Parent", "Follow Up", "Ready to Enroll", "Converted", "Closed"]
+    temp_options = ["Warm", "Hot", "Cold"]
+
+    def opts(options, current):
+        return "".join(f"<option {'selected' if x == current else ''}>{v35_safe(x)}</option>" for x in options)
+
+    teacher_options = "<option value=''>Select teacher</option>"
+    for t in teachers:
+        name = t["name"]
+        teacher_options += f"<option {'selected' if name == inquiry['trial_teacher'] else ''}>{v35_safe(name)}</option>"
+
+    verified_checked = "checked" if inquiry["owner_verified"] else ""
+    convert_button = ""
+    if inquiry["status"] != "Active Student":
+        convert_button = f"<form method='POST' action='/convert_inquiry_to_student/{inquiry_id}'><button class='success' type='submit'>Convert to Student</button></form>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Trial Lead Detail</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
+            .wrap {{ max-width:1120px; margin:0 auto; }}
+            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); margin-bottom:18px; }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .btn, button {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border:0; border-radius:8px; text-decoration:none; font-weight:700; cursor:pointer; }}
+            .secondary {{ background:#111827; }}
+            .success {{ background:#16a34a; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+            .cards {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-top:16px; }}
+            .card {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; }}
+            .card span {{ display:block; color:#6b7280; font-size:13px; }}
+            label {{ display:block; font-weight:700; margin-top:14px; }}
+            input, select, textarea {{ width:100%; padding:12px; border:1px solid #d1d5db; border-radius:8px; font-size:16px; box-sizing:border-box; }}
+            textarea {{ min-height:120px; }}
+            .ai {{ background:#fffbeb; border:1px solid #fde68a; border-radius:12px; padding:18px; }}
+            .inline-check {{ display:flex; align-items:center; gap:8px; margin-top:14px; font-weight:700; }}
+            .inline-check input {{ width:auto; }}
+        </style>
+    </head>
+    <body>
+    <div class="wrap">
+        <div class="panel top">
+            <div>
+                <h1>{v35_safe(inquiry['student_name'], 'Trial Lead')}</h1>
+                <p>Lead / Trial Intake #{inquiry_id}</p>
+            </div>
+            <div>
+                <a class="btn secondary" href="/trial_leads">Back to Leads</a>
+                <a class="btn" href="/add_trial_lead">Add Lead</a>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="cards">
+                <div class="card"><span>Parent</span><b>{v35_safe(inquiry['parent_name'], '-')}</b></div>
+                <div class="card"><span>Email</span><b>{v35_safe(inquiry['parent_email'], '-')}</b></div>
+                <div class="card"><span>Phone</span><b>{v35_safe(inquiry['phone'], '-')}</b></div>
+                <div class="card"><span>Status</span><b>{v35_safe(inquiry['status'], '-')}</b></div>
+            </div>
+        </div>
+
+        <div class="panel ai">
+            <h2>AI Trial Plan - Owner Verification Required</h2>
+            <p><b>Summary:</b> {v35_safe(inquiry['ai_summary'], 'No AI summary yet.')}</p>
+            <p><b>Recommendation:</b> {v35_safe(inquiry['ai_recommendation'], 'No AI recommendation yet.')}</p>
+            <p><b>Follow-up Draft:</b> {v35_safe(inquiry['ai_follow_up_draft'], 'No follow-up draft yet.')}</p>
+        </div>
+
+        <div class="panel">
+            <h2>Review / Schedule Trial / Follow Up</h2>
+            <form method="POST" action="/update_inquiry/{inquiry_id}">
+                <div class="grid">
+                    <div><label>Student Name</label><input name="student_name" value="{v35_safe(inquiry['student_name'])}"></div>
+                    <div><label>Age</label><input name="age" value="{v35_safe(inquiry['age'])}"></div>
+                    <div><label>Parent Name</label><input name="parent_name" value="{v35_safe(inquiry['parent_name'])}"></div>
+                    <div><label>Parent Email</label><input name="parent_email" value="{v35_safe(inquiry['parent_email'])}"></div>
+                    <div><label>Phone</label><input name="phone" value="{v35_safe(inquiry['phone'])}"></div>
+                    <div><label>Source</label><input name="source" value="{v35_safe(inquiry['source'])}"></div>
+                    <div><label>Instrument</label><input name="instrument" value="{v35_safe(inquiry['instrument'])}"></div>
+                    <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
+                    <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
+                    <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
+                    <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
+                    <div><label>Preferred Times</label><input name="preferred_times" value="{v35_safe(inquiry['preferred_times'])}"></div>
+                    <div><label>Lead Temperature</label><select name="lead_temperature">{opts(temp_options, inquiry['lead_temperature'] or 'Warm')}</select></div>
+                    <div><label>Status</label><select name="status">{opts(status_options, inquiry['status'] or 'New Lead')}</select></div>
+                    <div><label>Trial Date</label><input type="date" name="trial_date" value="{v35_safe(inquiry['trial_date'])}"></div>
+                    <div><label>Trial Time</label><input type="time" name="trial_time" value="{v35_safe(inquiry['trial_time'])}"></div>
+                    <div><label>Trial Teacher</label><select name="trial_teacher">{teacher_options}</select></div>
+                    <div><label>Location / Room</label><input name="trial_location" value="{v35_safe(inquiry['trial_location'])}" placeholder="Room 1 / Online"></div>
+                    <div><label>Next Follow-up</label><input type="datetime-local" name="next_follow_up_at" value="{v35_safe(inquiry['next_follow_up_at']).replace(' ', 'T')}"></div>
+                    <div><label>Follow-up Status</label><select name="follow_up_status">{opts(follow_options, inquiry['follow_up_status'] or 'New')}</select></div>
+                </div>
+                <label>Lead Notes</label><textarea name="notes">{v35_safe(inquiry['notes'])}</textarea>
+                <label>Follow-up Notes</label><textarea name="follow_up_notes">{v35_safe(inquiry['follow_up_notes'])}</textarea>
+                <label class="inline-check"><input type="checkbox" name="owner_verified" value="1" {verified_checked}> Owner verified trial plan and schedule</label>
+                <button type="submit">Save Lead / Trial Plan</button>
+            </form>
+            {convert_button}
+        </div>
+    </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/update_inquiry/<int:inquiry_id>", methods=["POST"])
+def update_inquiry(inquiry_id):
+    ensure_owner()
+    ensure_v17_schema()
+
+    data = {
+        "student_name": request.form.get("student_name", "").strip(),
+        "parent_name": request.form.get("parent_name", "").strip(),
+        "parent_email": request.form.get("parent_email", "").strip(),
+        "phone": request.form.get("phone", "").strip(),
+        "age": request.form.get("age", "").strip(),
+        "instrument": request.form.get("instrument", "").strip(),
+        "program_interest": request.form.get("program_interest", "").strip(),
+        "preferred_days": request.form.get("preferred_days", "").strip(),
+        "preferred_times": request.form.get("preferred_times", "").strip(),
+        "source": request.form.get("source", "").strip(),
+        "previous_experience": request.form.get("previous_experience", "").strip(),
+        "experience_duration": request.form.get("experience_duration", "").strip(),
+        "lead_temperature": request.form.get("lead_temperature", "Warm"),
+        "status": request.form.get("status", "New Lead"),
+        "trial_date": request.form.get("trial_date", "").strip(),
+        "trial_time": request.form.get("trial_time", "").strip(),
+        "trial_teacher": request.form.get("trial_teacher", "").strip(),
+        "trial_location": request.form.get("trial_location", "").strip(),
+        "next_follow_up_at": request.form.get("next_follow_up_at", "").replace("T", " ").strip(),
+        "follow_up_status": request.form.get("follow_up_status", "New"),
+        "notes": request.form.get("notes", "").strip(),
+        "follow_up_notes": request.form.get("follow_up_notes", "").strip(),
+        "owner_verified": 1 if request.form.get("owner_verified") == "1" else 0,
+    }
+    summary, recommendation, follow_up = build_v35_trial_plan(data)
+    trial_status = "Needs Review"
+    status = data["status"]
+    if data["owner_verified"]:
+        if data["trial_date"] and data["trial_time"] and data["trial_teacher"]:
+            trial_status = "Scheduled"
+            if status in ("New Lead", "AI Suggested", "Inquiry", "Trial Proposed"):
+                status = "Trial Scheduled"
+        else:
+            trial_status = "Verified - Missing Info"
+    data["status"] = status
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = v35_now()
+    cursor.execute("""
+    UPDATE inquiries SET
+        student_name=?, parent_name=?, parent_email=?, phone=?, age=?, instrument=?, source=?, status=?,
+        trial_date=?, trial_time=?, trial_teacher=?, notes=?, updated_at=?, program_interest=?, preferred_days=?,
+        preferred_times=?, previous_experience=?, experience_duration=?, trial_location=?, trial_status=?, lead_temperature=?, ai_summary=?, ai_recommendation=?,
+        ai_follow_up_draft=?, next_follow_up_at=?, follow_up_status=?, follow_up_notes=?, owner_verified=?
+    WHERE id=?
+    """, (
+        data["student_name"], data["parent_name"], data["parent_email"], data["phone"], data["age"],
+        data["instrument"], data["source"], data["status"], data["trial_date"], data["trial_time"],
+        data["trial_teacher"], data["notes"], now, data["program_interest"], data["preferred_days"],
+        data["preferred_times"], data["previous_experience"], data["experience_duration"],
+        data["trial_location"], trial_status, data["lead_temperature"], summary,
+        recommendation, follow_up, data["next_follow_up_at"], data["follow_up_status"], data["follow_up_notes"],
+        data["owner_verified"], inquiry_id
+    ))
+
+    scheduled = False
+    if data["owner_verified"] and data["trial_date"] and data["trial_time"] and data["trial_teacher"]:
+        cursor.execute("""
+        SELECT id FROM schedule
+        WHERE student_name=? AND lesson_date=? AND lesson_time=?
+        LIMIT 1
+        """, (data["student_name"], data["trial_date"], data["trial_time"]))
+        if not cursor.fetchone():
+            cursor.execute("""
+            INSERT INTO schedule (student_name, teacher, lesson_date, lesson_time, classroom, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                data["student_name"], data["trial_teacher"], data["trial_date"], data["trial_time"],
+                data["trial_location"] or "Trial Room", "scheduled"
+            ))
+            scheduled = True
+
+    conn.commit()
+    conn.close()
+
+    if scheduled:
+        try:
+            create_notification(
+                "owner", "owner", "Trial Scheduled",
+                f"Trial scheduled for {data['student_name']} with {data['trial_teacher']} on {data['trial_date']} {data['trial_time']}.",
+                f"/inquiry/{inquiry_id}", "trial_lead", inquiry_id
+            )
+        except Exception:
+            pass
+
+    return redirect(f"/inquiry/{inquiry_id}")
+
+
+@app.route("/convert_inquiry_to_student/<int:inquiry_id>", methods=["POST"])
+def convert_inquiry_to_student(inquiry_id):
+    ensure_owner()
+    ensure_v17_schema()
+
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
+    inquiry = cursor.fetchone()
+
+    if not inquiry:
+        conn.close()
+        return "Lead not found"
+
+    student_name = inquiry["student_name"] or "New Student"
+    teacher = inquiry["trial_teacher"] or "Unassigned"
+    parent_email = inquiry["parent_email"] or ""
+
+    cursor.execute("SELECT id FROM students WHERE name=?", (student_name,))
+    existing = cursor.fetchone()
+    if not existing:
+        cursor.execute("""
+        INSERT INTO students (name, teacher, parent_email, lessons_left)
+        VALUES (?, ?, ?, ?)
+        """, (student_name, teacher, parent_email, 0))
+
+    cursor.execute("""
+    UPDATE inquiries
+    SET status=?, converted_student_name=?, follow_up_status=?, updated_at=?
+    WHERE id=?
+    """, ("Active Student", student_name, "Converted", v35_now(), inquiry_id))
+    conn.commit()
+    conn.close()
+
+    try:
+        create_notification("owner", "owner", "Lead Converted", f"{student_name} was converted into a student record.", f"/student/{student_name}", "trial_lead", inquiry_id)
+    except Exception:
+        pass
+
+    return redirect(f"/student/{student_name}")
+
+
+# =========================
+# V18 Core Data Model Upgrade
+# Course Types + Pricing Rules
+# =========================
+
+def calculate_course_amount(billing_method, rate, duration_minutes):
+    try:
+        rate = float(rate or 0)
+        duration_minutes = float(duration_minutes or 0)
+    except:
+        return 0
+
+    if billing_method == "Hourly":
+        return round(rate * duration_minutes / 60, 2)
+
+    return round(rate, 2)
+
+
+COURSE_COLOR_PRESETS = [
+    ("#8b5cf6", "Group Piano - Purple"),
+    ("#c4b5fd", "Piano Group - Light Purple"),
+    ("#93c5fd", "Private 30m - Light Blue"),
+    ("#3b82f6", "Private 45m - Blue"),
+    ("#1e3a8a", "Private 60m - Dark Blue"),
+    ("#facc15", "Trial - Yellow"),
+    ("#64748b", "Other - Slate"),
+]
+
+
+def course_color_from_rules(name="", duration=None, is_group=0):
+    course_name = (name or "").lower()
+    duration_text = str(duration or "").strip()
+
+    if "group piano" in course_name:
+        return "#8b5cf6"
+    if "piano group" in course_name:
+        return "#c4b5fd"
+    if "trial" in course_name:
+        return "#facc15"
+    if "private" in course_name or not is_group:
+        if duration_text == "30":
+            return "#93c5fd"
+        if duration_text == "45":
+            return "#3b82f6"
+        if duration_text == "60":
+            return "#1e3a8a"
+    if is_group or "group" in course_name:
+        return "#8b5cf6"
+    return None
+
+
+def default_course_color(name="", duration=None, is_group=0):
+    rule_color = course_color_from_rules(name, duration, is_group)
+    if rule_color:
+        return rule_color
+    return "#64748b"
+
+
+def normalize_hex_color(color, fallback=None):
+    value = str(color or "").strip()
+    if value.startswith("#"):
+        value = value[1:]
+    if len(value) == 3 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+        value = "".join(ch * 2 for ch in value)
+    if len(value) == 6 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+        return "#" + value.lower()
+    return fallback
+
+
+def _hex_rgb(color):
+    color = normalize_hex_color(color, "#64748b").lstrip("#")
+    return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _blend_hex(color, target="#ffffff", amount=0.84):
+    r1, g1, b1 = _hex_rgb(color)
+    r2, g2, b2 = _hex_rgb(target)
+    r = round(r1 * (1 - amount) + r2 * amount)
+    g = round(g1 * (1 - amount) + g2 * amount)
+    b = round(b1 * (1 - amount) + b2 * amount)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def course_color_background(color):
+    return _blend_hex(color, "#ffffff", 0.84)
+
+
+def course_color_border(color):
+    return _blend_hex(color, "#ffffff", 0.52)
+
+
+def course_color_text(color):
+    r, g, b = _hex_rgb(color)
+    luminance = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
+    if luminance > 170:
+        return "#6b4b00"
+    return normalize_hex_color(color, "#334155")
+
+
+def course_calendar_style(color):
+    color = normalize_hex_color(color, "#64748b")
+    return (
+        f"background:{course_color_background(color)};"
+        f"border-left-color:{color};"
+        f"border-color:{course_color_border(color)};"
+        f"color:{course_color_text(color)};"
+    )
+
+
+def course_color_options(current_color=None):
+    current = current_color or "#3b82f6"
+    options = ""
+    for color, label in COURSE_COLOR_PRESETS:
+        selected = "selected" if color.lower() == str(current).lower() else ""
+        options += f'<option value="{color}" {selected}>{label} {color}</option>'
+    return options
+
+
+def ensure_v18_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS course_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        duration INTEGER,
+        student_billing_method TEXT,
+        student_price REAL,
+        teacher_billing_method TEXT,
+        teacher_pay REAL,
+        is_group INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS course_type_tuition_tiers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_type_id INTEGER,
+        duration INTEGER,
+        class_size_min INTEGER,
+        class_size_max INTEGER,
+        student_billing_method TEXT DEFAULT 'Per Lesson',
+        student_price REAL DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("schedule", "course_type_id", "course_type_id INTEGER")
+    add_column_if_missing("schedule", "course_type_name", "course_type_name TEXT")
+    add_column_if_missing("schedule", "duration", "duration INTEGER")
+    add_column_if_missing("schedule", "student_billing_method", "student_billing_method TEXT")
+    add_column_if_missing("schedule", "student_price", "student_price REAL")
+    add_column_if_missing("schedule", "teacher_billing_method", "teacher_billing_method TEXT")
+    add_column_if_missing("schedule", "teacher_pay", "teacher_pay REAL")
+    add_column_if_missing("schedule", "student_charge_amount", "student_charge_amount REAL")
+    add_column_if_missing("schedule", "teacher_pay_amount", "teacher_pay_amount REAL")
+    add_column_if_missing("schedule", "is_group", "is_group INTEGER DEFAULT 0")
+    add_column_if_missing("schedule", "status", "status TEXT DEFAULT 'scheduled'")
+    add_column_if_missing("schedule", "charge_lessons", "charge_lessons REAL DEFAULT 0")
+    add_column_if_missing("schedule", "location", "location TEXT")
+    add_column_if_missing("schedule", "notes", "notes TEXT")
+    add_column_if_missing("schedule", "group_size", "group_size INTEGER")
+    add_column_if_missing("schedule", "group_student_names", "group_student_names TEXT")
+    add_column_if_missing("course_types", "display_color", "display_color TEXT")
+
+    cursor.execute("SELECT COUNT(*) FROM course_types")
+    existing_count = cursor.fetchone()[0]
+
+    if existing_count == 0:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        preset_courses = [
+            ("Private Lesson", 30, "Per Lesson", 55, "Per Lesson", 40, 0, 1, now, now),
+            ("Private Lesson", 45, "Per Lesson", 82.5, "Per Lesson", 60, 0, 1, now, now),
+            ("Private Lesson", 60, "Per Lesson", 110, "Per Lesson", 80, 0, 1, now, now),
+            ("Group Class", 50, "Per Lesson", 35, "Hourly", 60, 1, 1, now, now),
+            ("Trial Class", 30, "Per Lesson", 0, "Per Lesson", 25, 0, 1, now, now),
+            ("Custom Program", 60, "Hourly", 120, "Hourly", 70, 0, 1, now, now),
+        ]
+
+        cursor.executemany("""
+        INSERT INTO course_types (
+            name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            is_group,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, preset_courses)
+
+    cursor.execute("""
+    SELECT id, name, duration, is_group
+    FROM course_types
+    WHERE display_color IS NULL
+    OR display_color = ''
+    """)
+    courses_without_color = cursor.fetchall()
+    for course in courses_without_color:
+        cursor.execute("""
+        UPDATE course_types
+        SET display_color = ?
+        WHERE id = ?
+        """, (
+            default_course_color(course[1], course[2], course[3]),
+            course[0]
+        ))
+
+    cursor.execute("""
+    SELECT id, name, duration, is_group, display_color
+    FROM course_types
+    """)
+    courses_for_color_sync = cursor.fetchall()
+    for course in courses_for_color_sync:
+        rule_color = course_color_from_rules(course[1], course[2], course[3])
+        if rule_color and str(course[4] or "").lower() != rule_color.lower():
+            cursor.execute("""
+            UPDATE course_types
+            SET display_color = ?
+            WHERE id = ?
+            """, (rule_color, course[0]))
+
+    conn.commit()
+    conn.close()
+
+
+def get_course_type_tuition_tier(cursor, course_type_id, duration=None, class_size=None):
+    try:
+        duration_value = int(float(duration)) if duration not in (None, "") else None
+    except:
+        duration_value = None
+
+    try:
+        class_size_value = int(float(class_size)) if class_size not in (None, "") else None
+    except:
+        class_size_value = None
+
+    params = [course_type_id]
+    duration_clause = ""
+    class_clause = """
+    AND class_size_min IS NULL
+    AND class_size_max IS NULL
+    """
+
+    if duration_value:
+        duration_clause = "AND (duration IS NULL OR duration = ?)"
+        params.append(duration_value)
+
+    if class_size_value:
+        class_clause = """
+        AND (
+            (class_size_min IS NULL AND class_size_max IS NULL)
+            OR (
+                COALESCE(class_size_min, 0) <= ?
+                AND COALESCE(class_size_max, 999) >= ?
+            )
+        )
+        """
+        params.extend([class_size_value, class_size_value])
+
+    cursor.execute(f"""
+    SELECT student_billing_method, student_price, duration, class_size_min, class_size_max
+    FROM course_type_tuition_tiers
+    WHERE course_type_id = ?
+    AND active = 1
+    {duration_clause}
+    {class_clause}
+    ORDER BY
+        CASE WHEN duration = ? THEN 0 ELSE 1 END,
+        CASE WHEN class_size_min IS NOT NULL OR class_size_max IS NOT NULL THEN 0 ELSE 1 END,
+        id DESC
+    LIMIT 1
+    """, params + [duration_value or -1])
+
+    return cursor.fetchone()
+
+
+@app.route("/v18_setup")
+def v18_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    return """
+    <h1>V18 Setup Complete</h1>
+    <p>Course Types and Schedule pricing fields are ready.</p>
+    <p><a href="/course_types">Manage Course Types</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/course_types")
+def course_types():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        name,
+        duration,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group,
+        active,
+        display_color
+    FROM course_types
+    ORDER BY active DESC, name, duration
+    """)
+
+    courses = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for c in courses:
+        group_label = "Group" if c[7] == 1 else "Private/Single"
+        active_label = "Active" if c[8] == 1 else "Inactive"
+        display_color = c[9] or default_course_color(c[1], c[2], c[7])
+
+        student_example = calculate_course_amount(c[3], c[4], c[2])
+        rows += f"""
+        <tr>
+            <td>{c[0]}</td>
+            <td><span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:{display_color};margin-right:7px;vertical-align:-2px;"></span><b>{c[1]}</b></td>
+            <td>{c[2]} mins</td>
+            <td>{c[3]}</td>
+            <td>${c[4]}</td>
+            <td>${student_example}</td>
+            <td>{group_label}</td>
+            <td>{active_label}</td>
+            <td>
+                <a href="/edit_course_type/{c[0]}">Edit</a> |
+                <a href="/course_type_tuition_tiers/{c[0]}">Tuition Tiers</a>
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Course Types</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+                font-size: 14px;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Course Types</h1>
+            <p>Course Types define the class shape only. Student price is optional/default; teacher pay belongs in Teacher Rate Cards or Teacher Course Rates.</p>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/add_course_type">Add Course Type</a>
+            <a class="button" href="/add_schedule">Add Schedule</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Duration</th>
+                    <th>Student Billing</th>
+                    <th>Student Rate</th>
+                    <th>Student Charge</th>
+                    <th>Class Type</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_course_type", methods=["GET", "POST"])
+def add_course_type():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    if request.method == "POST":
+        name = request.form.get("name")
+        duration = request.form.get("duration")
+        student_billing_method = request.form.get("student_billing_method")
+        student_price = request.form.get("student_price")
+        teacher_billing_method = request.form.get("teacher_billing_method")
+        teacher_pay = request.form.get("teacher_pay")
+        is_group = request.form.get("is_group")
+        display_color = request.form.get("display_color")
+        active = request.form.get("active")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO course_types (
+            name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            is_group,
+            display_color,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            int(is_group or 0),
+            display_color or default_course_color(name, duration, int(is_group or 0)),
+            int(active or 1),
+            now,
+            now
+        ))
+
+        conn.commit()
+        course_id = cursor.lastrowid
+        conn.close()
+
+        return redirect(f"/course_type_tuition_tiers/{course_id}")
+
+    return """
+    <h1>Add Course Type</h1>
+
+    <form method="POST">
+
+        Course Name:<br>
+        <input name="name" placeholder="Private Lesson / Group Class / Custom Program" required><br><br>
+
+        Duration Minutes:<br>
+        <input type="number" name="duration" value="45" required><br><br>
+
+        Student Billing Method:<br>
+        <select name="student_billing_method">
+            <option value="Per Lesson">Per Lesson</option>
+            <option value="Hourly">Hourly</option>
+        </select><br><br>
+
+        Student Price / Rate:<br>
+        <input type="number" step="0.01" name="student_price" value="0"><br><br>
+
+        <input type="hidden" name="teacher_billing_method" value="Hourly">
+        <input type="hidden" name="teacher_pay" value="0">
+        <p><b>Teacher pay:</b> Set this in Teacher Rate Cards or Add Teacher Course Rate, not here.</p>
+
+        Is Group Class?<br>
+        <select name="is_group">
+            <option value="0">No</option>
+            <option value="1">Yes</option>
+        </select><br><br>
+
+        Display Color:<br>
+        <select name="display_color">
+            {course_color_options()}
+        </select><br><br>
+
+        Active?<br>
+        <select name="active">
+            <option value="1">Active</option>
+            <option value="0">Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Save Course Type</button>
+
+    </form>
+
+    <br>
+    <a href="/course_types">Back to Course Types</a>
+    """
+
+
+@app.route("/course_type_tuition_tiers/<int:course_id>", methods=["GET", "POST"])
+def course_type_tuition_tiers(course_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, name, duration, student_billing_method, student_price, is_group
+    FROM course_types
+    WHERE id = ?
+    """, (course_id,))
+    course = cursor.fetchone()
+
+    if not course:
+        conn.close()
+        return "<h1>Course Type not found</h1><p><a href='/course_types'>Back</a></p>"
+
+    if request.method == "POST":
+        duration = request.form.get("duration") or None
+        class_size_min = request.form.get("class_size_min") or None
+        class_size_max = request.form.get("class_size_max") or None
+        student_billing_method = request.form.get("student_billing_method")
+        student_price = request.form.get("student_price") or 0
+        active = request.form.get("active")
+        notes = request.form.get("notes")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO course_type_tuition_tiers (
+            course_type_id,
+            duration,
+            class_size_min,
+            class_size_max,
+            student_billing_method,
+            student_price,
+            active,
+            notes,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            course_id,
+            duration,
+            class_size_min,
+            class_size_max,
+            student_billing_method,
+            student_price,
+            int(active or 1),
+            notes,
+            now,
+            now
+        ))
+
+        conn.commit()
+        conn.close()
+        return redirect(f"/course_type_tuition_tiers/{course_id}")
+
+    cursor.execute("""
+    SELECT
+        id,
+        duration,
+        class_size_min,
+        class_size_max,
+        student_billing_method,
+        student_price,
+        active,
+        COALESCE(notes, ''),
+        created_at
+    FROM course_type_tuition_tiers
+    WHERE course_type_id = ?
+    ORDER BY active DESC,
+        COALESCE(duration, 99999),
+        COALESCE(class_size_min, 0),
+        COALESCE(class_size_max, 999),
+        id DESC
+    """, (course_id,))
+    tiers = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for t in tiers:
+        duration_label = f"{t[1]} mins" if t[1] else "Any duration"
+        if t[2] or t[3]:
+            size_label = f"{t[2] or ''}-{t[3] or ''}".strip("-")
+        else:
+            size_label = "Any / private"
+        active_label = "Active" if t[6] == 1 else "Inactive"
+        example_amount = calculate_course_amount(t[4], t[5], t[1] or course[2])
+        action_label = "Deactivate" if t[6] == 1 else "Activate"
+        rows += f"""
+        <tr>
+            <td>{t[0]}</td>
+            <td>{duration_label}</td>
+            <td>{size_label}</td>
+            <td>{t[4]}</td>
+            <td>${t[5]}</td>
+            <td>${example_amount}</td>
+            <td>{active_label}</td>
+            <td>{escape(t[7])}</td>
+            <td>
+                <form method="POST" action="/toggle_course_type_tuition_tier/{t[0]}" style="margin:0;">
+                    <button type="submit" class="small">{action_label}</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    if not rows:
+        rows = """
+        <tr>
+            <td colspan="9">No flexible tuition tiers yet. The course type default student price will be used until you add one.</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Tuition Tiers - {escape(str(course[1]))}</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+                color: #111827;
+            }}
+            .container {{
+                max-width: 1000px;
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                margin-bottom: 24px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 18px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+                font-size: 14px;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            input, select, textarea {{
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px;
+                margin-top: 6px;
+                margin-bottom: 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 15px;
+            }}
+            textarea {{
+                min-height: 90px;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 14px;
+            }}
+            button, a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                border: none;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+            button.small {{
+                padding: 7px 10px;
+                font-size: 13px;
+                background: #111827;
+            }}
+            a.button.secondary {{
+                background: #111827;
+            }}
+            .hint {{
+                color: #6b7280;
+                line-height: 1.45;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Tuition Tiers</h1>
+            <h2>{escape(str(course[1]))} - {course[2]} mins</h2>
+            <p class="hint">
+                Use this when parent tuition changes by duration or class size.
+                Example: private 1 student = $120, group 2 students = $80 each, group 3-4 students = $65 each.
+                Student-specific overrides still win when you set a special rate for one student.
+            </p>
+            <a class="button secondary" href="/course_types">Back to Course Types</a>
+            <a class="button" href="/add_schedule">Add Schedule</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Duration</th>
+                    <th>Class Size</th>
+                    <th>Billing</th>
+                    <th>Rate</th>
+                    <th>Example Charge</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+
+        <div class="container">
+            <h2>Add Flexible Tuition Rule</h2>
+            <form method="POST">
+                <div class="grid">
+                    <div>
+                        Duration Minutes:<br>
+                        <input type="number" name="duration" value="{course[2]}" placeholder="Blank = any duration">
+                    </div>
+                    <div>
+                        Student Billing Method:<br>
+                        <select name="student_billing_method">
+                            <option value="Per Lesson">Per Lesson</option>
+                            <option value="Hourly">Hourly</option>
+                        </select>
+                    </div>
+                    <div>
+                        Class Size Min:<br>
+                        <input type="number" name="class_size_min" placeholder="Blank = any/private">
+                    </div>
+                    <div>
+                        Class Size Max:<br>
+                        <input type="number" name="class_size_max" placeholder="Blank = any/private">
+                    </div>
+                    <div>
+                        Student Price / Rate:<br>
+                        <input type="number" step="0.01" name="student_price" required>
+                    </div>
+                    <div>
+                        Active:<br>
+                        <select name="active">
+                            <option value="1">Active</option>
+                            <option value="0">Inactive</option>
+                        </select>
+                    </div>
+                </div>
+
+                Notes:<br>
+                <textarea name="notes" placeholder="Example: Custom Program, 3-4 students, per student per lesson."></textarea>
+
+                <button type="submit">Save Tuition Rule</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/toggle_course_type_tuition_tier/<int:tier_id>", methods=["POST"])
+def toggle_course_type_tuition_tier(tier_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT course_type_id, active
+    FROM course_type_tuition_tiers
+    WHERE id = ?
+    """, (tier_id,))
+    tier = cursor.fetchone()
+
+    if not tier:
+        conn.close()
+        return "<h1>Tuition tier not found</h1><p><a href='/course_types'>Back</a></p>"
+
+    new_active = 0 if tier[1] == 1 else 1
+    cursor.execute("""
+    UPDATE course_type_tuition_tiers
+    SET active = ?, updated_at = ?
+    WHERE id = ?
+    """, (new_active, datetime.now().strftime("%Y-%m-%d %H:%M"), tier_id))
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/course_type_tuition_tiers/{tier[0]}")
+
+
+@app.route("/edit_course_type/<int:course_id>", methods=["GET", "POST"])
+def edit_course_type(course_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        name = request.form.get("name")
+        duration = request.form.get("duration")
+        student_billing_method = request.form.get("student_billing_method")
+        student_price = request.form.get("student_price")
+        teacher_billing_method = request.form.get("teacher_billing_method")
+        teacher_pay = request.form.get("teacher_pay")
+        is_group = request.form.get("is_group")
+        display_color = request.form.get("display_color")
+        active = request.form.get("active")
+
+        cursor.execute("""
+        UPDATE course_types
+        SET name = ?,
+            duration = ?,
+            student_billing_method = ?,
+            student_price = ?,
+            teacher_billing_method = ?,
+            teacher_pay = ?,
+            is_group = ?,
+            display_color = ?,
+            active = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            int(is_group or 0),
+            display_color or default_course_color(name, duration, int(is_group or 0)),
+            int(active or 1),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            course_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/course_types")
+
+    cursor.execute("""
+    SELECT
+        id,
+        name,
+        duration,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group,
+        active,
+        display_color
+    FROM course_types
+    WHERE id = ?
+    """, (course_id,))
+
+    c = cursor.fetchone()
+    conn.close()
+
+    if not c:
+        return "<h1>Course Type not found</h1>"
+
+    def selected(value, current):
+        return "selected" if value == current else ""
+
+    return f"""
+    <h1>Edit Course Type</h1>
+
+    <form method="POST">
+
+        Course Name:<br>
+        <input name="name" value="{c[1]}" required><br><br>
+
+        Duration Minutes:<br>
+        <input type="number" name="duration" value="{c[2]}" required><br><br>
+
+        Student Billing Method:<br>
+        <select name="student_billing_method">
+            <option value="Per Lesson" {selected("Per Lesson", c[3])}>Per Lesson</option>
+            <option value="Hourly" {selected("Hourly", c[3])}>Hourly</option>
+        </select><br><br>
+
+        Student Price / Rate:<br>
+        <input type="number" step="0.01" name="student_price" value="{c[4]}"><br><br>
+
+        <input type="hidden" name="teacher_billing_method" value="{c[5] or 'Hourly'}">
+        <input type="hidden" name="teacher_pay" value="{c[6] or 0}">
+        <p><b>Teacher pay:</b> Set teacher pay rules in Teacher Rate Cards or Add Teacher Course Rate.</p>
+
+        Is Group Class?<br>
+        <select name="is_group">
+            <option value="0" {selected(0, c[7])}>No</option>
+            <option value="1" {selected(1, c[7])}>Yes</option>
+        </select><br><br>
+
+        Display Color:<br>
+        <select name="display_color">
+            {course_color_options(c[9] or default_course_color(c[1], c[2], c[7]))}
+        </select><br><br>
+
+        Active?<br>
+        <select name="active">
+            <option value="1" {selected(1, c[8])}>Active</option>
+            <option value="0" {selected(0, c[8])}>Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Update Course Type</button>
+
+    </form>
+
+    <br>
+    <a href="/course_types">Back to Course Types</a>
+    """
+# =========================
+# V18-B Rate Override System
+# =========================
+
+def ensure_v18b_schema():
+    ensure_v18_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_course_rates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT,
+        course_type_id INTEGER,
+        teacher_billing_method TEXT,
+        teacher_pay REAL,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_course_rates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        course_type_id INTEGER,
+        student_billing_method TEXT,
+        student_price REAL,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("teacher_course_rates", "class_size_min", "class_size_min INTEGER")
+    add_column_if_missing("teacher_course_rates", "class_size_max", "class_size_max INTEGER")
+    add_column_if_missing("teacher_course_rates", "notes", "notes TEXT")
+
+    conn.commit()
+    conn.close()
+
+
+def get_effective_course_pricing(student_name, teacher_name, course_type_id):
+    ensure_v18b_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        name,
+        duration,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group
+    FROM course_types
+    WHERE id = ?
+    """, (course_type_id,))
+
+    course = cursor.fetchone()
+
+    if not course:
+        conn.close()
+        return None
+
+    course_id = course[0]
+    course_name = course[1]
+    duration = course[2]
+
+    student_billing_method = course[3]
+    student_price = course[4]
+
+    teacher_billing_method = course[5]
+    teacher_pay = course[6]
+
+    is_group = course[7]
+
+    # Student override
+    cursor.execute("""
+    SELECT student_billing_method, student_price
+    FROM student_course_rates
+    WHERE student_name = ?
+    AND course_type_id = ?
+    AND active = 1
+    ORDER BY id DESC
+    LIMIT 1
+    """, (student_name, course_type_id))
+
+    student_override = cursor.fetchone()
+
+    if student_override:
+        student_billing_method = student_override[0]
+        student_price = student_override[1]
+
+    # Teacher override
+    cursor.execute("""
+    SELECT teacher_billing_method, teacher_pay
+    FROM teacher_course_rates
+    WHERE teacher_name = ?
+    AND course_type_id = ?
+    AND active = 1
+    ORDER BY id DESC
+    LIMIT 1
+    """, (teacher_name, course_type_id))
+
+    teacher_override = cursor.fetchone()
+
+    if teacher_override:
+        teacher_billing_method = teacher_override[0]
+        teacher_pay = teacher_override[1]
+
+    student_charge_amount = calculate_course_amount(
+        student_billing_method,
+        student_price,
+        duration
+    )
+
+    teacher_pay_amount = calculate_course_amount(
+        teacher_billing_method,
+        teacher_pay,
+        duration
+    )
+
+    conn.close()
+
+    return {
+        "course_id": course_id,
+        "course_name": course_name,
+        "duration": duration,
+        "student_billing_method": student_billing_method,
+        "student_price": student_price,
+        "teacher_billing_method": teacher_billing_method,
+        "teacher_pay": teacher_pay,
+        "student_charge_amount": student_charge_amount,
+        "teacher_pay_amount": teacher_pay_amount,
+        "is_group": is_group
+    }
+
+
+@app.route("/v18b_setup")
+def v18b_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18b_schema()
+
+    return """
+    <h1>V18-B Setup Complete</h1>
+    <p>Teacher Course Rates and Student Course Rates are ready.</p>
+    <p><a href="/rate_overrides">Rate Overrides</a></p>
+    <p><a href="/course_types">Course Types</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/rate_overrides")
+def rate_overrides():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18b_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        t.id,
+        t.teacher_name,
+        c.name,
+        c.duration,
+        t.teacher_billing_method,
+        t.teacher_pay,
+        t.class_size_min,
+        t.class_size_max,
+        COALESCE(t.notes, ''),
+        t.active
+    FROM teacher_course_rates t
+    LEFT JOIN course_types c
+        ON t.course_type_id = c.id
+    ORDER BY t.teacher_name, c.name, c.duration
+    """)
+
+    teacher_rates = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        s.id,
+        s.student_name,
+        c.name,
+        c.duration,
+        s.student_billing_method,
+        s.student_price,
+        s.active
+    FROM student_course_rates s
+    LEFT JOIN course_types c
+        ON s.course_type_id = c.id
+    ORDER BY s.student_name, c.name, c.duration
+    """)
+
+    student_rates = cursor.fetchall()
+
+    conn.close()
+
+    teacher_rows = ""
+
+    for r in teacher_rates:
+        active = "Active" if r[9] == 1 else "Inactive"
+        if r[6] or r[7]:
+            class_size_label = f"{r[6] or ''}-{r[7] or ''}".strip("-")
+        else:
+            class_size_label = "Any"
+
+        teacher_rows += f"""
+        <tr>
+            <td>{r[1]}</td>
+            <td>{r[2]} - {r[3]} mins</td>
+            <td>{r[4]}</td>
+            <td>${r[5]}</td>
+            <td>{class_size_label}</td>
+            <td>{r[8]}</td>
+            <td>{active}</td>
+        </tr>
+        """
+
+    student_rows = ""
+
+    for r in student_rates:
+        active = "Active" if r[6] == 1 else "Inactive"
+
+        student_rows += f"""
+        <tr>
+            <td>{r[1]}</td>
+            <td>{r[2]} - {r[3]} mins</td>
+            <td>{r[4]}</td>
+            <td>${r[5]}</td>
+            <td>{active}</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Rate Overrides</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                margin-bottom: 24px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Rate Overrides</h1>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/course_types">Course Types</a>
+            <a class="button" href="/add_teacher_course_rate">Add Teacher Rate</a>
+            <a class="button" href="/add_student_course_rate">Add Student Rate</a>
+        </div>
+
+        <div class="container">
+            <h2>Teacher Course Rates</h2>
+
+            <table>
+                <tr>
+                    <th>Teacher</th>
+                    <th>Course</th>
+                    <th>Billing Method</th>
+                    <th>Teacher Pay / Rate</th>
+                    <th>Class Size</th>
+                    <th>Notes</th>
+                    <th>Status</th>
+                </tr>
+                {teacher_rows}
+            </table>
+        </div>
+
+        <div class="container">
+            <h2>Student Course Rates</h2>
+
+            <table>
+                <tr>
+                    <th>Student</th>
+                    <th>Course</th>
+                    <th>Billing Method</th>
+                    <th>Student Price / Rate</th>
+                    <th>Status</th>
+                </tr>
+                {student_rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_teacher_course_rate", methods=["GET", "POST"])
+def add_teacher_course_rate():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18b_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        teacher_name = request.form.get("teacher_name")
+        course_type_id = request.form.get("course_type_id")
+        teacher_billing_method = request.form.get("teacher_billing_method")
+        teacher_pay = request.form.get("teacher_pay")
+        class_size_min = request.form.get("class_size_min") or None
+        class_size_max = request.form.get("class_size_max") or None
+        notes = request.form.get("notes")
+        active = request.form.get("active")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO teacher_course_rates (
+            teacher_name,
+            course_type_id,
+            teacher_billing_method,
+            teacher_pay,
+            class_size_min,
+            class_size_max,
+            notes,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            teacher_name,
+            course_type_id,
+            teacher_billing_method,
+            teacher_pay,
+            class_size_min,
+            class_size_max,
+            notes,
+            int(active or 1),
+            now,
+            now
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/rate_overrides")
+
+    cursor.execute("""
+    SELECT teacher_name
+    FROM teachers
+    ORDER BY teacher_name
+    """)
+    teachers = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, name, duration
+    FROM course_types
+    WHERE active = 1
+    ORDER BY name, duration
+    """)
+    courses = cursor.fetchall()
+
+    conn.close()
+
+    teacher_options = ""
+    for t in teachers:
+        teacher_options += f"<option value='{t[0]}'>{t[0]}</option>"
+
+    course_options = ""
+    for c in courses:
+        course_options += f"<option value='{c[0]}'>{c[1]} - {c[2]} mins</option>"
+
+    return f"""
+    <h1>Add Teacher Course Rate</h1>
+    <p>
+        Use this for three cases:
+        1. Stable private lesson pay, usually hourly.
+        2. Group pay that changes by class size, usually per lesson.
+        3. Flexible custom program pay, either hourly or per lesson.
+    </p>
+
+    <form method="POST">
+
+        Teacher:<br>
+        <select name="teacher_name">
+            {teacher_options}
+        </select><br><br>
+
+        Course:<br>
+        <select name="course_type_id">
+            {course_options}
+        </select><br><br>
+
+        Teacher Billing Method:<br>
+        <select name="teacher_billing_method">
+            <option value="Hourly">Hourly</option>
+            <option value="Per Lesson">Per Lesson</option>
+        </select><br><br>
+
+        Teacher Pay / Rate:<br>
+        <input type="number" step="0.01" name="teacher_pay" required><br><br>
+
+        Class Size Range (optional, for group rules):<br>
+        <input type="number" name="class_size_min" placeholder="Min students, e.g. 2"><br>
+        <input type="number" name="class_size_max" placeholder="Max students, e.g. 4"><br><br>
+
+        Notes:<br>
+        <textarea name="notes" rows="4" cols="50" placeholder="Example: private hourly default, group 3-4 students per lesson, or flexible custom program."></textarea><br><br>
+
+        Active:<br>
+        <select name="active">
+            <option value="1">Active</option>
+            <option value="0">Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Save Teacher Rate</button>
+
+    </form>
+
+    <p><a href="/rate_overrides">Back to Rate Overrides</a></p>
+    """
+
+
+@app.route("/add_student_course_rate", methods=["GET", "POST"])
+def add_student_course_rate():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18b_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        student_name = request.form.get("student_name")
+        course_type_id = request.form.get("course_type_id")
+        student_billing_method = request.form.get("student_billing_method")
+        student_price = request.form.get("student_price")
+        active = request.form.get("active")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO student_course_rates (
+            student_name,
+            course_type_id,
+            student_billing_method,
+            student_price,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            student_name,
+            course_type_id,
+            student_billing_method,
+            student_price,
+            int(active or 1),
+            now,
+            now
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/rate_overrides")
+
+    cursor.execute("""
+    SELECT name
+    FROM students
+    ORDER BY name
+    """)
+    students = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, name, duration
+    FROM course_types
+    WHERE active = 1
+    ORDER BY name, duration
+    """)
+    courses = cursor.fetchall()
+
+    conn.close()
+
+    student_options = ""
+    for s in students:
+        student_options += f"<option value='{s[0]}'>{s[0]}</option>"
+
+    course_options = ""
+    for c in courses:
+        course_options += f"<option value='{c[0]}'>{c[1]} - {c[2]} mins</option>"
+
+    return f"""
+    <h1>Add Student Course Rate</h1>
+
+    <form method="POST">
+
+        Student:<br>
+        <select name="student_name">
+            {student_options}
+        </select><br><br>
+
+        Course:<br>
+        <select name="course_type_id">
+            {course_options}
+        </select><br><br>
+
+        Student Billing Method:<br>
+        <select name="student_billing_method">
+            <option value="Per Lesson">Per Lesson</option>
+            <option value="Hourly">Hourly</option>
+        </select><br><br>
+
+        Student Price / Rate:<br>
+        <input type="number" step="0.01" name="student_price" required><br><br>
+
+        Active:<br>
+        <select name="active">
+            <option value="1">Active</option>
+            <option value="0">Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Save Student Rate</button>
+
+    </form>
+
+    <p><a href="/rate_overrides">Back to Rate Overrides</a></p>
+    """
+
+# =========================
+# V18-C/D/E Teacher Rate Card + Pricing Engine + Payroll Auto
+# =========================
+
+def ensure_v18c_schema():
+    ensure_v18b_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_rate_cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT,
+        billing_method TEXT,
+        rate REAL,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def get_teacher_rate_card(teacher_name):
+    ensure_v18c_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT billing_method, rate
+    FROM teacher_rate_cards
+    WHERE teacher_name = ?
+    AND active = 1
+    ORDER BY id DESC
+    LIMIT 1
+    """, (teacher_name,))
+
+    result = cursor.fetchone()
+    conn.close()
+
+    if result:
+        return {
+            "billing_method": result[0],
+            "rate": result[1]
+        }
+
+    return None
+
+
+def get_final_pricing(student_name, teacher_name, course_type_id, class_size=None, duration_override=None):
+    ensure_v18c_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        name,
+        duration,
+        student_billing_method,
+        student_price,
+        teacher_billing_method,
+        teacher_pay,
+        is_group
+    FROM course_types
+    WHERE id = ?
+    """, (course_type_id,))
+
+    course = cursor.fetchone()
+
+    if not course:
+        conn.close()
+        return None
+
+    course_id = course[0]
+    course_name = course[1]
+    duration = course[2]
+    if duration_override not in (None, ""):
+        try:
+            duration = int(float(duration_override))
+        except:
+            pass
+
+    student_billing_method = course[3]
+    student_price = course[4]
+
+    teacher_billing_method = course[5]
+    teacher_pay = course[6]
+
+    is_group = course[7]
+
+    tuition_tier = get_course_type_tuition_tier(
+        cursor,
+        course_type_id,
+        duration=duration,
+        class_size=class_size
+    )
+    if tuition_tier:
+        student_billing_method = tuition_tier[0]
+        student_price = tuition_tier[1]
+
+    # Student price override. Student-specific rates win over course defaults and tuition tiers.
+    cursor.execute("""
+    SELECT student_billing_method, student_price
+    FROM student_course_rates
+    WHERE student_name = ?
+    AND course_type_id = ?
+    AND active = 1
+    ORDER BY id DESC
+    LIMIT 1
+    """, (student_name, course_type_id))
+
+    student_override = cursor.fetchone()
+
+    if student_override:
+        student_billing_method = student_override[0]
+        student_price = student_override[1]
+
+    # Teacher course-specific override. Class-size-specific rows win first.
+    try:
+        class_size_value = int(class_size) if class_size not in (None, "") else None
+    except:
+        class_size_value = None
+
+    if class_size_value:
+        cursor.execute("""
+        SELECT teacher_billing_method, teacher_pay
+        FROM teacher_course_rates
+        WHERE teacher_name = ?
+        AND course_type_id = ?
+        AND active = 1
+        AND (
+            (class_size_min IS NULL AND class_size_max IS NULL)
+            OR (
+                COALESCE(class_size_min, 0) <= ?
+                AND COALESCE(class_size_max, 999) >= ?
+            )
+        )
+        ORDER BY
+            CASE WHEN class_size_min IS NOT NULL OR class_size_max IS NOT NULL THEN 0 ELSE 1 END,
+            id DESC
+        LIMIT 1
+        """, (teacher_name, course_type_id, class_size_value, class_size_value))
+    else:
+        cursor.execute("""
+        SELECT teacher_billing_method, teacher_pay
+        FROM teacher_course_rates
+        WHERE teacher_name = ?
+        AND course_type_id = ?
+        AND active = 1
+        AND class_size_min IS NULL
+        AND class_size_max IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """, (teacher_name, course_type_id))
+
+    teacher_course_rate = cursor.fetchone()
+
+    if teacher_course_rate:
+        teacher_billing_method = teacher_course_rate[0]
+        teacher_pay = teacher_course_rate[1]
+
+    # Teacher Rate Card override. This is the general fallback when no course-specific rate exists.
+    cursor.execute("""
+    SELECT billing_method, rate
+    FROM teacher_rate_cards
+    WHERE teacher_name = ?
+    AND active = 1
+    ORDER BY id DESC
+    LIMIT 1
+    """, (teacher_name,))
+
+    teacher_rate_card = cursor.fetchone()
+
+    if teacher_rate_card and not teacher_course_rate:
+        teacher_billing_method = teacher_rate_card[0]
+        teacher_pay = teacher_rate_card[1]
+
+    student_charge_amount = calculate_course_amount(
+        student_billing_method,
+        student_price,
+        duration
+    )
+
+    teacher_pay_amount = calculate_course_amount(
+        teacher_billing_method,
+        teacher_pay,
+        duration
+    )
+
+    conn.close()
+
+    return {
+        "course_id": course_id,
+        "course_name": course_name,
+        "duration": duration,
+        "student_billing_method": student_billing_method,
+        "student_price": student_price,
+        "teacher_billing_method": teacher_billing_method,
+        "teacher_pay": teacher_pay,
+        "student_charge_amount": student_charge_amount,
+        "teacher_pay_amount": teacher_pay_amount,
+        "is_group": is_group
+    }
+
+
+@app.route("/v18c_setup")
+def v18c_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18c_schema()
+
+    return """
+    <h1>V18-C/D/E Setup Complete</h1>
+    <p>Teacher Rate Card + Pricing Engine + Payroll Auto fields are ready.</p>
+    <p><a href="/teacher_rate_cards">Teacher Rate Cards</a></p>
+    <p><a href="/rate_overrides">Student Rate Overrides</a></p>
+    <p><a href="/course_types">Course Types</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/teacher_rate_cards")
+def teacher_rate_cards():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18c_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        teacher_name,
+        billing_method,
+        rate,
+        active,
+        created_at
+    FROM teacher_rate_cards
+    ORDER BY teacher_name, id DESC
+    """)
+
+    cards = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for c in cards:
+        active = "Active" if c[4] == 1 else "Inactive"
+
+        rows += f"""
+        <tr>
+            <td>{c[0]}</td>
+            <td>{c[1]}</td>
+            <td>{c[2]}</td>
+            <td>${c[3]}</td>
+            <td>{active}</td>
+            <td>{c[5]}</td>
+            <td><a href="/edit_teacher_rate_card/{c[0]}">Edit</a></td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Teacher Rate Cards</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Teacher Rate Cards</h1>
+            <p>Teacher default pay rule. This overrides Course Type teacher pay.</p>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/add_teacher_rate_card">Add Teacher Rate Card</a>
+            <a class="button" href="/course_types">Course Types</a>
+            <a class="button" href="/rate_overrides">Student Rate Overrides</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Teacher</th>
+                    <th>Billing Method</th>
+                    <th>Rate</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/add_teacher_rate_card", methods=["GET", "POST"])
+def add_teacher_rate_card():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18c_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        teacher_name = request.form.get("teacher_name")
+        billing_method = request.form.get("billing_method")
+        rate = request.form.get("rate")
+        active = request.form.get("active")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO teacher_rate_cards (
+            teacher_name,
+            billing_method,
+            rate,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            teacher_name,
+            billing_method,
+            rate,
+            int(active or 1),
+            now,
+            now
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/teacher_rate_cards")
+
+    cursor.execute("""
+    SELECT teacher_name
+    FROM teachers
+    ORDER BY teacher_name
+    """)
+    teachers = cursor.fetchall()
+    conn.close()
+
+    teacher_options = ""
+
+    for t in teachers:
+        teacher_options += f"<option value='{t[0]}'>{t[0]}</option>"
+
+    return f"""
+    <h1>Add Teacher Rate Card</h1>
+
+    <form method="POST">
+
+        Teacher:<br>
+        <select name="teacher_name">
+            {teacher_options}
+        </select><br><br>
+
+        Billing Method:<br>
+        <select name="billing_method">
+            <option value="Hourly">Hourly</option>
+            <option value="Per Lesson">Per Lesson</option>
+        </select><br><br>
+
+        Rate:<br>
+        <input type="number" step="0.01" name="rate" required><br><br>
+
+        Active:<br>
+        <select name="active">
+            <option value="1">Active</option>
+            <option value="0">Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Save Teacher Rate Card</button>
+
+    </form>
+
+    <p><a href="/teacher_rate_cards">Back to Teacher Rate Cards</a></p>
+    """
+
+
+@app.route("/edit_teacher_rate_card/<int:card_id>", methods=["GET", "POST"])
+def edit_teacher_rate_card(card_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18c_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        teacher_name = request.form.get("teacher_name")
+        billing_method = request.form.get("billing_method")
+        rate = request.form.get("rate")
+        active = request.form.get("active")
+
+        cursor.execute("""
+        UPDATE teacher_rate_cards
+        SET teacher_name = ?,
+            billing_method = ?,
+            rate = ?,
+            active = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            teacher_name,
+            billing_method,
+            rate,
+            int(active or 1),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            card_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/teacher_rate_cards")
+
+    cursor.execute("""
+    SELECT id, teacher_name, billing_method, rate, active
+    FROM teacher_rate_cards
+    WHERE id = ?
+    """, (card_id,))
+
+    card = cursor.fetchone()
+
+    cursor.execute("""
+    SELECT teacher_name
+    FROM teachers
+    ORDER BY teacher_name
+    """)
+    teachers = cursor.fetchall()
+
+    conn.close()
+
+    if not card:
+        return "<h1>Teacher Rate Card not found</h1>"
+
+    teacher_options = ""
+    for t in teachers:
+        selected = "selected" if t[0] == card[1] else ""
+        teacher_options += f"<option value='{t[0]}' {selected}>{t[0]}</option>"
+
+    def selected_option(value, current):
+        return "selected" if value == current else ""
+
+    return f"""
+    <h1>Edit Teacher Rate Card</h1>
+
+    <form method="POST">
+
+        Teacher:<br>
+        <select name="teacher_name">
+            {teacher_options}
+        </select><br><br>
+
+        Billing Method:<br>
+        <select name="billing_method">
+            <option value="Hourly" {selected_option("Hourly", card[2])}>Hourly</option>
+            <option value="Per Lesson" {selected_option("Per Lesson", card[2])}>Per Lesson</option>
+        </select><br><br>
+
+        Rate:<br>
+        <input type="number" step="0.01" name="rate" value="{card[3]}" required><br><br>
+
+        Active:<br>
+        <select name="active">
+            <option value="1" {selected_option(1, card[4])}>Active</option>
+            <option value="0" {selected_option(0, card[4])}>Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Update Teacher Rate Card</button>
+
+    </form>
+
+    <p><a href="/teacher_rate_cards">Back to Teacher Rate Cards</a></p>
+    """
+# =========================
+# V19 Enrollment Engine
+# =========================
+
+def calculate_discounted_price(base_price, discount_type, discount_value):
+    try:
+        base_price = float(base_price or 0)
+        discount_value = float(discount_value or 0)
+    except:
+        return 0
+
+    if discount_type == "Fixed":
+        return max(round(base_price - discount_value, 2), 0)
+
+    if discount_type == "Percent":
+        return max(round(base_price * (1 - discount_value / 100), 2), 0)
+
+    return round(base_price, 2)
+
+
+def ensure_v19_schema():
+    ensure_v18c_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS enrollments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        course_type_id INTEGER,
+        course_type_name TEXT,
+        teacher_name TEXT,
+        duration INTEGER,
+
+        student_billing_method TEXT,
+        base_price REAL,
+        discount_type TEXT DEFAULT 'None',
+        discount_value REAL DEFAULT 0,
+        final_price REAL,
+
+        teacher_billing_method TEXT,
+        teacher_rate REAL,
+        teacher_pay_amount REAL,
+
+        lessons_left REAL DEFAULT 0,
+        status TEXT DEFAULT 'active',
+
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("schedule", "enrollment_id", "enrollment_id INTEGER")
+    add_column_if_missing("schedule", "final_price", "final_price REAL")
+    add_column_if_missing("enrollments", "class_size", "class_size INTEGER")
+    add_column_if_missing("enrollments", "confirmed_tuition_updated_at", "confirmed_tuition_updated_at TEXT")
+
+    conn.commit()
+    conn.close()
+
+
+@app.route("/v19_setup")
+def v19_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v19_schema()
+
+    return """
+    <h1>V19 Enrollment Engine Setup Complete</h1>
+    <p>Enrollment table and schedule enrollment fields are ready.</p>
+    <p><a href="/enrollments">Enrollment Dashboard</a></p>
+    <p><a href="/add_enrollment">Add Enrollment</a></p>
+    <p><a href="/">Back Ho
+    me</a></p>
+    """
+
+@app.route("/enrollments")
+def enrollments():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v19_schema()
+    q = (request.args.get("q") or "").strip()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    where_sql = ""
+    params = []
+    if q:
+        where_sql = """
+        WHERE student_name LIKE ?
+        OR course_type_name LIKE ?
+        OR teacher_name LIKE ?
+        """
+        like_q = f"%{q}%"
+        params = [like_q, like_q, like_q]
+
+    cursor.execute(f"""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        teacher_name,
+        duration,
+        final_price,
+        teacher_pay_amount,
+        lessons_left,
+        status
+    FROM enrollments
+    {where_sql}
+    ORDER BY student_name, status, id DESC
+    """, params)
+
+    rows_data = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM enrollments
+    WHERE status = 'active'
+    """)
+    active_count = cursor.fetchone()[0]
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM enrollments
+    WHERE lessons_left <= 2
+    AND status = 'active'
+    """)
+    renewal_count = cursor.fetchone()[0]
+
+    conn.close()
+
+    rows = ""
+
+    for r in rows_data:
+        rows += f"""
+        <tr>
+            <td><a href="/enrollment/{r[0]}">#{r[0]}</a></td>
+            <td><a href="/enrollment/{r[0]}">{r[1]}</a></td>
+            <td>{r[2]}</td>
+            <td>{r[3]}</td>
+            <td>{r[4]} mins</td>
+            <td>${r[5]}</td>
+            <td>{r[7]}</td>
+            <td>{r[8]}</td>
+            <td>
+                <a class="mini-button primary" href="/enrollment/{r[0]}">Enrollment Detail</a>
+                <a class="mini-button" href="/create_enrollment_invoice/{r[0]}">Send Invoice</a>
+                <a class="mini-button" href="/add_enrollment_schedule/{r[0]}">Add Schedule</a>
+            </td>
+        </tr>
+        """
+
+    if not rows:
+        rows = """
+        <tr>
+            <td colspan="9">No enrollments found.</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Enrollments</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .topbar {{
+                display:flex;
+                justify-content:space-between;
+                gap:16px;
+                align-items:flex-start;
+                flex-wrap:wrap;
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 16px;
+                margin-bottom: 20px;
+            }}
+            .card {{
+                background: #f8f8ff;
+                padding: 18px;
+                border-radius: 12px;
+            }}
+            .value {{
+                font-size: 30px;
+                font-weight: bold;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+            form.search {{
+                display:flex;
+                gap:10px;
+                margin:18px 0;
+                max-width:680px;
+            }}
+            form.search input {{
+                flex:1;
+                min-height:44px;
+                padding:10px 12px;
+                border:1px solid #d1d5db;
+                border-radius:8px;
+                font-size:16px;
+            }}
+            form.search button {{
+                background:#111827;
+                color:white;
+                border:none;
+                padding:10px 16px;
+                border-radius:8px;
+                font-weight:bold;
+            }}
+            td a {{
+                color: #635bff;
+                font-weight: bold;
+                text-decoration: none;
+            }}
+            .mini-button {{
+                display:inline-block;
+                background:#eef2ff;
+                color:#3730a3 !important;
+                padding:7px 9px;
+                border-radius:7px;
+                margin:2px 4px 2px 0;
+                white-space:nowrap;
+            }}
+            .mini-button.primary {{
+                background:#4f46e5;
+                color:white !important;
+            }}
+            .hint {{
+                color:#6b7280;
+                margin-top:6px;
+            }}
+            @media (max-width: 900px) {{
+                body {{ padding:16px; }}
+                table {{ display:block; overflow-x:auto; }}
+                .cards {{ grid-template-columns:1fr; }}
+                form.search {{ display:block; }}
+                form.search button {{ margin-top:8px; width:100%; min-height:44px; }}
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <div class="topbar">
+                <div>
+                    <h1>Enrollment Dashboard</h1>
+                    <div class="hint">Open Enrollment Detail from the first button in each row.</div>
+                </div>
+                <div>
+                    <a class="button" href="/">Home</a>
+                    <a class="button" href="/add_enrollment">New Enrollment</a>
+                </div>
+            </div>
+
+            <div class="cards">
+                <div class="card">
+                    <div>Active Enrollments</div>
+                    <div class="value">{active_count}</div>
+                </div>
+
+                <div class="card">
+                    <div>Need Renewal</div>
+                    <div class="value">{renewal_count}</div>
+                </div>
+            </div>
+
+            <form class="search" method="GET" action="/enrollments">
+                <input name="q" value="{q}" placeholder="Search student, teacher, or course">
+                <button type="submit">Search</button>
+                <a class="button" href="/enrollments">Clear</a>
+            </form>
+
+            <p>
+                <a class="button" href="/enrollment_renewals">Renewals</a>
+                <a class="button" href="/enrollment_payments">Payments</a>
+            </p>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Student</th>
+                    <th>Course</th>
+                    <th>Teacher</th>
+                    <th>Duration</th>
+                    <th>Student Price</th>
+                    <th>Lessons Left</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route("/add_enrollment", methods=["GET", "POST"])
+def add_enrollment():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        student_name = request.form.get("student_name")
+        course_type_id = request.form.get("course_type_id")
+        teacher_name = request.form.get("teacher_name")
+        discount_type = request.form.get("discount_type")
+        discount_value = request.form.get("discount_value")
+        package_amount = float(request.form.get("package_amount") or 0)
+        package_lessons = float(request.form.get("package_lessons") or 0)
+        auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
+        auto_renew_lessons = float(request.form.get("auto_renew_lessons") or package_lessons or 10)
+        start_date = request.form.get("start_date")
+        status = request.form.get("status")
+        notes = request.form.get("notes")
+
+        pricing = get_final_pricing(student_name, teacher_name, course_type_id)
+
+        if not pricing:
+            conn.close()
+            return "<h1>Pricing not found</h1>"
+
+        base_price = pricing["student_charge_amount"]
+
+        final_price = calculate_discounted_price(
+            base_price,
+            discount_type,
+            discount_value
+        )
+
+        teacher_pay_amount = pricing["teacher_pay_amount"]
+        profit_per_lesson = final_price - teacher_pay_amount
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        cursor.execute("""
+        INSERT INTO enrollments (
+            student_name,
+            course_type_id,
+            course_type_name,
+            teacher_name,
+            duration,
+
+            student_billing_method,
+            base_price,
+            discount_type,
+            discount_value,
+            final_price,
+
+            teacher_billing_method,
+            teacher_rate,
+            teacher_pay_amount,
+
+            lessons_left,
+            status,
+            notes,
+            start_date,
+            package_amount,
+            package_lessons,
+            auto_renew_enabled,
+            auto_renew_lessons,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            student_name,
+            pricing["course_id"],
+            pricing["course_name"],
+            teacher_name,
+            pricing["duration"],
+
+            pricing["student_billing_method"],
+            base_price,
+            discount_type,
+            float(discount_value or 0),
+            final_price,
+
+            pricing["teacher_billing_method"],
+            pricing["teacher_pay"],
+            teacher_pay_amount,
+
+            package_lessons,
+            status,
+            notes,
+            start_date,
+            package_amount,
+            package_lessons,
+            auto_renew_enabled,
+            auto_renew_lessons,
+            now,
+            now
+        ))
+
+        enrollment_id = cursor.lastrowid
+
+        invoice_id = None
+        parent_id = None
+        if package_amount > 0:
+            invoice_id = create_enrollment_invoice(
+                cursor,
+                enrollment_id,
+                "initial_tuition",
+                "Initial tuition invoice created from new enrollment."
+            )
+            parent_id = get_primary_parent_for_student(cursor, student_name)
+
+        conn.commit()
+        conn.close()
+
+        if package_amount > 0 and invoice_id:
+            create_invoice_message_event(
+                invoice_id,
+                "sent",
+                f"Hi, {student_name}'s new enrollment tuition invoice is ready. Amount due: ${package_amount}. Please open the invoice in the H-Music parent app when convenient.",
+                parent_id=parent_id,
+                student_name=student_name,
+                amount=package_amount
+            )
+
+        return redirect(f"/enrollment/{enrollment_id}")
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("SELECT name FROM students ORDER BY name")
+    students = cursor.fetchall()
+
+    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    teachers = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, name, duration
+    FROM course_types
+    WHERE active = 1
+    ORDER BY name, duration
+    """)
+    courses = cursor.fetchall()
+
+    conn.close()
+
+    student_options = "".join([f"<option value='{s[0]}'>{s[0]}</option>" for s in students])
+    teacher_options = "".join([f"<option value='{t[0]}'>{t[0]}</option>" for t in teachers])
+    course_options = "".join([f"<option value='{c[0]}'>{c[1]} - {c[2]} mins</option>" for c in courses])
+
+    return f"""
+    <html>
+    <head>
+        <title>New Enrollment</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                max-width: 760px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            input, select, textarea {{
+                width: 100%;
+                padding: 9px;
+                margin-top: 6px;
+                margin-bottom: 16px;
+                font-size: 14px;
+            }}
+            button {{
+                background: #635bff;
+                color: white;
+                border: none;
+                padding: 10px 16px;
+                border-radius: 8px;
+                font-weight: bold;
+            }}
+            .hint {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>New Enrollment</h1>
+            <p><a href="/enrollments">Back to Enrollments</a></p>
+
+            <form method="POST">
+
+                Student:<br>
+                <select name="student_name">
+                    {student_options}
+                </select>
+
+                Course:<br>
+                <select name="course_type_id">
+                    {course_options}
+                </select>
+
+                Teacher:<br>
+                <select name="teacher_name">
+                    {teacher_options}
+                </select>
+
+                Discount Type:<br>
+                <select name="discount_type">
+                    <option value="None">None</option>
+                    <option value="Fixed">Fixed Amount Off</option>
+                    <option value="Percent">Percent Off</option>
+                </select>
+
+                Discount Value:<br>
+                <input type="number" step="0.01" name="discount_value" value="0">
+
+                Package Amount:<br>
+                <input type="number" step="0.01" name="package_amount" value="0">
+                <div class="hint">Example: 1200 for a 10-lesson package.</div><br>
+
+                Package Lessons:<br>
+                <input type="number" step="0.5" name="package_lessons" value="10">
+
+                Auto-Renew / Auto Tuition Reminder:<br>
+                <select name="auto_renew_enabled">
+                    <option value="0">No - remind only</option>
+                    <option value="1">Yes - auto-generate next package invoice</option>
+                </select>
+                <div class="hint">When enabled, the system creates the next tuition invoice after the last lesson is completed. Real card charging requires Stripe later.</div><br>
+
+                Auto-Renew Lessons:<br>
+                <input type="number" step="0.5" name="auto_renew_lessons" value="10">
+
+                Start Date:<br>
+                <input type="date" name="start_date" value="{today}">
+
+                Status:<br>
+                <select name="status">
+                    <option value="active">Active</option>
+                    <option value="present">Present</option>
+                    <option value="no_show">No Show</option>
+                    <option value="cancel_3h">Cancel &lt; 3h</option>
+                    <option value="cancel_12h">Cancel &lt; 12h</option>
+                    <option value="cancel_24h">Cancel &lt; 24h</option>
+                    <option value="excused_24h">Cancel &gt; 24h</option>
+                    <option value="teacher_cancelled">Teacher Cancel</option>
+                    <option value="makeup">Makeup</option>
+                </select>
+
+                Notes:<br>
+                <textarea name="notes" rows="4"></textarea>
+
+                <button type="submit">Create Enrollment</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route("/enrollment/<int:enrollment_id>")
+def enrollment_detail(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        course_type_id,
+        teacher_name,
+        duration,
+        student_billing_method,
+        base_price,
+        discount_type,
+        discount_value,
+        final_price,
+        teacher_billing_method,
+        teacher_rate,
+        teacher_pay_amount,
+        lessons_left,
+        status,
+        notes,
+        start_date,
+        package_amount,
+        package_lessons,
+        auto_renew_enabled,
+        auto_renew_lessons,
+        renewal_reminder_sent_at,
+        auto_renewed_at,
+        class_size,
+        confirmed_tuition_updated_at
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+
+    e = cursor.fetchone()
+
+    if not e:
+        conn.close()
+        return "<h1>Enrollment not found</h1>"
+
+    # Payments summary
+    cursor.execute("""
+    SELECT
+        COALESCE(SUM(amount), 0),
+        COALESCE(SUM(lessons_added), 0)
+    FROM payments
+    WHERE enrollment_id = ?
+    """, (enrollment_id,))
+    payment_summary = cursor.fetchone()
+
+    total_paid = payment_summary[0] or 0
+    total_lessons_purchased = payment_summary[1] or 0
+
+    # Lesson financial summary
+    cursor.execute("""
+    SELECT
+        COALESCE(SUM(charge_lessons), 0),
+        COALESCE(SUM(revenue_amount), 0),
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(profit_amount), 0)
+    FROM schedule
+    WHERE enrollment_id = ?
+    """, (enrollment_id,))
+    financial_summary = cursor.fetchone()
+
+    lessons_used = financial_summary[0] or 0
+    revenue_earned = financial_summary[1] or 0
+    teacher_cost = financial_summary[2] or 0
+    profit_earned = financial_summary[3] or 0
+
+    package_value = e[18] or 0
+    outstanding_balance = round(package_value - total_paid, 2)
+    utilization = 0
+    if total_lessons_purchased:
+        utilization = round((lessons_used / total_lessons_purchased) * 100, 1)
+
+    cursor.execute("""
+    SELECT id, amount, status, invoice_type, created_at
+    FROM invoices
+    WHERE enrollment_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (enrollment_id,))
+    invoice_rows_data = cursor.fetchall()
+
+    # Recent payments
+    cursor.execute("""
+    SELECT
+        id,
+        amount,
+        lessons_added,
+        payment_method,
+        payment_date,
+        package_name,
+        COALESCE(visible_to_parent, 1)
+    FROM payments
+    WHERE enrollment_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (enrollment_id,))
+    payments = cursor.fetchall()
+
+    # Recent lessons
+    cursor.execute("""
+    SELECT
+        lesson_date,
+        lesson_time,
+        classroom,
+        status,
+        charge_lessons,
+        revenue_amount,
+        payroll_amount,
+        profit_amount
+    FROM schedule
+    WHERE enrollment_id = ?
+    ORDER BY lesson_date DESC, lesson_time DESC
+    LIMIT 15
+    """, (enrollment_id,))
+    lessons = cursor.fetchall()
+
+    conn.close()
+
+    payment_rows = ""
+    for p in payments:
+        visible_label = "Visible" if p[6] == 1 else "Hidden"
+        toggle_label = "Hide from Parent" if p[6] == 1 else "Show to Parent"
+        payment_rows += f"""
+        <tr>
+            <td>${p[1]}</td>
+            <td>{p[2]}</td>
+            <td>{p[3]}</td>
+            <td>{p[4]}</td>
+            <td>{p[5]}</td>
+            <td>{visible_label}</td>
+            <td>
+                <form method="POST" action="/toggle_parent_payment_visibility/{p[0]}" style="margin:0;">
+                    <button type="submit" class="mini-button">{toggle_label}</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    if payment_rows == "":
+        payment_rows = "<tr><td colspan='7'>No payments yet.</td></tr>"
+
+    suggested_pricing = get_final_pricing(e[1], e[4], e[3], class_size=e[24], duration_override=e[5])
+    suggested_price = suggested_pricing["student_charge_amount"] if suggested_pricing else (e[10] or 0)
+    confirmed_tuition = e[10] or suggested_price
+    confirmed_package_lessons = e[19] or e[21] or 10
+    confirmed_package_amount = e[18] or round((confirmed_tuition or 0) * confirmed_package_lessons, 2)
+    tuition_profit = round((confirmed_tuition or 0) - (e[13] or 0), 2)
+    class_size_value = e[24] or (1 if "group" not in (e[2] or "").lower() else "")
+
+    invoice_rows = ""
+    for inv in invoice_rows_data:
+        action = "Paid" if inv[2] == "paid" else f'<a href="/pay_invoice/{inv[0]}">Mark Paid</a>'
+        invoice_rows += f"""
+        <tr>
+            <td>{inv[0]}</td>
+            <td>${inv[1]}</td>
+            <td>{inv[2]}</td>
+            <td>{inv[3]}</td>
+            <td>{inv[4]}</td>
+            <td>{action}</td>
+        </tr>
+        """
+
+    if not invoice_rows:
+        invoice_rows = "<tr><td colspan='6'>No invoices yet.</td></tr>"
+
+    lesson_rows = ""
+    ledger_rows = ""
+
+    for l in lessons:
+        lesson_rows += f"""
+        <tr>
+            <td>{l[0]}</td>
+            <td>{l[1]}</td>
+            <td>{l[2]}</td>
+            <td>{l[3]}</td>
+            <td>{l[4] or 0}</td>
+            <td>${l[5] or 0}</td>
+            <td>${l[6] or 0}</td>
+            <td>${l[7] or 0}</td>
+        </tr>
+        """
+
+        ledger_rows += f"""
+        <tr>
+            <td>{l[0]}</td>
+            <td>{l[3]}</td>
+            <td>-{l[4] or 0} lesson</td>
+            <td>Revenue ${l[5] or 0} / Payroll ${l[6] or 0} / Profit ${l[7] or 0}</td>
+        </tr>
+        """
+
+    if lesson_rows == "":
+        lesson_rows = "<tr><td colspan='8'>No scheduled lessons yet.</td></tr>"
+
+    if ledger_rows == "":
+        ledger_rows = "<tr><td colspan='4'>No ledger events yet.</td></tr>"
+
+    # Add payment events to ledger
+    for p in payments:
+        ledger_rows += f"""
+        <tr>
+            <td>{p[4]}</td>
+            <td>Payment</td>
+            <td>+{p[2]} lessons</td>
+            <td>${p[1]} / {p[5]}</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Enrollment Detail</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 14px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .actions {{
+                margin-bottom: 24px;
+            }}
+            .actions a {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 16px;
+                margin: 20px 0;
+            }}
+            .card {{
+                background: #f8f8ff;
+                padding: 18px;
+                border-radius: 12px;
+            }}
+            .label {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+            .value {{
+                font-size: 24px;
+                font-weight: bold;
+                margin-top: 6px;
+            }}
+            h3 {{
+                margin-top: 32px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 12px;
+                margin-bottom: 24px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+                font-size: 14px;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            .muted {{
+                color: #6b7280;
+            }}
+            input {{
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px;
+                margin-top: 6px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 15px;
+            }}
+            button.save-button, button.mini-button {{
+                background: #635bff;
+                color: white;
+                border: none;
+                padding: 11px 15px;
+                border-radius: 8px;
+                font-weight: bold;
+                margin-right: 10px;
+            }}
+            button.mini-button {{
+                padding: 8px 10px;
+                font-size: 12px;
+                background: #111827;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+
+            <h1>Enrollment Detail</h1>
+            <h2>{e[1]} - {e[2]}</h2>
+
+            <div class="actions">
+                <a href="/enrollments">Back</a>
+                <a href="/enrollment_payment/{e[0]}">Payment</a>
+                <a href="/create_enrollment_invoice/{e[0]}">Create Tuition Invoice</a>
+                <a href="/add_enrollment_schedule/{e[0]}">Schedule</a>
+                <a href="/edit_enrollment/{e[0]}">Edit</a>
+            </div>
+
+            <h3>Overview</h3>
+
+            <div class="grid">
+                <div class="card">
+                    <div class="label">Student</div>
+                    <div class="value">{e[1]}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Teacher</div>
+                    <div class="value">{e[4]}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Course</div>
+                    <div class="value">{e[2]}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Status</div>
+                    <div class="value">{e[15]}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Confirmed Tuition / Lesson</div>
+                    <div class="value">${confirmed_tuition}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Teacher Pay / Lesson</div>
+                    <div class="value">${e[13]}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Profit / Lesson</div>
+                    <div class="value">${tuition_profit}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Lessons Left</div>
+                    <div class="value">{e[14]}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Auto-Renew</div>
+                    <div class="value">{"On" if e[20] == 1 else "Off"}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Renewal Lessons</div>
+                    <div class="value">{e[21] or e[19] or 10}</div>
+                </div>
+            </div>
+
+            <h3>Confirmed Tuition</h3>
+            <form method="POST" action="/update_enrollment_tuition/{e[0]}">
+                <div class="grid">
+                    <div class="card">
+                        <div class="label">Teacher</div>
+                        <div class="value">{e[4]}</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Course Type</div>
+                        <div class="value">{e[2]}</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Duration</div>
+                        <div class="value">{e[5]} mins</div>
+                    </div>
+                    <div class="card">
+                        <div class="label">Suggested Price</div>
+                        <div class="value">${suggested_price}</div>
+                    </div>
+                </div>
+                <div class="grid">
+                    <div>
+                        <label><b>Class Size</b></label><br>
+                        <input type="number" name="class_size" min="1" step="1" value="{class_size_value}" placeholder="1 for private, group size for group">
+                    </div>
+                    <div>
+                        <label><b>Final Student Tuition / Lesson</b></label><br>
+                        <input type="number" step="0.01" name="final_price" value="{confirmed_tuition}" required>
+                    </div>
+                    <div>
+                        <label><b>Invoice Package Lessons</b></label><br>
+                        <input type="number" step="0.5" name="package_lessons" value="{confirmed_package_lessons}">
+                    </div>
+                    <div>
+                        <label><b>Invoice Package Amount</b></label><br>
+                        <input type="number" step="0.01" name="package_amount" value="{confirmed_package_amount}">
+                    </div>
+                </div>
+                <p class="muted">Invoices and auto-renewal will use this confirmed tuition/package amount first. Suggested price is only a reference from Course Type rules.</p>
+                <button type="submit" class="save-button">Update Confirmed Tuition</button>
+                <span class="muted">Last updated: {e[25] or ""}</span>
+            </form>
+
+            <h3>Financial Summary</h3>
+
+            <div class="card">
+                <div class="label">Package Value</div>
+                <div class="value">${package_value}</div>
+            </div>
+
+                <div class="card">
+                    <div class="label">Lessons Purchased</div>
+                    <div class="value">{total_lessons_purchased}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Lessons Used</div>
+                    <div class="value">{lessons_used}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Utilization</div>
+                    <div class="value">{utilization}%</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Revenue Earned</div>
+                    <div class="value">${revenue_earned}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Teacher Cost</div>
+                    <div class="value">${teacher_cost}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Profit Earned</div>
+                    <div class="value">${profit_earned}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Outstanding Balance</div>
+                    <div class="value">${outstanding_balance}</div>
+                </div>
+            </div>
+
+            <h3>Pricing Details</h3>
+            <p><b>Billing:</b> {e[6]}</p>
+            <p><b>Base Price:</b> ${e[7]}</p>
+            <p><b>Discount:</b> {e[8]} {e[9]}</p>
+            <p><b>Start Date:</b> {e[17]}</p>
+            <p><b>Renewal Reminder Sent:</b> {e[22] or ""}</p>
+            <p><b>Last Auto-Renew:</b> {e[23] or ""}</p>
+            <p><b>Notes:</b> {e[16] or ""}</p>
+
+            <h3>Recent Lessons</h3>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Room</th>
+                    <th>Status</th>
+                    <th>Charged Units</th>
+                    <th>Revenue</th>
+                    <th>Payroll</th>
+                    <th>Profit</th>
+                </tr>
+                {lesson_rows}
+            </table>
+
+            <h3>Recent Payments</h3>
+            <table>
+                <tr>
+                    <th>Amount</th>
+                    <th>Lessons Added</th>
+                    <th>Method</th>
+                    <th>Date</th>
+                    <th>Package</th>
+                    <th>Parent App</th>
+                    <th>Action</th>
+                </tr>
+                {payment_rows}
+            </table>
+
+            <h3>Tuition Invoices</h3>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Type</th>
+                    <th>Created</th>
+                    <th>Action</th>
+                </tr>
+                {invoice_rows}
+            </table>
+
+            <h3>Enrollment Ledger</h3>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Event</th>
+                    <th>Lesson Change</th>
+                    <th>Details</th>
+                </tr>
+                {ledger_rows}
+            </table>
+
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route("/update_enrollment_tuition/<int:enrollment_id>", methods=["POST"])
+def update_enrollment_tuition(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    class_size = request.form.get("class_size") or None
+    final_price = float(request.form.get("final_price") or 0)
+    package_lessons = float(request.form.get("package_lessons") or 0)
+    package_amount = request.form.get("package_amount")
+    if package_amount in (None, ""):
+        package_amount = round(final_price * package_lessons, 2)
+    else:
+        package_amount = float(package_amount or 0)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE enrollments
+    SET class_size = ?,
+        final_price = ?,
+        package_lessons = ?,
+        package_amount = ?,
+        confirmed_tuition_updated_at = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        class_size,
+        final_price,
+        package_lessons,
+        package_amount,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        enrollment_id
+    ))
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/enrollment/{enrollment_id}")
+
+
+@app.route("/edit_enrollment/<int:enrollment_id>", methods=["GET", "POST"])
+def edit_enrollment(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        discount_type = request.form.get("discount_type")
+        discount_value = request.form.get("discount_value")
+        lessons_left = request.form.get("lessons_left")
+        status = request.form.get("status")
+        auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
+        auto_renew_lessons = float(request.form.get("auto_renew_lessons") or 10)
+        notes = request.form.get("notes")
+
+        cursor.execute("SELECT id FROM enrollments WHERE id = ?", (enrollment_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return "<h1>Enrollment not found</h1>"
+
+        cursor.execute("""
+        UPDATE enrollments
+        SET discount_type = ?,
+            discount_value = ?,
+            lessons_left = ?,
+            status = ?,
+            auto_renew_enabled = ?,
+            auto_renew_lessons = ?,
+            notes = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            discount_type,
+            float(discount_value or 0),
+            float(lessons_left or 0),
+            status,
+            auto_renew_enabled,
+            auto_renew_lessons,
+            notes,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            enrollment_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect(f"/enrollment/{enrollment_id}")
+
+    cursor.execute("""
+    SELECT
+        discount_type,
+        discount_value,
+        lessons_left,
+        status,
+        notes,
+        auto_renew_enabled,
+        auto_renew_lessons
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+
+    e = cursor.fetchone()
+    conn.close()
+
+    if not e:
+        return "<h1>Enrollment not found</h1>"
+
+    def selected(value, current):
+        return "selected" if value == current else ""
+
+    return f"""
+    <h1>Edit Enrollment</h1>
+
+    <form method="POST">
+
+        Discount Type:<br>
+        <select name="discount_type">
+            <option value="None" {selected("None", e[0])}>None</option>
+            <option value="Fixed" {selected("Fixed", e[0])}>Fixed Amount Off</option>
+            <option value="Percent" {selected("Percent", e[0])}>Percent Off</option>
+        </select><br><br>
+
+        Discount Value:<br>
+        <input type="number" step="0.01" name="discount_value" value="{e[1]}"><br><br>
+
+        Lessons Left:<br>
+        <input type="number" step="0.5" name="lessons_left" value="{e[2]}"><br><br>
+
+        Status:<br>
+        <select name="status">
+            <option value="active" {selected("active", e[3])}>Active</option>
+            <option value="paused" {selected("paused", e[3])}>Paused</option>
+            <option value="inactive" {selected("inactive", e[3])}>Inactive</option>
+        </select><br><br>
+
+        Auto-Renew:<br>
+        <select name="auto_renew_enabled">
+            <option value="0" {selected(0, e[5])}>No - remind only</option>
+            <option value="1" {selected(1, e[5])}>Yes - generate next tuition invoice</option>
+        </select><br><br>
+
+        Auto-Renew Lessons:<br>
+        <input type="number" step="0.5" name="auto_renew_lessons" value="{e[6] or 10}"><br><br>
+
+        Notes:<br>
+        <textarea name="notes" rows="4" cols="50">{e[4] or ""}</textarea><br><br>
+
+        <button type="submit">Update Enrollment</button>
+
+    </form>
+
+    <p><a href="/enrollment/{enrollment_id}">Back to Enrollment</a></p>
+    """
+
+
+@app.route("/add_enrollment_lessons/<int:enrollment_id>", methods=["GET", "POST"])
+def add_enrollment_lessons(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v19_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        lessons_added = float(request.form.get("lessons_added") or 0)
+
+        cursor.execute("""
+        UPDATE enrollments
+        SET lessons_left = lessons_left + ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            lessons_added,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            enrollment_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect(f"/enrollment/{enrollment_id}")
+
+    conn.close()
+
+    return f"""
+    <h1>Add Lessons / Package</h1>
+
+    <form method="POST">
+        Lessons Added:<br>
+        <input type="number" step="0.5" name="lessons_added" value="10"><br><br>
+
+        <button type="submit">Add Lessons</button>
+    </form>
+
+    <p><a href="/enrollment/{enrollment_id}">Back to Enrollment</a></p>
+    """
+
+
+@app.route("/add_enrollment_schedule/<int:enrollment_id>", methods=["GET", "POST"])
+def add_enrollment_schedule(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v19_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_id,
+        course_type_name,
+        teacher_name,
+        duration,
+        student_billing_method,
+        final_price,
+        teacher_billing_method,
+        teacher_rate,
+        teacher_pay_amount
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+
+    e = cursor.fetchone()
+
+    if not e:
+        conn.close()
+        return "<h1>Enrollment not found</h1>"
+
+    cursor.execute("""
+    SELECT room_name
+    FROM classrooms
+    ORDER BY room_name
+    """)
+
+    rooms = cursor.fetchall()
+
+    if request.method == "POST":
+        classroom = request.form.get("classroom")
+        weekday = request.form.get("weekday")
+        lesson_time = request.form.get("lesson_time")
+        schedule_type = request.form.get("schedule_type")
+        package_type = request.form.get("package_type")
+        start_date = request.form.get("start_date")
+
+        if schedule_type == "one_time":
+            number_of_lessons = 1
+        elif package_type == "10":
+            number_of_lessons = 10
+        elif package_type == "12":
+            number_of_lessons = 12
+        else:
+            number_of_lessons = 24
+
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+
+        generated_count = 0
+
+        for i in range(number_of_lessons):
+            if schedule_type == "weekly":
+                lesson_date_obj = start_date_obj + timedelta(days=7 * i)
+            else:
+                lesson_date_obj = start_date_obj
+
+            lesson_date = lesson_date_obj.strftime("%Y-%m-%d")
+
+            cursor.execute("""
+            INSERT INTO schedule (
+                enrollment_id,
+                student_name,
+                teacher,
+                classroom,
+                weekday,
+                lesson_time,
+                schedule_type,
+                package_type,
+                start_date,
+                lesson_date,
+
+                course_type_id,
+                course_type_name,
+                duration,
+                student_billing_method,
+                student_price,
+                teacher_billing_method,
+                teacher_pay,
+                student_charge_amount,
+                teacher_pay_amount,
+                final_price,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                e[0],
+                e[1],
+                e[4],
+                classroom,
+                weekday,
+                lesson_time,
+                schedule_type,
+                package_type,
+                start_date,
+                lesson_date,
+
+                e[2],
+                e[3],
+                e[5],
+                e[6],
+                e[7],
+                e[8],
+                e[9],
+                e[7],
+                e[10],
+                e[7],
+                "scheduled"
+            ))
+
+            generated_count += 1
+
+        conn.commit()
+        conn.close()
+
+        return f"""
+        <h1>Enrollment Schedule Generated!</h1>
+
+        <p>{generated_count} lesson(s) created.</p>
+        <p>Student: {e[1]}</p>
+        <p>Course: {e[3]}</p>
+        <p>Teacher: {e[4]}</p>
+        <p>Duration: {e[5]} mins</p>
+        <p>Student Price: ${e[7]}</p>
+        <p>Teacher Pay: ${e[10]}</p>
+
+        <p><a href="/enrollment/{enrollment_id}">Back to Enrollment</a></p>
+        <p><a href="/calendar">Calendar</a></p>
+        """
+
+    room_options = ""
+    for r in rooms:
+        room_options += f"<option value='{r[0]}'>{r[0]}</option>"
+
+    conn.close()
+
+    return f"""
+    <h1>Schedule Enrollment</h1>
+
+    <h2>{e[1]} - {e[3]}</h2>
+
+    <p>Teacher: {e[4]}</p>
+    <p>Duration: {e[5]} mins</p>
+    <p>Student Price: ${e[7]}</p>
+    <p>Teacher Pay: ${e[10]}</p>
+
+    <form method="POST">
+
+        Room:<br>
+        <select name="classroom">
+            {room_options}
+        </select><br><br>
+
+        Day of Week:<br>
+        <select name="weekday">
+            <option value="Monday">Monday</option>
+            <option value="Tuesday">Tuesday</option>
+            <option value="Wednesday">Wednesday</option>
+            <option value="Thursday">Thursday</option>
+            <option value="Friday">Friday</option>
+            <option value="Saturday">Saturday</option>
+            <option value="Sunday">Sunday</option>
+        </select><br><br>
+
+        Time:<br>
+        <input type="time" name="lesson_time" required><br><br>
+
+        Schedule Type:<br>
+        <select name="schedule_type">
+            <option value="one_time">One Time</option>
+            <option value="weekly">Weekly</option>
+        </select><br><br>
+
+        Package:<br>
+        <select name="package_type">
+            <option value="10">10 Lessons</option>
+            <option value="12">12 Lessons</option>
+            <option value="unlimited">Unlimited</option>
+        </select><br><br>
+
+        Start Date:<br>
+        <input type="date" name="start_date" required><br><br>
+
+        <button type="submit">Generate Schedule</button>
+
+    </form>
+
+    <p><a href="/enrollment/{enrollment_id}">Back to Enrollment</a></p>
+    """
+# =========================
+# V20-A Enrollment Renewals
+# =========================
+
+@app.route("/enrollment_renewals")
+def enrollment_renewals():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v19_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        teacher_name,
+        duration,
+        final_price,
+        lessons_left,
+        status
+    FROM enrollments
+    WHERE lessons_left <= 2
+    AND status = 'active'
+    ORDER BY lessons_left ASC, student_name ASC
+    """)
+
+    renewals = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for r in renewals:
+        rows += f"""
+        <tr>
+            <td><a href="/enrollment/{r[0]}">{r[0]}</a></td>
+            <td><a href="/student/{r[1]}">{r[1]}</a></td>
+            <td>{r[2]}</td>
+            <td>{r[3]}</td>
+            <td>{r[4]} mins</td>
+            <td>${r[5]}</td>
+            <td style="color:red;font-weight:bold;">{r[6]}</td>
+            <td>{r[7]}</td>
+            <td>
+                <a href="/add_enrollment_lessons/{r[0]}">Add Lessons</a>
+            </td>
+        </tr>
+        """
+
+    if rows == "":
+        rows = """
+        <tr>
+            <td colspan="9">No enrollments need renewal.</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Enrollment Renewals</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+
+            th {{
+                background: #f0f0ff;
+            }}
+
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Enrollment Renewals</h1>
+            <p>Only active enrollments with 2 or fewer lessons left.</p>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/enrollments">Enrollments</a>
+            <a class="button" href="/add_enrollment">Add Enrollment</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Student</th>
+                    <th>Course</th>
+                    <th>Teacher</th>
+                    <th>Duration</th>
+                    <th>Price</th>
+                    <th>Lessons Left</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+# =========================
+# V21 Package / Payment Engine
+# Enrollment-Based Payment
+# =========================
+
+def ensure_v21_schema():
+    ensure_v19_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("payments", "enrollment_id", "enrollment_id INTEGER")
+    add_column_if_missing("payments", "course_type_name", "course_type_name TEXT")
+    add_column_if_missing("payments", "teacher_name", "teacher_name TEXT")
+    add_column_if_missing("payments", "package_name", "package_name TEXT")
+    add_column_if_missing("payments", "notes", "notes TEXT")
+    add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
+
+    conn.commit()
+    conn.close()
+
+
+@app.route("/v21_setup")
+def v21_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v21_schema()
+
+    return """
+    <h1>V21 Package / Payment Engine Setup Complete</h1>
+    <p>Enrollment-based payment fields are ready.</p>
+    <p><a href="/enrollment_payments">Enrollment Payments</a></p>
+    <p><a href="/enrollments">Enrollments</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/enrollment_payments")
+def enrollment_payments():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v21_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        p.id,
+        p.student_name,
+        p.course_type_name,
+        p.teacher_name,
+        p.amount,
+        p.lessons_added,
+        p.payment_method,
+        p.payment_date,
+        p.package_name,
+        p.enrollment_id,
+        COALESCE(p.visible_to_parent, 1)
+    FROM payments p
+    WHERE p.enrollment_id IS NOT NULL
+    ORDER BY p.id DESC
+    LIMIT 100
+    """)
+
+    payments = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for p in payments:
+        visible_label = "Visible" if p[10] == 1 else "Hidden"
+        toggle_label = "Hide" if p[10] == 1 else "Show"
+        rows += f"""
+        <tr>
+            <td>{p[0]}</td>
+            <td>{p[1]}</td>
+            <td>{p[2]}</td>
+            <td>{p[3]}</td>
+            <td>${p[4]}</td>
+            <td>{p[5]}</td>
+            <td>{p[6]}</td>
+            <td>{p[7]}</td>
+            <td>{p[8]}</td>
+            <td><a href="/enrollment/{p[9]}">Enrollment</a></td>
+            <td>{visible_label}</td>
+            <td>
+                <form method="POST" action="/toggle_parent_payment_visibility/{p[0]}" style="margin:0;">
+                    <button type="submit">{toggle_label}</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    if rows == "":
+        rows = """
+        <tr>
+            <td colspan="12">No enrollment payments yet.</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Enrollment Payments</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Enrollment Payments</h1>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/enrollments">Enrollments</a>
+            <a class="button" href="/enrollment_renewals">Enrollment Renewals</a>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Student</th>
+                    <th>Course</th>
+                    <th>Teacher</th>
+                    <th>Amount</th>
+                    <th>Lessons Added</th>
+                    <th>Method</th>
+                    <th>Date</th>
+                    <th>Package</th>
+                    <th>Link</th>
+                    <th>Parent App</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/enrollment_payment/<int:enrollment_id>", methods=["GET", "POST"])
+def enrollment_payment(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v21_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        teacher_name,
+        duration,
+        final_price,
+        lessons_left
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+
+    e = cursor.fetchone()
+
+    if not e:
+        conn.close()
+        return "<h1>Enrollment not found</h1>"
+
+    if request.method == "POST":
+        amount = float(request.form.get("amount") or 0)
+        lessons_added = float(request.form.get("lessons_added") or 0)
+        payment_method = request.form.get("payment_method")
+        payment_date = request.form.get("payment_date")
+        package_name = request.form.get("package_name")
+        notes = request.form.get("notes")
+        visible_to_parent = 1 if request.form.get("visible_to_parent") == "1" else 0
+
+        cursor.execute("""
+        INSERT INTO payments (
+            student_name,
+            amount,
+            lessons_added,
+            payment_method,
+            payment_date,
+            enrollment_id,
+            course_type_name,
+            teacher_name,
+            package_name,
+            notes,
+            visible_to_parent
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            e[1],
+            amount,
+            lessons_added,
+            payment_method,
+            payment_date,
+            enrollment_id,
+            e[2],
+            e[3],
+            package_name,
+            notes,
+            visible_to_parent
+        ))
+
+        payment_id = cursor.lastrowid
+
+        cursor.execute("""
+        UPDATE enrollments
+        SET lessons_left = lessons_left + ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            lessons_added,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            enrollment_id
+        ))
+
+        cursor.execute("""
+        INSERT INTO student_ledger (
+            student_name,
+            entry_type,
+            amount,
+            description,
+            related_invoice_id,
+            related_payment_id,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            e[1],
+            "enrollment_payment",
+            amount,
+            f"Payment for {e[2]} / Enrollment #{enrollment_id} / +{lessons_added} lessons",
+            None,
+            payment_id,
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect(f"/enrollment/{enrollment_id}")
+
+    today = date.today().strftime("%Y-%m-%d")
+    suggested_amount = round((e[5] or 0) * 10, 2)
+
+    conn.close()
+
+    return f"""
+    <h1>Enrollment Payment</h1>
+
+    <h2>{e[1]} - {e[2]}</h2>
+
+    <p>Teacher: {e[3]}</p>
+    <p>Duration: {e[4]} mins</p>
+    <p>Price per lesson: ${e[5]}</p>
+    <p>Current Lessons Left: {e[6]}</p>
+
+    <form method="POST">
+
+        Package Name:<br>
+        <input name="package_name" value="10 Lesson Package"><br><br>
+
+        Amount:<br>
+        <input type="number" step="0.01" name="amount" value="{suggested_amount}"><br><br>
+
+        Lessons Added:<br>
+        <input type="number" step="0.5" name="lessons_added" value="10"><br><br>
+
+        Payment Method:<br>
+        <select name="payment_method">
+            <option value="Zelle">Zelle</option>
+            <option value="Cash">Cash</option>
+            <option value="Check">Check</option>
+            <option value="Credit Card">Credit Card</option>
+            <option value="Venmo">Venmo</option>
+            <option value="Other">Other</option>
+        </select><br><br>
+
+        Payment Date:<br>
+        <input type="date" name="payment_date" value="{today}"><br><br>
+
+        Show in Parent App?<br>
+        <select name="visible_to_parent">
+            <option value="1">Yes - parent can see this payment</option>
+            <option value="0">No - internal owner record only</option>
+        </select><br><br>
+
+        Notes:<br>
+        <textarea name="notes" rows="4" cols="50"></textarea><br><br>
+
+        <button type="submit">Record Payment + Add Lessons</button>
+
+    </form>
+
+    <p><a href="/enrollment/{enrollment_id}">Back to Enrollment</a></p>
+    <p><a href="/enrollments">Back to Enrollments</a></p>
+    """
+
+
+@app.route("/toggle_parent_payment_visibility/<int:payment_id>", methods=["POST"])
+def toggle_parent_payment_visibility(payment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v21_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT enrollment_id, COALESCE(visible_to_parent, 1)
+    FROM payments
+    WHERE id = ?
+    """, (payment_id,))
+    payment = cursor.fetchone()
+
+    if not payment:
+        conn.close()
+        return "<h1>Payment not found</h1>"
+
+    new_visible = 0 if payment[1] == 1 else 1
+    cursor.execute("""
+    UPDATE payments
+    SET visible_to_parent = ?
+    WHERE id = ?
+    """, (new_visible, payment_id))
+
+    conn.commit()
+    conn.close()
+
+    if payment[0]:
+        return redirect(f"/enrollment/{payment[0]}")
+    return redirect("/enrollment_payments")
+
+
+@app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
+def create_enrollment_invoice_route(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        teacher_name,
+        final_price,
+        package_amount,
+        package_lessons,
+        auto_renew_lessons
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    enrollment = cursor.fetchone()
+
+    if not enrollment:
+        conn.close()
+        return "<h1>Enrollment not found</h1>"
+
+    suggested_lessons = enrollment[6] or enrollment[7] or 10
+    suggested_amount = enrollment[5]
+    if suggested_amount is None or suggested_amount == 0:
+        suggested_amount = round((enrollment[4] or 0) * suggested_lessons, 2)
+
+    if request.method == "GET":
+        conn.close()
+        default_message = (
+            f"Hi, {enrollment[1]}'s tuition invoice is ready. "
+            f"Amount due: ${suggested_amount}. Please open the invoice in the H-Music parent app when convenient."
+        )
+        return f"""
+        <html>
+        <head>
+            <title>Send Tuition Invoice</title>
+            <style>
+                body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:40px; color:#111827; }}
+                .card {{ max-width:760px; margin:0 auto; background:white; border-radius:14px; padding:28px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+                h1 {{ margin-top:0; }}
+                .summary {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:18px 0; }}
+                .box {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:14px; }}
+                .label {{ color:#6b7280; font-size:13px; }}
+                .value {{ font-size:20px; font-weight:900; margin-top:4px; }}
+                textarea {{ width:100%; min-height:170px; padding:12px 14px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; box-sizing:border-box; }}
+                button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-top:14px; margin-right:8px; }}
+                .secondary {{ background:#111827 !important; }}
+                @media (max-width:760px) {{ body {{ padding:18px; }} .summary {{ grid-template-columns:1fr; }} }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>Send Tuition Invoice</h1>
+                <div class="summary">
+                    <div class="box"><div class="label">Student</div><div class="value">{enrollment[1]}</div></div>
+                    <div class="box"><div class="label">Course</div><div class="value">{enrollment[2]}</div></div>
+                    <div class="box"><div class="label">Teacher</div><div class="value">{enrollment[3]}</div></div>
+                    <div class="box"><div class="label">Amount</div><div class="value">${suggested_amount}</div></div>
+                </div>
+
+                <form method="POST">
+                    Message to parent:<br>
+                    <textarea name="message_body" required>{default_message}</textarea>
+                    <br>
+                    <button type="submit">Send Invoice + Message</button>
+                    <a class="button secondary" href="/enrollment/{enrollment_id}">Back</a>
+                </form>
+            </div>
+        </body>
+        </html>
+        """
+
+    invoice_id = create_enrollment_invoice(
+        cursor,
+        enrollment_id,
+        "initial_tuition",
+        "Tuition invoice manually generated by owner."
+    )
+
+    if not invoice_id:
+        conn.close()
+        return "<h1>Enrollment not found</h1>"
+
+    cursor.execute("""
+    SELECT student_name, amount
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
+
+    conn.commit()
+    conn.close()
+
+    if invoice:
+        message_body = (request.form.get("message_body") or "").strip()
+        if not message_body:
+            message_body = f"Tuition invoice #{invoice_id} for {invoice[0]} is ready. Amount due: ${invoice[1]}."
+        create_invoice_message_event(
+            invoice_id,
+            "sent",
+            message_body,
+            parent_id=parent_id,
+            student_name=invoice[0],
+            amount=invoice[1]
+        )
+
+    return redirect(f"/enrollment/{enrollment_id}")
+
+
+def ensure_v211_schema():
+    ensure_v21_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("enrollments", "start_date", "start_date TEXT")
+    add_column_if_missing("enrollments", "package_amount", "package_amount REAL DEFAULT 0")
+    add_column_if_missing("enrollments", "package_lessons", "package_lessons REAL DEFAULT 0")
+
+    conn.commit()
+    conn.close()
+
+
+def ensure_v321_schema():
+    ensure_v211_schema()
+    ensure_v29_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("enrollments", "auto_renew_enabled", "auto_renew_enabled INTEGER DEFAULT 0")
+    add_column_if_missing("enrollments", "auto_renew_lessons", "auto_renew_lessons REAL DEFAULT 10")
+    add_column_if_missing("enrollments", "renewal_reminder_sent_at", "renewal_reminder_sent_at TEXT")
+    add_column_if_missing("enrollments", "auto_renewed_at", "auto_renewed_at TEXT")
+    add_column_if_missing("enrollments", "first_lesson_autopay_reminder_sent_at", "first_lesson_autopay_reminder_sent_at TEXT")
+    add_column_if_missing("enrollments", "autopay_pending_invoice_id", "autopay_pending_invoice_id INTEGER")
+    add_column_if_missing("enrollments", "autopay_charge_due_date", "autopay_charge_due_date TEXT")
+    add_column_if_missing("enrollments", "autopay_charge_status", "autopay_charge_status TEXT")
+
+    add_column_if_missing("invoices", "enrollment_id", "enrollment_id INTEGER")
+    add_column_if_missing("invoices", "due_date", "due_date TEXT")
+    add_column_if_missing("invoices", "notes", "notes TEXT")
+    add_column_if_missing("invoices", "stripe_checkout_session_id", "stripe_checkout_session_id TEXT")
+    add_column_if_missing("invoices", "stripe_payment_intent_id", "stripe_payment_intent_id TEXT")
+    add_column_if_missing("invoices", "autopay_status", "autopay_status TEXT")
+    add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
+
+    conn.commit()
+    conn.close()
+
+
+def get_primary_parent_for_student(cursor, student_name):
+    cursor.execute("""
+    SELECT parent_id
+    FROM parent_students
+    WHERE student_name = ?
+    AND active = 1
+    ORDER BY id ASC
+    LIMIT 1
+    """, (student_name,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes=""):
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        course_type_name,
+        final_price,
+        package_amount,
+        package_lessons,
+        auto_renew_lessons
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    e = cursor.fetchone()
+
+    if not e:
+        return None
+
+    lessons = e[5] or e[6] or 10
+    amount = e[4]
+    if amount is None or amount == 0:
+        amount = round((e[3] or 0) * lessons, 2)
+
+    cursor.execute("""
+    SELECT id
+    FROM invoices
+    WHERE enrollment_id = ?
+    AND invoice_type = ?
+    AND status != 'paid'
+    ORDER BY id DESC
+    LIMIT 1
+    """, (enrollment_id, invoice_type))
+    existing = cursor.fetchone()
+    if existing:
+        return existing[0]
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    due_date = date.today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    INSERT INTO invoices (
+        student_name,
+        schedule_id,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        enrollment_id,
+        due_date,
+        notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        e[1],
+        None,
+        lessons,
+        amount,
+        "unpaid",
+        invoice_type,
+        now,
+        enrollment_id,
+        due_date,
+        notes
+    ))
+
+    return cursor.lastrowid
+
+
+def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title):
+    if not parent_id:
+        return
+
+    create_notification(
+        "parent",
+        str(parent_id),
+        title,
+        f"{student_name} has a tuition invoice due: ${amount}.",
+        f"/parent_invoice/{invoice_id}"
+    )
+
+
+def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
+    cursor.execute("""
+    SELECT
+        id,
+        lessons_left,
+        package_amount,
+        package_lessons,
+        auto_renew_enabled,
+        auto_renew_lessons,
+        renewal_reminder_sent_at,
+        auto_renewed_at,
+        first_lesson_autopay_reminder_sent_at
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    e = cursor.fetchone()
+
+    if not e:
+        return []
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lessons_left = e[1] or 0
+    package_lessons = e[3] or e[5] or 10
+    auto_renew_enabled = e[4] == 1
+    events = []
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+
+    if auto_renew_enabled and package_lessons and lessons_left == package_lessons - 1 and not e[8]:
+        cursor.execute("""
+        UPDATE enrollments
+        SET first_lesson_autopay_reminder_sent_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (now, now, enrollment_id))
+        events.append({
+            "parent_id": parent_id,
+            "title": "AutoPay payment reminder",
+            "body": f"{student_name}'s package is set to AutoPay. H-Music will remind you again on the second-to-last lesson before the next package renews.",
+            "link": "/parent_billing"
+        })
+
+    if auto_renew_enabled and lessons_left <= 2 and not e[6]:
+        cursor.execute("""
+        UPDATE enrollments
+        SET renewal_reminder_sent_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (now, now, enrollment_id))
+        events.append({
+            "parent_id": parent_id,
+            "title": "AutoPay payment reminder",
+            "body": f"{student_name} has {lessons_left} lesson(s) left. This package is set to AutoPay, and the next package will be prepared soon.",
+            "link": "/parent_billing" if auto_renew_enabled else "/parent_dashboard"
+        })
+
+    if lessons_left <= 0 and auto_renew_enabled:
+        invoice_id = create_enrollment_invoice(
+            cursor,
+            enrollment_id,
+            "auto_renewal",
+            "Auto-renewal invoice generated after package completion. Stripe AutoPay will be triggered on the next package first lesson date."
+        )
+
+        if invoice_id:
+            cursor.execute("""
+            SELECT lesson_date
+            FROM schedule
+            WHERE enrollment_id = ?
+            AND student_name = ?
+            AND lesson_date >= ?
+            AND COALESCE(status, 'scheduled') = 'scheduled'
+            ORDER BY lesson_date, lesson_time
+            LIMIT 1
+            """, (
+                enrollment_id,
+                student_name,
+                date.today().strftime("%Y-%m-%d")
+            ))
+            next_lesson = cursor.fetchone()
+            autopay_due_date = next_lesson[0] if next_lesson else date.today().strftime("%Y-%m-%d")
+
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = lessons_left + ?,
+                auto_renewed_at = ?,
+                first_lesson_autopay_reminder_sent_at = NULL,
+                renewal_reminder_sent_at = NULL,
+                autopay_pending_invoice_id = ?,
+                autopay_charge_due_date = ?,
+                autopay_charge_status = 'pending',
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                e[5] or e[3] or 10,
+                now,
+                invoice_id,
+                autopay_due_date,
+                now,
+                enrollment_id
+            ))
+
+            cursor.execute("""
+            SELECT amount
+            FROM invoices
+            WHERE id = ?
+            """, (invoice_id,))
+            invoice_amount = cursor.fetchone()[0]
+
+            events.append({
+                "parent_id": parent_id,
+                "title": "AutoPay payment scheduled",
+                "body": f"{student_name}'s next package invoice for ${invoice_amount} is ready. AutoPay is scheduled for {autopay_due_date}, the next package first lesson date.",
+                "link": f"/parent_invoice/{invoice_id}"
+            })
+
+    return events
+
+    # =========================
+# V25 Business Rules Engine
+# Lesson Status Rules
+# =========================
+
+def ensure_v25_schema():
+    ensure_v21_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lesson_status_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        status_code TEXT UNIQUE,
+        status_label TEXT,
+        student_charge_units REAL,
+        teacher_pay_units REAL,
+        counts_as_revenue INTEGER DEFAULT 1,
+        counts_as_payroll INTEGER DEFAULT 1,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    default_rules = [
+        ("present", "Present", 1.0, 1.0, 1, 1),
+        ("no_show", "No Show", 1.0, 1.0, 1, 1),
+        ("cancel_3h", "Cancel < 3h", 1.0, 1.0, 1, 1),
+        ("cancel_12h", "Cancel < 12h", 0.75, 0.75, 1, 1),
+        ("cancel_24h", "Cancel < 24h", 0.5, 0.5, 1, 1),
+        ("excused_24h", "Cancel > 24h", 0.0, 0.0, 0, 0),
+        ("teacher_cancelled", "Teacher Cancel", 0.0, 0.0, 0, 0),
+        ("makeup", "Makeup", 0.0, 0.0, 0, 0),
+    ]
+
+    for rule in default_rules:
+        cursor.execute("""
+        INSERT OR IGNORE INTO lesson_status_rules (
+            status_code,
+            status_label,
+            student_charge_units,
+            teacher_pay_units,
+            counts_as_revenue,
+            counts_as_payroll,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            rule[0],
+            rule[1],
+            rule[2],
+            rule[3],
+            rule[4],
+            rule[5],
+            1,
+            now,
+            now
+        ))
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+    add_column_if_missing("schedule", "student_charge_units", "student_charge_units REAL DEFAULT 0")
+    add_column_if_missing("schedule", "teacher_pay_units", "teacher_pay_units REAL DEFAULT 0")
+    add_column_if_missing("schedule", "revenue_amount", "revenue_amount REAL DEFAULT 0")
+    add_column_if_missing("schedule", "payroll_amount", "payroll_amount REAL DEFAULT 0")
+    add_column_if_missing("schedule", "profit_amount", "profit_amount REAL DEFAULT 0")
+
+    conn.commit()
+    conn.close()
+
+
+def get_lesson_status_rule(status_code):
+    ensure_v25_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        status_code,
+        status_label,
+        student_charge_units,
+        teacher_pay_units,
+        counts_as_revenue,
+        counts_as_payroll
+    FROM lesson_status_rules
+    WHERE status_code = ?
+    AND active = 1
+    """, (status_code,))
+
+    rule = cursor.fetchone()
+    conn.close()
+
+    if not rule:
+        return {
+            "status_code": status_code,
+            "status_label": status_code,
+            "student_charge_units": 0,
+            "teacher_pay_units": 0,
+            "counts_as_revenue": 0,
+            "counts_as_payroll": 0
+        }
+
+    return {
+        "status_code": rule[0],
+        "status_label": rule[1],
+        "student_charge_units": rule[2],
+        "teacher_pay_units": rule[3],
+        "counts_as_revenue": rule[4],
+        "counts_as_payroll": rule[5]
+    }
+
+
+@app.route("/v25_setup")
+def v25_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v25_schema()
+
+    return """
+    <h1>V25 Business Rules Engine Setup Complete</h1>
+    <p>Lesson Status Rules are ready.</p>
+    <p><a href="/lesson_status_rules">Lesson Status Rules</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/lesson_status_rules")
+def lesson_status_rules():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v25_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        status_code,
+        status_label,
+        student_charge_units,
+        teacher_pay_units,
+        counts_as_revenue,
+        counts_as_payroll,
+        active
+    FROM lesson_status_rules
+    ORDER BY id
+    """)
+
+    rules = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for r in rules:
+        revenue = "Yes" if r[5] == 1 else "No"
+        payroll = "Yes" if r[6] == 1 else "No"
+        active = "Active" if r[7] == 1 else "Inactive"
+
+        rows += f"""
+        <tr>
+            <td>{r[1]}</td>
+            <td>{r[2]}</td>
+            <td>{r[3]}</td>
+            <td>{r[4]}</td>
+            <td>{revenue}</td>
+            <td>{payroll}</td>
+            <td>{active}</td>
+            <td><a href="/edit_lesson_status_rule/{r[0]}">Edit</a></td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Lesson Status Rules</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Lesson Status Rules</h1>
+            <p>Owner can control student charge units and teacher pay units for each lesson status.</p>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/enrollments">Enrollments</a>
+            <a class="button" href="/teacher_dashboard">Teacher Dashboard</a>
+
+            <table>
+                <tr>
+                    <th>Status Code</th>
+                    <th>Status Label</th>
+                    <th>Student Charge Units</th>
+                    <th>Teacher Pay Units</th>
+                    <th>Counts Revenue</th>
+                    <th>Counts Payroll</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/edit_lesson_status_rule/<int:rule_id>", methods=["GET", "POST"])
+def edit_lesson_status_rule(rule_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v25_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        status_label = request.form.get("status_label")
+        student_charge_units = request.form.get("student_charge_units")
+        teacher_pay_units = request.form.get("teacher_pay_units")
+        counts_as_revenue = request.form.get("counts_as_revenue")
+        counts_as_payroll = request.form.get("counts_as_payroll")
+        active = request.form.get("active")
+
+        cursor.execute("""
+        UPDATE lesson_status_rules
+        SET status_label = ?,
+            student_charge_units = ?,
+            teacher_pay_units = ?,
+            counts_as_revenue = ?,
+            counts_as_payroll = ?,
+            active = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            status_label,
+            float(student_charge_units or 0),
+            float(teacher_pay_units or 0),
+            int(counts_as_revenue or 0),
+            int(counts_as_payroll or 0),
+            int(active or 1),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            rule_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/lesson_status_rules")
+
+    cursor.execute("""
+    SELECT
+        id,
+        status_code,
+        status_label,
+        student_charge_units,
+        teacher_pay_units,
+        counts_as_revenue,
+        counts_as_payroll,
+        active
+    FROM lesson_status_rules
+    WHERE id = ?
+    """, (rule_id,))
+
+    r = cursor.fetchone()
+    conn.close()
+
+    if not r:
+        return "<h1>Rule not found</h1>"
+
+    def selected(value, current):
+        return "selected" if value == current else ""
+
+    return f"""
+    <h1>Edit Lesson Status Rule</h1>
+
+    <p>Status Code: <b>{r[1]}</b></p>
+
+    <form method="POST">
+
+        Status Label:<br>
+        <input name="status_label" value="{r[2]}"><br><br>
+
+        Student Charge Units:<br>
+        <input type="number" step="0.25" name="student_charge_units" value="{r[3]}"><br><br>
+
+        Teacher Pay Units:<br>
+        <input type="number" step="0.25" name="teacher_pay_units" value="{r[4]}"><br><br>
+
+        Counts as Revenue?<br>
+        <select name="counts_as_revenue">
+            <option value="1" {selected(1, r[5])}>Yes</option>
+            <option value="0" {selected(0, r[5])}>No</option>
+        </select><br><br>
+
+        Counts as Payroll?<br>
+        <select name="counts_as_payroll">
+            <option value="1" {selected(1, r[6])}>Yes</option>
+            <option value="0" {selected(0, r[6])}>No</option>
+        </select><br><br>
+
+        Active?<br>
+        <select name="active">
+            <option value="1" {selected(1, r[7])}>Active</option>
+            <option value="0" {selected(0, r[7])}>Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Update Rule</button>
+
+    </form>
+
+    <p><a href="/lesson_status_rules">Back to Rules</a></p>
+    """
+# =========================
+# V25.2 Owner Business Rules Settings
+# =========================
+
+def ensure_v252_schema():
+    ensure_v25_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS business_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule_name TEXT UNIQUE,
+        rule_label TEXT,
+        student_charge_percent REAL DEFAULT 100,
+        teacher_pay_percent REAL DEFAULT 100,
+        deduct_lesson INTEGER DEFAULT 1,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    default_rules = [
+        ("present", "Present", 100, 100, 1),
+        ("no_show", "No Show", 100, 100, 1),
+        ("cancel_3h", "Cancel < 3h", 100, 100, 1),
+        ("cancel_12h", "Cancel < 12h", 100, 75, 1),
+        ("cancel_24h", "Cancel < 24h", 50, 50, 0),
+        ("excused_24h", "Cancel > 24h", 0, 0, 0),
+        ("teacher_cancelled", "Teacher Cancel", 0, 0, 0),
+        ("makeup", "Makeup", 0, 100, 0),
+    ]
+
+    for r in default_rules:
+        cursor.execute("""
+        INSERT OR IGNORE INTO business_rules (
+            rule_name,
+            rule_label,
+            student_charge_percent,
+            teacher_pay_percent,
+            deduct_lesson,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            1,
+            now,
+            now
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_business_rule(status):
+    ensure_v252_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        rule_name,
+        rule_label,
+        student_charge_percent,
+        teacher_pay_percent,
+        deduct_lesson
+    FROM business_rules
+    WHERE rule_name = ?
+    AND active = 1
+    """, (status,))
+
+    r = cursor.fetchone()
+    conn.close()
+
+    if not r:
+        return {
+            "rule_name": status,
+            "rule_label": status,
+            "student_charge_percent": 0,
+            "teacher_pay_percent": 0,
+            "deduct_lesson": 0
+        }
+
+    return {
+        "rule_name": r[0],
+        "rule_label": r[1],
+        "student_charge_percent": r[2],
+        "teacher_pay_percent": r[3],
+        "deduct_lesson": r[4]
+    }
+
+
+@app.route("/v252_setup")
+def v252_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v252_schema()
+
+    return """
+    <h1>V25.2 Setup Complete</h1>
+    <p>Owner Business Rules are ready.</p>
+    <p><a href="/business_rules">Business Rules</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/business_rules")
+def business_rules():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v252_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        id,
+        rule_name,
+        rule_label,
+        student_charge_percent,
+        teacher_pay_percent,
+        deduct_lesson,
+        active
+    FROM business_rules
+    ORDER BY id
+    """)
+
+    rules = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for r in rules:
+        deduct = "Yes" if r[5] == 1 else "No"
+        active = "Active" if r[6] == 1 else "Inactive"
+
+        rows += f"""
+        <tr>
+            <td>{r[1]}</td>
+            <td>{r[2]}</td>
+            <td>{r[3]}%</td>
+            <td>{r[4]}%</td>
+            <td>{deduct}</td>
+            <td>{active}</td>
+            <td><a href="/edit_business_rule/{r[0]}">Edit</a></td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Business Rules</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Business Rules</h1>
+            <p>Owner can edit student charge, teacher pay, and lesson deduction rules.</p>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/lesson_status_rules">Lesson Status Rules</a>
+            <a class="button" href="/teacher_dashboard">Teacher Dashboard</a>
+
+            <table>
+                <tr>
+                    <th>Rule Name</th>
+                    <th>Label</th>
+                    <th>Student Charge</th>
+                    <th>Teacher Pay</th>
+                    <th>Deduct Lesson?</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/edit_business_rule/<int:rule_id>", methods=["GET", "POST"])
+def edit_business_rule(rule_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v252_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        rule_label = request.form.get("rule_label")
+        student_charge_percent = request.form.get("student_charge_percent")
+        teacher_pay_percent = request.form.get("teacher_pay_percent")
+        deduct_lesson = request.form.get("deduct_lesson")
+        active = request.form.get("active")
+
+        cursor.execute("""
+        UPDATE business_rules
+        SET rule_label = ?,
+            student_charge_percent = ?,
+            teacher_pay_percent = ?,
+            deduct_lesson = ?,
+            active = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            rule_label,
+            float(student_charge_percent or 0),
+            float(teacher_pay_percent or 0),
+            int(deduct_lesson or 0),
+            int(active or 1),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            rule_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/business_rules")
+
+    cursor.execute("""
+    SELECT
+        id,
+        rule_name,
+        rule_label,
+        student_charge_percent,
+        teacher_pay_percent,
+        deduct_lesson,
+        active
+    FROM business_rules
+    WHERE id = ?
+    """, (rule_id,))
+
+    r = cursor.fetchone()
+    conn.close()
+
+    if not r:
+        return "<h1>Business Rule not found</h1>"
+
+    def selected(value, current):
+        return "selected" if value == current else ""
+
+    return f"""
+    <h1>Edit Business Rule</h1>
+
+    <p><b>Rule:</b> {r[1]}</p>
+
+    <form method="POST">
+
+        Label:<br>
+        <input name="rule_label" value="{r[2]}"><br><br>
+
+        Student Charge Percent:<br>
+        <input type="number" step="1" name="student_charge_percent" value="{r[3]}"><br><br>
+
+        Teacher Pay Percent:<br>
+        <input type="number" step="1" name="teacher_pay_percent" value="{r[4]}"><br><br>
+
+        Deduct Lesson?<br>
+        <select name="deduct_lesson">
+            <option value="1" {selected(1, r[5])}>Yes</option>
+            <option value="0" {selected(0, r[5])}>No</option>
+        </select><br><br>
+
+        Active?<br>
+        <select name="active">
+            <option value="1" {selected(1, r[6])}>Active</option>
+            <option value="0" {selected(0, r[6])}>Inactive</option>
+        </select><br><br>
+
+        <button type="submit">Update Business Rule</button>
+
+    </form>
+
+    <p><a href="/business_rules">Back to Business Rules</a></p>
+    """
+# =========================
+# V26 Payroll Engine Final
+# =========================
+
+def ensure_v26_schema():
+    ensure_v252_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS payroll_periods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month TEXT UNIQUE,
+        locked INTEGER DEFAULT 0,
+        locked_at TEXT,
+        locked_by TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def is_payroll_locked(month):
+    ensure_v26_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT locked
+    FROM payroll_periods
+    WHERE month = ?
+    """, (month,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return False
+
+    return row[0] == 1
+
+
+@app.route("/v26_setup")
+def v26_setup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v26_schema()
+
+    return """
+    <h1>V26 Payroll Engine Setup Complete</h1>
+    <p>Payroll periods are ready.</p>
+    <p><a href="/payroll">Go to Payroll</a></p>
+    <p><a href="/">Back Home</a></p>
+    """
+
+
+@app.route("/payroll")
+def payroll():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v26_schema()
+
+    month = request.args.get("month") or date.today().strftime("%Y-%m")
+    locked = is_payroll_locked(month)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        teacher,
+        COUNT(id),
+        COALESCE(SUM(teacher_pay_units), 0),
+        COALESCE(SUM(revenue_amount), 0),
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(profit_amount), 0)
+    FROM schedule
+    WHERE substr(lesson_date, 1, 7) = ?
+    GROUP BY teacher
+    ORDER BY teacher
+    """, (month,))
+
+    rows_data = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        COALESCE(SUM(revenue_amount), 0),
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(profit_amount), 0),
+        COALESCE(SUM(teacher_pay_units), 0),
+        COUNT(id)
+    FROM schedule
+    WHERE substr(lesson_date, 1, 7) = ?
+    """, (month,))
+
+    totals = cursor.fetchone()
+    conn.close()
+
+    total_revenue = totals[0] or 0
+    total_payroll = totals[1] or 0
+    total_profit = totals[2] or 0
+    total_units = totals[3] or 0
+    total_lessons = totals[4] or 0
+
+    rows = ""
+
+    for r in rows_data:
+        teacher = r[0]
+        lesson_count = r[1] or 0
+        paid_units = r[2] or 0
+        revenue = r[3] or 0
+        payroll_amount = r[4] or 0
+        profit = r[5] or 0
+
+        rows += f"""
+        <tr>
+            <td><a href="/payroll/{teacher}?month={month}">{teacher}</a></td>
+            <td>{lesson_count}</td>
+            <td>{paid_units}</td>
+            <td>${revenue}</td>
+            <td>${payroll_amount}</td>
+            <td>${profit}</td>
+        </tr>
+        """
+
+    if rows == "":
+        rows = "<tr><td colspan='6'>No payroll records for this month.</td></tr>"
+
+    lock_button = ""
+    if locked:
+        lock_button = "<span class='locked'>Payroll Locked</span>"
+    else:
+        lock_button = f"""
+        <form method="POST" action="/lock_payroll/{month}" style="display:inline;">
+            <button type="submit">Lock Payroll</button>
+        </form>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Payroll</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 14px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(5, 1fr);
+                gap: 14px;
+                margin: 22px 0;
+            }}
+            .card {{
+                background: #f8f8ff;
+                padding: 16px;
+                border-radius: 12px;
+            }}
+            .label {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+            .value {{
+                font-size: 22px;
+                font-weight: bold;
+                margin-top: 6px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button, button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                border: none;
+                margin-right: 8px;
+                cursor: pointer;
+            }}
+            .locked {{
+                display: inline-block;
+                background: #16a34a;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Teacher Payroll</h1>
+
+            <form method="GET" action="/payroll">
+                Month:
+                <input type="month" name="month" value="{month}">
+                <button type="submit">View</button>
+            </form>
+
+            <br>
+
+            <a class="button" href="/">Home</a>
+            <a class="button" href="/payroll_audit?month={month}">Payroll Audit</a>
+            <a class="button" href="/export_payroll_csv?month={month}">Export CSV</a>
+            {lock_button}
+
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Lesson Records</div>
+                    <div class="value">{total_lessons}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Paid Units</div>
+                    <div class="value">{total_units}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Revenue</div>
+                    <div class="value">${total_revenue}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Payroll</div>
+                    <div class="value">${total_payroll}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Profit</div>
+                    <div class="value">${total_profit}</div>
+                </div>
+            </div>
+
+            <table>
+                <tr>
+                    <th>Teacher</th>
+                    <th>Lesson Records</th>
+                    <th>Paid Units</th>
+                    <th>Revenue</th>
+                    <th>Payroll</th>
+                    <th>Profit</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/payroll/<teacher_name>")
+def payroll_teacher_detail(teacher_name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v26_schema()
+
+    month = request.args.get("month") or date.today().strftime("%Y-%m")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        COALESCE(SUM(revenue_amount), 0),
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(profit_amount), 0),
+        COALESCE(SUM(teacher_pay_units), 0),
+        COUNT(id)
+    FROM schedule
+    WHERE teacher = ?
+    AND substr(lesson_date, 1, 7) = ?
+    """, (teacher_name, month))
+
+    totals = cursor.fetchone()
+
+    total_revenue = totals[0] or 0
+    total_payroll = totals[1] or 0
+    total_profit = totals[2] or 0
+    total_units = totals[3] or 0
+    total_lessons = totals[4] or 0
+
+    cursor.execute("""
+    SELECT
+        lesson_date,
+        lesson_time,
+        student_name,
+        status,
+        teacher_pay_units,
+        revenue_amount,
+        payroll_amount,
+        profit_amount
+    FROM schedule
+    WHERE teacher = ?
+    AND substr(lesson_date, 1, 7) = ?
+    ORDER BY lesson_date, lesson_time
+    """, (teacher_name, month))
+
+    lessons = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for l in lessons:
+        rows += f"""
+        <tr>
+            <td>{l[0]}</td>
+            <td>{l[1]}</td>
+            <td>{l[2]}</td>
+            <td>{l[3]}</td>
+            <td>{l[4] or 0}</td>
+            <td>${l[5] or 0}</td>
+            <td>${l[6] or 0}</td>
+            <td>${l[7] or 0}</td>
+        </tr>
+        """
+
+    if rows == "":
+        rows = "<tr><td colspan='8'>No payroll records.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>{teacher_name} Payroll Detail</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 14px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(5, 1fr);
+                gap: 14px;
+                margin: 22px 0;
+            }}
+            .card {{
+                background: #f8f8ff;
+                padding: 16px;
+                border-radius: 12px;
+            }}
+            .label {{
+                color: #6b7280;
+                font-size: 13px;
+            }}
+            .value {{
+                font-size: 22px;
+                font-weight: bold;
+                margin-top: 6px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>{teacher_name} Payroll Detail</h1>
+            <p>Month: {month}</p>
+
+            <a class="button" href="/payroll?month={month}">Back to Payroll</a>
+            <a class="button" href="/">Home</a>
+
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Lesson Records</div>
+                    <div class="value">{total_lessons}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Paid Units</div>
+                    <div class="value">{total_units}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Revenue</div>
+                    <div class="value">${total_revenue}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Payroll</div>
+                    <div class="value">${total_payroll}</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Profit</div>
+                    <div class="value">${total_profit}</div>
+                </div>
+            </div>
+
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Student</th>
+                    <th>Status</th>
+                    <th>Paid Units</th>
+                    <th>Revenue</th>
+                    <th>Payroll</th>
+                    <th>Profit</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/payroll_audit")
+def payroll_audit():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v26_schema()
+
+    month = request.args.get("month") or date.today().strftime("%Y-%m")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        lesson_date,
+        lesson_time,
+        teacher,
+        student_name,
+        status,
+        charge_lessons,
+        teacher_pay_units,
+        revenue_amount,
+        payroll_amount,
+        profit_amount
+    FROM schedule
+    WHERE substr(lesson_date, 1, 7) = ?
+    ORDER BY lesson_date DESC, lesson_time DESC
+    """, (month,))
+
+    records = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+
+    for r in records:
+        rows += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]}</td>
+            <td>{r[2]}</td>
+            <td>{r[3]}</td>
+            <td>{r[4]}</td>
+            <td>{r[5] or 0}</td>
+            <td>{r[6] or 0}</td>
+            <td>${r[7] or 0}</td>
+            <td>${r[8] or 0}</td>
+            <td>${r[9] or 0}</td>
+        </tr>
+        """
+
+    if rows == "":
+        rows = "<tr><td colspan='10'>No audit records.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Payroll Audit</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f7f7fb;
+                padding: 40px;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 14px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th, td {{
+                padding: 10px;
+                border-bottom: 1px solid #eee;
+                text-align: left;
+                font-size: 14px;
+            }}
+            th {{
+                background: #f0f0ff;
+            }}
+            a.button {{
+                display: inline-block;
+                background: #635bff;
+                color: white;
+                padding: 10px 14px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-right: 8px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Payroll Audit</h1>
+
+            <form method="GET" action="/payroll_audit">
+                Month:
+                <input type="month" name="month" value="{month}">
+                <button type="submit">View</button>
+            </form>
+
+            <br>
+
+            <a class="button" href="/payroll?month={month}">Back to Payroll</a>
+            <a class="button" href="/">Home</a>
+
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Teacher</th>
+                    <th>Student</th>
+                    <th>Status</th>
+                    <th>Student Units</th>
+                    <th>Teacher Units</th>
+                    <th>Revenue</th>
+                    <th>Payroll</th>
+                    <th>Profit</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/lock_payroll/<month>", methods=["POST"])
+def lock_payroll(month):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v26_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    INSERT INTO payroll_periods (
+        month,
+        locked,
+        locked_at,
+        locked_by
+    )
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(month) DO UPDATE SET
+        locked = 1,
+        locked_at = excluded.locked_at,
+        locked_by = excluded.locked_by
+    """, (
+        month,
+        1,
+        now,
+        "owner"
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/payroll?month={month}")
+
+
+@app.route("/export_payroll_csv")
+def export_payroll_csv():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v26_schema()
+
+    month = request.args.get("month") or date.today().strftime("%Y-%m")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT
+        teacher,
+        COUNT(id),
+        COALESCE(SUM(teacher_pay_units), 0),
+        COALESCE(SUM(revenue_amount), 0),
+        COALESCE(SUM(payroll_amount), 0),
+        COALESCE(SUM(profit_amount), 0)
+    FROM schedule
+    WHERE substr(lesson_date, 1, 7) = ?
+    GROUP BY teacher
+    ORDER BY teacher
+    """, (month,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    csv_text = "Teacher,Lesson Records,Paid Units,Revenue,Payroll,Profit\n"
+
+    for r in rows:
+        csv_text += f"{r[0]},{r[1]},{r[2]},{r[3]},{r[4]},{r[5]}\n"
+
+    return Response(
+        csv_text,
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=payroll_{month}.csv"
+        }
+    )
+
+
+_production_schema_ready = False
+
+
+def ensure_base_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        teacher TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        parent_phone TEXT,
+        lessons_left INTEGER DEFAULT 0,
+        free_cancel_used INTEGER DEFAULT 0
+    )
+    """)
+
+    cursor.execute("PRAGMA table_info(students)")
+    student_columns = [row[1] for row in cursor.fetchall()]
+    if "parent_phone" not in student_columns:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_phone TEXT")
+    if "active" not in student_columns:
+        cursor.execute("ALTER TABLE students ADD COLUMN active INTEGER DEFAULT 1")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        classroom TEXT,
+        location TEXT,
+        duration INTEGER,
+        notes TEXT,
+        schedule_type TEXT,
+        total_lessons INTEGER,
+        weekday TEXT,
+        package_type TEXT,
+        start_date TEXT,
+        status TEXT DEFAULT 'scheduled',
+        charge_lessons REAL DEFAULT 0,
+        cancellation_reason TEXT,
+        cancelled_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        amount REAL,
+        lessons_added INTEGER,
+        payment_method TEXT,
+        payment_date TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        schedule_id INTEGER,
+        charge_lessons REAL,
+        amount REAL,
+        status TEXT,
+        invoice_type TEXT,
+        created_at TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        lesson_content TEXT,
+        performance TEXT,
+        homework TEXT,
+        lesson_date TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        entry_type TEXT,
+        amount REAL,
+        description TEXT,
+        related_invoice_id INTEGER,
+        related_payment_id INTEGER,
+        created_at TEXT,
+        related_schedule_id INTEGER
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO settings (key, value)
+    VALUES (?, ?)
+    """, [
+        ("free_cancel_per_package", "1"),
+        ("default_lesson_rate", "50"),
+        ("cancel_3h_charge", "1"),
+        ("cancel_12h_charge", "0.75"),
+        ("cancel_24h_charge", "0.5"),
+    ])
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classrooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_name TEXT UNIQUE
+    )
+    """)
+
+    cursor.executemany("""
+    INSERT OR IGNORE INTO classrooms (room_name)
+    VALUES (?)
+    """, [
+        ("Room 1",),
+        ("Room 2",),
+        ("Room 3",),
+        ("Trial Room",),
+    ])
+
+    cursor.execute("PRAGMA table_info(schedule)")
+    schedule_columns = [row[1] for row in cursor.fetchall()]
+    if "duration" not in schedule_columns:
+        cursor.execute("ALTER TABLE schedule ADD COLUMN duration INTEGER")
+
+    conn.commit()
+    conn.close()
+
+
+def ensure_production_schema():
+    global _production_schema_ready
+    if _production_schema_ready:
+        return
+
+    ensure_base_schema()
+    ensure_teacher_management_schema()
+    ensure_v26_schema()
+    ensure_v27_schema()
+    ensure_v29_schema()
+    ensure_v17_schema()
+    ensure_v321_schema()
+    ensure_v33_schema()
+    ensure_v145_schema()
+
+    _production_schema_ready = True
+
+
+def ensure_backup_dir():
+    os.makedirs(HMUSIC_BACKUP_DIR, exist_ok=True)
+    return HMUSIC_BACKUP_DIR
+
+
+def backup_state_path():
+    return os.path.join(ensure_backup_dir(), "backup_state.json")
+
+
+def create_hmusic_backup(label="manual"):
+    ensure_backup_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_label = "".join(ch for ch in str(label or "manual") if ch.isalnum() or ch in ("-", "_")) or "manual"
+
+    db_backup_name = f"hmusic_{safe_label}_{timestamp}.db"
+    db_backup_path = os.path.join(HMUSIC_BACKUP_DIR, db_backup_name)
+
+    source_conn = _sqlite_connect(HMUSIC_DB_PATH)
+    backup_conn = _sqlite_connect(db_backup_path)
+    try:
+        source_conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+        source_conn.close()
+
+    uploads_zip_name = None
+    upload_file_count = 0
+    if HMUSIC_UPLOAD_DIR and os.path.isdir(HMUSIC_UPLOAD_DIR):
+        uploads_zip_name = f"hmusic_uploads_{safe_label}_{timestamp}.zip"
+        uploads_zip_path = os.path.join(HMUSIC_BACKUP_DIR, uploads_zip_name)
+        with zipfile.ZipFile(uploads_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(HMUSIC_UPLOAD_DIR):
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    arc_name = os.path.relpath(file_path, HMUSIC_UPLOAD_DIR)
+                    zf.write(file_path, arc_name)
+                    upload_file_count += 1
+
+    manifest = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "label": safe_label,
+        "database": db_backup_name,
+        "uploads_zip": uploads_zip_name,
+        "upload_file_count": upload_file_count,
+        "source_db_path": HMUSIC_DB_PATH,
+        "source_upload_dir": HMUSIC_UPLOAD_DIR,
+    }
+    manifest_name = f"hmusic_{safe_label}_{timestamp}_manifest.json"
+    with open(os.path.join(HMUSIC_BACKUP_DIR, manifest_name), "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    cleanup_old_backups()
+    return manifest
+
+
+def cleanup_old_backups(keep=30):
+    ensure_backup_dir()
+    for suffix in (".db", ".zip", "_manifest.json"):
+        files = []
+        for name in os.listdir(HMUSIC_BACKUP_DIR):
+            if name.startswith("hmusic_") and name.endswith(suffix):
+                path = os.path.join(HMUSIC_BACKUP_DIR, name)
+                files.append((os.path.getmtime(path), path))
+        files.sort(reverse=True)
+        for _, path in files[keep:]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def maybe_run_daily_backup():
+    if os.environ.get("HMUSIC_DISABLE_AUTO_BACKUP") == "1":
+        return
+
+    ensure_backup_dir()
+    today = date.today().isoformat()
+    state_file = backup_state_path()
+    state = {}
+    if os.path.exists(state_file):
+        try:
+            with open(state_file) as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+
+    if state.get("last_auto_backup_date") == today:
+        return
+
+    try:
+        manifest = create_hmusic_backup("auto")
+        state["last_auto_backup_date"] = today
+        state["last_auto_backup_at"] = manifest["created_at"]
+        state["last_auto_backup_db"] = manifest["database"]
+        with open(state_file, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as exc:
+        print(f"[backup] automatic backup failed: {exc}")
+
+
+def list_backup_files():
+    ensure_backup_dir()
+    rows = []
+    for name in os.listdir(HMUSIC_BACKUP_DIR):
+        path = os.path.join(HMUSIC_BACKUP_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        if not (name.endswith(".db") or name.endswith(".zip") or name.endswith("_manifest.json")):
+            continue
+        rows.append({
+            "name": name,
+            "size": os.path.getsize(path),
+            "modified": datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    return sorted(rows, key=lambda row: row["modified"], reverse=True)
+
+
+@app.route("/owner_backup", methods=["GET", "POST"])
+def owner_backup():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    if request.method == "POST":
+        create_hmusic_backup("manual")
+        return redirect("/owner_backup?created=1")
+
+    backups = list_backup_files()
+    created_notice = ""
+    if request.args.get("created") == "1":
+        created_notice = "<div class='notice'>Backup created successfully.</div>"
+
+    rows = ""
+    for row in backups:
+        size_mb = row["size"] / (1024 * 1024)
+        rows += f"""
+        <tr>
+            <td>{escape(row["name"])}</td>
+            <td>{row["modified"]}</td>
+            <td>{size_mb:.2f} MB</td>
+            <td><a class="button small" href="/owner_backup/download/{escape(row["name"])}">Download</a></td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='4'>No backups yet.</td></tr>"
+
+    state = {}
+    state_file = backup_state_path()
+    if os.path.exists(state_file):
+        try:
+            with open(state_file) as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+
+    last_auto = state.get("last_auto_backup_at", "Not yet")
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Backup</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:32px; color:#111827; }}
+            .container {{ max-width:980px; background:white; padding:28px; border-radius:16px; box-shadow:0 8px 28px rgba(15,23,42,.08); }}
+            h1 {{ margin-top:0; }}
+            .notice {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:12px 14px; margin:16px 0; font-weight:800; }}
+            .warning {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin:16px 0; line-height:1.5; }}
+            .meta {{ color:#6b7280; line-height:1.55; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
+            th, td {{ text-align:left; padding:11px 10px; border-bottom:1px solid #e5e7eb; }}
+            th {{ background:#f3f4f6; }}
+            .button, button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:9px; padding:10px 14px; font-weight:900; text-decoration:none; cursor:pointer; }}
+            .button.small {{ padding:7px 10px; font-size:13px; }}
+            .links {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Owner Backup</h1>
+            <p class="meta">
+                Database source: <b>{escape(HMUSIC_DB_PATH)}</b><br>
+                Uploads source: <b>{escape(HMUSIC_UPLOAD_DIR)}</b><br>
+                Backup folder: <b>{escape(HMUSIC_BACKUP_DIR)}</b><br>
+                Last automatic backup: <b>{escape(str(last_auto))}</b>
+            </p>
+            {created_notice}
+            <div class="warning">
+                Automatic backup runs once per day on the first app request of the day.
+                Manual backup creates a fresh SQLite snapshot immediately.
+                Download and keep important backups outside Render as well.
+            </div>
+            <form method="POST">
+                <button type="submit">Create Backup Now</button>
+            </form>
+            <h2>Backup Files</h2>
+            <table>
+                <tr><th>File</th><th>Created</th><th>Size</th><th>Download</th></tr>
+                {rows}
+            </table>
+            <div class="links">
+                <a class="button" href="/executive_dashboard">Back to Executive Dashboard</a>
+                <a class="button" href="/">Home</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/owner_backup/download/<path:filename>")
+def owner_backup_download(filename):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    safe_name = os.path.basename(filename)
+    allowed = safe_name.endswith(".db") or safe_name.endswith(".zip") or safe_name.endswith("_manifest.json")
+    if not allowed:
+        return "File type not allowed", 403
+
+    return send_from_directory(HMUSIC_BACKUP_DIR, safe_name, as_attachment=True)
+
+
+@app.before_request
+def prepare_database_for_request():
+    ensure_production_schema()
+    maybe_run_daily_backup()
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5001)
+
+
+# ================================================================
+# PATCH: Reschedule drag-and-drop API
+# POST /reschedule_schedule
+# ================================================================
+
+@app.route("/reschedule_schedule", methods=["POST"])
+def reschedule_schedule():
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Not logged in"}, 401
+
+    data        = request.get_json(silent=True) or request.form
+    schedule_id = data.get("schedule_id")
+    new_date    = data.get("new_date")
+    scope       = data.get("scope", "once")   # "once" or "forward"
+
+    if not schedule_id or not new_date:
+        return {"ok": False, "error": "schedule_id and new_date required"}, 400
+
+    try:
+        new_date_obj = datetime.strptime(new_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"ok": False, "error": "Invalid date"}, 400
+
+    conn   = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
+        FROM schedule WHERE id = ?
+    """, (schedule_id,))
+    lesson = cursor.fetchone()
+
+    if not lesson:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found"}, 404
+
+    if require_teacher() and not require_owner():
+        if lesson[2] != session.get("teacher_name"):
+            conn.close()
+            return {"ok": False, "error": "Permission denied"}, 403
+
+    old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
+    day_delta    = (new_date_obj - old_date_obj).days
+    moved_ids    = []
+
+    if scope == "once":
+        cursor.execute("""
+            UPDATE schedule SET lesson_date = ?, weekday = ? WHERE id = ?
+        """, (new_date, new_date_obj.strftime("%A"), int(schedule_id)))
+        moved_ids.append(int(schedule_id))
+
+    elif scope == "forward":
+        cursor.execute("""
+            SELECT id, lesson_date FROM schedule
+            WHERE student_name = ? AND teacher = ? AND lesson_time = ?
+            AND lesson_date >= ?
+            ORDER BY lesson_date
+        """, (lesson[1], lesson[2], lesson[4], lesson[3]))
+        for row in cursor.fetchall():
+            shifted = (datetime.strptime(row[1], "%Y-%m-%d").date()
+                       + timedelta(days=day_delta))
+            cursor.execute("""
+                UPDATE schedule SET lesson_date = ?, weekday = ? WHERE id = ?
+            """, (shifted.strftime("%Y-%m-%d"), shifted.strftime("%A"), row[0]))
+            moved_ids.append(row[0])
+    else:
+        conn.close()
+        return {"ok": False, "error": "Invalid scope"}, 400
+
+    conn.commit()
+
+    # Notify teacher when owner moves a lesson
+    if require_owner() and lesson[2]:
+        try:
+            thread_id = get_or_create_message_thread(
+                f"Schedule change - {lesson[1]}",
+                student_name=lesson[1], teacher_name=lesson[2],
+                thread_type="reschedule_drag"
+            )
+            add_message(
+                thread_id, "owner", "owner", "teacher",
+                f"Owner moved {lesson[1]}'s lesson from {lesson[3]} to {new_date}"
+                + (" (this and all future lessons)" if scope == "forward"
+                   else " (this lesson only)")
+                + f". Time: {lesson[4]}, Room: {lesson[5] or '-'}."
+            )
+            create_notification(
+                "teacher", lesson[2],
+                "Lesson rescheduled",
+                f"{lesson[1]}'s lesson moved to {new_date}.",
+                "/teacher_dashboard?view=schedule"
+            )
+        except Exception:
+            pass
+
+    conn.close()
+    return {"ok": True, "moved": len(moved_ids), "new_date": new_date, "scope": scope}
+
+
+# ================================================================
+# PATCH: Bulk auto-link students who have no primary teacher
+# POST /auto_link_all_students  (owner only, utility route)
+# ================================================================
+
+@app.route("/auto_link_all_students", methods=["POST"])
+def auto_link_all_students():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    conn   = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name FROM students
+        WHERE teacher IS NULL OR teacher = ''
+    """)
+    unlinked = [r[0] for r in cursor.fetchall()]
+
+    linked = 0
+    for name in unlinked:
+        cursor.execute("""
+            SELECT teacher FROM schedule
+            WHERE student_name = ?
+            AND teacher IS NOT NULL AND teacher != ''
+            ORDER BY lesson_date DESC LIMIT 1
+        """, (name,))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute("UPDATE students SET teacher = ? WHERE name = ?",
+                           (row[0], name))
+            linked += 1
+
+    conn.commit()
+    conn.close()
+
+    return f"""
+    <html><body style="font-family:sans-serif;padding:32px">
+    <h1>Auto-Link Complete</h1>
+    <p>Linked <strong>{linked}</strong> student(s) to their primary teacher.</p>
+    <p><a href="/students">Students</a> &nbsp; <a href="/">Home</a></p>
+    </body></html>
+    """
+
+
+# ================================================================
+# PATCH: Quick open-slot creation from calendar popover
+# POST /add_open_slot_quick  (JSON body)
+# ================================================================
+
+@app.route("/add_open_slot_quick", methods=["POST"])
+def add_open_slot_quick():
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Not logged in"}, 401
+
+    ensure_v282_schema()
+    data       = request.get_json(silent=True) or {}
+    teacher    = data.get("teacher") or session.get("teacher_name")
+    slot_date  = data.get("date")
+    start_time = data.get("start_time")
+    end_time   = data.get("end_time")
+
+    if not teacher or not slot_date or not start_time:
+        return {"ok": False, "error": "teacher, date and start_time required"}, 400
+
+    conn   = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    now    = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+        INSERT INTO teacher_open_slots
+            (teacher, slot_date, slot_time, source, active, notes, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, 'manual', 1, ?, ?, ?, ?)
+    """, (teacher, slot_date, start_time,
+          f"end_time={end_time}" if end_time else "",
+          session.get("teacher_name") or "owner", now, now))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
