@@ -15551,9 +15551,8 @@ def send_email_delivery(destination, title, body, link_url):
     message["Subject"] = title or "H-Music Notification"
     message["From"] = from_email
     message["To"] = destination
-    message.set_content(
-        f"{body or ''}\n\nOpen: {link_url or '/'}\n\nH-Music"
-    )
+    footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
+    message.set_content(f"{body or ''}{footer}")
 
     with smtplib.SMTP(smtp_host, smtp_port) as server:
         server.starttls()
@@ -26230,13 +26229,14 @@ def renewal_emails():
     rows = ""
 
     for s in students:
+        student_url_name = quote(str(s[0] or ""))
         rows += f"""
         <tr>
-            <td><a href="/student/{s[0]}">{s[0]}</a></td>
-            <td>{s[1]}</td>
-            <td>{s[2]}</td>
+            <td><a href="/student/{student_url_name}">{escape(str(s[0] or ""))}</a></td>
+            <td>{escape(str(s[1] or ""))}</td>
+            <td>{escape(str(s[2] or ""))}</td>
             <td>
-                <a href="/send_renewal_email/{s[0]}">
+                <a href="/send_renewal_email/{student_url_name}">
                     Send Renewal Email
                 </a>
             </td>
@@ -26289,6 +26289,25 @@ def send_renewal_email(student_name):
     parent_email = student[1]
     lessons_left = student[2]
 
+    def record_renewal_status(status):
+        cursor.execute("""
+        INSERT INTO renewal_email_logs (
+            student_name,
+            parent_email,
+            lessons_left,
+            sent_at,
+            status
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            name,
+            parent_email,
+            lessons_left,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            status
+        ))
+        conn.commit()
+
     email_text = f"""
 Dear Parent,
 
@@ -26300,44 +26319,42 @@ Thank you,
 H-Music
 """
 
-    msg = EmailMessage()
-    msg["Subject"] = f"{name}'s Lesson Package Renewal Reminder"
-    msg["From"] = "huangzhenwei606@gmail.com"
-    msg["To"] = parent_email
-    msg.set_content(email_text)
+    if not parent_email or "@" not in parent_email:
+        record_renewal_status("failed: missing parent email")
+        conn.close()
+        return f"""
+        <h1>Renewal Email Not Sent</h1>
+        <p>{escape(str(name))} does not have a valid parent email.</p>
+        <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
+        """, 400
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(
-            "huangzhenwei606@gmail.com",
-            os.getenv("GMAIL_APP_PASSWORD")
-        )
-        smtp.send_message(msg)
+    subject = f"{name}'s Lesson Package Renewal Reminder"
+    try:
+        sent, response = send_email_delivery(parent_email, subject, email_text, "")
+    except Exception as exc:
+        sent = False
+        response = f"Email send failed: {exc}"
 
-    cursor.execute("""
-    INSERT INTO renewal_email_logs (
-        student_name,
-        parent_email,
-        lessons_left,
-        sent_at,
-        status
-    )
-    VALUES (?, ?, ?, ?, ?)
-    """, (
-        name,
-        parent_email,
-        lessons_left,
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "sent"
-    ))
+    if not sent:
+        record_renewal_status(f"failed: {response}"[:200])
+        conn.close()
+        return f"""
+        <h1>Renewal Email Not Sent</h1>
+        <p>Student: {escape(str(name))}</p>
+        <p>To: {escape(str(parent_email))}</p>
+        <p><b>Reason:</b> {escape(str(response))}</p>
+        <pre>{escape(email_text)}</pre>
+        <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
+        """, 502
 
-    conn.commit()
+    record_renewal_status("sent")
     conn.close()
 
     return f"""
     <h1>Renewal Email Sent</h1>
-    <p>Student: {name}</p>
-    <p>To: {parent_email}</p>
-    <pre>{email_text}</pre>
+    <p>Student: {escape(str(name))}</p>
+    <p>To: {escape(str(parent_email))}</p>
+    <pre>{escape(email_text)}</pre>
     <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
     """
 
