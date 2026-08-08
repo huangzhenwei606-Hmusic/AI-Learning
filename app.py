@@ -1050,12 +1050,22 @@ def hstudio_date_short(value):
 
 
 def hstudio_status_key(status):
-    status = (status or "scheduled").lower()
-    if status == "present":
+    raw = (status or "scheduled").strip().lower()
+    compact = raw.replace("-", "_").replace(" ", "_")
+    if compact == "present":
         return "present"
-    if status in ("no_show", "no show"):
+    if compact in ("no_show", "noshow"):
         return "noshow"
-    if status.startswith("cancel") or status == "teacher_cancelled":
+    if compact in (
+        "excused",
+        "excused_24h",
+        "cancel_>_24h",
+        "cancelled_>_24h",
+        "canceled_>_24h",
+        "teacher_cancel",
+        "teacher_cancelled",
+        "last_min_cancel",
+    ) or compact.startswith("cancel"):
         return "cancelled"
     return "scheduled"
 
@@ -1261,6 +1271,17 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .td-lesson-row.scheduled {{ background:var(--td-blue-soft); border-color:#cfe1ff; }}
             .td-lesson-row.noshow {{ background:var(--td-red-soft); border-color:#ffd0cc; }}
             .td-lesson-row.cancelled {{ background:var(--td-gray-soft); border-color:var(--td-line); }}
+.td-lesson-row.cancelled .td-date,
+.td-lesson-row.cancelled .td-student,
+.td-lesson-row.cancelled .td-meta {{
+    color:#667085;
+    text-decoration:line-through;
+    text-decoration-thickness:1.3px;
+}}
+.td-lesson-row.cancelled .td-status {{
+    color:#667085;
+    background:#e5e7eb;
+}}
             .td-date {{ color:var(--td-muted); font-size:14px; font-weight:500; }}
             .td-student {{ font-size:15px; font-weight:500; line-height:1.25; }}
             .td-meta {{ color:var(--td-muted); font-size:13px; line-height:1.3; }}
@@ -9592,6 +9613,14 @@ def teacher_dashboard():
     homework_badge = hstudio_badge(missing_homework_count)
 
     def status_label(status):
+        raw = (status or "").strip().lower()
+        compact = raw.replace("-", "_").replace(" ", "_")
+        if compact in ("excused", "excused_24h", "cancel_>_24h", "cancelled_>_24h", "canceled_>_24h"):
+            return "Cancel >24h"
+        if compact in ("teacher_cancel", "teacher_cancelled"):
+            return "Teacher cancel"
+        if compact == "last_min_cancel":
+            return "Last min cancel"
         key = hstudio_status_key(status)
         if key == "present":
             return "Present"
@@ -10118,6 +10147,68 @@ def teacher_dashboard():
     )
 
 
+@app.route("/teacher_missing_homework/save", methods=["POST"])
+def teacher_missing_homework_save():
+    if session.get("user_role") != "teacher":
+        return redirect("/teacher_login")
+
+    teacher_name = session.get("teacher_name")
+    schedule_id = request.form.get("schedule_id")
+    lesson_content = (request.form.get("lesson_content") or "").strip() or "Lesson note"
+    performance = (request.form.get("performance") or "").strip()
+    homework = (request.form.get("homework") or "").strip()
+
+    if not schedule_id or not homework:
+        return redirect("/teacher_missing_homework?error=1")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    filters = ["id = ?", "LOWER(COALESCE(status, '')) = 'present'"]
+    params = [schedule_id]
+    if teacher_name:
+        filters.append("teacher = ?")
+        params.append(teacher_name)
+
+    cursor.execute(f"""
+        SELECT student_name, lesson_date
+        FROM schedule
+        WHERE {" AND ".join(filters)}
+    """, params)
+    schedule_row = cursor.fetchone()
+    if not schedule_row:
+        conn.close()
+        return redirect("/teacher_missing_homework?error=1")
+
+    student_name, lesson_date = schedule_row
+
+    cursor.execute("""
+        SELECT id
+        FROM lessons
+        WHERE LOWER(TRIM(student_name)) = LOWER(TRIM(?))
+        AND lesson_date = ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (student_name, lesson_date))
+    lesson_row = cursor.fetchone()
+
+    if lesson_row:
+        cursor.execute("""
+            UPDATE lessons
+            SET lesson_content = ?, performance = ?, homework = ?
+            WHERE id = ?
+        """, (lesson_content, performance, homework, lesson_row[0]))
+    else:
+        cursor.execute("""
+            INSERT INTO lessons (student_name, lesson_content, performance, homework, lesson_date)
+            VALUES (?, ?, ?, ?, ?)
+        """, (student_name, lesson_content, performance, homework, lesson_date))
+
+    conn.commit()
+    conn.close()
+    return redirect("/teacher_missing_homework?saved=1")
+
+
 @app.route("/teacher_missing_homework")
 def teacher_missing_homework():
     if session.get("user_role") != "teacher":
@@ -10130,19 +10221,38 @@ def teacher_missing_homework():
 
     rows = ""
     for lesson in lessons:
-        homework_href = f"/teacher_dashboard?view=records&lesson_date={quote(str(lesson[3] or ''))}&student_name={quote(str(lesson[1] or ''))}"
+        schedule_id = escape(str(lesson[0] or ""))
+        student_display = escape(str(lesson[1] or "-"))
+        date_display = escape(str(lesson[3] or "-"))
+        time_display = escape(str(lesson[4] or "-"))
+        room_display = escape(str(lesson[5] or "-"))
         rows += f"""
         <tr>
-            <td>{lesson[3]}</td>
-            <td>{lesson[4] or '-'}</td>
-            <td>{escape(lesson[1] or '-')}</td>
-            <td>{escape(lesson[5] or '-')}</td>
-            <td><a class="mini-button" href="{homework_href}">Add Homework</a></td>
+            <td>{date_display}</td>
+            <td>{time_display}</td>
+            <td>{student_display}</td>
+            <td>{room_display}</td>
+            <td>
+                <button type="button" class="mini-button js-homework-button"
+                    data-schedule-id="{schedule_id}"
+                    data-student="{student_display}"
+                    data-date="{date_display}"
+                    data-time="{time_display}"
+                    data-room="{room_display}">
+                    Add Homework
+                </button>
+            </td>
         </tr>
         """
 
     if not rows:
         rows = "<tr><td colspan='5'>No missing homework right now.</td></tr>"
+
+    notice = ""
+    if request.args.get("saved"):
+        notice = """<div class="td-toast success">Homework saved. This lesson was removed from the missing list.</div>"""
+    elif request.args.get("error"):
+        notice = """<div class="td-toast error">Homework was not saved. Please choose a valid lesson and enter homework.</div>"""
 
     content = f"""
         <div class="schedule-head">
@@ -10152,9 +10262,10 @@ def teacher_missing_homework():
             </div>
             <div class="schedule-controls">
                 <a href="/teacher_dashboard">Home</a>
-                <a href="/teacher_dashboard?view=records">Lesson Records</a>
+                <a href="/teacher_lesson_notes">Lesson Records</a>
             </div>
         </div>
+        {notice}
         <section class="td-card">
             <table class="teacher-homework-table">
                 <tr>
@@ -10167,12 +10278,101 @@ def teacher_missing_homework():
                 {rows}
             </table>
         </section>
+        <div class="homework-modal" id="homeworkModal" aria-hidden="true">
+            <div class="homework-dialog" role="dialog" aria-modal="true" aria-labelledby="homeworkModalTitle">
+                <div class="homework-dialog-head">
+                    <div>
+                        <h2 id="homeworkModalTitle">Add homework</h2>
+                        <p id="homeworkLessonMeta">Select a lesson.</p>
+                    </div>
+                    <button type="button" class="homework-close" onclick="closeHomeworkModal()">&times;</button>
+                </div>
+                <form method="post" action="/teacher_missing_homework/save" class="homework-form">
+                    <input type="hidden" name="schedule_id" id="homeworkScheduleId">
+                    <label>
+                        <span>Lesson note</span>
+                        <input type="text" name="lesson_content" id="lessonContent" placeholder="Optional note for parent">
+                    </label>
+                    <label>
+                        <span>Performance</span>
+                        <select name="performance">
+                            <option value="Excellent focus and progress">Excellent focus and progress</option>
+                            <option value="Strong effort with steady growth">Strong effort with steady growth</option>
+                            <option value="Good participation, keep practicing">Good participation, keep practicing</option>
+                            <option value="Building consistency and confidence">Building consistency and confidence</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Homework</span>
+                        <textarea name="homework" id="homeworkText" rows="5" required placeholder="Write homework clearly for the parent and student."></textarea>
+                    </label>
+                    <div class="homework-actions">
+                        <button type="button" class="homework-secondary" onclick="closeHomeworkModal()">Cancel</button>
+                        <button type="submit" class="homework-primary">Save Homework</button>
+                    </div>
+                </form>
+            </div>
+        </div>
         <style>
             .teacher-homework-table {{ width:100%; border-collapse:collapse; }}
             .teacher-homework-table th, .teacher-homework-table td {{ border-bottom:1px solid var(--td-line); padding:12px; text-align:left; }}
             .teacher-homework-table th {{ color:var(--td-muted); font-weight:500; font-size:13px; }}
-            .mini-button {{ display:inline-block; padding:8px 11px; border-radius:8px; background:var(--td-red-soft); color:var(--td-red); font-weight:600; }}
+            .mini-button {{ border:0; cursor:pointer; display:inline-block; padding:8px 11px; border-radius:8px; background:var(--td-red-soft); color:var(--td-red); font-weight:600; font:inherit; }}
+            .td-toast {{ margin:0 0 14px; border-radius:10px; padding:10px 12px; font-weight:600; }}
+            .td-toast.success {{ background:#ecfdf3; color:#166534; border:1px solid #bbf7d0; }}
+            .td-toast.error {{ background:#fff1f2; color:#b91c1c; border:1px solid #fecdd3; }}
+            .homework-modal {{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,.42); z-index:1000; padding:18px; }}
+            .homework-modal.show {{ display:flex; }}
+            .homework-dialog {{ width:min(620px, 100%); background:#fff; color:#111827; border:1px solid #dfe5ef; border-radius:14px; box-shadow:0 22px 60px rgba(15,23,42,.22); overflow:hidden; }}
+            .homework-dialog-head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:18px 20px 14px; border-bottom:1px solid #e5e7eb; }}
+            .homework-dialog-head h2 {{ margin:0; font-size:22px; line-height:1.2; }}
+            .homework-dialog-head p {{ margin:5px 0 0; color:#667085; font-size:14px; }}
+            .homework-close {{ border:0; background:#f3f4f6; color:#4b5563; border-radius:9px; width:34px; height:34px; font-size:24px; line-height:1; cursor:pointer; }}
+            .homework-form {{ padding:18px 20px 20px; display:grid; gap:13px; }}
+            .homework-form label {{ display:grid; gap:6px; color:#4b5563; font-size:13px; font-weight:700; }}
+            .homework-form input, .homework-form select, .homework-form textarea {{ width:100%; border:1px solid #d8dee9; border-radius:10px; padding:10px 11px; font:inherit; color:#111827; background:#fff; }}
+            .homework-form textarea {{ resize:vertical; min-height:130px; }}
+            .homework-actions {{ display:flex; justify-content:flex-end; gap:10px; padding-top:4px; }}
+            .homework-secondary, .homework-primary {{ border:0; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; }}
+            .homework-secondary {{ background:#f3f4f6; color:#374151; }}
+            .homework-primary {{ background:#2563eb; color:#fff; }}
         </style>
+        <script>
+            const homeworkModal = document.getElementById("homeworkModal");
+            const homeworkScheduleId = document.getElementById("homeworkScheduleId");
+            const homeworkLessonMeta = document.getElementById("homeworkLessonMeta");
+            const lessonContent = document.getElementById("lessonContent");
+            const homeworkText = document.getElementById("homeworkText");
+
+            function closeHomeworkModal() {{
+                homeworkModal.classList.remove("show");
+                homeworkModal.setAttribute("aria-hidden", "true");
+            }}
+
+            document.querySelectorAll(".js-homework-button").forEach((button) => {{
+                button.addEventListener("click", () => {{
+                    homeworkScheduleId.value = button.dataset.scheduleId;
+                    homeworkLessonMeta.textContent = button.dataset.student + " - " + button.dataset.date + " " + button.dataset.time + " - " + button.dataset.room;
+                    lessonContent.value = "";
+                    homeworkText.value = "";
+                    homeworkModal.classList.add("show");
+                    homeworkModal.setAttribute("aria-hidden", "false");
+                    homeworkText.focus();
+                }});
+            }});
+
+            homeworkModal.addEventListener("click", (event) => {{
+                if (event.target === homeworkModal) {{
+                    closeHomeworkModal();
+                }}
+            }});
+
+            document.addEventListener("keydown", (event) => {{
+                if (event.key === "Escape") {{
+                    closeHomeworkModal();
+                }}
+            }});
+        </script>
     """
     return hstudio_teacher_dark_shell(
         teacher_name or "Teacher",
