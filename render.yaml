@@ -2,6 +2,7 @@ services:
   - type: web
     name: hmusic-crm
     runtime: python
+    rootDir: HMusic_CRM_Code_3eefd09
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
