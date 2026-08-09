@@ -4910,6 +4910,13 @@ def student_detail(name):
                 <button type="submit">Mark paid</button>
             </form>
             """
+        delete_html = ""
+        if require_owner() and status_text in ("unpaid", "payment_failed"):
+            delete_html = f"""
+            <form class="inline-pay-form" method="POST" action="/delete_invoice/{invoice_id}" onsubmit="return confirm('Delete invoice #{invoice_id}? This invoice has not been paid. This cannot be undone.');">
+                <button class="danger-link" type="submit">Delete</button>
+            </form>
+            """
         payment_html += f"""
             <div class="timeline-item billing">
                 <div class="timeline-date">{escape(str(created_at or 'Invoice'))}</div>
@@ -4920,6 +4927,7 @@ def student_detail(name):
                 <div class="payment-actions">
                     <span class="pill {'ok' if status_text == 'paid' else 'amber'}">{escape(str(status_text).title())}</span>
                     {action_html}
+                    {delete_html}
                 </div>
             </div>
         """
@@ -5258,6 +5266,40 @@ def link_student_teacher(name):
     conn.commit()
     conn.close()
     return redirect(f"/student/{name}")
+
+
+@app.route("/delete_invoice/<int:invoice_id>", methods=["POST"])
+def delete_invoice(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, status
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    student_name = invoice[1]
+    status = invoice[2] or "unpaid"
+    if status not in ("unpaid", "payment_failed"):
+        conn.close()
+        return f"""
+        <h1>Invoice Cannot Be Deleted</h1>
+        <p>Invoice #{invoice_id} is currently {escape(status)}. Only unpaid or failed invoices can be deleted.</p>
+        <p><a href="/student/{quote(student_name)}#payments">Back to Student</a></p>
+        """
+
+    cursor.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{quote(student_name)}#payments")
 
 
 @app.route("/teacher_lesson_notes", methods=["GET", "POST"])
