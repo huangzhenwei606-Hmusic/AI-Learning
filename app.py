@@ -19408,7 +19408,7 @@ def parent_booking_request_review(request_id):
             )
         return redirect(f"/parent_booking_request_review/{request_id}")
 
-    cursor.execute("SELECT name FROM teachers ORDER BY name")
+    cursor.execute("SELECT teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
     teachers = [row[0] for row in cursor.fetchall()]
     cursor.execute("""
     SELECT r.id, r.room_name, COALESCE(l.location_name, '')
