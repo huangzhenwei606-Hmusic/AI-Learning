@@ -17346,11 +17346,11 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         student_name,
         amount,
         lessons_added,
-        "Stripe Test Mode",
+        "Stripe ACH",
         payment_date,
         enrollment_id,
         "Tuition Invoice",
-        f"Invoice #{invoice_id} paid via Stripe test mode ({source})",
+        f"Invoice #{invoice_id} paid via Stripe ACH ({source})",
         1
     ))
 
@@ -17368,7 +17368,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     SET status = 'paid',
         stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
         stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
-        autopay_status = 'paid_test'
+        autopay_status = 'paid'
     WHERE id = ?
     """, (
         checkout_session_id,
@@ -17392,7 +17392,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         student_name,
         "invoice_payment",
         amount,
-        f"Invoice #{invoice_id} paid via Stripe test mode",
+        f"Invoice #{invoice_id} paid via Stripe ACH",
         invoice_id,
         payment_id,
         None,
@@ -17411,6 +17411,71 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         amount=amount
     )
 
+    return True
+
+
+def mark_stripe_invoice_payment_failed(invoice_id=None, payment_intent_id=None, checkout_session_id=None, reason="Stripe payment failed"):
+    ensure_v321_schema()
+
+    if not invoice_id and payment_intent_id:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id
+        FROM invoices
+        WHERE stripe_payment_intent_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (payment_intent_id,))
+        row = cursor.fetchone()
+        conn.close()
+        invoice_id = row[0] if row else None
+
+    if not invoice_id:
+        return False
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    reason_text = str(reason or "Stripe payment failed")[:180]
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoices
+    SET status = CASE WHEN status = 'paid' THEN status ELSE 'payment_failed' END,
+        stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+        stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+        autopay_status = ?
+    WHERE id = ?
+    """, (
+        checkout_session_id,
+        payment_intent_id,
+        f"failed: {reason_text}",
+        invoice_id
+    ))
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
+    """, (
+        "Stripe payment failed",
+        f"Invoice #{invoice_id} Stripe/ACH payment failed or was returned. Reason: {reason_text}",
+        f"/pay_invoice/{invoice_id}",
+        invoice_id,
+        now
+    ))
+    conn.commit()
+    conn.close()
     return True
 
 
@@ -24055,7 +24120,7 @@ def parent_billing():
                     parent_id,
                     customer_id,
                     checkout_session.id,
-                    "Stripe test-mode ACH setup session created.",
+                    "Stripe ACH setup session created.",
                     now,
                     now
                 ))
@@ -24123,7 +24188,7 @@ def parent_billing():
     if request.args.get("requested") == "1":
         requested_alert = "<div class='alert'>Request sent. The owner will send the secure Stripe setup link.</div>"
     if request.args.get("connected") == "1":
-        requested_alert = "<div class='alert'>Bank setup completed in Stripe test mode.</div>"
+        requested_alert = "<div class='alert'>Bank setup completed securely through Stripe.</div>"
     if request.args.get("stripe_missing") == "1":
         requested_alert = "<div class='warn'>Stripe is not configured yet. Add STRIPE_SECRET_KEY in Render first.</div>"
     if request.args.get("cancelled") == "1":
@@ -24134,7 +24199,7 @@ def parent_billing():
         stripe_button = """
         <form method="POST">
             <input type="hidden" name="action" value="start_stripe_setup">
-            <button type="submit">Connect Bank with Stripe Test Mode</button>
+            <button type="submit">Connect Bank with Stripe</button>
         </form>
         """
     else:
@@ -24369,10 +24434,25 @@ def stripe_webhook():
                 parent_id=parent_id
             )
 
-    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and data_object.get("mode") == "payment":
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed") and data_object.get("mode") == "payment":
         invoice_id = metadata.get("invoice_id")
         if invoice_id:
-            if event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
+            if event_type == "checkout.session.async_payment_failed":
+                mark_stripe_invoice_payment_failed(
+                    invoice_id=invoice_id,
+                    checkout_session_id=data_object.get("id"),
+                    payment_intent_id=data_object.get("payment_intent"),
+                    reason=data_object.get("payment_status") or event_type
+                )
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "invoice_payment_failed",
+                    "Invoice marked failed from Stripe async payment failure.",
+                    invoice_id=invoice_id,
+                    parent_id=metadata.get("parent_id")
+                )
+            elif event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
                 finalize_stripe_invoice_payment(
                     int(invoice_id),
                     checkout_session_id=data_object.get("id"),
@@ -24453,6 +24533,26 @@ def stripe_webhook():
                 invoice_id=invoice_id,
                 parent_id=metadata.get("parent_id")
             )
+
+    if event_type in ("payment_intent.payment_failed", "charge.failed"):
+        invoice_id = metadata.get("invoice_id")
+        payment_intent_id = data_object.get("id") if event_type == "payment_intent.payment_failed" else data_object.get("payment_intent")
+        error_obj = data_object.get("last_payment_error") or data_object.get("failure_message") or data_object.get("failure_code") or event_type
+        if isinstance(error_obj, dict):
+            error_obj = error_obj.get("message") or error_obj.get("code") or event_type
+        marked = mark_stripe_invoice_payment_failed(
+            invoice_id=invoice_id,
+            payment_intent_id=payment_intent_id,
+            reason=error_obj
+        )
+        record_stripe_webhook_event(
+            event_id,
+            event_type,
+            "invoice_payment_failed" if marked else "payment_failed_no_invoice",
+            str(error_obj),
+            invoice_id=invoice_id,
+            parent_id=metadata.get("parent_id")
+        )
 
     return Response("ok", status=200)
 
@@ -25052,6 +25152,8 @@ def parent_invoice(invoice_id):
         payment_status_alert = "<div class='alert'>ACH payment is processing. Bank transfers can take several business days to fully settle.</div>"
     elif invoice[4] == "pending_confirmation":
         payment_status_alert = "<div class='alert'>Payment notice sent. H-Music will confirm and add lesson credits after review.</div>"
+    elif invoice[4] == "payment_failed":
+        payment_status_alert = "<div class='warn'>The previous Stripe/ACH payment did not complete. Please try again or use Zelle / PayPal.</div>"
     elif request.args.get("cancelled") == "1":
         payment_status_alert = "<div class='warn'>ACH checkout was cancelled. You can try again or use Zelle / PayPal.</div>"
 
