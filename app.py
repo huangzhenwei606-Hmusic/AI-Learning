@@ -11814,8 +11814,13 @@ def calendar_lesson_action():
                 "homework_assignment",
                 int(schedule_id)
             )
-        # The 24h lesson reminder checkbox only controls the scheduled reminder job.
-        # Saving lesson details should not immediately notify parents.
+        if parent_reminder and effective_lesson_date:
+            reminder_dates = {
+                date.today().strftime("%Y-%m-%d"),
+                (date.today() + timedelta(days=1)).strftime("%Y-%m-%d"),
+            }
+            if effective_lesson_date in reminder_dates:
+                queued += create_lesson_reminders_for_date(effective_lesson_date)
         if is_owner and low_balance_alert:
             queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
         scope_count = len(following_ids) if is_owner and detail_update else 0
@@ -15804,6 +15809,7 @@ def queue_parent_lesson_reminder(parent_id, title, body, link_url, schedule_id):
 
 def create_lesson_reminders_for_date(target_date):
     ensure_v33_schema()
+    ensure_parent_portal_feature_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -15833,6 +15839,15 @@ def create_lesson_reminders_for_date(target_date):
         for parent_row in parent_rows:
             parent_id = parent_row[0]
             cursor.execute("""
+            SELECT COALESCE(lesson_reminders, 1)
+            FROM parent_notification_preferences
+            WHERE parent_id = ?
+            """, (parent_id,))
+            pref_row = cursor.fetchone()
+            if pref_row and int(pref_row[0] or 0) != 1:
+                continue
+
+            cursor.execute("""
             SELECT id
             FROM notification_delivery_queue
             WHERE user_role = 'parent'
@@ -15858,6 +15873,47 @@ def create_lesson_reminders_for_date(target_date):
 
     conn.close()
     return created
+
+
+def maybe_run_daily_lesson_reminders():
+    if os.environ.get("HMUSIC_DISABLE_AUTO_REMINDERS") == "1":
+        return
+
+    today = date.today().isoformat()
+    target_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'last_auto_lesson_reminder_date'")
+    row = cursor.fetchone()
+    if row and row[0] == today:
+        conn.close()
+        return
+
+    cursor.execute("""
+    INSERT OR REPLACE INTO settings (key, value)
+    VALUES ('last_auto_lesson_reminder_date', ?)
+    """, (today,))
+    cursor.execute("""
+    INSERT OR REPLACE INTO settings (key, value)
+    VALUES ('last_auto_lesson_reminder_target_date', ?)
+    """, (target_date,))
+    conn.commit()
+    conn.close()
+
+    try:
+        parent_created = create_lesson_reminders_for_date(target_date)
+        teacher_created = create_teacher_lesson_reminders_for_date(target_date)
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT OR REPLACE INTO settings (key, value)
+        VALUES ('last_auto_lesson_reminder_result', ?)
+        """, (f"{datetime.now().strftime('%Y-%m-%d %H:%M')} | {target_date} | parents {parent_created} | teachers {teacher_created}",))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"[reminders] automatic lesson reminder run failed: {exc}")
 
 
 def create_autopay_due_notifications(target_date=None):
@@ -36161,6 +36217,7 @@ def prepare_database_for_request():
     # run automatic backups when explicitly enabled in Render env vars.
     if os.environ.get("HMUSIC_ENABLE_AUTO_BACKUP") == "1":
         maybe_run_daily_backup()
+    maybe_run_daily_lesson_reminders()
     public_paths = (
         "/static/",
         "/favicon.ico",
