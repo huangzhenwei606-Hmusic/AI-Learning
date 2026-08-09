@@ -16871,6 +16871,8 @@ def ensure_parent_portal_feature_schema():
         ("parent_notification_preferences", "quiet_hours_end", "quiet_hours_end TEXT"),
         ("student_credit_wallets", "makeup_credits", "makeup_credits REAL DEFAULT 0"),
         ("parent_booking_requests", "preferred_room", "preferred_room TEXT"),
+        ("parent_booking_requests", "owner_note", "owner_note TEXT"),
+        ("parent_booking_requests", "confirmed_schedule_id", "confirmed_schedule_id INTEGER"),
         ("guardian_invites", "guardian_phone", "guardian_phone TEXT"),
         ("studio_events", "status", "status TEXT DEFAULT 'published'"),
         ("event_rsvps", "notes", "notes TEXT"),
@@ -19150,6 +19152,8 @@ def owner_booking_requests():
     rows = ""
     for r in requests:
         request_type = str(r[3] or "booking").replace("_", " ").title()
+        status_display = "confirmed" if (r[9] or "") in ("confirmed", "approved") else (r[9] or "")
+        action_html = f"<a class='mini-button' href='/parent_booking_request_review/{r[0]}'>Review / Confirm</a>"
         rows += f"""
         <tr>
             <td>#{r[0]}</td>
@@ -19160,11 +19164,12 @@ def owner_booking_requests():
             <td>{escape(str(r[6] or "Any teacher"))}</td>
             <td>{escape(str(r[7] or "Any room"))}</td>
             <td>{escape(str(r[8] or ""))}</td>
-            <td>{escape(str(r[9] or ""))}</td>
+            <td>{escape(status_display)}</td>
+            <td>{action_html}</td>
         </tr>
         """
     if not rows:
-        rows = "<tr><td colspan='9'>No booking requests found.</td></tr>"
+        rows = "<tr><td colspan='10'>No booking requests found.</td></tr>"
 
     return f"""
     <html>
@@ -19182,6 +19187,7 @@ def owner_booking_requests():
             th {{ background:#f3f4f6; color:#667085; font-size:12px; text-transform:uppercase; }}
             td {{ font-size:14px; }}
             a {{ color:#155d9e; font-weight:800; }}
+            .mini-button {{ display:inline-block; background:#1f6fb8; color:white; padding:7px 10px; border-radius:8px; text-decoration:none; white-space:nowrap; }}
             .muted {{ color:#667085; }}
         </style>
     </head>
@@ -19197,10 +19203,324 @@ def owner_booking_requests():
             <table>
                 <tr>
                     <th>ID</th><th>Created</th><th>Student</th><th>Type</th><th>Preferred time</th>
-                    <th>Teacher</th><th>Room</th><th>Notes</th><th>Status</th>
+                    <th>Teacher</th><th>Room</th><th>Notes</th><th>Status</th><th>Action</th>
                 </tr>
                 {rows}
             </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_booking_request_review/<int:request_id>", methods=["GET", "POST"])
+def parent_booking_request_review(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_parent_portal_feature_schema()
+    ensure_v18_schema()
+    ensure_location_room_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, parent_id, student_name, request_type, preferred_date, preferred_time,
+           preferred_teacher, preferred_room, notes, status, created_at,
+           COALESCE(owner_note, ''), confirmed_schedule_id
+    FROM parent_booking_requests
+    WHERE id = ?
+    """, (request_id,))
+    req = cursor.fetchone()
+    if not req:
+        conn.close()
+        return "<h1>Booking request not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
+        owner_note = (request.form.get("owner_note") or "").strip()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if action == "reject":
+            cursor.execute("""
+            UPDATE parent_booking_requests
+            SET status = 'rejected',
+                owner_note = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (owner_note, now, request_id))
+            conn.commit()
+            conn.close()
+            if req[1]:
+                create_notification(
+                    "parent",
+                    str(req[1]),
+                    "Booking request updated",
+                    f"H-Music reviewed {req[2]}'s booking request. Status: rejected.",
+                    "/parent_schedule",
+                    related_type="parent_booking_request",
+                    related_id=request_id
+                )
+            return redirect(f"/parent_booking_request_review/{request_id}")
+
+        if action != "confirm":
+            conn.close()
+            return "<h1>Unknown action.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 400
+
+        student_name = (request.form.get("student_name") or req[2] or "").strip()
+        teacher = (request.form.get("teacher") or req[6] or "").strip()
+        lesson_date = (request.form.get("lesson_date") or req[4] or "").strip()
+        lesson_time = (request.form.get("lesson_time") or req[5] or "").strip()
+        room_id = (request.form.get("room_id") or "").strip()
+        course_type_id = (request.form.get("course_type_id") or "").strip()
+        billing_decision = (request.form.get("billing_decision") or "existing_credits").strip()
+        if not student_name or not teacher or not lesson_date or not lesson_time or not room_id or not course_type_id:
+            conn.close()
+            return "<h1>Student, teacher, date, time, room, and course are required.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 400
+
+        cursor.execute("""
+        SELECT r.id, r.room_name, r.location_id, COALESCE(l.location_name, '')
+        FROM studio_rooms r
+        LEFT JOIN studio_locations l ON r.location_id = l.id
+        WHERE r.id = ?
+        """, (room_id,))
+        room_row = cursor.fetchone()
+        if not room_row:
+            conn.close()
+            return "<h1>Room not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
+        classroom = room_row[1]
+        location_id = room_row[2]
+        location = room_row[3]
+
+        cursor.execute("""
+        SELECT id, name, COALESCE(duration, 30), student_billing_method, student_price,
+               teacher_billing_method, teacher_pay, COALESCE(is_group, 0)
+        FROM course_types
+        WHERE id = ?
+        """, (course_type_id,))
+        course = cursor.fetchone()
+        if not course:
+            conn.close()
+            return "<h1>Course type not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
+
+        duration = course[2] or 30
+        conflict = schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, duration=duration)
+        if conflict.get("has_conflict"):
+            conn.close()
+            return f"""
+            <h1>Cannot Confirm Booking</h1>
+            <p>{escape(conflict.get("message") or "Schedule conflict found.")}</p>
+            <p><a href="/parent_booking_request_review/{request_id}">Back to request</a></p>
+            """, 409
+
+        pricing = get_final_pricing(student_name, teacher, course_type_id)
+        if pricing:
+            course_id = pricing["course_id"]
+            course_name = pricing["course_name"]
+            duration = pricing["duration"] or duration
+            student_billing_method = pricing["student_billing_method"]
+            student_price = pricing["student_price"]
+            teacher_billing_method = pricing["teacher_billing_method"]
+            teacher_pay = pricing["teacher_pay"]
+            student_charge_amount = pricing["student_charge_amount"]
+            teacher_pay_amount = pricing["teacher_pay_amount"]
+            is_group = pricing["is_group"]
+        else:
+            course_id = course[0]
+            course_name = course[1]
+            student_billing_method = course[3]
+            student_price = course[4]
+            teacher_billing_method = course[5]
+            teacher_pay = course[6]
+            student_charge_amount = calculate_course_amount(student_billing_method, student_price, duration)
+            teacher_pay_amount = calculate_course_amount(teacher_billing_method, teacher_pay, duration)
+            is_group = course[7]
+
+        if billing_decision in ("makeup_credit", "no_charge", "trial_free"):
+            student_charge_amount = 0
+
+        try:
+            weekday = datetime.strptime(lesson_date, "%Y-%m-%d").strftime("%A")
+        except ValueError:
+            weekday = ""
+
+        request_type_label = str(req[3] or "booking").replace("_", " ").title()
+        schedule_note = (
+            f"Confirmed from parent booking request #{request_id}. "
+            f"Request type: {request_type_label}. "
+            f"Parent note: {req[8] or ''}. Owner note: {owner_note or ''}"
+        ).strip()
+        auto_link_student_teacher(cursor, student_name, teacher)
+        cursor.execute("""
+        INSERT INTO schedule (
+            student_name, teacher, location_id, room_id, location, classroom,
+            weekday, lesson_time, schedule_type, package_type, start_date, lesson_date,
+            course_type_id, course_type_name, duration, student_billing_method, student_price,
+            teacher_billing_method, teacher_pay, student_charge_amount, teacher_pay_amount,
+            is_group, notes, billing_decision, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'one_time', 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+        """, (
+            student_name,
+            teacher,
+            location_id,
+            int(room_id),
+            location,
+            classroom,
+            weekday,
+            lesson_time,
+            lesson_date,
+            lesson_date,
+            course_id,
+            course_name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            student_charge_amount,
+            teacher_pay_amount,
+            is_group,
+            schedule_note,
+            billing_decision,
+        ))
+        schedule_id = cursor.lastrowid
+        cursor.execute("""
+        UPDATE parent_booking_requests
+        SET status = 'confirmed',
+            owner_note = ?,
+            confirmed_schedule_id = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (owner_note, schedule_id, now, request_id))
+        conn.commit()
+        conn.close()
+
+        if req[1]:
+            create_notification(
+                "parent",
+                str(req[1]),
+                "Booking request confirmed",
+                f"H-Music confirmed {student_name}'s lesson for {lesson_date} {lesson_time}.",
+                "/parent_schedule",
+                related_type="parent_booking_request",
+                related_id=request_id
+            )
+        return redirect(f"/parent_booking_request_review/{request_id}")
+
+    cursor.execute("SELECT name FROM teachers ORDER BY name")
+    teachers = [row[0] for row in cursor.fetchall()]
+    cursor.execute("""
+    SELECT r.id, r.room_name, COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON r.location_id = l.id
+    WHERE COALESCE(r.active, 1) = 1
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(r.sort_order, 0), r.room_name
+    """)
+    rooms = cursor.fetchall()
+    cursor.execute("""
+    SELECT id, name, COALESCE(duration, 30), COALESCE(is_group, 0)
+    FROM course_types
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY COALESCE(is_group, 0), name, COALESCE(duration, 0)
+    """)
+    courses = cursor.fetchall()
+    cursor.execute("""
+    SELECT course_type_id, COALESCE(course_type_name, ''), COALESCE(duration, 30), teacher, room_id
+    FROM schedule
+    WHERE student_name = ?
+    AND course_type_id IS NOT NULL
+    ORDER BY lesson_date DESC, id DESC
+    LIMIT 1
+    """, (req[2],))
+    last_schedule = cursor.fetchone()
+    conn.close()
+
+    preferred_teacher = req[6] or (last_schedule[3] if last_schedule else "") or (teachers[0] if teachers else "")
+    preferred_course_id = str(last_schedule[0]) if last_schedule and last_schedule[0] else (str(courses[0][0]) if courses else "")
+    preferred_room_id = str(last_schedule[4]) if last_schedule and last_schedule[4] else ""
+    if not preferred_room_id and req[7]:
+        for room in rooms:
+            if str(room[1]).lower() == str(req[7]).lower():
+                preferred_room_id = str(room[0])
+                break
+    if not preferred_room_id and rooms:
+        preferred_room_id = str(rooms[0][0])
+
+    teacher_options = "".join(
+        f"<option value='{escape(str(t))}' {'selected' if str(t) == str(preferred_teacher) else ''}>{escape(str(t))}</option>"
+        for t in teachers
+    )
+    room_options = "".join(
+        f"<option value='{room[0]}' {'selected' if str(room[0]) == str(preferred_room_id) else ''}>{escape(str(room[1]))} · {escape(str(room[2] or ''))}</option>"
+        for room in rooms
+    )
+    course_options = "".join(
+        f"<option value='{course[0]}' {'selected' if str(course[0]) == str(preferred_course_id) else ''}>{escape(str(course[1]))} · {int(course[2] or 30)} min{' · Group' if course[3] else ''}</option>"
+        for course in courses
+    )
+    status_display = "confirmed" if (req[9] or "") in ("confirmed", "approved") else (req[9] or "pending")
+    confirmed_link = f"<p><b>Calendar schedule:</b> <a href='/calendar'>#{req[12]}</a></p>" if req[12] else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Review Booking Request</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:30px; }}
+            .wrap {{ max-width:920px; margin:0 auto; }}
+            .card {{ background:white; border-radius:14px; border:1px solid #e5e7eb; padding:22px; margin-bottom:14px; box-shadow:0 8px 22px rgba(15,23,42,.05); }}
+            h1 {{ margin:0 0 8px; }}
+            .muted {{ color:#667085; }}
+            .grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }}
+            label {{ display:block; color:#667085; font-weight:800; font-size:13px; margin-bottom:5px; }}
+            input, select, textarea {{ width:100%; min-height:42px; border:1px solid #d1d5db; border-radius:10px; padding:9px 11px; font:inherit; }}
+            textarea {{ min-height:92px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }}
+            button,.button {{ border:0; border-radius:10px; padding:11px 14px; font-weight:900; text-decoration:none; cursor:pointer; }}
+            .primary {{ background:#1f6fb8; color:white; }}
+            .secondary {{ background:#eef4ff; color:#155d9e; }}
+            .danger {{ background:#fef2f2; color:#991b1b; }}
+            @media(max-width:720px) {{ body {{ padding:14px; }} .grid {{ grid-template-columns:1fr; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <section class="card">
+                <p class="muted">Request #{req[0]} · {escape(str(req[10] or ''))}</p>
+                <h1>{escape(str(req[2] or 'Student'))} booking request</h1>
+                <p><b>Status:</b> {escape(status_display)}</p>
+                <p><b>Type:</b> {escape(str(req[3] or '').replace('_', ' ').title())}</p>
+                <p><b>Requested:</b> {escape(str(req[4] or 'Date TBD'))} {escape(str(req[5] or ''))} · {escape(str(req[6] or 'Any teacher'))} · {escape(str(req[7] or 'Any room'))}</p>
+                <p><b>Parent note:</b> {escape(str(req[8] or ''))}</p>
+                {confirmed_link}
+            </section>
+            <form class="card" method="POST">
+                <div class="grid">
+                    <div><label>Student</label><input name="student_name" value="{escape(str(req[2] or ''))}" required></div>
+                    <div><label>Teacher</label><select name="teacher" required>{teacher_options}</select></div>
+                    <div><label>Date</label><input type="date" name="lesson_date" value="{escape(str(req[4] or ''))}" required></div>
+                    <div><label>Time</label><input type="time" name="lesson_time" value="{escape(str(req[5] or ''))}" required></div>
+                    <div><label>Room</label><select name="room_id" required>{room_options}</select></div>
+                    <div><label>Course</label><select name="course_type_id" required>{course_options}</select></div>
+                    <div><label>Billing handling</label><select name="billing_decision">
+                        <option value="existing_credits">Use existing credits / package</option>
+                        <option value="invoice_later">Invoice later</option>
+                        <option value="makeup_credit">Use makeup credit</option>
+                        <option value="trial_free">Free trial</option>
+                        <option value="no_charge">No charge</option>
+                    </select></div>
+                </div>
+                <label style="margin-top:12px;">Owner note</label>
+                <textarea name="owner_note" placeholder="Optional note for parent/internal record">{escape(str(req[11] or ''))}</textarea>
+                <div class="actions">
+                    <button class="primary" name="action" value="confirm" type="submit">Confirm + add to calendar</button>
+                    <button class="danger" name="action" value="reject" type="submit">Reject request</button>
+                    <a class="button secondary" href="/owner_booking_requests">Back to requests</a>
+                    <a class="button secondary" href="/calendar">Calendar</a>
+                </div>
+            </form>
         </div>
     </body>
     </html>
