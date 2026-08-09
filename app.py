@@ -12025,7 +12025,25 @@ def create_package_invoice(name):
         amount_due = max(round(subtotal_amount - discount_amount, 2), 0)
         due_date = request.form.get("due_date") or default_due_date
         payment_methods = ",".join(request.form.getlist("payment_methods")) or "ach,zelle,paypal"
+        package_option_values = request.form.getlist("package_options")
         notes = (request.form.get("notes") or "").strip()
+        package_options = []
+        if "1" in package_option_values:
+            package_options.append({
+                "lessons": 1,
+                "amount": money_value(request.form.get("option_1_amount"), round(package_subtotal_amount / max(charge_lessons, 1), 2))
+            })
+        if "10" in package_option_values:
+            package_options.append({
+                "lessons": 10,
+                "amount": money_value(request.form.get("option_10_amount"), package_subtotal_amount)
+            })
+        if not package_options:
+            package_options.append({
+                "lessons": charge_lessons,
+                "amount": package_subtotal_amount
+            })
+        package_options_json = json.dumps(package_options)
 
         if charge_lessons <= 0 or amount_due < 0:
             conn.close()
@@ -12053,9 +12071,10 @@ def create_package_invoice(name):
             discount_code,
             discount_amount,
             payment_methods,
+            package_options,
             manual_payment_status
         )
-        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, (
             student[0],
             charge_lessons,
@@ -12066,7 +12085,8 @@ def create_package_invoice(name):
             subtotal_amount,
             discount_code,
             discount_amount,
-            payment_methods
+            payment_methods,
+            package_options_json
         ))
         invoice_id = cursor.lastrowid
         if include_pending_fees and pending_fee_total > 0:
@@ -12140,11 +12160,15 @@ def create_package_invoice(name):
             .methods {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
             .method {{ border:1px solid #d1d5db; border-radius:12px; padding:12px; display:flex; align-items:center; gap:8px; font-weight:850; }}
             .method input {{ width:auto; min-height:auto; }}
+            .offer-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            .offer-card {{ border:1px solid #d1d5db; border-radius:14px; padding:12px; background:#fff; }}
+            .offer-card .method {{ border:0; padding:0 0 8px; }}
+            .offer-card input[type="number"] {{ margin:0; }}
             .actions {{ display:flex; gap:12px; margin-top:22px; }}
             button, .button {{ border:0; border-radius:12px; padding:13px 18px; font-size:15px; font-weight:900; text-decoration:none; background:#1d65ad; color:white; cursor:pointer; }}
             .button.secondary {{ background:white; color:#111827; border:1px solid #d1d5db; }}
             .alert.danger {{ background:#fef2f2; border:1px solid #fecaca; color:#991b1b; border-radius:12px; padding:12px; margin-bottom:16px; font-weight:850; }}
-            @media(max-width:760px) {{ body {{ padding:16px; }} .grid,.methods {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
+            @media(max-width:760px) {{ body {{ padding:16px; }} .grid,.methods,.offer-grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
         </style>
         <script>
             function syncInvoicePreview() {{
@@ -12156,10 +12180,20 @@ def create_package_invoice(name):
                 const pendingFees = pendingBox && pendingBox.checked ? {pending_fee_total} : 0;
                 const subtotal = baseSubtotal + pendingFees;
                 const total = Math.max(subtotal - discount, 0);
+                const oneAmount = lessons ? baseSubtotal / lessons : baseSubtotal;
+                const oneInput = document.querySelector('[name="option_1_amount"]');
+                const tenInput = document.querySelector('[name="option_10_amount"]');
+                if (oneInput && oneInput.dataset.touched !== "1") oneInput.value = oneAmount.toFixed(2);
+                if (tenInput && tenInput.dataset.touched !== "1") tenInput.value = (oneAmount * 10).toFixed(2);
                 document.getElementById('invoicePreview').textContent =
                     `Parent app will show ${{lessons || 0}} lesson(s), subtotal $${{subtotal.toFixed(2)}}${{pendingFees ? ' including pending fee(s) $' + pendingFees.toFixed(2) : ''}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
             }}
-            window.addEventListener('DOMContentLoaded', syncInvoicePreview);
+            window.addEventListener('DOMContentLoaded', function() {{
+                document.querySelectorAll('[data-option-amount="1"]').forEach(function(input) {{
+                    input.addEventListener('input', function() {{ input.dataset.touched = "1"; }});
+                }});
+                syncInvoicePreview();
+            }});
         </script>
     </head>
     <body>
@@ -12207,6 +12241,19 @@ def create_package_invoice(name):
                             <label class="method"><input type="checkbox" name="payment_methods" value="ach" checked> ACH / bank</label>
                             <label class="method"><input type="checkbox" name="payment_methods" value="zelle" checked> Zelle</label>
                             <label class="method"><input type="checkbox" name="payment_methods" value="paypal" checked> PayPal</label>
+                        </div>
+                    </div>
+                    <div class="span-2">
+                        <label>Package options shown to parent</label>
+                        <div class="offer-grid">
+                            <div class="offer-card">
+                                <label class="method"><input type="checkbox" name="package_options" value="1" checked> 1 lesson</label>
+                                <input name="option_1_amount" data-option-amount="1" type="number" step="0.01" value="65.00">
+                            </div>
+                            <div class="offer-card">
+                                <label class="method"><input type="checkbox" name="package_options" value="10" checked> 10 lessons</label>
+                                <input name="option_10_amount" data-option-amount="1" type="number" step="0.01" value="{hmusic_money(default_subtotal)}">
+                            </div>
                         </div>
                     </div>
                     {pending_fee_html}
@@ -24417,6 +24464,46 @@ def hmusic_money(value):
         return "0.00"
 
 
+def hmusic_invoice_package_options(options_text, current_lessons, current_amount):
+    options = []
+    try:
+        parsed = json.loads(options_text or "[]")
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    lessons = float(item.get("lessons") or 0)
+                    amount = float(item.get("amount") or 0)
+                    if lessons > 0 and amount >= 0:
+                        options.append({"lessons": lessons, "amount": round(amount, 2)})
+    except Exception:
+        options = []
+
+    if not options:
+        try:
+            lessons = float(current_lessons or 0)
+            amount = float(current_amount or 0)
+            if lessons > 0:
+                options.append({"lessons": lessons, "amount": round(amount, 2)})
+        except Exception:
+            pass
+
+    deduped = {}
+    for option in options:
+        key = hmusic_lesson_count_label(option["lessons"])
+        deduped[key] = option
+    return sorted(deduped.values(), key=lambda item: item["lessons"])
+
+
+def hmusic_lesson_count_label(value):
+    try:
+        number = float(value or 0)
+    except Exception:
+        number = 0
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:g}"
+
+
 def hmusic_card_gross_up(base_amount):
     try:
         base = float(base_amount or 0)
@@ -24809,7 +24896,8 @@ def parent_invoice(invoice_id):
         COALESCE(i.discount_code, ''),
         COALESCE(i.discount_amount, 0),
         COALESCE(i.payment_methods, ''),
-        COALESCE(i.manual_payment_status, '')
+        COALESCE(i.manual_payment_status, ''),
+        COALESCE(i.package_options, '')
     FROM invoices i
     LEFT JOIN enrollments e
         ON i.enrollment_id = e.id
@@ -24844,6 +24932,39 @@ def parent_invoice(invoice_id):
                 invoice[7]
             ))
             conn.commit()
+            conn.close()
+            return redirect(f"/parent_invoice/{invoice_id}")
+
+        if action == "select_package_option" and invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+            try:
+                selected_lessons = float(request.form.get("selected_lessons") or 0)
+                selected_amount = float(request.form.get("selected_amount") or 0)
+            except Exception:
+                selected_lessons = 0
+                selected_amount = 0
+            package_options = hmusic_invoice_package_options(invoice[17], invoice[2], invoice[12] or invoice[3])
+            allowed_option = any(
+                abs(float(option["lessons"]) - selected_lessons) < 0.001
+                and abs(float(option["amount"]) - selected_amount) < 0.01
+                for option in package_options
+            )
+            if allowed_option and selected_lessons > 0 and selected_amount >= 0:
+                discount_amount = float(invoice[14] or 0)
+                amount_due = max(round(selected_amount - discount_amount, 2), 0)
+                cursor.execute("""
+                UPDATE invoices
+                SET charge_lessons = ?,
+                    subtotal_amount = ?,
+                    amount = ?
+                WHERE id = ?
+                AND status NOT IN ('paid', 'pending_confirmation', 'stripe_processing', 'square_processing')
+                """, (
+                    selected_lessons,
+                    selected_amount,
+                    amount_due,
+                    invoice_id
+                ))
+                conn.commit()
             conn.close()
             return redirect(f"/parent_invoice/{invoice_id}")
 
@@ -24889,76 +25010,59 @@ def parent_invoice(invoice_id):
     allowed_methods = {m.strip().lower() for m in (invoice[15] or "ach,zelle,paypal").split(",") if m.strip()}
     if not allowed_methods:
         allowed_methods = {"ach", "zelle", "paypal"}
-    online_payment_html = ""
+    package_options = hmusic_invoice_package_options(invoice[17], invoice[2], subtotal_amount)
+    package_options_html = ""
+    if package_options:
+        package_cards = []
+        for option in package_options:
+            lessons_label = hmusic_lesson_count_label(option["lessons"])
+            lesson_word = "Lesson" if lessons_label == "1" else "Lessons"
+            selected = abs(float(option["lessons"]) - float(invoice[2] or 0)) < 0.001
+            selected_class = " active" if selected else ""
+            option_button = "<div class='selected-chip'>Selected</div>"
+            if not selected and invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+                option_button = f"""
+                    <form method="POST">
+                        <input type="hidden" name="action" value="select_package_option">
+                        <input type="hidden" name="selected_lessons" value="{option['lessons']}">
+                        <input type="hidden" name="selected_amount" value="{option['amount']}">
+                        <button type="submit" class="choose-package">Choose</button>
+                    </form>
+                """
+            package_cards.append(f"""
+                <div class="package-choice{selected_class}">
+                    <div class="package-name">{lessons_label} {lesson_word}</div>
+                    <div class="package-price">${hmusic_money(option["amount"])}</div>
+                    {option_button}
+                </div>
+            """)
+        package_options_html = f"""
+            <div class="section-title">Package Options</div>
+            <div class="package-row">
+                {''.join(package_cards)}
+            </div>
+        """
+
     payment_status_alert = ""
-    if request.args.get("square_missing") == "1":
-        payment_status_alert = "<div class='warn'>Online card payment is not available yet. Please use ACH, Zelle, PayPal, or contact H-Music for help.</div>"
-    elif request.args.get("square_invalid_amount") == "1":
-        payment_status_alert = "<div class='warn'>This invoice needs a valid amount before Square checkout can start.</div>"
-    elif request.args.get("square_processing") == "1" or invoice[4] == "square_processing":
-        payment_status_alert = "<div class='alert'>Square checkout returned successfully. H-Music will confirm the card payment and mark this invoice paid.</div>"
-    elif request.args.get("stripe_missing") == "1":
-        payment_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
+    if request.args.get("stripe_missing") == "1":
+        payment_status_alert = "<div class='warn'>ACH is not connected yet. Please use Zelle or PayPal for now.</div>"
     elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
         payment_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
     elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
-        payment_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
+        payment_status_alert = "<div class='alert'>ACH payment is processing. Bank transfers can take several business days to fully settle.</div>"
+    elif invoice[4] == "pending_confirmation":
+        payment_status_alert = "<div class='alert'>Payment notice sent. H-Music will confirm and add lesson credits after review.</div>"
     elif request.args.get("cancelled") == "1":
-        payment_status_alert = "<div class='warn'>Online checkout was cancelled. You can try again or use the current studio payment method.</div>"
+        payment_status_alert = "<div class='warn'>ACH checkout was cancelled. You can try again or use Zelle / PayPal.</div>"
 
-    if invoice[4] not in ("paid", "stripe_processing", "square_processing"):
+    online_payment_html = ""
+    if invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
         payment_choices = []
-        if square_is_configured():
-            payment_choices.append(f"""
-                <div class="payment-choice recommended">
-                    <div class="choice-kicker">Card payment</div>
-                    <h3>Pay with Square</h3>
-                    <p>Use Square's secure checkout to pay this invoice by credit or debit card.</p>
-                    <div class="pay-summary">
-                        <span>Invoice</span><b>${hmusic_money(invoice[3])}</b>
-                        <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
-                    </div>
-                    <a class="button square-button" href="/square/invoice/{invoice_id}/checkout">Pay by card</a>
-                </div>
-            """)
-        else:
-            payment_choices.append("""
-                <div class="payment-choice disabled">
-                    <div class="choice-kicker">Card payment</div>
-                    <h3>Pay by card</h3>
-                    <p>Online card payment is not available yet. Please use ACH, Zelle, PayPal, or contact H-Music for help.</p>
-                </div>
-            """)
-
-        if "ach" in allowed_methods and stripe_is_configured():
-            payment_choices.append(f"""
-                <div class="payment-choice">
-                    <div class="choice-kicker">Bank option</div>
-                    <h3>Bank Payment / ACH</h3>
-                    <p>No processing fee for families. H-Music covers the ACH bank transfer fee.</p>
-                    <div class="pay-summary">
-                        <span>Package</span><b>${hmusic_money(invoice[3])}</b>
-                        <span>Family fee</span><b>$0.00</b>
-                        <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
-                    </div>
-                    <a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
-                </div>
-            """)
-        elif "ach" in allowed_methods:
-            payment_choices.append("""
-                <div class="payment-choice disabled">
-                    <div class="choice-kicker">Bank option</div>
-                    <h3>ACH / Bank</h3>
-                    <p>Secure bank payment setup is being prepared. Please use Zelle, PayPal, or contact H-Music for now.</p>
-                </div>
-            """)
-
         if "zelle" in allowed_methods:
             payment_choices.append("""
-                <div class="payment-choice manual-pay">
-                    <div class="choice-kicker">Manual transfer</div>
-                    <h3>Zelle</h3>
-                    <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
+                <div class="payment-choice">
+                    <div class="method-head"><h3>Zelle</h3><span class="badge">Manual confirm</span></div>
+                    <p>Send from your bank app, then mark the invoice as paid.</p>
                     <div class="account-box">
                         <span class="copy-account-text">hmusicjustplay@gmail.com</span>
                         <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
@@ -24974,10 +25078,9 @@ def parent_invoice(invoice_id):
 
         if "paypal" in allowed_methods:
             payment_choices.append("""
-                <div class="payment-choice manual-pay">
-                    <div class="choice-kicker">Manual transfer</div>
-                    <h3>PayPal</h3>
-                    <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
+                <div class="payment-choice">
+                    <div class="method-head"><h3>PayPal</h3><span class="badge">Manual confirm</span></div>
+                    <p>Use the H-Music PayPal email, then notify the owner.</p>
                     <div class="account-box">
                         <span class="copy-account-text">hmusicjustplay@gmail.com</span>
                         <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
@@ -24991,15 +25094,36 @@ def parent_invoice(invoice_id):
                 </div>
             """)
 
+        if "ach" in allowed_methods and stripe_is_configured():
+            payment_choices.append(f"""
+                <div class="payment-choice">
+                    <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
+                    <p>Pay securely by bank transfer through Stripe. Processing may take several business days.</p>
+                    <div class="pay-summary">
+                        <span>Amount due</span><b>${hmusic_money(invoice[3])}</b>
+                    </div>
+                    <a class="button primary-action" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
+                </div>
+            """)
+        elif "ach" in allowed_methods:
+            payment_choices.append("""
+                <div class="payment-choice disabled">
+                    <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
+                    <p>ACH online payment is being set up. Please use Zelle or PayPal for now.</p>
+                    <button type="button" class="primary-action" disabled>Pay by ACH</button>
+                </div>
+            """)
+
         if payment_choices:
             online_payment_html = f"""
+            <div class="section-title">Pay With</div>
             <div class="payment-choice-grid">
                 {''.join(payment_choices)}
             </div>
             """
         else:
             online_payment_html = """
-            <p class="hint">Online payment is not enabled yet. Please use the current studio payment method below.</p>
+            <p class="hint">No payment method is enabled for this invoice yet. Please contact H-Music.</p>
             """
 
     return f"""
@@ -25008,42 +25132,53 @@ def parent_invoice(invoice_id):
         {parent_app_meta("Tuition Invoice")}
         <style>
             * {{ box-sizing:border-box; }}
-            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
-            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:760px; margin:0 auto; }}
-            h1 {{ font-size:30px; margin:0 0 18px; }}
-            .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; margin:14px 0; }}
-            .label {{ color:#6b7280; font-size:13px; }}
-            .value {{ font-size:28px; font-weight:900; margin-top:4px; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#fff; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(24px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:520px; margin:0 auto; }}
+            .top-row {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }}
+            h1 {{ font-size:32px; line-height:1.05; margin:0; letter-spacing:0; }}
+            h3 {{ margin:0; font-size:17px; }}
+            .status-pill {{ border-radius:999px; padding:7px 10px; background:#fff7ed; color:#9a3412; font-size:12px; font-weight:900; white-space:nowrap; }}
+            .subcopy {{ color:#6b7280; margin:0 0 16px; font-size:15px; line-height:1.35; font-weight:650; }}
+            .summary {{ display:grid; grid-template-columns:1fr auto; gap:8px 16px; padding:14px; border:1px solid #d8dee9; border-radius:18px; background:#f5f7fb; margin-bottom:14px; }}
+            .summary-label {{ color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .summary-value {{ font-size:15px; font-weight:900; }}
+            .amount {{ font-size:28px; font-weight:950; line-height:1; }}
+            .section-title {{ margin:16px 0 8px; color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.05em; }}
             .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             .hint {{ color:#6b7280; line-height:1.45; }}
-            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
-            textarea {{ min-height:100px; }}
-            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
-            .secondary {{ background:#111827 !important; }}
-            .stripe-button {{ background:#4f46e5 !important; }}
-            .square-button {{ background:#1d65ad !important; }}
-            .card-button {{ background:#111827 !important; }}
-            .payment-choice-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:14px 0; }}
-            .payment-choice {{ border:1px solid #e5e7eb; border-radius:14px; padding:14px; background:#fff; }}
-            .payment-choice.recommended {{ border-color:#bfdbfe; background:#eff6ff; }}
+            .package-row {{ display:grid; grid-template-columns:1fr 1fr; gap:9px; }}
+            .package-choice {{ min-height:86px; padding:12px; border:1px solid #d8dee9; border-radius:16px; background:#fff; display:flex; flex-direction:column; justify-content:space-between; gap:8px; }}
+            .package-choice.active {{ border:2px solid #5747e8; background:#eef2ff; padding:11px; }}
+            .package-name {{ font-size:16px; line-height:1.1; font-weight:900; }}
+            .package-price {{ color:#6b7280; font-size:13px; font-weight:800; }}
+            .selected-chip {{ color:#5747e8; font-size:12px; font-weight:900; }}
+            .choose-package {{ min-height:34px; width:100%; background:#eef2ff; color:#5747e8; }}
+            .payment-choice-grid {{ display:grid; gap:9px; }}
+            .payment-choice {{ border:1px solid #d8dee9; border-radius:17px; padding:12px; background:#fff; }}
             .payment-choice.disabled {{ opacity:.72; }}
-            .payment-choice h3 {{ margin:4px 0 8px; }}
-            .payment-choice p {{ color:#6b7280; line-height:1.45; }}
-            .account-box {{ background:#f8fafc; border:1px dashed #94a3b8; border-radius:10px; padding:10px; font-weight:900; margin:10px 0; display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; }}
+            .payment-choice p {{ color:#6b7280; line-height:1.35; font-size:13px; font-weight:650; margin:7px 0 8px; }}
+            .method-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; }}
+            .badge {{ background:#dcfce7; color:#166534; border-radius:999px; padding:5px 8px; font-size:11px; font-weight:900; white-space:nowrap; }}
+            .account-box {{ background:#f5f7fb; border-radius:12px; padding:9px; font-weight:900; margin:8px 0; display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; font-size:12px; }}
             .copy-account-text {{ word-break:break-all; }}
-            .copy-account-button {{ min-height:38px; margin:0; padding:8px 12px; border-radius:8px; background:#1d65ad; font-size:14px; }}
-            .invoice-breakdown .line {{ display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:#4b5563; font-size:16px; }}
-            .invoice-breakdown .total {{ border-top:1px solid #d1d5db; padding-top:10px; color:#111827; font-size:18px; }}
-            .choice-kicker {{ color:#047857; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
-            .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f8fafc; border-radius:10px; padding:10px; margin:10px 0 12px; }}
+            input, select, textarea {{ width:100%; min-height:44px; padding:10px 12px; margin:8px 0; font-size:15px; border:1px solid #d1d5db; border-radius:12px; }}
+            textarea {{ min-height:64px; resize:vertical; }}
+            button, a.button {{ display:inline-block; border:none; border-radius:13px; padding:11px 14px; font-weight:900; text-decoration:none; min-height:42px; font-size:14px; }}
+            button {{ background:#eef2ff; color:#5747e8; }}
+            .copy-account-button {{ min-height:30px; margin:0; padding:6px 9px; border-radius:10px; background:#fff; color:#5747e8; border:1px solid #d8dee9; font-size:12px; }}
+            .primary-action {{ width:100%; margin-top:8px; color:#fff !important; background:#5747e8 !important; text-align:center; }}
+            .primary-action:disabled {{ background:#d8dee9 !important; color:#6b7280 !important; }}
+            .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f5f7fb; border-radius:10px; padding:10px; margin:8px 0; }}
             .pay-summary span {{ color:#6b7280; }}
             .pay-summary b {{ text-align:right; }}
-            @media(max-width:760px) {{ .payment-choice-grid {{ grid-template-columns:1fr; }} }}
+            .auto-renew-panel {{ margin-top:14px; border-top:1px solid #e5e7eb; padding-top:12px; }}
+            .auto-renew-panel summary {{ font-weight:900; color:#111827; cursor:pointer; }}
+            .back-link {{ display:inline-block; margin-top:14px; color:#5747e8; font-weight:900; text-decoration:none; }}
+            @media(max-width:360px) {{ .package-row {{ grid-template-columns:1fr; }} h1 {{ font-size:28px; }} }}
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
-            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
         <script>
             function copyParentPaymentAccount(button) {{
@@ -25086,49 +25221,40 @@ def parent_invoice(invoice_id):
     </head>
     <body>
         <div class="container">
-            <h1>Tuition Invoice</h1>
+            <div class="top-row">
+                <h1>Invoice</h1>
+                <div class="status-pill">{escape(str(invoice[4] or "unpaid")).replace("_", " ")}</div>
+            </div>
+            <p class="subcopy">{escape(str(invoice[1]))} lesson package from H-Music. Choose a package and payment method.</p>
             {payment_status_alert}
-            <div class="card">
-                <div class="label">Student</div>
-                <div class="value">{invoice[1]}</div>
+            <div class="summary">
+                <div>
+                    <div class="summary-label">Student</div>
+                    <div class="summary-value">{escape(str(invoice[1]))}</div>
+                </div>
+                <div>
+                    <div class="summary-label">Amount due</div>
+                    <div class="amount">${hmusic_money(invoice[3])}</div>
+                </div>
             </div>
-            <div class="card invoice-breakdown">
-                <div class="label">Package</div>
-                <div class="value">{invoice[2]:g} lessons</div>
-                <div class="line"><span>Subtotal</span><b>${hmusic_money(subtotal_amount)}</b></div>
-                <div class="line"><span>Discount {escape(discount_code)}</span><b>-${hmusic_money(discount_amount)}</b></div>
-                <div class="line total"><span>Amount Due</span><b>${hmusic_money(invoice[3])}</b></div>
-            </div>
-            <p><b>Status:</b> {invoice[4]}</p>
-            <p><b>Due Date:</b> {invoice[8] or ''}</p>
-            <p>{invoice[9] or ''}</p>
-
-            <h2>Payment</h2>
+            {package_options_html}
             {online_payment_html}
-            <p class="hint">Card payments open a secure checkout when available. Bank/ACH, Zelle, and PayPal may also be offered by H-Music.</p>
-            <p>Please use the manual confirmation below only if you paid outside the online payment flow.</p>
-            <form method="POST">
-                <input type="hidden" name="action" value="notify_paid">
-                Payment note (optional):<br>
-                <textarea name="payment_note" rows="3" placeholder="Example: Zelle sent today, check number, or payment reference."></textarea>
-                <button type="submit">I Paid / Notify Owner</button>
-                <a class="button secondary" href="/parent_dashboard">Back</a>
-            </form>
-
-            <h2>Auto-Renew</h2>
-            <form method="POST">
-                <input type="hidden" name="action" value="save_autorenew">
-                Auto-renew after package ends:<br>
-                <select name="auto_renew_enabled">
-                    <option value="0" {checked_no}>No - remind me first</option>
-                    <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
-                </select>
-                Lessons per renewal:<br>
-                <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
-                <button type="submit">Save Auto-Renew</button>
-            </form>
+            <p class="hint">Lessons are added after payment is confirmed or ACH succeeds.</p>
+            <details class="auto-renew-panel">
+                <summary>Auto-renew settings</summary>
+                <form method="POST">
+                    <input type="hidden" name="action" value="save_autorenew">
+                    <select name="auto_renew_enabled">
+                        <option value="0" {checked_no}>No - remind me first</option>
+                        <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
+                    </select>
+                    <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
+                    <button type="submit">Save Auto-Renew</button>
+                </form>
+            </details>
+            <a class="back-link" href="/parent_profile">Back to invoices</a>
         </div>
-        {parent_bottom_nav("home")}
+        {parent_bottom_nav("profile")}
     </body>
     </html>
     """
@@ -34150,6 +34276,7 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "discount_code", "discount_code TEXT")
     add_column_if_missing("invoices", "discount_amount", "discount_amount REAL DEFAULT 0")
     add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
+    add_column_if_missing("invoices", "package_options", "package_options TEXT")
     add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
     add_column_if_missing("schedule", "policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0")
