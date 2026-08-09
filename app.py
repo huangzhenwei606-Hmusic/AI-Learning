@@ -11460,24 +11460,30 @@ def calendar_lesson_detail(schedule_id):
         return {"ok": False, "error": "Permission denied"}, 403
     teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
     course_name = row[7] or row[8] or row[9] or "Lesson"
-    return {
+    response = {
         "ok": True,
         "lesson": {
             "id": row[0], "student": row[1] or "", "teacher": row[2] or "", "date": row[3] or "",
             "time": row[4] or "", "time_range": format_lesson_time_range(row[4], row[10]),
             "classroom": row[5] or "", "status": row[6] or "scheduled", "status_label": calendar_status_label(row[6]),
             "course_name": course_name, "schedule_type": row[8] or row[9] or "Lesson", "duration": row[10] or 30,
-            "lessons_left": row[11] or 0, "lesson_note": row[12] or "", "private_note": row[13] or "",
+            "lessons_left": row[11] or 0, "lesson_note": hmusic_parent_visible_lesson_note(row[12]), "private_note": row[13] or "",
             "homework": row[14] or "", "parent_lesson_reminder_enabled": int(row[15] or 0),
             "practice_reminder_enabled": int(row[16] or 0), "low_balance_alert_enabled": int(row[17] or 0),
             "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
             "course_type_id": int(row[19] or 0), "location_id": int(row[20] or 0), "room_id": int(row[21] or 0),
-            "student_billing_method": row[22] or "", "student_price": float(row[23] or 0),
-            "student_charge_amount": float(row[24] or 0), "billing_decision": row[25] or "existing_credits",
             "custom_lesson_count": int(row[26] or 0), "location": row[27] or "",
             "permissions": teacher_permissions,
         }
     }
+    if require_owner():
+        response["lesson"].update({
+            "student_billing_method": row[22] or "",
+            "student_price": float(row[23] or 0),
+            "student_charge_amount": float(row[24] or 0),
+            "billing_decision": row[25] or "existing_credits",
+        })
+    return response
 
 
 @app.route("/calendar_lesson_action", methods=["POST"])
@@ -11509,7 +11515,7 @@ def calendar_lesson_action():
 
     if action == "save":
         status = (data.get("status") or row[6] or "scheduled").strip()
-        lesson_note = (data.get("lesson_note") or "").strip()
+        lesson_note = hmusic_parent_visible_lesson_note(data.get("lesson_note") or "")
         private_note = (data.get("private_note") or "").strip()
         homework_items = data.get("homework_items")
         if isinstance(homework_items, list):
@@ -19400,12 +19406,7 @@ def parent_booking_request_review(request_id):
         except ValueError:
             weekday = ""
 
-        request_type_label = str(req[3] or "booking").replace("_", " ").title()
-        schedule_note = (
-            f"Confirmed from parent booking request #{request_id}. "
-            f"Request type: {request_type_label}. "
-            f"Parent note: {req[8] or ''}. Owner note: {owner_note or ''}"
-        ).strip()
+        schedule_note = ""
         auto_link_student_teacher(cursor, student_name, teacher)
         cursor.execute("""
         INSERT INTO schedule (
