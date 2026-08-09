@@ -12171,8 +12171,24 @@ def create_package_invoice(name):
             @media(max-width:760px) {{ body {{ padding:16px; }} .grid,.methods,.offer-grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
         </style>
         <script>
+            let packageOptionDefaultsTouched = false;
+            function applyPackageOptionDefaults(force) {{
+                const type = document.querySelector('[name="package_type"]').value;
+                const oneOption = document.querySelector('[name="package_options"][value="1"]');
+                const tenOption = document.querySelector('[name="package_options"][value="10"]');
+                if (!oneOption || !tenOption) return;
+                if (!force && packageOptionDefaultsTouched) return;
+                if (type === '10') {{
+                    oneOption.checked = false;
+                    tenOption.checked = true;
+                }} else {{
+                    oneOption.checked = false;
+                    tenOption.checked = false;
+                }}
+            }}
             function syncInvoicePreview() {{
                 const type = document.querySelector('[name="package_type"]').value;
+                applyPackageOptionDefaults(false);
                 const lessons = type === '10' ? 10 : parseFloat(document.querySelector('[name="custom_lessons"]').value || '0');
                 const baseSubtotal = parseFloat(document.querySelector('[name="subtotal_amount"]').value || '0');
                 const discount = parseFloat(document.querySelector('[name="discount_amount"]').value || '0');
@@ -12192,6 +12208,15 @@ def create_package_invoice(name):
                 document.querySelectorAll('[data-option-amount="1"]').forEach(function(input) {{
                     input.addEventListener('input', function() {{ input.dataset.touched = "1"; }});
                 }});
+                document.querySelectorAll('[name="package_options"]').forEach(function(input) {{
+                    input.addEventListener('change', function() {{ packageOptionDefaultsTouched = true; }});
+                }});
+                document.querySelector('[name="package_type"]').addEventListener('change', function() {{
+                    packageOptionDefaultsTouched = false;
+                    applyPackageOptionDefaults(true);
+                    syncInvoicePreview();
+                }});
+                applyPackageOptionDefaults(true);
                 syncInvoicePreview();
             }});
         </script>
@@ -12210,7 +12235,7 @@ def create_package_invoice(name):
                 <div class="grid">
                     <div>
                         <label>Package</label>
-                        <select name="package_type" onchange="syncInvoicePreview()">
+                        <select name="package_type">
                             <option value="10">10 lessons</option>
                             <option value="custom">Custom</option>
                         </select>
@@ -12247,7 +12272,7 @@ def create_package_invoice(name):
                         <label>Package options shown to parent</label>
                         <div class="offer-grid">
                             <div class="offer-card">
-                                <label class="method"><input type="checkbox" name="package_options" value="1" checked> 1 lesson</label>
+                                <label class="method"><input type="checkbox" name="package_options" value="1"> 1 lesson</label>
                                 <input name="option_1_amount" data-option-amount="1" type="number" step="0.01" value="65.00">
                             </div>
                             <div class="offer-card">
@@ -12255,6 +12280,7 @@ def create_package_invoice(name):
                                 <input name="option_10_amount" data-option-amount="1" type="number" step="0.01" value="{hmusic_money(default_subtotal)}">
                             </div>
                         </div>
+                        <p class="muted">If no preset option is checked, the parent will see only this invoice's current package.</p>
                     </div>
                     {pending_fee_html}
                     <div class="span-2">
