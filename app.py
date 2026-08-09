@@ -25381,6 +25381,37 @@ def parent_profile():
                 font-size:13px;
                 font-weight:650;
             }}
+            .parent-bottom-nav {{
+                position:fixed;
+                left:0;
+                right:0;
+                bottom:0;
+                display:grid;
+                grid-template-columns:repeat(4,1fr);
+                gap:4px;
+                padding:7px 10px calc(7px + env(safe-area-inset-bottom));
+                background:rgba(255,255,255,.97);
+                border-top:1px solid #e5e7eb;
+                box-shadow:0 -4px 18px rgba(0,0,0,.08);
+                z-index:20;
+            }}
+            .parent-bottom-nav a {{
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                min-height:38px;
+                text-align:center;
+                color:#6b7280;
+                font-size:11px;
+                font-weight:850;
+                padding:8px 4px;
+                border-radius:8px;
+                text-decoration:none;
+            }}
+            .parent-bottom-nav a.active {{
+                color:#1d65ad;
+                background:#eef6ff;
+            }}
             @media (min-width:720px) {{
                 .container {{ padding-left:24px; padding-right:24px; }}
             }}
