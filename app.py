@@ -15813,26 +15813,86 @@ def queue_parent_lesson_reminder(parent_id, title, body, link_url, schedule_id):
     )
 
 
+def hmusic_public_app_url(path="/parent_dashboard"):
+    base = (os.environ.get("HMUSIC_PUBLIC_URL") or "https://hmusic-crm.onrender.com").rstrip("/")
+    clean_path = "/" + str(path or "").lstrip("/")
+    return base + clean_path
+
+
+def hmusic_lesson_reminder_date_label(lesson_date):
+    try:
+        parsed = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d")
+        return parsed.strftime("%A, %B %-d, %Y")
+    except Exception:
+        return str(lesson_date or "Date TBD")
+
+
+def hmusic_lesson_reminder_time_label(lesson_time):
+    return format_display_time(lesson_time) if lesson_time else "Time TBD"
+
+
+def hmusic_lesson_reminder_title(student_name, lesson_date, lesson_time):
+    name = str(student_name or "Student").strip() or "Student"
+    try:
+        date_part = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d").strftime("%b %-d")
+    except Exception:
+        date_part = str(lesson_date or "Date TBD")
+    return f"H-Music Lesson Reminder: {name} - {date_part} at {hmusic_lesson_reminder_time_label(lesson_time)}"
+
+
+def hmusic_lesson_reminder_body(student_name, lesson_date, lesson_time, teacher, location_name, location_address=""):
+    name = str(student_name or "your student").strip() or "your student"
+    first_name = name.split()[0] if name else "your student"
+    location = str(location_name or "H-Music Studio").strip() or "H-Music Studio"
+    address = str(location_address or "").strip()
+    address_line = f"\nAddress: {address}" if address else ""
+    return f"""Hi,
+
+This is a reminder that {first_name} has a lesson tomorrow.
+
+Student: {name}
+Date: {hmusic_lesson_reminder_date_label(lesson_date)}
+Time: {hmusic_lesson_reminder_time_label(lesson_time)}
+Teacher: {teacher or 'H-Music teacher'}
+Location: {location}{address_line}
+
+Please open the H-Music Parent App to view schedule details.
+
+Thank you,
+H-Music
+"""
+
+
 def create_lesson_reminders_for_date(target_date):
     ensure_v33_schema()
     ensure_parent_portal_feature_schema()
+    ensure_location_room_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
-    FROM schedule
+    SELECT
+        s.id,
+        s.student_name,
+        s.teacher,
+        s.lesson_date,
+        s.lesson_time,
+        COALESCE(l.location_name, s.location, 'H-Music Studio'),
+        COALESCE(l.address, '')
+    FROM schedule s
+    LEFT JOIN studio_locations l
+        ON s.location_id = l.id
     WHERE lesson_date = ?
-    AND COALESCE(status, 'scheduled') = 'scheduled'
-    AND COALESCE(parent_lesson_reminder_enabled, 0) = 1
-    ORDER BY lesson_time
+    AND COALESCE(s.status, 'scheduled') = 'scheduled'
+    AND COALESCE(s.parent_lesson_reminder_enabled, 0) = 1
+    ORDER BY s.lesson_time
     """, (target_date,))
     lessons = cursor.fetchall()
 
     created = 0
     for lesson in lessons:
-        schedule_id, student_name, teacher, lesson_date, lesson_time, classroom = lesson
+        schedule_id, student_name, teacher, lesson_date, lesson_time, location_name, location_address = lesson
 
         cursor.execute("""
         SELECT parent_id
@@ -15868,10 +15928,9 @@ def create_lesson_reminders_for_date(target_date):
             if existing:
                 continue
 
-            title = "Lesson reminder"
-            studio_room = classroom or "the studio"
-            body = f"{student_name} has a lesson on {lesson_date} at {lesson_time} with {teacher} in {studio_room}."
-            link = "/parent_dashboard"
+            title = hmusic_lesson_reminder_title(student_name, lesson_date, lesson_time)
+            body = hmusic_lesson_reminder_body(student_name, lesson_date, lesson_time, teacher, location_name, location_address)
+            link = hmusic_public_app_url("/parent_dashboard")
             conn.commit()
             queue_id = queue_parent_lesson_reminder(parent_id, title, body, link, schedule_id)
             if queue_id:
