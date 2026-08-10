@@ -12818,6 +12818,8 @@ def invoices():
         COALESCE(i.coverage_start, ''),
         COALESCE(i.coverage_note, ''),
         COALESCE(i.manual_payment_status, ''),
+        COALESCE(i.payment_reminder_sent_at, ''),
+        COALESCE(i.payment_reminder_count, 0),
         pp.id,
         COALESCE(pp.parent_name, ''),
         COALESCE(pp.email, '')
@@ -12921,6 +12923,8 @@ def invoices():
             coverage_start,
             coverage_note,
             manual_payment_status,
+            payment_reminder_sent_at,
+            payment_reminder_count,
             parent_id,
             parent_name,
             parent_email,
@@ -12941,6 +12945,11 @@ def invoices():
         actions = [f'<a class="action secondary" href="/parent_invoice/{invoice_id}">Review</a>']
         if status in ("unpaid", "payment_failed", "pending_confirmation"):
             actions.append(f"""
+                <form method="POST" action="/send_invoice_payment_reminder/{invoice_id}">
+                    <button class="action reminder" type="submit">Email reminder</button>
+                </form>
+            """)
+            actions.append(f"""
                 <form method="POST" action="/pay_invoice/{invoice_id}">
                     <input type="hidden" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}">
                     <input type="hidden" name="payment_method" value="Owner marked paid">
@@ -12955,6 +12964,11 @@ def invoices():
             """)
 
         manual_note = f"<span class='mini-note'>{escape(manual_payment_status)}</span>" if manual_payment_status else ""
+        reminder_note = ""
+        if payment_reminder_sent_at:
+            reminder_note = f"<span class='mini-note'>Reminder sent {escape(str(payment_reminder_sent_at))}</span>"
+        elif payment_reminder_count:
+            reminder_note = f"<span class='mini-note'>Reminder count {int(payment_reminder_count or 0)}</span>"
 
         rows_html += f"""
         <tr>
@@ -12974,7 +12988,7 @@ def invoices():
             <td><div class="coverage-pills">{coverage_html}</div></td>
             <td><div class="amount">${hmusic_money(amount)}</div></td>
             <td>{date_short(due_date)}</td>
-            <td><span class="status {status_class(status)}">{escape(status_label(status))}</span>{manual_note}</td>
+            <td><span class="status {status_class(status)}">{escape(status_label(status))}</span>{manual_note}{reminder_note}</td>
             <td><div class="method-pills">{method_labels(payment_methods)}</div></td>
             <td><div class="actions">{''.join(actions)}</div></td>
         </tr>
@@ -12988,6 +13002,20 @@ def invoices():
 
     query_without_status = urlencode({k: v for k, v in {"q": search, "type": type_filter}.items() if v and v != "all"})
     suffix = f"&{query_without_status}" if query_without_status else ""
+
+    reminder_alert = ""
+    reminder_state = (request.args.get("reminder") or "").strip().lower()
+    reminder_message = request.args.get("message") or ""
+    if reminder_state == "sent":
+        reminder_alert = "<div class='notice success'>Payment reminder email sent.</div>"
+    elif reminder_state == "no_email":
+        reminder_alert = "<div class='notice warn'>No real parent email is available for that invoice. Please update the student parent email first.</div>"
+    elif reminder_state == "paid":
+        reminder_alert = "<div class='notice warn'>That invoice is already paid, so no reminder was sent.</div>"
+    elif reminder_state == "missing":
+        reminder_alert = "<div class='notice warn'>Invoice not found.</div>"
+    elif reminder_state == "failed":
+        reminder_alert = f"<div class='notice warn'>Payment reminder was queued but email failed: {escape(reminder_message)}</div>"
 
     return f"""
     <html>
@@ -13010,6 +13038,9 @@ def invoices():
             .card span {{ display:block; color:#667085; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
             .card b {{ display:block; margin-top:5px; font-size:26px; }}
             .filters {{ display:flex; gap:10px; align-items:center; padding:16px 30px; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; background:#f9fafb; }}
+            .notice {{ margin:0 30px 14px; padding:12px 14px; border-radius:10px; font-weight:900; }}
+            .notice.success {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }}
+            .notice.warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; }}
             .filters input,.filters select {{ height:42px; border:1px solid #d9e1ee; border-radius:9px; padding:0 12px; font-weight:800; background:#fff; min-width:150px; }}
             .filters input {{ flex:1; min-width:260px; }}
             .tabs {{ display:flex; gap:8px; padding:16px 30px 0; flex-wrap:wrap; }}
@@ -13038,6 +13069,7 @@ def invoices():
             .actions form {{ margin:0; }}
             .action {{ border:1px solid #d9e1ee; border-radius:8px; min-height:34px; padding:7px 10px; font-weight:900; background:#fff; color:#1d65ad; cursor:pointer; font-size:13px; display:inline-flex; align-items:center; }}
             .action.primary {{ background:#1d65ad; border-color:#1d65ad; color:#fff; }}
+            .action.reminder {{ background:#eef2ff; border-color:#c7d2fe; color:#3730a3; }}
             .action.danger {{ color:#dc2626; border-color:#fecaca; }}
             .empty {{ text-align:center; color:#667085; font-weight:800; padding:34px; }}
             @media (max-width: 900px) {{
@@ -13070,6 +13102,7 @@ def invoices():
                     <div class="card"><span>Processing</span><b>{processing_count}</b></div>
                     <div class="card"><span>Paid total</span><b>${hmusic_money(paid_amount)}</b></div>
                 </div>
+                {reminder_alert}
 
                 <form class="filters" method="GET" action="/invoices">
                     <input name="q" value="{escape(search, quote=True)}" placeholder="Search student, parent, email, or invoice #">
@@ -13121,6 +13154,97 @@ def invoices():
     </body>
     </html>
     """
+
+
+@app.route("/send_invoice_payment_reminder/<int:invoice_id>", methods=["POST"])
+def send_invoice_payment_reminder(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    ensure_v33_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    invoice_row, parent_id, parent_email = hmusic_get_invoice_payment_reminder_target(cursor, invoice_id)
+
+    if not invoice_row:
+        conn.close()
+        return redirect("/invoices?reminder=missing")
+
+    status = str(invoice_row[4] or "unpaid").lower()
+    if status == "paid":
+        conn.close()
+        return redirect("/invoices?reminder=paid")
+
+    if not parent_email:
+        conn.close()
+        return redirect("/invoices?reminder=no_email")
+
+    student_name = str(invoice_row[1] or "Student")
+    invoice_link = public_url_for(f"/parent_invoice/{invoice_id}")
+    title = f"H-Music Payment Reminder: {student_name}"
+    body = hmusic_invoice_payment_reminder_body(invoice_row, invoice_link)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES (?, ?, 'email', ?, ?, ?, ?, 'invoice_payment_reminder', ?, 'pending', ?)
+    """, (
+        "parent",
+        str(parent_id or parent_email),
+        parent_email,
+        title,
+        body,
+        invoice_link,
+        invoice_id,
+        now
+    ))
+    queue_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    sent, response = send_queued_email_now(queue_id)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoices
+    SET payment_reminder_count = COALESCE(payment_reminder_count, 0) + 1,
+        payment_reminder_sent_at = CASE WHEN ? THEN ? ELSE payment_reminder_sent_at END
+    WHERE id = ?
+    """, (1 if sent else 0, now, invoice_id))
+    conn.commit()
+    conn.close()
+
+    if parent_id:
+        create_notification(
+            "parent",
+            str(parent_id),
+            "H-Music payment reminder",
+            f"{student_name} has a tuition invoice ready for payment.",
+            f"/parent_invoice/{invoice_id}",
+            related_type="invoice_payment_reminder",
+            related_id=invoice_id,
+            queue_delivery=False
+        )
+
+    if sent:
+        return redirect("/invoices?reminder=sent")
+    return redirect(f"/invoices?reminder=failed&message={quote(str(response or 'Unknown error'))}")
+
 
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def pay_invoice(invoice_id):
@@ -25572,6 +25696,105 @@ def hmusic_money(value):
         return "0.00"
 
 
+def hmusic_invoice_payment_reminder_body(invoice_row, invoice_link):
+    (
+        invoice_id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        due_date,
+        payment_methods,
+        coverage_title,
+        coverage_class,
+        coverage_start,
+        coverage_note,
+    ) = invoice_row
+    method_labels = {
+        "ach": "ACH bank payment",
+        "zelle": "Zelle",
+        "paypal": "PayPal",
+        "card": "credit/debit card",
+    }
+    methods = [
+        method_labels.get(item.strip().lower(), item.strip().title())
+        for item in (payment_methods or "ach,zelle,paypal").split(",")
+        if item.strip()
+    ]
+    coverage_bits = [item for item in (coverage_title, coverage_class, f"starts {coverage_start}" if coverage_start else "", coverage_note) if item]
+    body_lines = [
+        "Hi,",
+        "",
+        f"This is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.",
+        "",
+        f"Amount due: ${hmusic_money(amount)}",
+    ]
+    if due_date:
+        body_lines.append(f"Due date: {due_date}")
+    if charge_lessons:
+        body_lines.append(f"Package: {hmusic_lesson_count_label(charge_lessons)} lesson(s)")
+    if coverage_bits:
+        body_lines.append(f"Coverage: {' · '.join(str(bit) for bit in coverage_bits)}")
+    if methods:
+        body_lines.append(f"Payment options: {', '.join(methods)}")
+    body_lines.extend([
+        "",
+        "Please open the H-Music Parent App to review the invoice and choose a payment method.",
+        "",
+        "Thank you,",
+        "H-Music",
+    ])
+    return "\n".join(body_lines)
+
+
+def hmusic_get_invoice_payment_reminder_target(cursor, invoice_id):
+    cursor.execute("""
+    SELECT
+        i.id,
+        i.student_name,
+        COALESCE(i.charge_lessons, 0),
+        COALESCE(i.amount, 0),
+        COALESCE(i.status, 'unpaid'),
+        COALESCE(i.invoice_type, 'invoice'),
+        COALESCE(i.due_date, ''),
+        COALESCE(i.payment_methods, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, ''),
+        pp.id,
+        COALESCE(pp.email, ''),
+        COALESCE(st.parent_email, '')
+    FROM invoices i
+    LEFT JOIN students st ON st.name = i.student_name
+    LEFT JOIN parent_students ps
+        ON ps.student_name = i.student_name
+        AND ps.active = 1
+        AND ps.id = (
+            SELECT ps2.id
+            FROM parent_students ps2
+            WHERE ps2.student_name = i.student_name
+            AND ps2.active = 1
+            ORDER BY ps2.id DESC
+            LIMIT 1
+        )
+    LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
+    WHERE i.id = ?
+    """, (invoice_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None, None, None
+    invoice_row = row[:12]
+    parent_id = row[12]
+    parent_email = row[13]
+    student_parent_email = row[14]
+    email = student_parent_email if hmusic_is_real_email(student_parent_email) else parent_email
+    if not hmusic_is_real_email(email):
+        email = None
+    return invoice_row, parent_id, email
+
+
 def hmusic_invoice_package_options(options_text, current_lessons, current_amount):
     options = []
     try:
@@ -35814,6 +36037,8 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "coverage_class", "coverage_class TEXT")
     add_column_if_missing("invoices", "coverage_start", "coverage_start TEXT")
     add_column_if_missing("invoices", "coverage_note", "coverage_note TEXT")
+    add_column_if_missing("invoices", "payment_reminder_sent_at", "payment_reminder_sent_at TEXT")
+    add_column_if_missing("invoices", "payment_reminder_count", "payment_reminder_count INTEGER DEFAULT 0")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
     add_column_if_missing("schedule", "policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0")
     add_column_if_missing("schedule", "pending_fee_amount", "pending_fee_amount REAL DEFAULT 0")
