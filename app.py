@@ -12069,6 +12069,10 @@ def create_package_invoice(name):
         payment_methods = ",".join(request.form.getlist("payment_methods")) or "ach,zelle,paypal"
         package_option_values = request.form.getlist("package_options")
         notes = (request.form.get("notes") or "").strip()
+        coverage_title = (request.form.get("coverage_title") or "").strip()
+        coverage_class = (request.form.get("coverage_class") or "").strip()
+        coverage_start = (request.form.get("coverage_start") or "").strip()
+        coverage_note = (request.form.get("coverage_note") or "").strip()
         package_options = []
         if "1" in package_option_values:
             package_options.append({
@@ -12114,9 +12118,13 @@ def create_package_invoice(name):
             discount_amount,
             payment_methods,
             package_options,
+            coverage_title,
+            coverage_class,
+            coverage_start,
+            coverage_note,
             manual_payment_status
         )
-        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, (
             student[0],
             charge_lessons,
@@ -12128,7 +12136,11 @@ def create_package_invoice(name):
             discount_code,
             discount_amount,
             payment_methods,
-            package_options_json
+            package_options_json,
+            coverage_title,
+            coverage_class,
+            coverage_start,
+            coverage_note
         ))
         invoice_id = cursor.lastrowid
         if include_pending_fees and pending_fee_total > 0:
@@ -12323,6 +12335,15 @@ def create_package_invoice(name):
                             </div>
                         </div>
                         <p class="muted">If no preset option is checked, the parent will see only this invoice's current package.</p>
+                    </div>
+                    <div class="span-2">
+                        <label>Coverage shown to parent</label>
+                        <div class="offer-grid">
+                            <input name="coverage_title" placeholder="Fall 2026 Piano Package">
+                            <input name="coverage_class" placeholder="Private Piano / Group Class">
+                            <input name="coverage_start" type="date" value="{date.today().strftime('%Y-%m-%d')}">
+                            <input name="coverage_note" placeholder="Optional: covers weekly Monday lessons">
+                        </div>
                     </div>
                     {pending_fee_html}
                     <div class="span-2">
@@ -13642,12 +13663,13 @@ def add_parent():
     """
 
 
-@app.route("/parent_admin/<int:parent_id>")
+@app.route("/parent_admin/<int:parent_id>", methods=["GET", "POST"])
 def parent_admin(parent_id):
     if not require_owner():
         return redirect("/owner_login")
 
     ensure_v27_schema()
+    ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -13672,6 +13694,92 @@ def parent_admin(parent_id):
     ORDER BY ps.active DESC, ps.student_name
     """, (parent_id,))
     linked_students = cursor.fetchall()
+
+    if request.method == "POST" and request.form.get("action") == "create_family_invoices":
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        selected_students = request.form.getlist("invoice_students")
+        created_count = 0
+        active_names = {row[1] for row in linked_students if row[3] == 1}
+        for student_name in selected_students:
+            if student_name not in active_names:
+                continue
+            key = quote(student_name, safe="")
+            try:
+                lessons = float(request.form.get(f"lessons_{key}") or 0)
+                amount = round(float(request.form.get(f"amount_{key}") or 0), 2)
+            except Exception:
+                lessons = 0
+                amount = 0
+            if lessons <= 0 or amount < 0:
+                continue
+            due_date = request.form.get(f"due_date_{key}") or (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+            coverage_title = (request.form.get(f"coverage_title_{key}") or "").strip()
+            coverage_class = (request.form.get(f"coverage_class_{key}") or "").strip()
+            coverage_start = (request.form.get(f"coverage_start_{key}") or "").strip()
+            coverage_note = (request.form.get(f"coverage_note_{key}") or "").strip()
+            payment_methods = ",".join(request.form.getlist(f"payment_methods_{key}")) or "ach,zelle,paypal"
+            package_options = json.dumps([{"lessons": lessons, "amount": amount}])
+            invoice_notes = f"Package invoice for {lessons:g} lesson(s)."
+            if coverage_title:
+                invoice_notes += f" Covers: {coverage_title}."
+            cursor.execute("""
+            INSERT INTO invoices (
+                student_name,
+                schedule_id,
+                charge_lessons,
+                amount,
+                status,
+                invoice_type,
+                created_at,
+                due_date,
+                notes,
+                subtotal_amount,
+                discount_code,
+                discount_amount,
+                payment_methods,
+                package_options,
+                coverage_title,
+                coverage_class,
+                coverage_start,
+                coverage_note,
+                manual_payment_status
+            )
+            VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, NULL)
+            """, (
+                student_name,
+                lessons,
+                amount,
+                now,
+                due_date,
+                invoice_notes,
+                amount,
+                payment_methods,
+                package_options,
+                coverage_title,
+                coverage_class,
+                coverage_start,
+                coverage_note
+            ))
+            invoice_id = cursor.lastrowid
+            notify_parent_tuition_due(
+                student_name,
+                parent_id,
+                invoice_id,
+                hmusic_money(amount),
+                "New package invoice"
+            )
+            create_invoice_message_event(
+                invoice_id,
+                "created",
+                f"Hi, {student_name}'s package invoice is ready. Amount due: ${hmusic_money(amount)}.",
+                parent_id=parent_id,
+                student_name=student_name,
+                amount=amount
+            )
+            created_count += 1
+        conn.commit()
+        conn.close()
+        return redirect(f"/parent_admin/{parent_id}?created_invoices={created_count}")
 
     cursor.execute("""
     SELECT name, teacher, parent_email
@@ -13731,6 +13839,45 @@ def parent_admin(parent_id):
 
     if not linked_rows:
         linked_rows = "<tr><td colspan='6' class='empty'>No children are visible in this parent app yet.</td></tr>"
+
+    family_invoice_rows = ""
+    default_due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+    for s in linked_students:
+        if s[3] != 1:
+            continue
+        student_name = str(s[1] or "")
+        student_key = quote(student_name, safe="")
+        family_invoice_rows += f"""
+        <tr>
+            <td><input type="checkbox" name="invoice_students" value="{escape(student_name, quote=True)}" checked></td>
+            <td>
+                <div class="child-cell">
+                    <a href="/student/{quote(student_name)}">{escape(student_name)}</a>
+                    <span>{escape(str(s[5] or 'Unassigned'))}</span>
+                </div>
+            </td>
+            <td><input name="lessons_{student_key}" type="number" step="0.5" value="10"></td>
+            <td><input name="amount_{student_key}" type="number" step="0.01" value="650.00"></td>
+            <td>
+                <div class="coverage-grid">
+                    <input name="coverage_title_{student_key}" placeholder="Fall 2026 Piano Package">
+                    <input name="coverage_class_{student_key}" placeholder="Private Piano / Group Class">
+                    <input name="coverage_start_{student_key}" type="date" value="{date.today().strftime('%Y-%m-%d')}">
+                    <input name="coverage_note_{student_key}" placeholder="Optional note">
+                </div>
+            </td>
+            <td><input name="due_date_{student_key}" type="date" value="{default_due_date}"></td>
+            <td>
+                <div class="access-pills invoice-methods">
+                    <label><input type="checkbox" name="payment_methods_{student_key}" value="ach" checked> ACH</label>
+                    <label><input type="checkbox" name="payment_methods_{student_key}" value="zelle" checked> Zelle</label>
+                    <label><input type="checkbox" name="payment_methods_{student_key}" value="paypal" checked> PayPal</label>
+                </div>
+            </td>
+        </tr>
+        """
+    if not family_invoice_rows:
+        family_invoice_rows = "<tr><td colspan='7' class='empty'>No active children available for invoice creation.</td></tr>"
 
     student_options = ""
     for s in available_students:
@@ -13850,8 +13997,13 @@ def parent_admin(parent_id):
             .child-cell span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
             .access-pills {{ display:flex; gap:4px; flex-wrap:wrap; }}
             .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
+            .invoice-methods label {{ min-height:24px; display:inline-flex; align-items:center; gap:4px; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
+            .invoice-methods input {{ width:auto; min-height:auto; padding:0; }}
+            .coverage-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:6px; min-width:360px; }}
+            .coverage-grid input {{ min-height:30px; font-size:11px; }}
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
             .activity-table {{ min-width:760px; }}
+            .invoice-table {{ min-width:1180px; }}
             @media (max-width:900px) {{
                 .topbar, .head, .layout, .add-grid {{ grid-template-columns:1fr; }}
                 .tabs, .top-actions {{ justify-content:flex-start; }}
@@ -13965,6 +14117,38 @@ def parent_admin(parent_id):
                                 </tr>
                                 {linked_rows}
                             </table>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Create invoices for this family</h2><span>Separate invoice per child</span></div>
+                        <div class="panel-body">
+                            <form method="POST" action="/parent_admin/{parent[0]}">
+                                <input type="hidden" name="action" value="create_family_invoices">
+                                <div class="table-wrap">
+                                    <table class="invoice-table">
+                                        <tr>
+                                            <th>Create</th>
+                                            <th>Child</th>
+                                            <th>Lessons</th>
+                                            <th>Amount</th>
+                                            <th>Coverage shown to parent</th>
+                                            <th>Due date</th>
+                                            <th>Payment</th>
+                                        </tr>
+                                        {family_invoice_rows}
+                                    </table>
+                                </div>
+                                <div class="hint-line" style="margin-top:10px;">
+                                    <span>Coverage examples:</span>
+                                    <span class="pill">Fall 2026 Piano Package</span>
+                                    <span class="pill">Private Piano</span>
+                                    <span class="pill">Starts Aug 16</span>
+                                </div>
+                                <div class="top-actions" style="justify-content:flex-start;margin-top:12px;">
+                                    <button class="primary" type="submit">Create selected invoices</button>
+                                </div>
+                            </form>
                         </div>
                     </section>
 
@@ -24504,6 +24688,94 @@ def stripe_webhook():
 
     if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed") and data_object.get("mode") == "payment":
         invoice_id = metadata.get("invoice_id")
+        invoice_ids_text = metadata.get("invoice_ids")
+        if invoice_ids_text:
+            invoice_ids = []
+            for raw_id in str(invoice_ids_text).split(","):
+                try:
+                    invoice_ids.append(int(raw_id))
+                except Exception:
+                    pass
+            if event_type == "checkout.session.async_payment_failed":
+                for grouped_invoice_id in invoice_ids:
+                    mark_stripe_invoice_payment_failed(
+                        invoice_id=grouped_invoice_id,
+                        checkout_session_id=data_object.get("id"),
+                        payment_intent_id=data_object.get("payment_intent"),
+                        reason=data_object.get("payment_status") or event_type
+                    )
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "group_invoice_payment_failed",
+                    "Grouped invoices marked failed from Stripe async payment failure.",
+                    invoice_id=invoice_ids[0] if invoice_ids else None,
+                    parent_id=metadata.get("parent_id")
+                )
+            elif event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
+                for grouped_invoice_id in invoice_ids:
+                    finalize_stripe_invoice_payment(
+                        grouped_invoice_id,
+                        checkout_session_id=data_object.get("id"),
+                        payment_intent_id=data_object.get("payment_intent"),
+                        source=event_type
+                    )
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "group_invoices_paid",
+                    "Grouped invoices finalized from Stripe webhook.",
+                    invoice_id=invoice_ids[0] if invoice_ids else None,
+                    parent_id=metadata.get("parent_id")
+                )
+            else:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                conn = sqlite3.connect("hmusic.db")
+                cursor = conn.cursor()
+                if invoice_ids:
+                    placeholders = ",".join(["?"] * len(invoice_ids))
+                    cursor.execute(f"""
+                    UPDATE invoices
+                    SET status = 'stripe_processing',
+                        stripe_checkout_session_id = ?,
+                        stripe_payment_intent_id = ?,
+                        autopay_status = COALESCE(autopay_status, 'processing')
+                    WHERE id IN ({placeholders})
+                    AND status != 'paid'
+                    """, [data_object.get("id"), data_object.get("payment_intent")] + invoice_ids)
+                    cursor.execute("""
+                    INSERT INTO notification_delivery_queue (
+                        user_role,
+                        user_key,
+                        channel,
+                        destination,
+                        title,
+                        body,
+                        link_url,
+                        related_type,
+                        related_id,
+                        status,
+                        created_at
+                    )
+                    VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
+                    """, (
+                        "Stripe grouped payment processing",
+                        f"Stripe checkout completed for invoices {invoice_ids_text}. Await bank/payment settlement.",
+                        "/invoices",
+                        invoice_ids[0],
+                        now
+                    ))
+                conn.commit()
+                conn.close()
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "group_payment_processing",
+                    "Grouped checkout completed, waiting for bank/payment settlement.",
+                    invoice_id=invoice_ids[0] if invoice_ids else None,
+                    parent_id=metadata.get("parent_id")
+                )
+            return Response("ok", status=200)
         if invoice_id:
             if event_type == "checkout.session.async_payment_failed":
                 mark_stripe_invoice_payment_failed(
@@ -24587,6 +24859,29 @@ def stripe_webhook():
 
     if event_type == "payment_intent.succeeded":
         invoice_id = metadata.get("invoice_id")
+        invoice_ids_text = metadata.get("invoice_ids")
+        if invoice_ids_text:
+            invoice_ids = []
+            for raw_id in str(invoice_ids_text).split(","):
+                try:
+                    invoice_ids.append(int(raw_id))
+                except Exception:
+                    pass
+            for grouped_invoice_id in invoice_ids:
+                finalize_stripe_invoice_payment(
+                    grouped_invoice_id,
+                    payment_intent_id=data_object.get("id"),
+                    source=event_type
+                )
+            record_stripe_webhook_event(
+                event_id,
+                event_type,
+                "group_invoices_paid",
+                "Grouped invoices finalized from payment intent.",
+                invoice_id=invoice_ids[0] if invoice_ids else None,
+                parent_id=metadata.get("parent_id")
+            )
+            return Response("ok", status=200)
         if invoice_id:
             finalize_stripe_invoice_payment(
                 int(invoice_id),
@@ -24604,10 +24899,33 @@ def stripe_webhook():
 
     if event_type in ("payment_intent.payment_failed", "charge.failed"):
         invoice_id = metadata.get("invoice_id")
+        invoice_ids_text = metadata.get("invoice_ids")
         payment_intent_id = data_object.get("id") if event_type == "payment_intent.payment_failed" else data_object.get("payment_intent")
         error_obj = data_object.get("last_payment_error") or data_object.get("failure_message") or data_object.get("failure_code") or event_type
         if isinstance(error_obj, dict):
             error_obj = error_obj.get("message") or error_obj.get("code") or event_type
+        if invoice_ids_text:
+            invoice_ids = []
+            for raw_id in str(invoice_ids_text).split(","):
+                try:
+                    invoice_ids.append(int(raw_id))
+                except Exception:
+                    pass
+            for grouped_invoice_id in invoice_ids:
+                mark_stripe_invoice_payment_failed(
+                    invoice_id=grouped_invoice_id,
+                    payment_intent_id=payment_intent_id,
+                    reason=error_obj
+                )
+            record_stripe_webhook_event(
+                event_id,
+                event_type,
+                "group_invoice_payment_failed",
+                str(error_obj),
+                invoice_id=invoice_ids[0] if invoice_ids else None,
+                parent_id=metadata.get("parent_id")
+            )
+            return Response("ok", status=200)
         marked = mark_stripe_invoice_payment_failed(
             invoice_id=invoice_id,
             payment_intent_id=payment_intent_id,
@@ -24670,6 +24988,66 @@ def hmusic_lesson_count_label(value):
     if number.is_integer():
         return str(int(number))
     return f"{number:g}"
+
+
+def hmusic_invoice_coverage_summary(invoice_row):
+    title = (invoice_row.get("coverage_title") or "").strip()
+    class_name = (invoice_row.get("coverage_class") or "").strip()
+    start = (invoice_row.get("coverage_start") or "").strip()
+    note = (invoice_row.get("coverage_note") or "").strip()
+    parts = []
+    if class_name:
+        parts.append(class_name)
+    if start:
+        parts.append(f"starts {start}")
+    if note:
+        parts.append(note)
+    return title, " · ".join(parts)
+
+
+def hmusic_package_lesson_dates(cursor, student_name, invoice_created_at=None, max_lessons=10, next_invoice_created_at=None):
+    try:
+        limit = max(int(float(max_lessons or 10)), 1)
+    except Exception:
+        limit = 10
+    start_date = (str(invoice_created_at or "")[:10] or "0000-00-00")
+    end_date = str(next_invoice_created_at or "")[:10]
+    params = [student_name, start_date]
+    end_clause = ""
+    if end_date:
+        end_clause = "AND lesson_date < ?"
+        params.append(end_date)
+    params.append(limit)
+    cursor.execute(f"""
+    SELECT lesson_date
+    FROM lessons
+    WHERE student_name = ?
+    AND COALESCE(lesson_date, '') >= ?
+    {end_clause}
+    AND COALESCE(lesson_date, '') != ''
+    ORDER BY lesson_date, id
+    LIMIT ?
+    """, params)
+    dates = [row[0] for row in cursor.fetchall() if row and row[0]]
+    if dates:
+        return dates
+
+    params = [student_name, start_date]
+    if end_date:
+        params.append(end_date)
+    params.append(limit)
+    cursor.execute(f"""
+    SELECT lesson_date
+    FROM schedule
+    WHERE student_name = ?
+    AND COALESCE(lesson_date, '') >= ?
+    {end_clause}
+    AND COALESCE(lesson_date, '') != ''
+    AND COALESCE(status, 'scheduled') IN ('present', 'scheduled')
+    ORDER BY lesson_date, lesson_time, id
+    LIMIT ?
+    """, params)
+    return [row[0] for row in cursor.fetchall() if row and row[0]]
 
 
 def hmusic_card_gross_up(base_amount):
@@ -24797,6 +25175,126 @@ def stripe_invoice_checkout(invoice_id):
         """
 
 
+@app.route("/stripe/invoices/checkout", methods=["POST"])
+def stripe_invoices_checkout():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    if not configure_stripe():
+        return redirect("/parent_profile?stripe_missing=1")
+
+    ensure_billing_schema()
+    parent_id = session.get("parent_id")
+    raw_invoice_ids = request.form.getlist("invoice_ids")
+    invoice_ids = []
+    for raw_id in raw_invoice_ids:
+        try:
+            invoice_ids.append(int(raw_id))
+        except Exception:
+            pass
+    invoice_ids = list(dict.fromkeys(invoice_ids))
+    if not invoice_ids:
+        return redirect("/parent_profile")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(invoice_ids))
+    cursor.execute(f"""
+    SELECT id, student_name, charge_lessons, amount, status
+    FROM invoices
+    WHERE id IN ({placeholders})
+    ORDER BY id
+    """, invoice_ids)
+    invoices = cursor.fetchall()
+    valid_invoices = []
+    for inv in invoices:
+        if inv[0] not in invoice_ids:
+            continue
+        if not parent_can_access_student(parent_id, inv[1]):
+            continue
+        if str(inv[4] or "unpaid").lower() not in ("unpaid", "payment_failed"):
+            continue
+        valid_invoices.append(inv)
+
+    if not valid_invoices:
+        conn.close()
+        return redirect("/parent_profile")
+
+    total_amount = round(sum(float(inv[3] or 0) for inv in valid_invoices), 2)
+    if total_amount <= 0:
+        conn.close()
+        return redirect("/parent_profile")
+
+    try:
+        customer_id = get_or_create_stripe_customer(cursor, parent_id)
+        invoice_id_text = ",".join(str(inv[0]) for inv in valid_invoices)
+        checkout_session = stripe.checkout.Session.create(
+            mode="payment",
+            customer=customer_id,
+            payment_method_types=["us_bank_account"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {
+                        "name": "H-Music Tuition - Selected invoices",
+                        "description": f"ACH payment for invoices {invoice_id_text}.",
+                    },
+                    "unit_amount": int(round(total_amount * 100)),
+                },
+                "quantity": 1,
+            }],
+            success_url=public_url_for("/stripe/invoices/success") + f"?invoice_ids={quote(invoice_id_text)}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=public_url_for("/parent_profile?cancelled=1"),
+            metadata={
+                "invoice_ids": invoice_id_text,
+                "parent_id": str(parent_id),
+                "payment_method": "ach",
+                "total_charged": hmusic_money(total_amount),
+            },
+            payment_intent_data={
+                "metadata": {
+                    "invoice_ids": invoice_id_text,
+                    "parent_id": str(parent_id),
+                    "payment_method": "ach",
+                    "total_charged": hmusic_money(total_amount),
+                }
+            }
+        )
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        valid_placeholders = ",".join(["?"] * len(valid_invoices))
+        cursor.execute(f"""
+        UPDATE invoices
+        SET stripe_checkout_session_id = ?,
+            autopay_status = COALESCE(autopay_status, 'checkout_started')
+        WHERE id IN ({valid_placeholders})
+        """, [checkout_session.id] + [inv[0] for inv in valid_invoices])
+        cursor.execute("""
+        INSERT INTO parent_billing_profiles (
+            parent_id,
+            stripe_customer_id,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, 'checkout_started', ?, ?)
+        ON CONFLICT(parent_id) DO UPDATE SET
+            stripe_customer_id = excluded.stripe_customer_id,
+            status = 'checkout_started',
+            updated_at = excluded.updated_at
+        """, (parent_id, customer_id, now, now))
+        conn.commit()
+        conn.close()
+        return redirect(checkout_session.url)
+    except Exception as exc:
+        conn.rollback()
+        conn.close()
+        return f"""
+        <h1>Stripe Checkout Failed</h1>
+        <p>{escape(str(exc))}</p>
+        <p><a href="/parent_profile">Back to Invoices</a></p>
+        """
+
+
 @app.route("/stripe/invoice/success")
 def stripe_invoice_success():
     if not require_parent():
@@ -24843,6 +25341,58 @@ def stripe_invoice_success():
     conn.close()
 
     return redirect(f"/parent_invoice/{invoice_id}?stripe_processing=1")
+
+
+@app.route("/stripe/invoices/success")
+def stripe_invoices_success():
+    if not require_parent():
+        return redirect("/parent_login")
+
+    invoice_ids_text = request.args.get("invoice_ids") or ""
+    session_id = request.args.get("session_id")
+    invoice_ids = []
+    for raw_id in invoice_ids_text.split(","):
+        try:
+            invoice_ids.append(int(raw_id))
+        except Exception:
+            pass
+    if not invoice_ids or not session_id:
+        return redirect("/parent_profile")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id) if configure_stripe() else None
+        if checkout_session:
+            session_invoice_ids = checkout_session.get("metadata", {}).get("invoice_ids") or ""
+            if session_invoice_ids and session_invoice_ids != ",".join(str(i) for i in invoice_ids):
+                return redirect("/parent_profile")
+            if checkout_session.get("payment_status") == "paid":
+                for invoice_id in invoice_ids:
+                    finalize_stripe_invoice_payment(
+                        int(invoice_id),
+                        checkout_session_id=session_id,
+                        payment_intent_id=checkout_session.get("payment_intent"),
+                        source="stripe_group_success_return"
+                    )
+                return redirect("/parent_profile?stripe_paid=1")
+    except Exception:
+        pass
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(invoice_ids))
+    cursor.execute(f"""
+    UPDATE invoices
+    SET status = 'stripe_processing',
+        stripe_checkout_session_id = ?,
+        autopay_status = 'processing'
+    WHERE id IN ({placeholders})
+    AND status != 'paid'
+    """, [session_id] + invoice_ids)
+    conn.commit()
+    conn.close()
+
+    return redirect("/parent_profile?stripe_processing=1")
 
 
 @app.route("/square/invoice/<int:invoice_id>/checkout")
@@ -25065,7 +25615,11 @@ def parent_invoice(invoice_id):
         COALESCE(i.discount_amount, 0),
         COALESCE(i.payment_methods, ''),
         COALESCE(i.manual_payment_status, ''),
-        COALESCE(i.package_options, '')
+        COALESCE(i.package_options, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, '')
     FROM invoices i
     LEFT JOIN enrollments e
         ON i.enrollment_id = e.id
@@ -25178,6 +25732,24 @@ def parent_invoice(invoice_id):
     allowed_methods = {m.strip().lower() for m in (invoice[15] or "ach,zelle,paypal").split(",") if m.strip()}
     if not allowed_methods:
         allowed_methods = {"ach", "zelle", "paypal"}
+    coverage_title = invoice[18] or ""
+    coverage_parts = []
+    if invoice[19]:
+        coverage_parts.append(str(invoice[19]))
+    if invoice[20]:
+        coverage_parts.append(f"starts {invoice[20]}")
+    if invoice[21]:
+        coverage_parts.append(str(invoice[21]))
+    coverage_html = ""
+    if coverage_title or coverage_parts:
+        coverage_html = f"""
+            <div class="coverage-card">
+                <div class="summary-label">Covers</div>
+                <div class="coverage-title">{escape(str(coverage_title or 'Lesson package'))}</div>
+                <div class="coverage-sub">{escape(' · '.join(coverage_parts))}</div>
+            </div>
+        """
+
     package_options = hmusic_invoice_package_options(invoice[17], invoice[2], subtotal_amount)
     package_options_html = ""
     if package_options:
@@ -25313,6 +25885,9 @@ def parent_invoice(invoice_id):
             .summary-label {{ color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
             .summary-value {{ font-size:15px; font-weight:900; }}
             .amount {{ font-size:28px; font-weight:950; line-height:1; }}
+            .coverage-card {{ border-left:4px solid #1d65ad; background:#f8fafc; border-radius:14px; padding:12px; margin:0 0 14px; }}
+            .coverage-title {{ font-size:15px; font-weight:900; margin-top:3px; }}
+            .coverage-sub {{ color:#6b7280; font-size:13px; font-weight:700; margin-top:4px; line-height:1.35; }}
             .section-title {{ margin:16px 0 8px; color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.05em; }}
             .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
@@ -25407,6 +25982,7 @@ def parent_invoice(invoice_id):
                     <div class="amount">${hmusic_money(invoice[3])}</div>
                 </div>
             </div>
+            {coverage_html}
             {package_options_html}
             {online_payment_html}
             <p class="hint">Lessons are added after payment is confirmed or ACH succeeds.</p>
@@ -25496,7 +26072,7 @@ def parent_profile():
 
     def invoice_status_class(status):
         label = str(status or "").lower()
-        if "paid" in label:
+        if label == "paid":
             return "paid"
         if any(word in label for word in ("sent", "open", "unpaid", "due")):
             return "open"
@@ -25558,13 +26134,18 @@ def parent_profile():
         charge_expr = "i.charge_lessons" if "charge_lessons" in invoice_cols else "NULL"
         type_expr = "i.invoice_type" if "invoice_type" in invoice_cols else "''"
         due_expr = "i.due_date" if "due_date" in invoice_cols else "NULL"
+        coverage_title_expr = "COALESCE(i.coverage_title, '')" if "coverage_title" in invoice_cols else "''"
+        coverage_class_expr = "COALESCE(i.coverage_class, '')" if "coverage_class" in invoice_cols else "''"
+        coverage_start_expr = "COALESCE(i.coverage_start, '')" if "coverage_start" in invoice_cols else "''"
+        coverage_note_expr = "COALESCE(i.coverage_note, '')" if "coverage_note" in invoice_cols else "''"
         join_sql = "LEFT JOIN schedule s ON i.schedule_id = s.id" if "schedule_id" in invoice_cols else ""
         lesson_date_expr = "s.lesson_date" if join_sql else "NULL"
         lesson_time_expr = "s.lesson_time" if join_sql else "NULL"
         placeholders = ",".join(["?"] * len(linked_student_names))
         cursor.execute(f"""
         SELECT i.id, i.student_name, {charge_expr}, i.amount, i.status, {type_expr},
-               i.created_at, {due_expr}, {lesson_date_expr}, {lesson_time_expr}
+               i.created_at, {due_expr}, {lesson_date_expr}, {lesson_time_expr},
+               {coverage_title_expr}, {coverage_class_expr}, {coverage_start_expr}, {coverage_note_expr}
         FROM invoices i
         {join_sql}
         WHERE i.student_name IN ({placeholders})
@@ -25572,6 +26153,32 @@ def parent_profile():
         LIMIT 12
         """, linked_student_names)
         invoice_records = cursor.fetchall()
+
+    previous_package_rows = ""
+    for student_name in linked_student_names:
+        cursor.execute("""
+        SELECT id, charge_lessons, amount, created_at, COALESCE(coverage_title, '')
+        FROM invoices
+        WHERE student_name = ?
+        AND COALESCE(status, '') = 'paid'
+        AND COALESCE(invoice_type, '') = 'package_invoice'
+        ORDER BY COALESCE(created_at, '') DESC, id DESC
+        LIMIT 1
+        """, (student_name,))
+        paid_invoice = cursor.fetchone()
+        if not paid_invoice:
+            continue
+        lesson_dates = hmusic_package_lesson_dates(cursor, student_name, paid_invoice[3], paid_invoice[1])
+        date_text = ", ".join(short_date(item) for item in lesson_dates[:12]) if lesson_dates else "No lesson dates recorded yet"
+        previous_package_rows += f"""
+        <div class="package-history-row">
+            <div>
+                <div class="record-title">{clean_text(student_name)} · {clean_text(paid_invoice[4] or 'Previous package')}</div>
+                <div class="record-sub">{format_lessons(paid_invoice[1])} · Paid {format_money(paid_invoice[2])} · Invoice #{paid_invoice[0]}</div>
+                <div class="lesson-dates">{clean_text(date_text)}</div>
+            </div>
+        </div>
+        """
 
     conn.close()
 
@@ -25587,7 +26194,9 @@ def parent_profile():
         linked_rows = "<tr><td colspan='2'>No linked students.</td></tr>"
 
     invoice_rows = ""
-    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, due_date, lesson_date, lesson_time in invoice_records:
+    combined_pay_rows = ""
+    selected_total = 0
+    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, due_date, lesson_date, lesson_time, coverage_title, coverage_class, coverage_start, coverage_note in invoice_records:
         status_text = clean_text(status or "Pending")
         status_class = invoice_status_class(status)
         title = f"{clean_text(student_name)} · {invoice_type_label(invoice_type)}"
@@ -25604,11 +26213,31 @@ def parent_profile():
                 lesson_label += f" {clean_text(lesson_time)}"
             meta_parts.append(lesson_label)
         meta = " · ".join(meta_parts)
+        coverage_parts = [part for part in (coverage_class, f"starts {coverage_start}" if coverage_start else "", coverage_note) if part]
+        coverage_line = ""
+        if coverage_title or coverage_parts:
+            coverage_line = f"<div class='record-coverage'>Covers: {clean_text(coverage_title or 'Lesson package')}"
+            if coverage_parts:
+                coverage_line += f"<span>{clean_text(' · '.join(coverage_parts))}</span>"
+            coverage_line += "</div>"
+        if str(status or "unpaid").lower() in ("unpaid", "payment_failed"):
+            selected_total += float(amount or 0)
+            combined_pay_rows += f"""
+            <label class="pay-together-row">
+                <input type="checkbox" name="invoice_ids" value="{invoice_id}" checked>
+                <span>
+                    <b>{clean_text(student_name)}</b>
+                    <small>{format_lessons(charge_lessons)} · Invoice #{invoice_id}</small>
+                </span>
+                <strong>{format_money(amount)}</strong>
+            </label>
+            """
         invoice_rows += f"""
         <a class="record-row" href="/parent_invoice/{invoice_id}">
             <div class="record-main">
                 <div class="record-title">{title}</div>
                 <div class="record-sub">{clean_text(meta)}</div>
+                {coverage_line}
             </div>
             <div class="record-side">
                 <div class="record-amount">{format_money(amount)}</div>
@@ -25619,6 +26248,39 @@ def parent_profile():
 
     if not invoice_rows:
         invoice_rows = "<div class='empty-record'>No package or invoice records yet.</div>"
+
+    combined_pay_html = ""
+    if combined_pay_rows:
+        combined_pay_html = f"""
+            <form class="pay-together-card" method="POST" action="/stripe/invoices/checkout">
+                <div class="section-header compact">
+                    <div>
+                        <div class="section-title">Pay selected together</div>
+                        <div class="section-note">ACH can pay multiple unpaid invoices in one secure Stripe checkout.</div>
+                    </div>
+                </div>
+                <div class="pay-together-list">{combined_pay_rows}</div>
+                <div class="pay-together-total">
+                    <span>Selected total</span>
+                    <b>{format_money(selected_total)}</b>
+                </div>
+                <button type="submit">Pay selected by ACH</button>
+            </form>
+        """
+
+    previous_package_html = ""
+    if previous_package_rows:
+        previous_package_html = f"""
+            <section class="section-card">
+                <div class="section-header">
+                    <div>
+                        <div class="section-title">Previous Package Lesson Dates</div>
+                        <div class="section-note">Lesson dates recorded under the most recent paid package for each child.</div>
+                    </div>
+                </div>
+                <div class="package-history-list">{previous_package_rows}</div>
+            </section>
+        """
 
     return f"""
     <!DOCTYPE html>
@@ -25734,6 +26396,7 @@ def parent_profile():
                 padding:13px 14px;
                 border-bottom:1px solid var(--line);
             }}
+            .section-header.compact {{ padding:0 0 10px; border-bottom:0; }}
             .section-title {{ font-size:17px; font-weight:900; }}
             .section-note {{
                 margin-top:3px;
@@ -25770,6 +26433,20 @@ def parent_profile():
                 line-height:1.3;
                 font-weight:650;
             }}
+            .record-coverage {{
+                margin-top:6px;
+                padding-left:8px;
+                border-left:3px solid #1d65ad;
+                color:#111827;
+                font-size:12px;
+                font-weight:850;
+                line-height:1.35;
+            }}
+            .record-coverage span {{
+                display:block;
+                color:var(--muted);
+                font-weight:650;
+            }}
             .record-side {{ text-align:right; flex:0 0 auto; }}
             .record-amount {{ font-size:14px; font-weight:900; }}
             .status-pill {{
@@ -25792,6 +26469,52 @@ def parent_profile():
                 color:var(--muted);
                 font-size:13px;
                 font-weight:650;
+            }}
+            .pay-together-card {{
+                margin:0 0 14px;
+                border:1px solid #bfdbfe;
+                background:#eff6ff;
+                border-radius:14px;
+                padding:13px;
+            }}
+            .pay-together-list {{ display:grid; gap:8px; margin:8px 0; }}
+            .pay-together-row {{
+                display:grid;
+                grid-template-columns:auto 1fr auto;
+                align-items:center;
+                gap:10px;
+                border:1px solid #dbeafe;
+                background:#fff;
+                border-radius:12px;
+                padding:10px;
+                margin:0;
+            }}
+            .pay-together-row input {{ width:18px; min-height:auto; margin:0; }}
+            .pay-together-row b {{ display:block; font-size:13px; }}
+            .pay-together-row small {{ display:block; color:var(--muted); margin-top:2px; }}
+            .pay-together-row strong {{ font-size:13px; white-space:nowrap; }}
+            .pay-together-total {{
+                display:flex;
+                justify-content:space-between;
+                align-items:center;
+                gap:12px;
+                color:#1e3a8a;
+                font-weight:900;
+                margin:8px 0 10px;
+            }}
+            .pay-together-total b {{ font-size:20px; }}
+            .package-history-list {{ display:grid; gap:0; }}
+            .package-history-row {{
+                padding:12px 14px;
+                border-bottom:1px solid #eef2f7;
+            }}
+            .package-history-row:last-child {{ border-bottom:0; }}
+            .lesson-dates {{
+                margin-top:7px;
+                color:#374151;
+                font-size:12px;
+                line-height:1.45;
+                font-weight:700;
             }}
             .parent-bottom-nav {{
                 position:fixed;
@@ -25865,9 +26588,11 @@ def parent_profile():
                     </div>
                 </div>
                 <div class="records-list">
+                    {combined_pay_html}
                     {invoice_rows}
                 </div>
             </section>
+            {previous_package_html}
         </main>
         {parent_bottom_nav("profile")}
     </body>
@@ -34448,6 +35173,10 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
     add_column_if_missing("invoices", "package_options", "package_options TEXT")
     add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
+    add_column_if_missing("invoices", "coverage_title", "coverage_title TEXT")
+    add_column_if_missing("invoices", "coverage_class", "coverage_class TEXT")
+    add_column_if_missing("invoices", "coverage_start", "coverage_start TEXT")
+    add_column_if_missing("invoices", "coverage_note", "coverage_note TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
     add_column_if_missing("schedule", "policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0")
     add_column_if_missing("schedule", "pending_fee_amount", "pending_fee_amount REAL DEFAULT 0")
