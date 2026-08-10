@@ -13699,6 +13699,7 @@ def parent_admin(parent_id):
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         selected_students = request.form.getlist("invoice_students")
         created_count = 0
+        created_invoices = []
         active_names = {row[1] for row in linked_students if row[3] == 1}
         for student_name in selected_students:
             if student_name not in active_names:
@@ -13761,24 +13762,29 @@ def parent_admin(parent_id):
                 coverage_note
             ))
             invoice_id = cursor.lastrowid
-            notify_parent_tuition_due(
-                student_name,
-                parent_id,
-                invoice_id,
-                hmusic_money(amount),
-                "New package invoice"
-            )
-            create_invoice_message_event(
-                invoice_id,
-                "created",
-                f"Hi, {student_name}'s package invoice is ready. Amount due: ${hmusic_money(amount)}.",
-                parent_id=parent_id,
-                student_name=student_name,
-                amount=amount
-            )
+            created_invoices.append((invoice_id, student_name, amount))
             created_count += 1
         conn.commit()
         conn.close()
+        for invoice_id, student_name, amount in created_invoices:
+            try:
+                notify_parent_tuition_due(
+                    student_name,
+                    parent_id,
+                    invoice_id,
+                    hmusic_money(amount),
+                    "New package invoice"
+                )
+                create_invoice_message_event(
+                    invoice_id,
+                    "created",
+                    f"Hi, {student_name}'s package invoice is ready. Amount due: ${hmusic_money(amount)}.",
+                    parent_id=parent_id,
+                    student_name=student_name,
+                    amount=amount
+                )
+            except Exception as exc:
+                app.logger.exception("Family invoice notification failed for invoice %s: %s", invoice_id, exc)
         return redirect(f"/parent_admin/{parent_id}?created_invoices={created_count}")
 
     cursor.execute("""
