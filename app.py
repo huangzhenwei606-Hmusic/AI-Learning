@@ -12476,118 +12476,360 @@ def waive_pending_fee(ledger_id):
 
 @app.route("/invoices")
 def invoices():
-
     if not require_owner():
         return redirect("/owner_login")
-    
+
+    ensure_v321_schema()
+
+    status_filter = (request.args.get("status") or "open").strip().lower()
+    type_filter = (request.args.get("type") or "all").strip().lower()
+    search = (request.args.get("q") or "").strip()
+
+    where_clauses = []
+    params = []
+
+    if status_filter == "open":
+        where_clauses.append("COALESCE(i.status, 'unpaid') IN ('unpaid', 'payment_failed', 'stripe_processing', 'square_processing', 'pending_confirmation')")
+    elif status_filter != "all":
+        where_clauses.append("COALESCE(i.status, 'unpaid') = ?")
+        params.append(status_filter)
+
+    if type_filter != "all":
+        where_clauses.append("COALESCE(i.invoice_type, '') = ?")
+        params.append(type_filter)
+
+    if search:
+        like = f"%{search.lower()}%"
+        where_clauses.append("""
+        (
+            LOWER(COALESCE(i.student_name, '')) LIKE ?
+            OR LOWER(COALESCE(pp.parent_name, '')) LIKE ?
+            OR LOWER(COALESCE(pp.email, '')) LIKE ?
+            OR CAST(i.id AS TEXT) LIKE ?
+        )
+        """)
+        params.extend([like, like, like, f"%{search}%"])
+
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(f"""
     SELECT
-        id,
-        student_name,
-        charge_lessons,
-        amount,
-        status,
-        invoice_type,
-        created_at
-    FROM invoices
-    ORDER BY id DESC
-    """)
+        i.id,
+        i.student_name,
+        COALESCE(i.charge_lessons, 0),
+        COALESCE(i.amount, 0),
+        COALESCE(i.status, 'unpaid'),
+        COALESCE(i.invoice_type, 'invoice'),
+        COALESCE(i.created_at, ''),
+        COALESCE(i.due_date, ''),
+        COALESCE(i.payment_methods, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, ''),
+        COALESCE(i.manual_payment_status, ''),
+        pp.id,
+        COALESCE(pp.parent_name, ''),
+        COALESCE(pp.email, '')
+    FROM invoices i
+    LEFT JOIN parent_students ps
+        ON ps.student_name = i.student_name
+        AND ps.active = 1
+        AND ps.id = (
+            SELECT ps2.id
+            FROM parent_students ps2
+            WHERE ps2.student_name = i.student_name
+            AND ps2.active = 1
+            ORDER BY ps2.id DESC
+            LIMIT 1
+        )
+    LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
+    {where_sql}
+    ORDER BY i.id DESC
+    LIMIT 250
+    """, params)
 
-    invoices = cursor.fetchall()
+    invoice_rows = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT COALESCE(status, 'unpaid'), COUNT(*), COALESCE(SUM(amount), 0)
+    FROM invoices
+    GROUP BY COALESCE(status, 'unpaid')
+    """)
+    summary_rows = cursor.fetchall()
     conn.close()
 
-    rows = ""
+    summary = {row[0]: {"count": row[1], "amount": row[2]} for row in summary_rows}
+    open_statuses = ("unpaid", "payment_failed", "stripe_processing", "square_processing", "pending_confirmation")
+    open_count = sum(summary.get(status, {}).get("count", 0) for status in open_statuses)
+    open_amount = sum(summary.get(status, {}).get("amount", 0) for status in open_statuses)
+    processing_count = summary.get("stripe_processing", {}).get("count", 0) + summary.get("square_processing", {}).get("count", 0)
+    paid_count = summary.get("paid", {}).get("count", 0)
+    paid_amount = summary.get("paid", {}).get("amount", 0)
 
-    for invoice in invoices:
-        if invoice[4] == "paid":
-            action_html = "Paid"
-        else:
-            action_html = f'<a href="/pay_invoice/{invoice[0]}">Mark Paid</a>'
+    def status_label(raw_status):
+        status = (raw_status or "unpaid").lower()
+        labels = {
+            "unpaid": "Unpaid",
+            "payment_failed": "Payment failed",
+            "stripe_processing": "ACH processing",
+            "square_processing": "Card processing",
+            "pending_confirmation": "Needs owner confirmation",
+            "paid": "Paid",
+        }
+        return labels.get(status, status.replace("_", " ").title())
 
-        rows += f"""
+    def status_class(raw_status):
+        status = (raw_status or "unpaid").lower()
+        if status == "paid":
+            return "paid"
+        if status in ("stripe_processing", "square_processing"):
+            return "processing"
+        if status in ("payment_failed",):
+            return "failed"
+        if status in ("pending_confirmation",):
+            return "review"
+        return "unpaid"
+
+    def type_label(raw_type):
+        invoice_type = (raw_type or "invoice").replace("_", " ")
+        return invoice_type.title()
+
+    def method_labels(methods_text):
+        methods = [item.strip().lower() for item in (methods_text or "").split(",") if item.strip()]
+        if not methods:
+            methods = ["ach", "zelle", "paypal"]
+        labels = {"ach": "ACH", "zelle": "Zelle", "paypal": "PayPal", "card": "Card"}
+        return "".join(f"<span>{escape(labels.get(method, method.title()))}</span>" for method in methods)
+
+    def date_short(value):
+        value = str(value or "").strip()
+        if not value:
+            return "No due date"
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(value[:16] if "%H" in fmt else value[:10], fmt).strftime("%b %-d, %Y")
+            except Exception:
+                pass
+        return escape(value)
+
+    rows_html = ""
+
+    for inv in invoice_rows:
+        (
+            invoice_id,
+            student_name,
+            charge_lessons,
+            amount,
+            status,
+            invoice_type,
+            created_at,
+            due_date,
+            payment_methods,
+            coverage_title,
+            coverage_class,
+            coverage_start,
+            coverage_note,
+            manual_payment_status,
+            parent_id,
+            parent_name,
+            parent_email,
+        ) = inv
+
+        family_label = parent_name or parent_email or "No parent linked"
+        family_link = (
+            f'<a href="/parent_admin/{parent_id}">{escape(str(family_label))}</a>'
+            if parent_id
+            else escape(str(family_label))
+        )
+        student_link = f'<a href="/student/{quote(str(student_name or ""))}">{escape(str(student_name or ""))}</a>'
+        coverage_bits = [coverage_title, coverage_class, f"Starts {coverage_start}" if coverage_start else "", coverage_note]
+        coverage_html = "".join(f"<span>{escape(str(bit))}</span>" for bit in coverage_bits if bit)
+        if not coverage_html:
+            coverage_html = "<span class='muted-pill'>No coverage note</span>"
+
+        actions = [f'<a class="action secondary" href="/parent_invoice/{invoice_id}">Review</a>']
+        if status in ("unpaid", "payment_failed", "pending_confirmation"):
+            actions.append(f"""
+                <form method="POST" action="/pay_invoice/{invoice_id}">
+                    <input type="hidden" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}">
+                    <input type="hidden" name="payment_method" value="Owner marked paid">
+                    <button class="action primary" type="submit">Mark paid</button>
+                </form>
+            """)
+        if status in ("unpaid", "payment_failed"):
+            actions.append(f"""
+                <form method="POST" action="/delete_invoice/{invoice_id}" onsubmit="return confirm('Delete invoice #{invoice_id}? This invoice has not been paid. This cannot be undone.');">
+                    <button class="action danger" type="submit">Delete</button>
+                </form>
+            """)
+
+        manual_note = f"<span class='mini-note'>{escape(manual_payment_status)}</span>" if manual_payment_status else ""
+
+        rows_html += f"""
         <tr>
-            <td>{invoice[0]}</td>
-            <td>{invoice[1]}</td>
-            <td>{invoice[2]}</td>
-            <td>${invoice[3]}</td>
-            <td>{invoice[4]}</td>
-            <td>{invoice[5]}</td>
-            <td>{invoice[6]}</td>
-            <td>{action_html}</td>
+            <td>
+                <div class="invoice-id">#{invoice_id}</div>
+                <div class="muted">{escape(str(created_at or ''))}</div>
+            </td>
+            <td>
+                <div class="strong">{family_link}</div>
+                <div class="muted">{escape(str(parent_email or ''))}</div>
+            </td>
+            <td>{student_link}</td>
+            <td>
+                <div class="strong">{charge_lessons:g} lessons</div>
+                <div class="muted">{escape(type_label(invoice_type))}</div>
+            </td>
+            <td><div class="coverage-pills">{coverage_html}</div></td>
+            <td><div class="amount">${hmusic_money(amount)}</div></td>
+            <td>{date_short(due_date)}</td>
+            <td><span class="status {status_class(status)}">{escape(status_label(status))}</span>{manual_note}</td>
+            <td><div class="method-pills">{method_labels(payment_methods)}</div></td>
+            <td><div class="actions">{''.join(actions)}</div></td>
         </tr>
         """
+
+    if not rows_html:
+        rows_html = "<tr><td colspan='10' class='empty'>No invoices match these filters.</td></tr>"
+
+    def selected(value, current):
+        return "selected" if value == current else ""
+
+    query_without_status = urlencode({k: v for k, v in {"q": search, "type": type_filter}.items() if v and v != "all"})
+    suffix = f"&{query_without_status}" if query_without_status else ""
 
     return f"""
     <html>
     <head>
         <title>Invoices</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #f7f7fb;
-                padding: 40px;
-            }}
-
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            }}
-
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 20px;
-            }}
-
-            th {{
-                background: #eeeeff;
-                padding: 10px;
-                border: 1px solid #ddd;
-            }}
-
-            td {{
-                padding: 10px;
-                border: 1px solid #ddd;
-            }}
-
-            a.button {{
-                display: inline-block;
-                margin-top: 25px;
-                background: #5b5cff;
-                color: white;
-                padding: 10px 16px;
-                border-radius: 6px;
-                text-decoration: none;
-                font-weight: bold;
+            * {{ box-sizing: border-box; }}
+            body {{ margin:0; font-family: Inter, Arial, sans-serif; background:#f6f7fb; color:#111827; }}
+            a {{ color:#1d65ad; font-weight:800; text-decoration:none; }}
+            .page {{ max-width: 1500px; margin: 0 auto; padding: 42px 28px; }}
+            .shell {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 14px 35px rgba(17,24,39,.06); overflow:hidden; }}
+            .head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:28px 30px 18px; }}
+            h1 {{ margin:0; font-size:34px; letter-spacing:0; }}
+            .sub {{ color:#667085; margin-top:6px; font-weight:700; }}
+            .top-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            .button {{ border:1px solid #d9e1ee; background:#fff; color:#111827; border-radius:9px; padding:10px 14px; font-weight:900; display:inline-flex; align-items:center; min-height:42px; }}
+            .button.primary {{ background:#1d65ad; color:#fff; border-color:#1d65ad; }}
+            .cards {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; padding:0 30px 20px; }}
+            .card {{ border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; background:#fbfcff; }}
+            .card span {{ display:block; color:#667085; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .card b {{ display:block; margin-top:5px; font-size:26px; }}
+            .filters {{ display:flex; gap:10px; align-items:center; padding:16px 30px; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; background:#f9fafb; }}
+            .filters input,.filters select {{ height:42px; border:1px solid #d9e1ee; border-radius:9px; padding:0 12px; font-weight:800; background:#fff; min-width:150px; }}
+            .filters input {{ flex:1; min-width:260px; }}
+            .tabs {{ display:flex; gap:8px; padding:16px 30px 0; flex-wrap:wrap; }}
+            .tab {{ padding:9px 12px; border-radius:999px; background:#eef3fb; color:#475467; font-size:13px; font-weight:900; }}
+            .tab.active {{ background:#1d65ad; color:#fff; }}
+            .table-wrap {{ overflow:auto; padding:16px 30px 30px; }}
+            table {{ width:100%; border-collapse:separate; border-spacing:0; min-width:1220px; }}
+            th {{ text-align:left; font-size:12px; color:#667085; text-transform:uppercase; letter-spacing:.04em; background:#f1f4f9; padding:12px; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; }}
+            th:first-child {{ border-left:1px solid #e5e7eb; border-radius:10px 0 0 0; }}
+            th:last-child {{ border-right:1px solid #e5e7eb; border-radius:0 10px 0 0; }}
+            td {{ padding:13px 12px; border-bottom:1px solid #edf0f5; vertical-align:top; font-size:14px; }}
+            tr:hover td {{ background:#fbfdff; }}
+            .invoice-id,.strong,.amount {{ font-weight:900; }}
+            .amount {{ white-space:nowrap; }}
+            .muted {{ color:#667085; font-size:12px; font-weight:700; margin-top:3px; }}
+            .coverage-pills,.method-pills,.actions {{ display:flex; gap:6px; flex-wrap:wrap; align-items:center; }}
+            .coverage-pills span,.method-pills span,.muted-pill {{ display:inline-flex; border-radius:999px; padding:5px 8px; background:#eef3fb; color:#475467; font-size:12px; font-weight:900; }}
+            .method-pills span {{ background:#ecfdf5; color:#166534; }}
+            .status {{ display:inline-flex; border-radius:999px; padding:6px 9px; font-size:12px; font-weight:900; white-space:nowrap; }}
+            .status.unpaid {{ background:#fff7ed; color:#9a3412; }}
+            .status.processing {{ background:#eff6ff; color:#1d4ed8; }}
+            .status.failed {{ background:#fef2f2; color:#b91c1c; }}
+            .status.review {{ background:#f5f3ff; color:#5b21b6; }}
+            .status.paid {{ background:#dcfce7; color:#166534; }}
+            .mini-note {{ display:block; color:#667085; margin-top:5px; font-size:11px; font-weight:800; }}
+            .actions form {{ margin:0; }}
+            .action {{ border:1px solid #d9e1ee; border-radius:8px; min-height:34px; padding:7px 10px; font-weight:900; background:#fff; color:#1d65ad; cursor:pointer; font-size:13px; display:inline-flex; align-items:center; }}
+            .action.primary {{ background:#1d65ad; border-color:#1d65ad; color:#fff; }}
+            .action.danger {{ color:#dc2626; border-color:#fecaca; }}
+            .empty {{ text-align:center; color:#667085; font-weight:800; padding:34px; }}
+            @media (max-width: 900px) {{
+                .page {{ padding:18px 10px; }}
+                .head,.filters {{ flex-direction:column; align-items:stretch; }}
+                .cards {{ grid-template-columns:1fr 1fr; padding-left:16px; padding-right:16px; }}
+                .head,.filters,.tabs,.table-wrap {{ padding-left:16px; padding-right:16px; }}
             }}
         </style>
     </head>
 
     <body>
-        <div class="container">
-            <h1>Invoices</h1>
+        <div class="page">
+            <div class="shell">
+                <div class="head">
+                    <div>
+                        <h1>Invoices</h1>
+                        <div class="sub">Owner dashboard for package invoices, ACH status, manual payments, and parent-facing coverage.</div>
+                    </div>
+                    <div class="top-actions">
+                        <a class="button" href="/">Dashboard</a>
+                        <a class="button" href="/billing_settings">Billing Settings</a>
+                        <a class="button primary" href="/students">Create Invoice</a>
+                    </div>
+                </div>
 
-            <table>
-                <tr>
-                    <th>ID</th>
-                    <th>Student</th>
-                    <th>Charge Lessons</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th>Type</th>
-                    <th>Created At</th>
-                    <th>Action</th>
-                </tr>
+                <div class="cards">
+                    <div class="card"><span>Open invoices</span><b>{open_count}</b></div>
+                    <div class="card"><span>Amount due</span><b>${hmusic_money(open_amount)}</b></div>
+                    <div class="card"><span>Processing</span><b>{processing_count}</b></div>
+                    <div class="card"><span>Paid total</span><b>${hmusic_money(paid_amount)}</b></div>
+                </div>
 
-                {rows}
-            </table>
+                <form class="filters" method="GET" action="/invoices">
+                    <input name="q" value="{escape(search, quote=True)}" placeholder="Search student, parent, email, or invoice #">
+                    <select name="status">
+                        <option value="open" {selected("open", status_filter)}>Open</option>
+                        <option value="all" {selected("all", status_filter)}>All statuses</option>
+                        <option value="unpaid" {selected("unpaid", status_filter)}>Unpaid</option>
+                        <option value="stripe_processing" {selected("stripe_processing", status_filter)}>ACH processing</option>
+                        <option value="payment_failed" {selected("payment_failed", status_filter)}>Payment failed</option>
+                        <option value="pending_confirmation" {selected("pending_confirmation", status_filter)}>Needs confirmation</option>
+                        <option value="paid" {selected("paid", status_filter)}>Paid</option>
+                    </select>
+                    <select name="type">
+                        <option value="all" {selected("all", type_filter)}>All types</option>
+                        <option value="package_invoice" {selected("package_invoice", type_filter)}>Package invoices</option>
+                        <option value="pending_fee_invoice" {selected("pending_fee_invoice", type_filter)}>Fee invoices</option>
+                    </select>
+                    <button class="button primary" type="submit">Apply</button>
+                </form>
 
-            <a class="button" href="/">Back Home</a>
+                <div class="tabs">
+                    <a class="tab {'active' if status_filter == 'open' else ''}" href="/invoices?status=open{suffix}">Open</a>
+                    <a class="tab {'active' if status_filter == 'unpaid' else ''}" href="/invoices?status=unpaid{suffix}">Unpaid</a>
+                    <a class="tab {'active' if status_filter == 'stripe_processing' else ''}" href="/invoices?status=stripe_processing{suffix}">ACH processing</a>
+                    <a class="tab {'active' if status_filter == 'payment_failed' else ''}" href="/invoices?status=payment_failed{suffix}">Failed</a>
+                    <a class="tab {'active' if status_filter == 'paid' else ''}" href="/invoices?status=paid{suffix}">Paid</a>
+                    <a class="tab {'active' if status_filter == 'all' else ''}" href="/invoices?status=all{suffix}">All</a>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <tr>
+                            <th>Invoice</th>
+                            <th>Family</th>
+                            <th>Student</th>
+                            <th>Package</th>
+                            <th>Coverage</th>
+                            <th>Amount</th>
+                            <th>Due</th>
+                            <th>Status</th>
+                            <th>Payment</th>
+                            <th>Action</th>
+                        </tr>
+                        {rows_html}
+                    </table>
+                </div>
+            </div>
         </div>
     </body>
     </html>
