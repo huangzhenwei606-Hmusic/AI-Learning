@@ -13735,6 +13735,64 @@ def sync_parent_profile_for_student(cursor, student_name, parent_name=None, pare
     email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
     display_name = parent_name or (email_key.split("@")[0] if "@" in email_key else "Parent")
 
+    if hmusic_is_real_email(parent_email):
+        cursor.execute("""
+        SELECT pp.id, pp.email
+        FROM parent_students ps
+        JOIN parent_profiles pp ON pp.id = ps.parent_id
+        WHERE ps.student_name = ?
+        AND COALESCE(ps.active, 1) = 1
+        AND lower(COALESCE(pp.email, '')) LIKE '%@hmusic.local'
+        ORDER BY pp.id
+        LIMIT 1
+        """, (student_name,))
+        legacy_parent = cursor.fetchone()
+
+        cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (parent_email,))
+        existing_real_parent = cursor.fetchone()
+
+        if legacy_parent and not existing_real_parent:
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET email = ?,
+                parent_name = ?,
+                phone = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                parent_email,
+                display_name,
+                parent_phone,
+                now,
+                legacy_parent[0]
+            ))
+        elif legacy_parent and existing_real_parent:
+            cursor.execute("""
+            INSERT OR IGNORE INTO parent_students (
+                parent_id,
+                student_name,
+                relationship,
+                active,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """, (
+                existing_real_parent[0],
+                student_name,
+                "Parent",
+                1,
+                now
+            ))
+            cursor.execute("""
+            UPDATE parent_students
+            SET active = 0
+            WHERE student_name = ?
+            AND parent_id = ?
+            """, (
+                student_name,
+                legacy_parent[0]
+            ))
+
     cursor.execute("""
     INSERT OR IGNORE INTO parent_profiles (
         parent_name,
@@ -16323,15 +16381,44 @@ def should_queue_sms_notification(title):
     return any(keyword in title for keyword in important_keywords)
 
 
-def get_notification_destination(cursor, user_role, user_key, channel):
+def hmusic_is_real_email(email):
+    email = (email or "").strip()
+    if "@" not in email:
+        return False
+    return not email.lower().endswith("@hmusic.local")
+
+
+def get_parent_lesson_reminder_email(cursor, parent_id, schedule_id):
+    if schedule_id:
+        cursor.execute("""
+        SELECT COALESCE(st.parent_email, '')
+        FROM schedule s
+        LEFT JOIN students st ON st.name = s.student_name
+        WHERE s.id = ?
+        LIMIT 1
+        """, (schedule_id,))
+        row = cursor.fetchone()
+        if row and hmusic_is_real_email(row[0]):
+            return row[0].strip()
+
+    cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (parent_id,))
+    row = cursor.fetchone()
+    if row and hmusic_is_real_email(row[0]):
+        return row[0].strip()
+    return None
+
+
+def get_notification_destination(cursor, user_role, user_key, channel, related_type=None, related_id=None):
     if channel == "push":
         return f"{user_role}:{user_key}"
 
     if channel == "email":
         if user_role == "parent":
+            if related_type == "lesson_reminder":
+                return get_parent_lesson_reminder_email(cursor, user_key, related_id)
             cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (user_key,))
             row = cursor.fetchone()
-            return row[0] if row and row[0] else None
+            return row[0] if row and hmusic_is_real_email(row[0]) else None
         if user_role == "teacher":
             cursor.execute("SELECT email FROM teachers WHERE teacher_name = ?", (user_key,))
             row = cursor.fetchone()
@@ -16363,7 +16450,7 @@ def queue_notification_delivery(user_role, user_key, title, body, link_url, chan
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    destination = get_notification_destination(cursor, user_role, user_key, channel)
+    destination = get_notification_destination(cursor, user_role, user_key, channel, related_type, related_id)
 
     if not destination:
         conn.close()
