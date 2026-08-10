@@ -7067,7 +7067,7 @@ def calendar():
           <input type="hidden" name="location" id="popLocationName">
           <input type="hidden" name="room_id" id="popRoomId">
 
-          <div class="pop-section">
+          <div class="pop-section" id="popStudentSection">
             <h3>Student</h3>
             <label class="pop-label">Student</label>
             <input class="pop-sel student-picker-compact" id="popStudent" name="student_name" list="popStudentList" placeholder="Search existing or type new student" required>
@@ -7172,12 +7172,12 @@ def calendar():
               <button class="group-compact-add" type="button" onclick="addGroupStudentRow()">+ Add student</button>
               <input type="hidden" name="group_size" id="popGroupSize">
               <input type="hidden" name="group_student_names" id="popGroupStudentNames">
-              <div class="group-billing-note">Saving this schedule will not create invoices. Charge later / low balance can be invoiced later from Student or Family Billing.</div>
+              <div class="group-billing-note">Saving this schedule will not create invoices. Charge later items can be invoiced later from Student or Family Billing.</div>
             </div>
             <div class="pop-summary" id="popPriceSummary"></div>
           </div>
 
-          <div class="pop-section">
+          <div class="pop-section" id="popBillingSection">
             <h3>Billing</h3>
             <label class="pop-label">Billing decision</label>
             <select class="pop-sel" name="billing_decision" id="popBillingDecision" onchange="updateBillingControls()">
@@ -7701,6 +7701,11 @@ def calendar():
       }}[value] || value || 'Use existing credits';
     }}
     function updateBillingControls() {{
+      const isGroup = isQuickGroupMode();
+      const billingSection = document.getElementById('popBillingSection');
+      const studentSection = document.getElementById('popStudentSection');
+      if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
+      if (studentSection) studentSection.style.display = isGroup ? 'none' : 'block';
       const packageSelect = document.getElementById('popPackageType');
       const customCount = document.getElementById('popCustomLessonCount');
       const billingDecision = document.getElementById('popBillingDecision');
@@ -7712,7 +7717,7 @@ def calendar():
         customCount.required = !!isCustomCount;
         customCount.style.opacity = isCustomCount ? '1' : '.55';
       }}
-      const isCustomPrice = billingDecision && billingDecision.value === 'custom_price';
+      const isCustomPrice = !isGroup && billingDecision && billingDecision.value === 'custom_price';
       if (customPrice) {{
         customPrice.style.display = isCustomPrice ? 'block' : 'none';
         customPrice.required = !!isCustomPrice;
@@ -7741,6 +7746,22 @@ def calendar():
         studentCharge = quickAmount(basisMethod, rate, duration);
         const customPrice = document.getElementById('popCustomStudentPrice');
         if (customPrice) customPrice.value = rate.toFixed(2);
+      }}
+      const isGroup = isQuickGroupMode();
+      if (isGroup) {{
+        const groupNames = syncGroupFieldsForSubmit();
+        const rates = Array.from(document.querySelectorAll('input[name="group_student_rate"]'))
+          .map(input => Number(input.value || 0))
+          .filter(value => value > 0);
+        const uniqueRates = Array.from(new Set(rates.map(value => value.toFixed(2))));
+        const rateLabel = uniqueRates.length === 1 ? `$${{uniqueRates[0]}} / student` : (uniqueRates.length > 1 ? 'Varies by student' : `$${{studentCharge.toFixed(2)}} / student`);
+        document.getElementById('popPriceSummary').innerHTML =
+          `<strong>${{course.name || 'Group Class'}}</strong> · ${{duration}} min<br>` +
+          `Students: <strong>${{groupNames.length || 0}}</strong><br>` +
+          `Default rate: <strong>${{rateLabel}}</strong><br>` +
+          `Billing: <strong>controlled per student</strong>`;
+        syncGroupRateDefaults(studentCharge);
+        return;
       }}
       const packageSelect = document.getElementById('popPackageType');
       const customCount = document.getElementById('popCustomLessonCount');
@@ -7813,6 +7834,14 @@ def calendar():
       }}
       return names;
     }}
+    document.addEventListener('input', function(e) {{
+      if (e.target && ['group_student_name','group_credit_units','group_student_rate'].includes(e.target.name)) {{
+        updateQuickCourseSummary();
+      }}
+    }});
+    document.addEventListener('change', function(e) {{
+      if (e.target && e.target.name === 'group_billing_rule') updateQuickCourseSummary();
+    }});
     function toggleOwnerDurationBox() {{
       const box = document.getElementById('popDurationBox');
       if (box) box.classList.toggle('show');
@@ -7926,6 +7955,15 @@ def calendar():
     function updateQuickCourseBilling() {{
       const course = selectedQuickCourse();
       if (!course) return;
+      const isGroup = isQuickGroupMode();
+      const groupFields = document.getElementById('popGroupFields');
+      const billingSection = document.getElementById('popBillingSection');
+      const studentSection = document.getElementById('popStudentSection');
+      const studentInput = document.getElementById('popStudent');
+      if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
+      if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
+      if (studentSection) studentSection.style.display = isGroup ? 'none' : 'block';
+      if (studentInput) studentInput.required = !isGroup;
       const basis = document.getElementById('popParentBillingBasis');
       const rate = document.getElementById('popParentChargeRate');
       if (basis) basis.value = methodToQuickBillingBasis(course.student_billing_method);
