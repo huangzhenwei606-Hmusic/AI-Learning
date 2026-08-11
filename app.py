@@ -15264,14 +15264,14 @@ def parent_admin(parent_id):
             .metric strong {{ display:block; margin-top:3px; font-size:15px; font-weight:900; }}
             .explain {{ margin-top:10px; padding:9px 10px; border-radius:8px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:12px; font-weight:750; line-height:1.35; }}
             .password-box {{ margin-top:10px; padding:10px; border-radius:10px; border:1px solid #bfdbfe; background:#eff6ff; }}
-            .password-box-head {{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }}
+            .password-box-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:8px; flex-wrap:wrap; }}
             .password-box-title {{ color:#155d9e; font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
             .password-box-badge {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#dbeafe; color:#155d9e; font-size:10px; font-weight:900; white-space:nowrap; }}
             .password-value {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:16px; font-weight:900; letter-spacing:.02em; color:var(--text); background:#fff; border:1px solid #d9dee8; border-radius:8px; padding:8px 9px; word-break:break-all; }}
             .password-label {{ color:var(--muted); font-size:11px; font-weight:850; margin-bottom:4px; }}
             .password-note, .password-empty {{ margin-top:7px; color:#475467; font-size:11px; font-weight:700; line-height:1.35; }}
             .password-empty {{ margin-top:0; }}
-            .password-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; }}
+            .password-actions {{ display:grid; grid-template-columns:1fr; gap:8px; margin-top:9px; }}
             .password-actions form, .password-actions button {{ width:100%; }}
             .stack {{ display:grid; gap:12px; }}
             .add-grid {{ display:grid; grid-template-columns:minmax(260px,1fr) 160px auto; gap:8px; align-items:end; }}
