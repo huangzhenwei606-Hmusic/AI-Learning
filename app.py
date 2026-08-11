@@ -7186,6 +7186,7 @@ def calendar():
     <div class="popover" id="popover">
       <form id="quickLessonForm" method="POST" action="/add_schedule">
         <input type="hidden" name="return_to" value="{escape(current_calendar_url, quote=True)}">
+        <input type="hidden" name="source" value="owner_calendar_drawer">
         <div class="pop-inner">
           <div class="pop-title">
             <span id="popTitle">Add lesson</span>
@@ -8284,6 +8285,13 @@ def calendar():
       s.classList.add('show');
       setTimeout(() => s.classList.remove('show'), 4000);
     }}
+    const calendarParams = new URLSearchParams(window.location.search);
+    if (calendarParams.get('created')) {{
+      showSuccess(`${{calendarParams.get('created')}} lesson(s) created.`);
+      calendarParams.delete('created');
+      const cleanQuery = calendarParams.toString();
+      history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : ''));
+    }}
     </script>
     </body>
     </html>
@@ -8943,6 +8951,10 @@ def add_schedule():
             teacher_return_to = safe_schedule_return(request.form.get("return_to"), "/teacher_dashboard?view=add_schedule")
             joiner = "&" if "?" in teacher_return_to else "?"
             return redirect(f"{teacher_return_to}{joiner}created={generated_count}")
+
+        if request.form.get("source") == "owner_calendar_drawer":
+            joiner = "&" if "?" in owner_calendar_return else "?"
+            return redirect(f"{owner_calendar_return}{joiner}created={generated_count}")
 
         student_charge_summary = ""
         if not (require_teacher() and not require_owner()):
