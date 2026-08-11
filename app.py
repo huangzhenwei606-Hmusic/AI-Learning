@@ -1821,7 +1821,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     ORDER BY l.sort_order, l.location_name, r.sort_order, r.room_name
     """)
     rooms = cursor.fetchall()
-    cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
+    cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY COALESCE(is_group, 0), name, duration")
     course_types = cursor.fetchall()
     cursor.execute("""
     SELECT base.student_name, COALESCE(st.parent_name, '')
@@ -1847,11 +1847,11 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
         }
         for room in rooms
     ])
-    course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {int(c[2] or 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
-    student_options = ''.join(
-        f'<option value="{escape(str(r[0]))}">{escape(hmusic_student_parent_label(r[0], r[1]))}</option>'
+    course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {int(c[2] or 0)} mins - {"Group" if c[3] else "Private"}</option>' for c in course_types)
+    student_datalist_options = ''.join(
+        f'<option value="{escape(hmusic_student_parent_label(r[0], r[1]), quote=True)}"></option>'
         for r in students
-    ) or '<option value="">No students found</option>'
+    )
     created = request.args.get('created')
     created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
     duration_request_html = '<div class="td-success">Duration request sent to owner.</div>' if request.args.get('duration_request') else ''
@@ -1872,7 +1872,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                     <label class="mode-pill"><input type="radio" name="student_mode" value="existing" checked> Existing student</label>
                     <label class="mode-pill"><input type="radio" name="student_mode" value="new"> New student</label>
                 </div>
-                <label class="existing-student-field">Student<select class="student-picker-compact" id="student_name" name="student_name">{student_options}</select></label>
+                <label class="existing-student-field">Student<input class="student-picker-compact" id="student_name" name="student_name" list="teacherStudentList" placeholder="Type student name..." autocomplete="off" required><datalist id="teacherStudentList">{student_datalist_options}</datalist></label>
                 <div class="new-student-box full" id="newStudentBox">
                     <div class="new-student-grid">
                         <label>Student name<input type="text" name="new_student_name" placeholder="Required for new student"></label>
@@ -1889,7 +1889,9 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 <label>Weekday<select name="weekday">{weekday_options}</select></label>
                 <label>Time<input type="time" name="lesson_time" required></label>
                 <label>Frequency<select name="schedule_type" id="teacherScheduleType"><option value="one_time">One time</option><option value="weekly" selected>Weekly</option><option value="biweekly">Every 2 weeks</option><option value="custom">Custom interval</option></select></label>
-                <label>Repeat count<input type="number" id="teacherRepeatCount" name="repeat_count" min="1" max="260" value="10"></label>
+                <label>Repeat mode<select name="repeat_mode" id="teacherRepeatMode"><option value="custom" selected>Custom count</option><option value="ongoing">Ongoing</option></select></label>
+                <label id="teacherRepeatCountField">Repeat count<input type="number" id="teacherRepeatCount" name="repeat_count" min="1" max="260" value="10"></label>
+                <div class="teacher-inline-note" id="teacherOngoingNote">Ongoing keeps this weekly pattern active. The system creates up to 260 future lessons; owner can stop or edit it later.</div>
                 <label id="teacherIntervalField">Every N weeks<input type="number" name="repeat_interval_weeks" min="1" max="8" value="1"></label>
                 <label>Start Date<input type="date" name="start_date" value="{escape(prefill_date)}" required></label>
                 <label>Course<select name="course_type_id" required>{course_options}</select></label>
@@ -1925,6 +1927,8 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
             .new-student-grid span {{ font-size:11px; color:#9ca3af; font-weight:800; }}
             .new-student-box p, .teacher-billing-note {{ margin:8px 0 0; color:var(--td-muted); font-size:13px; font-weight:750; line-height:1.35; }}
             .teacher-billing-note {{ margin:0; padding:9px 10px; border-radius:8px; background:#f8fafc; border:1px solid var(--td-line); }}
+            .teacher-inline-note {{ display:none; grid-column:1 / -1; margin:0; padding:9px 10px; border-radius:8px; background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; font-size:13px; font-weight:750; line-height:1.35; }}
+            .teacher-inline-note.show {{ display:block; }}
             .duration-request-card {{ margin-top:14px; }}
             .duration-request-card h2 {{ margin:0 0 6px; font-size:18px; }}
             .td-note {{ color:var(--td-muted); margin:0 0 14px; line-height:1.45; }}
@@ -1936,10 +1940,13 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 const modeInputs = document.querySelectorAll('input[name="student_mode"]');
                 const newBox = document.getElementById('newStudentBox');
                 const existingField = document.querySelector('.existing-student-field');
-                const existingSelect = document.getElementById('student_name');
+                const existingStudentInput = document.getElementById('student_name');
                 const newName = document.querySelector('input[name="new_student_name"]');
                 const scheduleType = document.getElementById('teacherScheduleType');
+                const repeatMode = document.getElementById('teacherRepeatMode');
                 const repeatCount = document.getElementById('teacherRepeatCount');
+                const repeatCountField = document.getElementById('teacherRepeatCountField');
+                const ongoingNote = document.getElementById('teacherOngoingNote');
                 const intervalField = document.getElementById('teacherIntervalField');
                 const locationSelect = document.getElementById('teacherScheduleLocation');
                 const roomSelect = document.getElementById('teacherScheduleRoom');
@@ -1982,18 +1989,29 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                     const isNew = checked && checked.value === 'new';
                     newBox.classList.toggle('show', isNew);
                     existingField.style.display = isNew ? 'none' : 'block';
-                    if (existingSelect) existingSelect.required = !isNew;
+                    if (existingStudentInput) existingStudentInput.required = !isNew;
                     if (newName) newName.required = isNew;
                 }}
                 function syncFrequency() {{
                     const value = scheduleType.value;
                     const oneTime = value === 'one_time';
+                    const ongoing = repeatMode && repeatMode.value === 'ongoing' && !oneTime;
+                    if (repeatMode) repeatMode.disabled = oneTime;
+                    if (repeatCountField) repeatCountField.style.display = oneTime || ongoing ? 'none' : 'block';
+                    if (ongoingNote) ongoingNote.classList.toggle('show', ongoing);
                     repeatCount.disabled = oneTime;
-                    repeatCount.value = oneTime ? '1' : (repeatCount.value === '1' ? '10' : repeatCount.value || '10');
+                    if (oneTime) {{
+                        repeatCount.value = '1';
+                    }} else if (ongoing) {{
+                        repeatCount.value = '260';
+                    }} else if (!repeatCount.value || repeatCount.value === '1' || repeatCount.value === '260') {{
+                        repeatCount.value = '10';
+                    }}
                     intervalField.style.display = value === 'custom' ? 'block' : 'none';
                 }}
                 modeInputs.forEach(input => input.addEventListener('change', syncStudentMode));
                 scheduleType.addEventListener('change', syncFrequency);
+                if (repeatMode) repeatMode.addEventListener('change', syncFrequency);
                 window.updateTeacherScheduleRooms();
                 syncStudentMode();
                 syncFrequency();
