@@ -7365,7 +7365,7 @@ def calendar():
               </div>
               <div>
                 <label class="pop-label">Parent charge / rate</label>
-                <input class="pop-inp" type="number" name="parent_charge_rate" id="popParentChargeRate" min="0" step="0.01" placeholder="0.00" onchange="updateQuickCourseSummary()">
+                <input class="pop-inp" type="number" name="parent_charge_rate" id="popParentChargeRate" min="0" step="0.01" value="110" placeholder="110.00" onchange="updateQuickCourseSummary()">
               </div>
             </div>
             <label class="pop-label" id="popCustomPriceLabel" style="display:none">Custom student price</label>
@@ -7820,6 +7820,8 @@ def calendar():
     let activePopDate = null;
     const QUICK_ROOM_DATA = {quick_room_data_json};
     const QUICK_COURSE_DATA = {quick_course_data_json};
+    const DEFAULT_STUDENT_BILLING_BASIS = 'hourly';
+    const DEFAULT_STUDENT_RATE = 110;
     function selectedQuickCourse() {{
       const courseSelect = document.getElementById('popCourse');
       const id = Number(courseSelect ? courseSelect.value : 0);
@@ -7887,8 +7889,8 @@ def calendar():
       const duration = isCustom ? Number(customDurationInput.value || course.duration || 60) : Number(course.duration || 30);
       document.getElementById('popEnd').value = minutesToTime(document.getElementById('popStart').value, duration);
       const billingDecision = (document.getElementById('popBillingDecision') || {{value:'existing_credits'}}).value;
-      const basis = (document.getElementById('popParentBillingBasis') || {{value:methodToQuickBillingBasis(course.student_billing_method)}}).value;
-      const rate = Number((document.getElementById('popParentChargeRate') || {{value:course.student_price || 0}}).value || 0);
+      const basis = (document.getElementById('popParentBillingBasis') || {{value:DEFAULT_STUDENT_BILLING_BASIS}}).value || DEFAULT_STUDENT_BILLING_BASIS;
+      const rate = Number((document.getElementById('popParentChargeRate') || {{value:DEFAULT_STUDENT_RATE}}).value || DEFAULT_STUDENT_RATE);
       const basisMethod = billingBasisToMethod(basis);
       let studentCharge = quickAmount(basisMethod, rate, duration);
       if (['trial_free','makeup_credit','no_charge'].includes(billingDecision)) studentCharge = 0;
@@ -8116,8 +8118,8 @@ def calendar():
       if (studentInput) studentInput.required = !isGroup;
       const basis = document.getElementById('popParentBillingBasis');
       const rate = document.getElementById('popParentChargeRate');
-      if (basis) basis.value = methodToQuickBillingBasis(course.student_billing_method);
-      if (rate) rate.value = Number(course.student_price || 0).toFixed(2);
+      if (basis) basis.value = DEFAULT_STUDENT_BILLING_BASIS;
+      if (rate) rate.value = Number(DEFAULT_STUDENT_RATE).toFixed(2);
       updateQuickCourseSummary();
     }}
     function updatePanelRooms(preferredRoomId, preferredRoomName) {{
@@ -8167,8 +8169,8 @@ def calendar():
       const basisSelect = document.getElementById('panelBillingBasis');
       const formatSelect = document.getElementById('panelDetailFormat');
       if (durationInput) durationInput.value = Number(course.duration || 30);
-      if (rateInput) rateInput.value = Number(course.student_price || 0).toFixed(2);
-      if (basisSelect) basisSelect.value = methodToBillingBasis(course.student_billing_method);
+      if (rateInput) rateInput.value = Number(DEFAULT_STUDENT_RATE).toFixed(2);
+      if (basisSelect) basisSelect.value = DEFAULT_STUDENT_BILLING_BASIS;
       if (formatSelect) formatSelect.value = Number(course.is_group || 0) ? 'group' : 'private';
       updatePanelChargePreview();
     }}
@@ -8183,9 +8185,9 @@ def calendar():
       updatePanelChargePreview();
     }}
     function panelComputedCharge() {{
-      const basis = (document.getElementById('panelBillingBasis') || {{value:'per_class'}}).value;
+      const basis = (document.getElementById('panelBillingBasis') || {{value:DEFAULT_STUDENT_BILLING_BASIS}}).value || DEFAULT_STUDENT_BILLING_BASIS;
       const duration = Number((document.getElementById('panelDetailDuration') || {{value:30}}).value || 30);
-      const rate = Number((document.getElementById('panelStudentRate') || {{value:0}}).value || 0);
+      const rate = Number((document.getElementById('panelStudentRate') || {{value:DEFAULT_STUDENT_RATE}}).value || DEFAULT_STUDENT_RATE);
       const decision = (document.getElementById('panelBillingDecision') || {{value:'existing_credits'}}).value;
       if (['trial_free','makeup_credit','no_charge'].includes(decision)) return 0;
       if (basis === 'hourly') return rate * duration / 60;
@@ -8194,8 +8196,8 @@ def calendar():
     function updatePanelChargePreview() {{
       const preview = document.getElementById('panelBillingPreview');
       if (!preview) return;
-      const basis = (document.getElementById('panelBillingBasis') || {{value:'per_class'}}).value;
-      const rate = Number((document.getElementById('panelStudentRate') || {{value:0}}).value || 0);
+      const basis = (document.getElementById('panelBillingBasis') || {{value:DEFAULT_STUDENT_BILLING_BASIS}}).value || DEFAULT_STUDENT_BILLING_BASIS;
+      const rate = Number((document.getElementById('panelStudentRate') || {{value:DEFAULT_STUDENT_RATE}}).value || DEFAULT_STUDENT_RATE);
       const duration = Number((document.getElementById('panelDetailDuration') || {{value:30}}).value || 30);
       const charge = panelComputedCharge();
       const basisText = basis === 'hourly' ? `$${{rate.toFixed(2)}}/hour × ${{duration}} min` : `$${{rate.toFixed(2)}}/class`;
@@ -32186,12 +32188,12 @@ def ensure_v18_schema():
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         preset_courses = [
-            ("Private Lesson", 30, "Per Lesson", 55, "Per Lesson", 40, 0, 1, now, now),
-            ("Private Lesson", 45, "Per Lesson", 82.5, "Per Lesson", 60, 0, 1, now, now),
-            ("Private Lesson", 60, "Per Lesson", 110, "Per Lesson", 80, 0, 1, now, now),
+            ("Private Lesson", 30, "Hourly", 110, "Per Lesson", 40, 0, 1, now, now),
+            ("Private Lesson", 45, "Hourly", 110, "Per Lesson", 60, 0, 1, now, now),
+            ("Private Lesson", 60, "Hourly", 110, "Per Lesson", 80, 0, 1, now, now),
             ("Group Class", 50, "Per Lesson", 35, "Hourly", 60, 1, 1, now, now),
             ("Trial Class", 30, "Per Lesson", 0, "Per Lesson", 25, 0, 1, now, now),
-            ("Custom Program", 60, "Hourly", 120, "Hourly", 70, 0, 1, now, now),
+            ("Custom Program", 60, "Hourly", 110, "Hourly", 70, 0, 1, now, now),
         ]
 
         cursor.executemany("""
@@ -32816,12 +32818,12 @@ def add_course_type():
 
         Student Billing Method:<br>
         <select name="student_billing_method">
-            <option value="Per Lesson">Per Lesson</option>
             <option value="Hourly">Hourly</option>
+            <option value="Per Lesson">Per Lesson</option>
         </select><br><br>
 
         Student Price / Rate:<br>
-        <input type="number" step="0.01" name="student_price" value="0"><br><br>
+        <input type="number" step="0.01" name="student_price" value="110"><br><br>
 
         <input type="hidden" name="teacher_billing_method" value="Hourly">
         <input type="hidden" name="teacher_pay" value="0">
@@ -33087,8 +33089,8 @@ def course_type_tuition_tiers(course_id):
                     <div>
                         Student Billing Method:<br>
                         <select name="student_billing_method">
-                            <option value="Per Lesson">Per Lesson</option>
                             <option value="Hourly">Hourly</option>
+                            <option value="Per Lesson">Per Lesson</option>
                         </select>
                     </div>
                     <div>
@@ -33101,7 +33103,7 @@ def course_type_tuition_tiers(course_id):
                     </div>
                     <div>
                         Student Price / Rate:<br>
-                        <input type="number" step="0.01" name="student_price" required>
+                        <input type="number" step="0.01" name="student_price" value="110" required>
                     </div>
                     <div>
                         Active:<br>
@@ -33246,8 +33248,8 @@ def edit_course_type(course_id):
 
         Student Billing Method:<br>
         <select name="student_billing_method">
-            <option value="Per Lesson" {selected("Per Lesson", c[3])}>Per Lesson</option>
             <option value="Hourly" {selected("Hourly", c[3])}>Hourly</option>
+            <option value="Per Lesson" {selected("Per Lesson", c[3])}>Per Lesson</option>
         </select><br><br>
 
         Student Price / Rate:<br>
@@ -33838,12 +33840,12 @@ def add_student_course_rate():
 
         Student Billing Method:<br>
         <select name="student_billing_method">
-            <option value="Per Lesson">Per Lesson</option>
             <option value="Hourly">Hourly</option>
+            <option value="Per Lesson">Per Lesson</option>
         </select><br><br>
 
         Student Price / Rate:<br>
-        <input type="number" step="0.01" name="student_price" required><br><br>
+        <input type="number" step="0.01" name="student_price" value="110" required><br><br>
 
         Active:<br>
         <select name="active">
