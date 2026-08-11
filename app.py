@@ -12942,7 +12942,10 @@ def invoices():
         if not coverage_html:
             coverage_html = "<span class='muted-pill'>No coverage note</span>"
 
-        actions = [f'<a class="action secondary" href="/parent_invoice/{invoice_id}">Review</a>']
+        actions = [
+            f'<a class="action secondary" href="/parent_invoice/{invoice_id}">Review</a>',
+            f'<a class="action history" href="/invoice_history/{invoice_id}">History</a>',
+        ]
         if status in ("unpaid", "payment_failed", "pending_confirmation"):
             actions.append(f"""
                 <form method="POST" action="/send_invoice_payment_reminder/{invoice_id}">
@@ -13070,6 +13073,7 @@ def invoices():
             .action {{ border:1px solid #d9e1ee; border-radius:8px; min-height:34px; padding:7px 10px; font-weight:900; background:#fff; color:#1d65ad; cursor:pointer; font-size:13px; display:inline-flex; align-items:center; }}
             .action.primary {{ background:#1d65ad; border-color:#1d65ad; color:#fff; }}
             .action.reminder {{ background:#eef2ff; border-color:#c7d2fe; color:#3730a3; }}
+            .action.history {{ background:#f8fafc; border-color:#d9e1ee; color:#475467; }}
             .action.danger {{ color:#dc2626; border-color:#fecaca; }}
             .empty {{ text-align:center; color:#667085; font-weight:800; padding:34px; }}
             @media (max-width: 900px) {{
@@ -13244,6 +13248,269 @@ def send_invoice_payment_reminder(invoice_id):
     if sent:
         return redirect("/invoices?reminder=sent")
     return redirect(f"/invoices?reminder=failed&message={quote(str(response or 'Unknown error'))}")
+
+
+@app.route("/invoice_history/<int:invoice_id>")
+def invoice_history(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    ensure_v33_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        COALESCE(charge_lessons, 0),
+        COALESCE(amount, 0),
+        COALESCE(status, 'unpaid'),
+        COALESCE(due_date, ''),
+        COALESCE(payment_methods, ''),
+        COALESCE(coverage_title, ''),
+        COALESCE(coverage_class, ''),
+        COALESCE(coverage_start, ''),
+        COALESCE(coverage_note, ''),
+        COALESCE(payment_reminder_sent_at, ''),
+        COALESCE(payment_reminder_count, 0)
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1><p><a href='/invoices'>Back to invoices</a></p>"
+
+    cursor.execute("""
+    SELECT
+        id,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        status,
+        provider_response,
+        created_at,
+        sent_at,
+        related_type
+    FROM notification_delivery_queue
+    WHERE related_id = ?
+    AND COALESCE(related_type, '') IN (
+        'invoice_payment_reminder',
+        'invoice',
+        'paid_notice',
+        'stripe_paid',
+        'invoice_payment'
+    )
+    ORDER BY id DESC
+    LIMIT 80
+    """, (invoice_id,))
+    delivery_rows = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT title, body, link_url, read_at, created_at
+    FROM notifications
+    WHERE related_id = ?
+    AND COALESCE(related_type, '') IN (
+        'invoice_payment_reminder',
+        'invoice',
+        'paid_notice',
+        'stripe_paid',
+        'invoice_payment'
+    )
+    ORDER BY id DESC
+    LIMIT 40
+    """, (invoice_id,))
+    app_notifications = cursor.fetchall()
+    conn.close()
+
+    (
+        _invoice_id,
+        student_name,
+        charge_lessons,
+        amount,
+        invoice_status,
+        due_date,
+        payment_methods,
+        coverage_title,
+        coverage_class,
+        coverage_start,
+        coverage_note,
+        payment_reminder_sent_at,
+        payment_reminder_count,
+    ) = invoice
+
+    def pill_class(value):
+        value = str(value or "").lower()
+        if value == "sent":
+            return "sent"
+        if value == "failed":
+            return "failed"
+        if value == "pending":
+            return "pending"
+        return "neutral"
+
+    def channel_label(channel):
+        labels = {"email": "Email", "sms": "SMS", "push": "App"}
+        return labels.get(str(channel or "").lower(), str(channel or "").title())
+
+    def status_label(value):
+        value = str(value or "").lower()
+        labels = {
+            "unpaid": "Unpaid",
+            "payment_failed": "Payment failed",
+            "stripe_processing": "ACH processing",
+            "square_processing": "Card processing",
+            "pending_confirmation": "Needs confirmation",
+            "paid": "Paid",
+        }
+        return labels.get(value, value.replace("_", " ").title())
+
+    coverage_bits = [coverage_title, coverage_class, f"Starts {coverage_start}" if coverage_start else "", coverage_note]
+    coverage_html = "".join(f"<span>{escape(str(bit))}</span>" for bit in coverage_bits if bit) or "<span>No coverage note</span>"
+    method_html = "".join(
+        f"<span>{escape(part.strip().upper() if part.strip().lower() == 'ach' else part.strip().title())}</span>"
+        for part in str(payment_methods or "ach,zelle,paypal").split(",")
+        if part.strip()
+    )
+
+    delivery_html = ""
+    for row in delivery_rows:
+        queue_id, channel, destination, title, body, link_url, status, provider_response, created_at, sent_at, related_type = row
+        retry = ""
+        if status == "failed":
+            retry = f"""
+            <form method="POST" action="/notification_queue/{queue_id}/send">
+                <button type="submit">Retry</button>
+            </form>
+            """
+        delivery_html += f"""
+        <div class="history-row">
+            <div>
+                <div class="row-title">{escape(channel_label(channel))} · {escape(title or '')}</div>
+                <div class="muted">To: {escape(destination or 'No destination')}</div>
+                <div class="body-preview">{escape((body or '')[:260])}{'...' if body and len(body) > 260 else ''}</div>
+            </div>
+            <div><span class="pill {pill_class(status)}">{escape(str(status or 'pending').replace('_', ' ').title())}</span></div>
+            <div>
+                <div class="muted">Created</div>
+                <div class="strong">{escape(created_at or '')}</div>
+                <div class="muted">Sent</div>
+                <div>{escape(sent_at or '-')}</div>
+            </div>
+            <div class="response">{escape(provider_response or 'No provider response yet.')}</div>
+            <div class="row-actions">
+                <a class="link" href="{escape(link_url or f'/parent_invoice/{invoice_id}', quote=True)}">Open</a>
+                {retry}
+            </div>
+        </div>
+        """
+
+    if not delivery_html:
+        delivery_html = "<div class='empty'>No email or SMS reminders have been recorded for this invoice yet.</div>"
+
+    app_html = ""
+    for title, body, link_url, read_at, created_at in app_notifications:
+        app_html += f"""
+        <div class="app-row">
+            <div>
+                <div class="row-title">{escape(title or 'App notification')}</div>
+                <div class="muted">{escape(created_at or '')} · {'Read' if read_at else 'Unread'}</div>
+                <div class="body-preview">{escape(body or '')}</div>
+            </div>
+            <a class="link" href="{escape(link_url or f'/parent_invoice/{invoice_id}', quote=True)}">Open</a>
+        </div>
+        """
+    if not app_html:
+        app_html = "<div class='empty'>No parent app notification recorded for this invoice yet.</div>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Invoice History</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; font-family:Inter, Arial, sans-serif; background:#f6f7fb; color:#111827; }}
+            a {{ color:#1d65ad; font-weight:900; text-decoration:none; }}
+            .page {{ max-width:1200px; margin:0 auto; padding:34px 24px; }}
+            .shell {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 14px 35px rgba(17,24,39,.06); overflow:hidden; }}
+            .head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:24px 26px; border-bottom:1px solid #e5e7eb; }}
+            h1 {{ margin:0; font-size:30px; letter-spacing:0; }}
+            h2 {{ margin:0; font-size:20px; }}
+            .sub {{ color:#667085; margin-top:5px; font-weight:750; }}
+            .button {{ border:1px solid #d9e1ee; background:#fff; color:#111827; border-radius:9px; padding:10px 14px; font-weight:900; display:inline-flex; min-height:40px; align-items:center; }}
+            .button.primary {{ background:#1d65ad; border-color:#1d65ad; color:#fff; }}
+            .summary {{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; padding:18px 26px; border-bottom:1px solid #e5e7eb; }}
+            .card {{ border:1px solid #e5e7eb; border-radius:10px; padding:12px; background:#fbfcff; }}
+            .label {{ color:#667085; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .value {{ margin-top:5px; font-size:18px; font-weight:950; }}
+            .pills {{ display:flex; gap:6px; flex-wrap:wrap; margin-top:5px; }}
+            .pills span {{ background:#eef3fb; color:#475467; border-radius:999px; padding:5px 8px; font-size:12px; font-weight:900; }}
+            .section {{ padding:22px 26px; border-bottom:1px solid #e5e7eb; }}
+            .history-row {{ display:grid; grid-template-columns:1.6fr .45fr .65fr 1fr .45fr; gap:14px; align-items:start; padding:14px 0; border-bottom:1px solid #edf0f5; }}
+            .history-row:last-child,.app-row:last-child {{ border-bottom:none; }}
+            .app-row {{ display:grid; grid-template-columns:1fr auto; gap:14px; align-items:start; padding:13px 0; border-bottom:1px solid #edf0f5; }}
+            .row-title,.strong {{ font-weight:950; }}
+            .muted {{ color:#667085; font-size:12px; font-weight:750; margin-top:3px; }}
+            .body-preview {{ color:#374151; margin-top:8px; font-size:13px; line-height:1.42; white-space:pre-wrap; }}
+            .response {{ color:#374151; font-size:13px; line-height:1.35; }}
+            .pill {{ display:inline-flex; border-radius:999px; padding:6px 9px; font-size:12px; font-weight:950; white-space:nowrap; }}
+            .pill.sent {{ background:#dcfce7; color:#166534; }}
+            .pill.failed {{ background:#fee2e2; color:#991b1b; }}
+            .pill.pending {{ background:#fef3c7; color:#92400e; }}
+            .pill.neutral {{ background:#eef3fb; color:#475467; }}
+            .row-actions {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }}
+            button {{ border:1px solid #fecaca; background:#fff; color:#dc2626; border-radius:8px; padding:7px 10px; font-weight:900; cursor:pointer; }}
+            form {{ margin:0; }}
+            .empty {{ color:#667085; font-weight:850; padding:18px 0; }}
+            @media(max-width:900px) {{
+                .page {{ padding:16px 10px; }}
+                .head,.summary,.history-row,.app-row {{ grid-template-columns:1fr; }}
+                .summary {{ grid-template-columns:1fr 1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <div class="shell">
+                <div class="head">
+                    <div>
+                        <h1>Invoice History</h1>
+                        <div class="sub">Internal record for invoice #{invoice_id}. Parents do not see this internal number.</div>
+                    </div>
+                    <div class="row-actions">
+                        <a class="button" href="/invoices">Back to Invoices</a>
+                        <a class="button primary" href="/parent_invoice/{invoice_id}">Review Invoice</a>
+                    </div>
+                </div>
+                <div class="summary">
+                    <div class="card"><div class="label">Student</div><div class="value">{escape(str(student_name or ''))}</div></div>
+                    <div class="card"><div class="label">Amount</div><div class="value">${hmusic_money(amount)}</div></div>
+                    <div class="card"><div class="label">Status</div><div class="value">{escape(status_label(invoice_status))}</div></div>
+                    <div class="card"><div class="label">Reminders</div><div class="value">{int(payment_reminder_count or 0)}</div><div class="muted">{escape(payment_reminder_sent_at or 'No sent reminder yet')}</div></div>
+                    <div class="card"><div class="label">Package</div><div class="value">{hmusic_lesson_count_label(charge_lessons)} lessons</div></div>
+                    <div class="card"><div class="label">Due date</div><div class="value">{escape(due_date or 'No due date')}</div></div>
+                    <div class="card"><div class="label">Coverage</div><div class="pills">{coverage_html}</div></div>
+                    <div class="card"><div class="label">Payment methods</div><div class="pills">{method_html}</div></div>
+                </div>
+                <div class="section">
+                    <h2>Email / SMS Delivery</h2>
+                    <div class="sub">Every payment reminder delivery attempt for this invoice.</div>
+                    {delivery_html}
+                </div>
+                <div class="section">
+                    <h2>Parent App Notifications</h2>
+                    <div class="sub">In-app notices connected to this invoice.</div>
+                    {app_html}
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
