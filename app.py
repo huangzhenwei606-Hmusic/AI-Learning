@@ -1180,7 +1180,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
         return f'<a class="td-nav-item{active_class}" href="{href}"><i class="ti {icon}"></i><span>{label}</span>{extra}</a>'
 
     messages_item = item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge) if perms.get("message_parents") else ""
-    add_schedule_item = item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
+    add_schedule_item = item("add_schedule", "/teacher_dashboard?view=schedule&open_add=1", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
     payroll_item = item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>') if perms.get("view_payroll") else ""
     sub_item = item("sub", "/teacher_sub_request", "ti-replace", "Sub Request") if perms.get("sub_request") else ""
 
@@ -1786,7 +1786,7 @@ def teacher_dashboard_records_content(teacher_name):
     """
 
 
-def teacher_dashboard_add_schedule_content(teacher_name):
+def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     ensure_v18_schema()
     ensure_course_duration_request_schema()
     prefill_date = (request.args.get("prefill_date") or date.today().strftime("%Y-%m-%d")).strip()
@@ -1832,6 +1832,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     created = request.args.get('created')
     created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
     duration_request_html = '<div class="td-success">Duration request sent to owner.</div>' if request.args.get('duration_request') else ''
+    return_to_html = f'<input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">' if return_to else ''
     weekday_options = ''.join(
         f'<option{" selected" if day == prefill_weekday else ""}>{day}</option>'
         for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -1842,6 +1843,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
         {duration_request_html}
         <section class="td-card">
             <form method="POST" action="/add_schedule" class="td-form td-form-grid">
+                {return_to_html}
                 <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
                 <div class="full student-mode-row">
                     <label class="mode-pill"><input type="radio" name="student_mode" value="existing" checked> Existing student</label>
@@ -8873,7 +8875,9 @@ def add_schedule():
             )
 
         if require_teacher() and not require_owner():
-            return redirect(f"/teacher_dashboard?view=add_schedule&created={generated_count}")
+            teacher_return_to = safe_schedule_return(request.form.get("return_to"), "/teacher_dashboard?view=add_schedule")
+            joiner = "&" if "?" in teacher_return_to else "?"
+            return redirect(f"{teacher_return_to}{joiner}created={generated_count}")
 
         student_charge_summary = ""
         if not (require_teacher() and not require_owner()):
@@ -10279,6 +10283,15 @@ def teacher_dashboard():
     .teacher-rs-ok{background:var(--blue);border-color:var(--blue)!important;color:white}
     .lesson-scrim{position:fixed;inset:0;background:rgba(17,24,39,.42);display:none;z-index:1100}.lesson-scrim.show{display:block}
     .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#fff;color:#172033;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);display:flex;flex-direction:column;border-left:1px solid #E5E7EB}.lesson-panel.show{transform:translateX(0)}
+    .teacher-add-panel{position:fixed;top:0;right:0;bottom:0;width:min(760px,100vw);background:#fff;color:#172033;z-index:1102;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);border-left:1px solid #E5E7EB;overflow:hidden}.teacher-add-panel.show{transform:translateX(0)}
+    .teacher-add-panel-scroll{height:100%;overflow:auto;padding:20px 24px 28px;background:#fff}
+    .teacher-add-panel .schedule-head{padding-right:46px;margin-bottom:12px}
+    .teacher-add-panel .schedule-title h1{font-size:22px}
+    .teacher-add-panel .td-card{box-shadow:none;border-radius:10px;padding:14px}
+    .teacher-add-panel .td-form-grid{gap:10px}
+    .teacher-add-panel .td-form input,.teacher-add-panel .td-form select,.teacher-add-panel .td-form textarea{padding:9px 11px}
+    .teacher-add-panel .td-form textarea{min-height:68px}
+    .teacher-add-panel .duration-request-card{display:none}
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
     .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.early_cancel{background:#98A2B3}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
@@ -10374,6 +10387,10 @@ def teacher_dashboard():
         schedule_mode = request.args.get("mode", "month")
         if schedule_mode not in ("week", "month"):
             schedule_mode = "week"
+        if schedule_mode == "month":
+            schedule_return_url = f"/teacher_dashboard?view=schedule&mode=month&month={selected_month}"
+        else:
+            schedule_return_url = f"/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}"
 
         if schedule_mode == "month":
             month_grid_start = month_start - timedelta(days=month_start.weekday())
@@ -10448,6 +10465,17 @@ def teacher_dashboard():
         owner_policy_copy = "Direct reschedule is enabled for your own lessons. Delete, billing, and student profile changes still require owner approval." if direct_reschedule else "Owner approval required for final reschedule, delete, billing, sub assignment, and cancellation. Parents are notified only after owner confirmation."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
+        created_notice = f'<div class="td-success">{escape(request.args.get("created"))} lesson(s) created.</div>' if request.args.get("created") else ''
+        open_add_on_load = request.args.get("open_add") == "1"
+        auto_add_date = (request.args.get("prefill_date") or today).strip()
+        try:
+            datetime.strptime(auto_add_date, "%Y-%m-%d")
+        except Exception:
+            auto_add_date = today
+        teacher_add_panel_html = teacher_dashboard_add_schedule_content(
+            teacher_name or "",
+            return_to=schedule_return_url
+        )
         content = f"""
             <div class="schedule-head">
                 <div class="schedule-title">
@@ -10463,9 +10491,11 @@ def teacher_dashboard():
                 </div>
             </div>
             {TEACHER_CAL_CSS}
+        {created_notice}
         <div class="calendar-grid">{day_columns}</div>
 
         <div class="lesson-scrim" id="teacherLessonScrim" onclick="closeTeacherLessonPanel()"></div>
+        <div class="lesson-scrim" id="teacherAddScrim" onclick="closeTeacherAddPanel()"></div>
         <aside class="lesson-panel" id="teacherLessonPanel" aria-hidden="true">
           <div class="lesson-panel-scroll">
             <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
@@ -10477,6 +10507,12 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel()">Save changes</button></div>
+        </aside>
+        <aside class="teacher-add-panel" id="teacherAddPanel" aria-hidden="true">
+            <button class="lesson-panel-close" type="button" onclick="closeTeacherAddPanel()"><i class="ti ti-x"></i></button>
+            <div class="teacher-add-panel-scroll">
+                {teacher_add_panel_html}
+            </div>
         </aside>
         <div class="teacher-rs-overlay" id="teacherRsOverlay">
             <div class="teacher-rs-modal">
@@ -10522,7 +10558,28 @@ def teacher_dashboard():
 
         let teacherDrag = null;
         function teacherAddOnDate(dateStr) {{
-            window.location.href = `/teacher_dashboard?view=add_schedule&prefill_date=${{dateStr}}`;
+            openTeacherAddPanel(dateStr);
+        }}
+        function teacherWeekdayName(dateStr) {{
+            const d = new Date(dateStr + 'T12:00:00');
+            return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()];
+        }}
+        function openTeacherAddPanel(dateStr) {{
+            const panel = document.getElementById('teacherAddPanel');
+            const scrim = document.getElementById('teacherAddScrim');
+            const dateInput = panel.querySelector('input[name="start_date"]');
+            const weekdaySelect = panel.querySelector('select[name="weekday"]');
+            if (dateInput) dateInput.value = dateStr;
+            if (weekdaySelect) weekdaySelect.value = teacherWeekdayName(dateStr);
+            scrim.classList.add('show');
+            panel.classList.add('show');
+        }}
+        function closeTeacherAddPanel() {{
+            document.getElementById('teacherAddScrim').classList.remove('show');
+            document.getElementById('teacherAddPanel').classList.remove('show');
+        }}
+        if ({str(open_add_on_load).lower()}) {{
+            setTimeout(() => openTeacherAddPanel('{escape(auto_add_date)}'), 0);
         }}
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
             card.addEventListener("dragstart", e => {{
@@ -10594,7 +10651,7 @@ def teacher_dashboard():
             teacher_name or "Teacher",
             unread_messages,
             content,
-            active="schedule",
+            active="add_schedule" if open_add_on_load else "schedule",
             missing_homework_count=missing_homework_count
         )
 
