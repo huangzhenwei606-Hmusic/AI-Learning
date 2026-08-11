@@ -1308,11 +1308,11 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .schedule-tabs a {{ border:0; border-radius:0; background:white; padding:7px 11px; }}
             .schedule-tabs a.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
-            .calendar-day {{ min-height:340px; background:white; padding:5px; min-width:0; }}
+            .calendar-day {{ min-height:300px; background:white; padding:3px; min-width:0; }}
             .calendar-day.today {{ background:#fbfdff; }}
-            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:5px; align-items:center; min-height:17px; margin-bottom:4px; color:var(--td-muted); font-size:10px; }}
-            .calendar-day-head strong {{ color:var(--td-text); font-size:12px; font-weight:500; }}
-            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:5px solid var(--td-blue); border-radius:6px; padding:4px 5px; margin-bottom:4px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
+            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:4px; align-items:center; min-height:15px; margin-bottom:3px; color:var(--td-muted); font-size:9.5px; }}
+            .calendar-day-head strong {{ color:var(--td-text); font-size:11px; font-weight:500; }}
+            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:4px solid var(--td-blue); border-radius:5px; padding:3px 4px; margin-bottom:3px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
             .calendar-event.private-30 {{ border-left-color:#38bdf8; background:#dff4ff; border-color:#8bdcff; }}
             .calendar-event.private-45 {{ border-left-color:#2563eb; background:#bfdbfe; border-color:#60a5fa; }}
             .calendar-event.private-60 {{ border-left-color:#0f172a; background:#93c5fd; border-color:#1d4ed8; }}
@@ -1320,14 +1320,15 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-event.group-small {{ border-left-color:#a855f7; background:#eadcff; border-color:#c084fc; }}
             .calendar-event.group-large {{ border-left-color:#4c1d95; background:#c4b5fd; border-color:#7c3aed; }}
             .calendar-event.trial {{ border-left-color:#eab308; background:#fde68a; border-color:#facc15; }}
-            .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:5px; margin-bottom:2px; }}
-            .event-time {{ flex:1 1 auto; min-width:0; font-size:9px; color:#334155; line-height:1.05; font-weight:500; }}
-            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:10.5px; font-weight:650; line-height:1.08; margin-bottom:1px; }}
-            .event-line {{ overflow-wrap:anywhere; font-size:9.5px; color:#334155; line-height:1.08; margin-top:0; }}
-            .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 32px; gap:3px; margin-top:3px; align-items:center; }}
-            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:19px; border:1px solid rgba(51,65,85,.28); border-radius:5px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:9px; padding:1px 3px; }}
-            .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; padding:0 4px; }}
-            .calendar-empty {{ color:var(--td-faint); font-size:13px; padding:8px 2px; }}
+            .event-top {{ display:flex; align-items:center; justify-content:space-between; gap:3px; margin-bottom:1px; }}
+            .event-time {{ flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:3px; font-size:8.5px; color:#334155; line-height:1; font-weight:650; white-space:nowrap; }}
+            .event-time-text {{ color:#334155; font-weight:650; white-space:nowrap; }}
+            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:10px; font-weight:650; line-height:1.04; margin-bottom:1px; }}
+            .event-line {{ overflow-wrap:anywhere; font-size:8.5px; color:#334155; line-height:1.04; margin-top:0; }}
+            .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 28px; gap:2px; margin-top:2px; align-items:center; }}
+            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:17px; border:1px solid rgba(51,65,85,.28); border-radius:4px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:8.5px; padding:0 3px; }}
+            .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; padding:0 3px; }}
+            .calendar-empty {{ color:var(--td-faint); font-size:11px; padding:4px 1px; }}
             @media (max-width:900px) {{
                 .td-shell {{ grid-template-columns:64px 1fr; }}
                 .td-brand span, .td-nav-item span, .td-nav-section, .td-new-badge, .nav-badge {{ display:none; }}
@@ -10278,6 +10279,17 @@ def teacher_dashboard():
     def teacher_time_range(time_text, duration):
         return format_lesson_time_range(time_text, duration)
 
+    def compact_course_label(course_name):
+        text = str(course_name or "").strip()
+        lower = text.lower()
+        if "trial" in lower:
+            return "Trial"
+        if "group" in lower:
+            return "Group"
+        if "private" in lower:
+            return "Private"
+        return text
+
     def _t_status_dot(st):
         if st == "present":   return "sd-present"
         if st == "late":      return "sd-late"
@@ -10311,11 +10323,11 @@ def teacher_dashboard():
         --s-present:#639922;--s-scheduled:#378ADD;--s-late:#D99019;
         --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
     }
-    .t-status-badge{display:inline-flex;align-items:center;gap:4px;
-                    border-radius:999px;padding:2px 7px;font-size:9px;
+    .t-status-badge{display:inline-flex;align-items:center;gap:3px;
+                    border-radius:999px;padding:1px 5px;font-size:8px;
                     line-height:1;font-weight:900;color:#fff;
                     box-shadow:0 1px 2px rgba(0,0,0,.18)}
-    .t-status-badge:before{content:"";width:6px;height:6px;border-radius:50%;
+    .t-status-badge:before{content:"";width:5px;height:5px;border-radius:50%;
                            background:currentColor;filter:brightness(0) invert(1)}
     .sd-present  {background:var(--s-present)}
     .sd-scheduled{background:var(--s-scheduled)}
@@ -10327,17 +10339,17 @@ def teacher_dashboard():
     .calendar-event{border-left:4px solid var(--blue)}
     .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:#667085!important;box-shadow:none!important}
     .calendar-event.early-cancel .t-status-badge{background:#E5E7EB;color:#667085;box-shadow:none;text-decoration:line-through;text-decoration-thickness:1.5px}
-    .calendar-event.early-cancel .event-time span:last-child,
+    .calendar-event.early-cancel .event-time-text,
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
     .calendar-event.early-cancel .event-cancel-result{color:#667085!important;text-decoration:line-through;text-decoration-thickness:1.5px}
-    .calendar-event.early-cancel .event-cancel-result{display:block;font-size:10px;margin:2px 0 0;font-weight:800}
+    .calendar-event.early-cancel .event-cancel-result{display:block;font-size:8.5px;margin:1px 0 0;font-weight:800}
     .calendar-event.early-cancel .event-status-form select,
     .calendar-event.early-cancel .event-status-form button{text-decoration:none}
     .calendar-event{cursor:grab;user-select:none}
     .calendar-event.dragging{opacity:.35}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
-    .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:2px 8px}
+    .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:1px 6px}
     .calendar-day-head strong:hover{background:rgba(24,95,165,.14)}
     .teacher-rs-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:9999}
     .teacher-rs-overlay.show{display:flex}
@@ -10379,6 +10391,7 @@ def teacher_dashboard():
         course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
         place_label = lesson[12] or lesson[4] or "-"
+        course_label = compact_course_label(lesson[7])
         return f"""
         <div class="calendar-event{event_class}"
              draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
@@ -10389,11 +10402,11 @@ def teacher_dashboard():
             <div class="event-top">
                 <span class="event-time">
                   <span class="t-status-badge {dot}">{status_text}</span>
-                  <span style="display:block;margin-top:3px">{time_range}</span>
+                  <span class="event-time-text">{time_range}</span>
                 </span>
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
-            <div class="event-line">{escape(place_label)} · {escape(lesson[7] or '')}</div>
+            <div class="event-line">{escape(place_label)} · {escape(course_label)}</div>
             {cancel_result}
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
