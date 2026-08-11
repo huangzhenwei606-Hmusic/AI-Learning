@@ -14941,6 +14941,8 @@ def parent_admin(parent_id):
         conn.close()
         return "<h1>Parent not found</h1>"
 
+    generated_password = ""
+
     cursor.execute("""
     SELECT ps.id, ps.student_name, ps.relationship, ps.active, ps.created_at,
            COALESCE(s.teacher, ''), COALESCE(s.parent_email, '')
@@ -14950,6 +14952,11 @@ def parent_admin(parent_id):
     ORDER BY ps.active DESC, ps.student_name
     """, (parent_id,))
     linked_students = cursor.fetchall()
+
+    if request.method == "POST" and request.form.get("action") == "reset_parent_password":
+        generated_password = hmusic_temp_password()
+        set_password_columns(cursor, "parent_profiles", parent_id, generated_password, must_change=True)
+        conn.commit()
 
     if request.method == "POST" and request.form.get("action") == "create_family_invoices":
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -15195,6 +15202,25 @@ def parent_admin(parent_id):
         open_invoice_count = 0
         open_invoice_total = 0
 
+    login_url = "https://hmusic-crm.onrender.com/parent_login"
+    generated_password_html = ""
+    copy_login_text = f"H-Music Parent App\nLogin: {login_url}\nEmail: {parent[2] or ''}"
+    if generated_password:
+        copy_login_text += f"\nTemporary password: {generated_password}"
+        generated_password_html = f"""
+                        <div class="password-generated">
+                            <div class="password-label">Temporary password</div>
+                            <div class="password-value" id="parentTempPassword">{escape(generated_password)}</div>
+                            <div class="password-note">The parent will be asked to change this password after login.</div>
+                        </div>
+        """
+    else:
+        generated_password_html = """
+                        <div class="password-empty">
+                            Password is hidden. Generate a new temporary password when the family needs login help.
+                        </div>
+        """
+
     return f"""
     <!doctype html>
     <html>
@@ -15237,6 +15263,16 @@ def parent_admin(parent_id):
             .metric span {{ display:block; color:var(--muted); font-size:11px; font-weight:850; }}
             .metric strong {{ display:block; margin-top:3px; font-size:15px; font-weight:900; }}
             .explain {{ margin-top:10px; padding:9px 10px; border-radius:8px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:12px; font-weight:750; line-height:1.35; }}
+            .password-box {{ margin-top:10px; padding:10px; border-radius:10px; border:1px solid #bfdbfe; background:#eff6ff; }}
+            .password-box-head {{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }}
+            .password-box-title {{ color:#155d9e; font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .password-box-badge {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#dbeafe; color:#155d9e; font-size:10px; font-weight:900; white-space:nowrap; }}
+            .password-value {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:16px; font-weight:900; letter-spacing:.02em; color:var(--text); background:#fff; border:1px solid #d9dee8; border-radius:8px; padding:8px 9px; word-break:break-all; }}
+            .password-label {{ color:var(--muted); font-size:11px; font-weight:850; margin-bottom:4px; }}
+            .password-note, .password-empty {{ margin-top:7px; color:#475467; font-size:11px; font-weight:700; line-height:1.35; }}
+            .password-empty {{ margin-top:0; }}
+            .password-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; }}
+            .password-actions form, .password-actions button {{ width:100%; }}
             .stack {{ display:grid; gap:12px; }}
             .add-grid {{ display:grid; grid-template-columns:minmax(260px,1fr) 160px auto; gap:8px; align-items:end; }}
             label {{ display:block; color:var(--muted); font-size:11px; font-weight:850; margin-bottom:4px; }}
@@ -15323,12 +15359,21 @@ def parent_admin(parent_id):
                             <div class="metric"><span>Open invoices</span><strong>{open_invoice_count}</strong></div>
                             <div class="metric"><span>Amount due</span><strong>${hmusic_money(open_invoice_total)}</strong></div>
                         </div>
-                        <div class="explain">Use this page to control which children this parent can see in the parent app. Removing access hides a child from the parent app; it does not delete the student.</div>
-                        <div class="top-actions" style="justify-content:flex-start;margin-top:10px;">
-                            <form method="POST" action="/reset_parent_password/{parent[0]}" class="inline-form">
-                                <button type="submit">Reset password</button>
-                            </form>
+                        <div class="password-box">
+                            <div class="password-box-head">
+                                <div class="password-box-title">One family login password</div>
+                                <div class="password-box-badge">Shared by {active_link_count} children</div>
+                            </div>
+                            {generated_password_html}
+                            <div class="password-actions">
+                                <form method="POST" action="/parent_admin/{parent[0]}" class="inline-form">
+                                    <input type="hidden" name="action" value="reset_parent_password">
+                                    <button class="primary" type="submit">Generate new password</button>
+                                </form>
+                                <button type="button" onclick='navigator.clipboard.writeText({json.dumps(copy_login_text)}); this.textContent="Copied";'>Copy login info</button>
+                            </div>
                         </div>
+                        <div class="explain">Use this page to control which children this parent can see in the parent app. Removing access hides a child from the parent app; it does not delete the student.</div>
                     </div>
                 </aside>
 
