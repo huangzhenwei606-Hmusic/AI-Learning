@@ -1236,7 +1236,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             * {{ box-sizing:border-box; }}
             body {{ margin:0; background:var(--td-bg); color:var(--td-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; font-weight:400; }}
             a {{ color:inherit; text-decoration:none; }}
-            .td-shell {{ display:grid; grid-template-columns:240px 1fr; grid-template-rows:56px 1fr; min-height:100vh; background:var(--td-bg); }}
+            .td-shell {{ display:grid; grid-template-columns:240px 1fr; grid-template-rows:56px 1fr; height:100vh; min-height:100vh; overflow:hidden; background:var(--td-bg); }}
             .td-topbar {{ grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding:0 20px; background:var(--td-surface); border-bottom:1px solid var(--td-line); }}
             .td-brand {{ display:flex; align-items:center; gap:10px; font-size:18px; font-weight:500; }}
             .td-mark {{ width:32px; height:32px; display:grid; place-items:center; border-radius:8px; background:var(--td-blue-soft); color:var(--td-blue); font-size:18px; }}
@@ -1244,7 +1244,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .td-role {{ display:inline-flex; gap:6px; align-items:center; padding:6px 10px; border:1px solid var(--td-line); border-radius:999px; color:var(--td-muted); font-size:13px; }}
             .td-avatar {{ width:32px; height:32px; border-radius:999px; display:grid; place-items:center; background:var(--td-blue); color:white; font-size:12px; font-weight:500; }}
             .td-more {{ width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--td-gray-soft); color:var(--td-muted); font-size:18px; }}
-            .td-sidebar {{ background:var(--td-sidebar); border-right:1px solid var(--td-line); padding:18px 0; }}
+            .td-sidebar {{ background:var(--td-sidebar); border-right:1px solid var(--td-line); padding:18px 0; height:calc(100vh - 56px); overflow:auto; }}
             .td-nav-section {{ padding:12px 18px 6px; color:var(--td-faint); font-size:11px; letter-spacing:.05em; text-transform:uppercase; font-weight:500; }}
             .td-nav-item {{ display:flex; align-items:center; gap:10px; min-height:38px; padding:0 18px; color:var(--td-muted); font-size:14px; font-weight:400; }}
             .td-nav-item i {{ width:18px; font-size:18px; color:var(--td-muted); }}
@@ -1252,7 +1252,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .td-nav-item.active i {{ color:var(--td-blue); }}
             .nav-badge {{ margin-left:auto; display:inline-grid; place-items:center; min-width:20px; height:20px; padding:0 6px; border-radius:999px; background:var(--td-red-soft); color:var(--td-red); font-size:11px; font-weight:500; }}
             .td-new-badge {{ margin-left:auto; border-radius:999px; padding:1px 6px; background:var(--td-green-soft); color:var(--td-green); font-size:11px; font-weight:500; }}
-            .td-main {{ padding:20px 24px 40px; overflow:auto; }}
+            .td-main {{ padding:20px 24px 40px; height:calc(100vh - 56px); overflow:auto; }}
             .td-greeting {{ display:flex; align-items:baseline; gap:12px; margin-bottom:18px; }}
             .td-greeting h1 {{ margin:0; font-size:22px; line-height:1.25; font-weight:500; }}
             .td-greeting span {{ color:var(--td-muted); font-size:14px; }}
@@ -1308,11 +1308,11 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .schedule-tabs a {{ border:0; border-radius:0; background:white; padding:7px 11px; }}
             .schedule-tabs a.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
-            .calendar-day {{ min-height:560px; background:white; padding:8px; min-width:0; }}
+            .calendar-day {{ min-height:340px; background:white; padding:5px; min-width:0; }}
             .calendar-day.today {{ background:#fbfdff; }}
-            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:6px; align-items:center; min-height:20px; margin-bottom:7px; color:var(--td-muted); font-size:11px; }}
-            .calendar-day-head strong {{ color:var(--td-text); font-size:13px; font-weight:500; }}
-            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:6px solid var(--td-blue); border-radius:7px; padding:5px 6px; margin-bottom:5px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
+            .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:5px; align-items:center; min-height:17px; margin-bottom:4px; color:var(--td-muted); font-size:10px; }}
+            .calendar-day-head strong {{ color:var(--td-text); font-size:12px; font-weight:500; }}
+            .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:5px solid var(--td-blue); border-radius:6px; padding:4px 5px; margin-bottom:4px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
             .calendar-event.private-30 {{ border-left-color:#38bdf8; background:#dff4ff; border-color:#8bdcff; }}
             .calendar-event.private-45 {{ border-left-color:#2563eb; background:#bfdbfe; border-color:#60a5fa; }}
             .calendar-event.private-60 {{ border-left-color:#0f172a; background:#93c5fd; border-color:#1d4ed8; }}
@@ -1321,11 +1321,11 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-event.group-large {{ border-left-color:#4c1d95; background:#c4b5fd; border-color:#7c3aed; }}
             .calendar-event.trial {{ border-left-color:#eab308; background:#fde68a; border-color:#facc15; }}
             .event-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:5px; margin-bottom:2px; }}
-            .event-time {{ flex:1 1 auto; min-width:0; font-size:10px; color:#334155; line-height:1.1; font-weight:500; }}
-            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:11.5px; font-weight:600; line-height:1.12; margin-bottom:2px; }}
-            .event-line {{ overflow-wrap:anywhere; font-size:10px; color:#334155; line-height:1.12; margin-top:0; }}
-            .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 36px; gap:3px; margin-top:4px; align-items:center; }}
-            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:21px; border:1px solid rgba(51,65,85,.28); border-radius:5px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:10px; padding:1px 4px; }}
+            .event-time {{ flex:1 1 auto; min-width:0; font-size:9px; color:#334155; line-height:1.05; font-weight:500; }}
+            .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:10.5px; font-weight:650; line-height:1.08; margin-bottom:1px; }}
+            .event-line {{ overflow-wrap:anywhere; font-size:9.5px; color:#334155; line-height:1.08; margin-top:0; }}
+            .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 32px; gap:3px; margin-top:3px; align-items:center; }}
+            .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:19px; border:1px solid rgba(51,65,85,.28); border-radius:5px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:9px; padding:1px 3px; }}
             .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; padding:0 4px; }}
             .calendar-empty {{ color:var(--td-faint); font-size:13px; padding:8px 2px; }}
             @media (max-width:900px) {{
@@ -1789,6 +1789,7 @@ def teacher_dashboard_records_content(teacher_name):
 def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     ensure_v18_schema()
     ensure_course_duration_request_schema()
+    ensure_location_room_schema()
     prefill_date = (request.args.get("prefill_date") or date.today().strftime("%Y-%m-%d")).strip()
     try:
         prefill_date_obj = datetime.strptime(prefill_date, "%Y-%m-%d")
@@ -1799,15 +1800,26 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS classrooms (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        room_name TEXT UNIQUE
-    )
+    SELECT id, location_name
+    FROM studio_locations
+    WHERE active = 1
+    ORDER BY sort_order, location_name
     """)
-    cursor.executemany("INSERT OR IGNORE INTO classrooms (room_name) VALUES (?)", [("Room 1",), ("Room 2",), ("Room 3",), ("Trial Room",)])
-    conn.commit()
-    cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
-    classrooms = cursor.fetchall()
+    locations = cursor.fetchall()
+    cursor.execute("""
+    SELECT
+        r.id,
+        r.location_id,
+        r.room_name,
+        l.location_name,
+        COALESCE(l.address, '')
+    FROM studio_rooms r
+    JOIN studio_locations l ON l.id = r.location_id
+    WHERE r.active = 1
+    AND l.active = 1
+    ORDER BY l.sort_order, l.location_name, r.sort_order, r.room_name
+    """)
+    rooms = cursor.fetchall()
     cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
     course_types = cursor.fetchall()
     cursor.execute("""
@@ -1823,7 +1835,17 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     """, (teacher_name, teacher_name, teacher_name))
     students = cursor.fetchall()
     conn.close()
-    room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in classrooms)
+    location_options = ''.join(f'<option value="{location[0]}">{escape(location[1] or "Location")}</option>' for location in locations)
+    room_data_json = json.dumps([
+        {
+            "id": room[0],
+            "location_id": room[1],
+            "room_name": room[2],
+            "location_name": room[3],
+            "address": room[4],
+        }
+        for room in rooms
+    ])
     course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {int(c[2] or 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
     student_options = ''.join(
         f'<option value="{escape(str(r[0]))}">{escape(hmusic_student_parent_label(r[0], r[1]))}</option>'
@@ -1859,7 +1881,10 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                     </div>
                     <p>Saving creates the lesson first and notifies owner to add or assign the student record.</p>
                 </div>
-                <label>Room<select name="classroom" required>{room_options}</select></label>
+                <label>Location<select name="location_id" id="teacherScheduleLocation" onchange="updateTeacherScheduleRooms()" required>{location_options}</select></label>
+                <input type="hidden" name="location" id="teacherScheduleLocationName">
+                <label>Room<select name="classroom" id="teacherScheduleRoom" onchange="updateTeacherScheduleRoomId()" required></select></label>
+                <input type="hidden" name="room_id" id="teacherScheduleRoomId">
                 <label>Weekday<select name="weekday">{weekday_options}</select></label>
                 <label>Time<input type="time" name="lesson_time" required></label>
                 <label>Frequency<select name="schedule_type" id="teacherScheduleType"><option value="one_time">One time</option><option value="weekly" selected>Weekly</option><option value="biweekly">Every 2 weeks</option><option value="custom">Custom interval</option></select></label>
@@ -1906,6 +1931,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
         </style>
         <script>
             (function() {{
+                const ROOM_DATA = {room_data_json};
                 const modeInputs = document.querySelectorAll('input[name="student_mode"]');
                 const newBox = document.getElementById('newStudentBox');
                 const existingField = document.querySelector('.existing-student-field');
@@ -1914,6 +1940,42 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 const scheduleType = document.getElementById('teacherScheduleType');
                 const repeatCount = document.getElementById('teacherRepeatCount');
                 const intervalField = document.getElementById('teacherIntervalField');
+                const locationSelect = document.getElementById('teacherScheduleLocation');
+                const roomSelect = document.getElementById('teacherScheduleRoom');
+                const locationNameInput = document.getElementById('teacherScheduleLocationName');
+                const roomIdInput = document.getElementById('teacherScheduleRoomId');
+                window.updateTeacherScheduleRoomId = function() {{
+                    if (!roomSelect || !roomIdInput) return;
+                    const selected = roomSelect.options[roomSelect.selectedIndex];
+                    roomIdInput.value = selected ? (selected.dataset.roomId || '') : '';
+                }}
+                window.updateTeacherScheduleRooms = function() {{
+                    if (!locationSelect || !roomSelect) return;
+                    const locationId = String(locationSelect.value || '');
+                    const previousValue = roomSelect.value || '';
+                    if (locationNameInput) {{
+                        const selectedLocation = locationSelect.options[locationSelect.selectedIndex];
+                        locationNameInput.value = selectedLocation ? selectedLocation.textContent : '';
+                    }}
+                    roomSelect.innerHTML = '';
+                    ROOM_DATA
+                        .filter(room => String(room.location_id) === locationId)
+                        .forEach(room => {{
+                            const option = document.createElement('option');
+                            option.value = room.room_name || '';
+                            option.textContent = room.room_name || 'Room';
+                            option.dataset.roomId = room.id || '';
+                            if (previousValue && previousValue === option.value) option.selected = true;
+                            roomSelect.appendChild(option);
+                        }});
+                    if (!roomSelect.options.length) {{
+                        const option = document.createElement('option');
+                        option.value = '';
+                        option.textContent = 'No active rooms for this location';
+                        roomSelect.appendChild(option);
+                    }}
+                    window.updateTeacherScheduleRoomId();
+                }}
                 function syncStudentMode() {{
                     const checked = document.querySelector('input[name="student_mode"]:checked');
                     const isNew = checked && checked.value === 'new';
@@ -1931,6 +1993,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 }}
                 modeInputs.forEach(input => input.addEventListener('change', syncStudentMode));
                 scheduleType.addEventListener('change', syncFrequency);
+                window.updateTeacherScheduleRooms();
                 syncStudentMode();
                 syncFrequency();
             }})();
@@ -8287,6 +8350,7 @@ def add_schedule():
         """, 403
 
     ensure_v18_schema()
+    ensure_location_room_schema()
 
     def safe_schedule_return(value, fallback="/calendar"):
         value = (value or "").strip()
@@ -10086,9 +10150,11 @@ def teacher_dashboard():
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
-        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
+        COALESCE(l.location_name, s.location, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON s.location_id = l.id
     WHERE s.teacher = ?
     AND s.lesson_date LIKE ?
     ORDER BY s.lesson_date, s.lesson_time
@@ -10099,9 +10165,11 @@ def teacher_dashboard():
     SELECT
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
-        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
+        COALESCE(l.location_name, s.location, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON s.location_id = l.id
     WHERE s.teacher = ?
     AND s.lesson_date >= ?
     AND s.lesson_date <= ?
@@ -10310,6 +10378,7 @@ def teacher_dashboard():
         status_text = _t_status_label(lesson_status)
         course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
+        place_label = lesson[12] or lesson[4] or "-"
         return f"""
         <div class="calendar-event{event_class}"
              draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
@@ -10324,7 +10393,7 @@ def teacher_dashboard():
                 </span>
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
-            <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
+            <div class="event-line">{escape(place_label)} · {escape(lesson[7] or '')}</div>
             {cancel_result}
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
