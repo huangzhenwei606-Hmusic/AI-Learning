@@ -1789,6 +1789,13 @@ def teacher_dashboard_records_content(teacher_name):
 def teacher_dashboard_add_schedule_content(teacher_name):
     ensure_v18_schema()
     ensure_course_duration_request_schema()
+    prefill_date = (request.args.get("prefill_date") or date.today().strftime("%Y-%m-%d")).strip()
+    try:
+        prefill_date_obj = datetime.strptime(prefill_date, "%Y-%m-%d")
+    except Exception:
+        prefill_date = date.today().strftime("%Y-%m-%d")
+        prefill_date_obj = datetime.strptime(prefill_date, "%Y-%m-%d")
+    prefill_weekday = prefill_date_obj.strftime("%A")
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -1825,26 +1832,43 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     created = request.args.get('created')
     created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
     duration_request_html = '<div class="td-success">Duration request sent to owner.</div>' if request.args.get('duration_request') else ''
+    weekday_options = ''.join(
+        f'<option{" selected" if day == prefill_weekday else ""}>{day}</option>'
+        for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    )
     return f"""
-        <div class="schedule-head"><div class="schedule-title"><h1>Add Schedule</h1><p>Create lessons from inside the teacher portal. New/unassigned students will notify owner for review.</p></div></div>
+        <div class="schedule-head"><div class="schedule-title"><h1>Add Schedule</h1><p>Create lessons from inside the teacher portal. Tuition and invoices stay owner-managed.</p></div></div>
         {created_html}
         {duration_request_html}
         <section class="td-card">
             <form method="POST" action="/add_schedule" class="td-form td-form-grid">
                 <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
-                <label>Student<select class="student-picker-compact" id="student_name" name="student_name" required>{student_options}</select></label>
+                <div class="full student-mode-row">
+                    <label class="mode-pill"><input type="radio" name="student_mode" value="existing" checked> Existing student</label>
+                    <label class="mode-pill"><input type="radio" name="student_mode" value="new"> New student</label>
+                </div>
+                <label class="existing-student-field">Student<select class="student-picker-compact" id="student_name" name="student_name">{student_options}</select></label>
+                <div class="new-student-box full" id="newStudentBox">
+                    <div class="new-student-grid">
+                        <label>Student name<input type="text" name="new_student_name" placeholder="Required for new student"></label>
+                        <label>Parent name <span>optional</span><input type="text" name="new_parent_name" placeholder="Backup info"></label>
+                        <label>Parent phone / email <span>optional</span><input type="text" name="new_parent_contact" placeholder="Backup contact"></label>
+                        <label>Note <span>optional</span><input type="text" name="new_student_note" placeholder="Trial, referral, or scheduling context"></label>
+                    </div>
+                    <p>Saving creates the lesson first and notifies owner to add or assign the student record.</p>
+                </div>
                 <label>Room<select name="classroom" required>{room_options}</select></label>
-                <label>Weekday<select name="weekday"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option></select></label>
+                <label>Weekday<select name="weekday">{weekday_options}</select></label>
                 <label>Time<input type="time" name="lesson_time" required></label>
-                <label>Schedule Type<select name="schedule_type"><option value="weekly">Weekly</option><option value="one_time">One time</option></select></label>
-                <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option></select></label>
-                <label>Custom Count<input type="number" name="custom_lesson_count" min="1" max="260" placeholder="Only if package is custom"></label>
-                <label>Start Date<input type="date" name="start_date" value="{date.today().strftime('%Y-%m-%d')}" required></label>
+                <label>Frequency<select name="schedule_type" id="teacherScheduleType"><option value="one_time">One time</option><option value="weekly" selected>Weekly</option><option value="biweekly">Every 2 weeks</option><option value="custom">Custom interval</option></select></label>
+                <label>Repeat count<input type="number" id="teacherRepeatCount" name="repeat_count" min="1" max="260" value="10"></label>
+                <label id="teacherIntervalField">Every N weeks<input type="number" name="repeat_interval_weeks" min="1" max="8" value="1"></label>
+                <label>Start Date<input type="date" name="start_date" value="{escape(prefill_date)}" required></label>
                 <label>Course<select name="course_type_id" required>{course_options}</select></label>
-                <input type="hidden" name="billing_decision" value="existing_credits">
                 <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
                 <label class="full">Group Students<textarea name="group_student_names" placeholder="For group classes, list names here."></textarea></label>
-                <div class="full"><button type="submit">Create Schedule</button></div>
+                <div class="full teacher-billing-note">No tuition or invoice is created here. Owner can invoice later from Student / Family Billing.</div>
+                <div class="full"><button type="submit">Create Lesson Schedule</button></div>
             </form>
         </section>
         <section class="td-card duration-request-card">
@@ -1864,10 +1888,51 @@ def teacher_dashboard_add_schedule_content(teacher_name):
             .td-form label {{ display:block; color:var(--td-muted); font-weight:600; }}
             .td-form input,.td-form select,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
             .td-form textarea {{ min-height:90px; resize:vertical; }} .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
+            .student-mode-row {{ display:flex; gap:8px; flex-wrap:wrap; }}
+            .mode-pill {{ width:auto !important; display:inline-flex !important; align-items:center; gap:7px; min-height:38px; padding:0 12px; border:1px solid var(--td-line); border-radius:999px; background:#fff; color:var(--td-text) !important; font-size:13px; }}
+            .mode-pill input {{ width:auto; margin:0; }}
+            .new-student-box {{ display:none; border:1px solid #fed7aa; border-radius:10px; background:#fffaf0; padding:10px; }}
+            .new-student-box.show {{ display:block; }}
+            .new-student-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .new-student-grid span {{ font-size:11px; color:#9ca3af; font-weight:800; }}
+            .new-student-box p, .teacher-billing-note {{ margin:8px 0 0; color:var(--td-muted); font-size:13px; font-weight:750; line-height:1.35; }}
+            .teacher-billing-note {{ margin:0; padding:9px 10px; border-radius:8px; background:#f8fafc; border:1px solid var(--td-line); }}
             .duration-request-card {{ margin-top:14px; }}
             .duration-request-card h2 {{ margin:0 0 6px; font-size:18px; }}
             .td-note {{ color:var(--td-muted); margin:0 0 14px; line-height:1.45; }}
+            @media (max-width:760px) {{ .td-form-grid, .new-student-grid {{ grid-template-columns:1fr; }} }}
         </style>
+        <script>
+            (function() {{
+                const modeInputs = document.querySelectorAll('input[name="student_mode"]');
+                const newBox = document.getElementById('newStudentBox');
+                const existingField = document.querySelector('.existing-student-field');
+                const existingSelect = document.getElementById('student_name');
+                const newName = document.querySelector('input[name="new_student_name"]');
+                const scheduleType = document.getElementById('teacherScheduleType');
+                const repeatCount = document.getElementById('teacherRepeatCount');
+                const intervalField = document.getElementById('teacherIntervalField');
+                function syncStudentMode() {{
+                    const checked = document.querySelector('input[name="student_mode"]:checked');
+                    const isNew = checked && checked.value === 'new';
+                    newBox.classList.toggle('show', isNew);
+                    existingField.style.display = isNew ? 'none' : 'block';
+                    if (existingSelect) existingSelect.required = !isNew;
+                    if (newName) newName.required = isNew;
+                }}
+                function syncFrequency() {{
+                    const value = scheduleType.value;
+                    const oneTime = value === 'one_time';
+                    repeatCount.disabled = oneTime;
+                    repeatCount.value = oneTime ? '1' : (repeatCount.value === '1' ? '10' : repeatCount.value || '10');
+                    intervalField.style.display = value === 'custom' ? 'block' : 'none';
+                }}
+                modeInputs.forEach(input => input.addEventListener('change', syncStudentMode));
+                scheduleType.addEventListener('change', syncFrequency);
+                syncStudentMode();
+                syncFrequency();
+            }})();
+        </script>
     """
 
 
@@ -8272,14 +8337,15 @@ def add_schedule():
     if request.method == "POST":
         action = request.form.get("action")
         student_mode = request.form.get("student_mode", "existing")
+        teacher_portal_schedule = require_teacher() and not require_owner()
+        new_student_schedule_request = teacher_portal_schedule and student_mode == "new"
         allow_unassigned_teacher_schedule = (
-            action == "create_unassigned_teacher_schedule"
-            and require_teacher()
-            and not require_owner()
+            teacher_portal_schedule
+            and (action == "create_unassigned_teacher_schedule" or new_student_schedule_request)
         )
         temporary_schedule_note = (request.form.get("temporary_schedule_note") or "").strip()
 
-        if (action == "request_student_setup" or student_mode == "new") and require_teacher() and not require_owner():
+        if action == "request_student_setup" and teacher_portal_schedule:
             teacher_name = session.get("teacher_name")
             requested_student = (request.form.get("requested_student") or request.form.get("new_student_name") or "").strip()
             parent_name = (request.form.get("new_parent_name") or "").strip()
@@ -8322,8 +8388,19 @@ def add_schedule():
             """
 
         student_name = hmusic_clean_student_picker_value(request.form.get("student_name"))
+        if new_student_schedule_request:
+            student_name = (request.form.get("new_student_name") or "").strip()
+            parent_name = (request.form.get("new_parent_name") or "").strip()
+            parent_contact = (request.form.get("new_parent_contact") or "").strip()
+            request_note = (request.form.get("new_student_note") or "").strip()
+            temporary_schedule_note = request_note or "Teacher added a new student while creating a schedule."
+            if parent_name or parent_contact:
+                temporary_schedule_note += f" Parent backup: {parent_name or 'N/A'} | {parent_contact or 'N/A'}."
+            if not student_name:
+                conn.close()
+                return f"<h1>Please enter the student name.</h1><p><a href='/teacher_dashboard?view=add_schedule'>Back</a></p>", 400
         teacher = request.form.get("teacher")
-        if require_teacher() and not require_owner():
+        if teacher_portal_schedule:
             teacher = session.get("teacher_name")
             teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher)
 
@@ -8401,7 +8478,12 @@ def add_schedule():
         schedule_type = request.form.get("schedule_type")
         package_type = request.form.get("package_type") or "10"
         billing_decision = request.form.get("billing_decision") or "existing_credits"
+        if teacher_portal_schedule:
+            billing_decision = "owner_review"
+            package_type = "teacher_schedule"
         custom_lesson_count = request.form.get("custom_lesson_count")
+        repeat_count = request.form.get("repeat_count")
+        repeat_interval_weeks = request.form.get("repeat_interval_weeks")
         custom_student_price = request.form.get("custom_student_price")
         parent_billing_basis = request.form.get("parent_billing_basis")
         parent_charge_rate = request.form.get("parent_charge_rate")
@@ -8443,6 +8525,8 @@ def add_schedule():
                 f"Temporary teacher-created schedule for unassigned student: {student_name}. "
                 f"Teacher note: {temporary_schedule_note}"
             )
+        elif teacher_portal_schedule:
+            schedule_note = "Teacher-created schedule. Billing is owner-managed and no invoice was created."
 
         cursor.execute("""
         SELECT
@@ -8500,6 +8584,11 @@ def add_schedule():
                 group_size = str(len(group_participants))
                 group_student_names = ", ".join([p["student_name"] for p in group_participants])
 
+        if teacher_portal_schedule and group_participants:
+            for participant in group_participants:
+                participant["student_rate"] = 0
+                participant["billing_rule"] = "no_charge"
+
         if is_group and len(group_participants) < 2:
             conn.close()
             return f"<h1>Please add at least two students for a group class.</h1><p><a href='{escape(add_schedule_href, quote=True)}'>Back</a></p>", 400
@@ -8529,6 +8618,10 @@ def add_schedule():
 
         student_charge_amount = effective_pricing["student_charge_amount"]
         teacher_pay_amount = effective_pricing["teacher_pay_amount"]
+        if teacher_portal_schedule:
+            student_billing_method = "Owner Review"
+            student_price = 0
+            student_charge_amount = 0
         if not is_custom_program:
             is_group = effective_pricing["is_group"]
         if is_custom_program:
@@ -8567,7 +8660,15 @@ def add_schedule():
             "invoice_later": "Invoice later",
             "custom_price": "Custom price",
         }
-        if schedule_type == "one_time":
+        if teacher_portal_schedule:
+            if schedule_type == "one_time":
+                number_of_lessons = 1
+            else:
+                try:
+                    number_of_lessons = int(float(repeat_count or 10))
+                except:
+                    number_of_lessons = 10
+        elif schedule_type == "one_time":
             number_of_lessons = 1
         elif package_type == "10":
             number_of_lessons = 10
@@ -8581,6 +8682,10 @@ def add_schedule():
         else:
             number_of_lessons = 24
         number_of_lessons = max(1, min(number_of_lessons, 260))
+        try:
+            repeat_interval_value = max(1, min(int(float(repeat_interval_weeks or 1)), 8))
+        except:
+            repeat_interval_value = 1
 
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         generated_count = 0
@@ -8591,6 +8696,10 @@ def add_schedule():
         for i in range(number_of_lessons):
             if schedule_type == "weekly":
                 lesson_date_obj = start_date_obj + timedelta(days=7 * i)
+            elif schedule_type == "biweekly":
+                lesson_date_obj = start_date_obj + timedelta(days=14 * i)
+            elif schedule_type == "custom":
+                lesson_date_obj = start_date_obj + timedelta(days=7 * repeat_interval_value * i)
             else:
                 lesson_date_obj = start_date_obj
 
@@ -10413,7 +10522,7 @@ def teacher_dashboard():
 
         let teacherDrag = null;
         function teacherAddOnDate(dateStr) {{
-            window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
+            window.location.href = `/teacher_dashboard?view=add_schedule&prefill_date=${{dateStr}}`;
         }}
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
             card.addEventListener("dragstart", e => {{
