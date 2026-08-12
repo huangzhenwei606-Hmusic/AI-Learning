@@ -10561,6 +10561,24 @@ def teacher_dashboard():
     cursor.execute("SELECT COALESCE(hourly_rate, 0) FROM teachers WHERE teacher_name=?", (teacher_name,))
     rate_row = cursor.fetchone()
     teacher_rate = rate_row[0] if rate_row else 0
+
+    cursor.execute("""
+    SELECT id, location_name, COALESCE(address, '')
+    FROM studio_locations
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY COALESCE(sort_order, 0), location_name
+    """)
+    teacher_locations = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT r.id, r.location_id, r.room_name, COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON l.id = r.location_id
+    WHERE COALESCE(r.active, 1) = 1
+    AND COALESCE(l.active, 1) = 1
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(r.sort_order, 0), r.room_name
+    """)
+    teacher_rooms = cursor.fetchall()
     conn.close()
 
     completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
@@ -10570,6 +10588,21 @@ def teacher_dashboard():
     pending_count = unread_messages + missing_homework_count
     today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
     homework_badge = hstudio_badge(missing_homework_count)
+    teacher_location_options = "".join(
+        f'<option value="{int(row[0])}">{escape(row[1] or "-")}</option>'
+        for row in teacher_locations
+    )
+    if not teacher_location_options:
+        teacher_location_options = '<option value="">No active locations</option>'
+    teacher_room_payload = json.dumps([
+        {
+            "id": int(row[0]),
+            "location_id": int(row[1] or 0),
+            "room_name": row[2] or "",
+            "location_name": row[3] or "",
+        }
+        for row in teacher_rooms
+    ])
 
     def status_label(status):
         raw = (status or "").strip().lower()
@@ -10704,7 +10737,7 @@ def teacher_dashboard():
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
     .sd-early-cancel{background:#98A2B3}
-    .calendar-event{border-left:4px solid var(--blue)}
+    .calendar-event{border-left:4px solid var(--blue);position:relative}
     .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:#667085!important;box-shadow:none!important}
     .calendar-event.early-cancel .t-status-badge{background:#E5E7EB;color:#667085;box-shadow:none;text-decoration:line-through;text-decoration-thickness:1.5px}
     .calendar-event.early-cancel .event-time-text,
@@ -10715,6 +10748,25 @@ def teacher_dashboard():
     .calendar-event.early-cancel .event-status-form select,
     .calendar-event.early-cancel .event-status-form button{text-decoration:none}
     .calendar-event{cursor:grab;user-select:none}
+    .teacher-multi-toggle{border:1px solid #B8CCE3;background:#fff;color:var(--blue);border-radius:9px;padding:8px 11px;font-weight:900;cursor:pointer}
+    .teacher-multi-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
+    .teacher-select-box{display:none;position:absolute;top:5px;right:5px;z-index:3;width:18px;height:18px;border-radius:6px;background:#fff;border:1px solid #B8CCE3;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(15,23,42,.15)}
+    .teacher-select-box input{width:13px;height:13px;margin:0;accent-color:var(--blue)}
+    .calendar-grid.multi-select-on .teacher-select-box{display:flex}
+    .calendar-grid.multi-select-on .calendar-event{cursor:pointer;padding-right:26px}
+    .calendar-grid.multi-select-on .calendar-event.multi-selected{outline:2px solid var(--blue);outline-offset:-2px;box-shadow:0 0 0 3px rgba(24,95,165,.12)}
+    .teacher-multi-bar{display:none;position:sticky;bottom:10px;z-index:950;margin:10px 0 0;background:#fff;border:1px solid #D9E2EF;border-radius:12px;box-shadow:0 14px 34px rgba(15,23,42,.18);padding:10px;grid-template-columns:auto minmax(150px,180px) 1fr auto auto;gap:8px;align-items:center}
+    .teacher-multi-bar.show{display:grid}
+    .teacher-multi-count{font-weight:900;color:#172033;white-space:nowrap}
+    .teacher-multi-bar select,.teacher-multi-bar input{height:38px;border:1px solid #D9DEE8;border-radius:9px;background:#fff;color:#172033;padding:0 10px;font:inherit;font-size:13px;font-weight:800}
+    .teacher-multi-extra{display:none;gap:8px;align-items:center}
+    .teacher-multi-extra.show{display:grid}
+    .teacher-multi-extra.room{grid-template-columns:minmax(160px,1fr) minmax(160px,1fr)}
+    .teacher-multi-extra.note{grid-template-columns:1fr}
+    .teacher-multi-apply,.teacher-multi-clear{height:38px;border-radius:9px;font-weight:900;cursor:pointer}
+    .teacher-multi-apply{border:0;background:var(--blue);color:#fff;padding:0 14px}
+    .teacher-multi-clear{border:1px solid #D9DEE8;background:#fff;color:#172033;padding:0 12px}
+    @media(max-width:900px){.teacher-multi-bar{grid-template-columns:1fr;align-items:stretch}.teacher-multi-extra.room{grid-template-columns:1fr}}
     .calendar-event.dragging{opacity:.35}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
     .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:1px 6px}
@@ -10767,6 +10819,9 @@ def teacher_dashboard():
              data-time="{escape(str(lesson[2] or ''))}"
             data-student="{escape(str(lesson[3] or ''))}"
             data-teacher="{escape(str(teacher_name or ''))}">
+            <label class="teacher-select-box" onclick="event.stopPropagation();">
+                <input type="checkbox" class="teacher-select-input" value="{lesson[0]}" onchange="teacherMultiUpdate()">
+            </label>
             <div class="event-top">
                 <span class="event-time">
                   <span class="t-status-badge {dot}">{status_text}</span>
@@ -10937,12 +10992,41 @@ def teacher_dashboard():
                         <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
                         <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
                     </div>
+                    <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" onclick="teacherMultiToggle()">Multi-Select</button>
                     {controls}
                 </div>
             </div>
             {TEACHER_CAL_CSS}
         {created_notice}
-        <div class="calendar-grid">{day_columns}</div>
+        <div class="calendar-grid" id="teacherCalendarGrid">{day_columns}</div>
+        <div class="teacher-multi-bar" id="teacherMultiBar">
+            <div class="teacher-multi-count"><span id="teacherMultiCount">0</span> selected</div>
+            <select id="teacherMultiAction" onchange="teacherMultiActionChanged()">
+                <option value="set_status">Set status</option>
+                <option value="cancel_lessons">Cancel lessons</option>
+                <option value="change_room">Change location / room</option>
+                <option value="private_note">Add private note</option>
+            </select>
+            <div class="teacher-multi-extra show" id="teacherMultiStatusExtra">
+                <select id="teacherMultiStatus">
+                    <option value="scheduled">Scheduled</option>
+                    <option value="present">Present</option>
+                    <option value="no_show">No Show</option>
+                    <option value="last_min_cancel">Last Min Cancel</option>
+                    <option value="excused_24h">Cancel &gt; 24h</option>
+                    <option value="teacher_cancelled">Teacher Cancel</option>
+                </select>
+            </div>
+            <div class="teacher-multi-extra room" id="teacherMultiRoomExtra">
+                <select id="teacherMultiLocation" onchange="teacherMultiRefreshRooms()">{teacher_location_options}</select>
+                <select id="teacherMultiRoom"></select>
+            </div>
+            <div class="teacher-multi-extra note" id="teacherMultiNoteExtra">
+                <input id="teacherMultiPrivateNote" placeholder="Private note to add to selected lessons">
+            </div>
+            <button class="teacher-multi-apply" type="button" onclick="teacherMultiApply()">Apply</button>
+            <button class="teacher-multi-clear" type="button" onclick="teacherMultiClear()">Clear</button>
+        </div>
 
         <div class="lesson-scrim" id="teacherLessonScrim" onclick="closeTeacherLessonPanel()"></div>
         <div class="lesson-scrim" id="teacherAddScrim" onclick="closeTeacherAddPanel()"></div>
@@ -10986,16 +11070,18 @@ def teacher_dashboard():
 
         const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
+        const TEACHER_MULTI_ROOMS = {teacher_room_payload};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherPanelSaving = false;
+        let teacherMultiOn = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
-        function openTeacherLessonPanel(scheduleId) {{ fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
         function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
@@ -11032,8 +11118,105 @@ def teacher_dashboard():
         if ({str(open_add_on_load).lower()}) {{
             setTimeout(() => openTeacherAddPanel('{escape(auto_add_date)}'), 0);
         }}
+        function teacherMultiSelectedIds() {{
+            return Array.from(document.querySelectorAll('.teacher-select-input:checked')).map(cb => cb.value);
+        }}
+        function teacherMultiUpdate() {{
+            const ids = teacherMultiSelectedIds();
+            const count = document.getElementById('teacherMultiCount');
+            const bar = document.getElementById('teacherMultiBar');
+            if (count) count.textContent = ids.length;
+            if (bar) bar.classList.toggle('show', teacherMultiOn && ids.length > 0);
+            document.querySelectorAll('.calendar-event[data-id]').forEach(card => {{
+                const cb = card.querySelector('.teacher-select-input');
+                card.classList.toggle('multi-selected', !!cb && cb.checked);
+            }});
+        }}
+        function teacherMultiToggle() {{
+            teacherMultiOn = !teacherMultiOn;
+            const grid = document.getElementById('teacherCalendarGrid');
+            const toggle = document.getElementById('teacherMultiToggle');
+            if (grid) grid.classList.toggle('multi-select-on', teacherMultiOn);
+            if (toggle) toggle.classList.toggle('active', teacherMultiOn);
+            if (!teacherMultiOn) teacherMultiClear();
+            teacherMultiUpdate();
+        }}
+        function teacherMultiClear() {{
+            document.querySelectorAll('.teacher-select-input').forEach(cb => cb.checked = false);
+            teacherMultiUpdate();
+        }}
+        function teacherMultiActionChanged() {{
+            const action = document.getElementById('teacherMultiAction').value;
+            document.getElementById('teacherMultiStatusExtra').classList.toggle('show', action === 'set_status');
+            document.getElementById('teacherMultiRoomExtra').classList.toggle('show', action === 'change_room');
+            document.getElementById('teacherMultiNoteExtra').classList.toggle('show', action === 'private_note');
+            if (action === 'change_room') teacherMultiRefreshRooms();
+        }}
+        function teacherMultiRefreshRooms() {{
+            const locationSelect = document.getElementById('teacherMultiLocation');
+            const roomSelect = document.getElementById('teacherMultiRoom');
+            if (!locationSelect || !roomSelect) return;
+            const locationId = parseInt(locationSelect.value || '0', 10);
+            const rooms = TEACHER_MULTI_ROOMS.filter(room => parseInt(room.location_id || 0, 10) === locationId);
+            roomSelect.innerHTML = '';
+            rooms.forEach(room => {{
+                const option = document.createElement('option');
+                option.value = room.id;
+                option.textContent = room.room_name || 'Room';
+                roomSelect.appendChild(option);
+            }});
+            if (!rooms.length) {{
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'No active rooms';
+                roomSelect.appendChild(option);
+            }}
+        }}
+        function teacherMultiApply() {{
+            const ids = teacherMultiSelectedIds();
+            if (!ids.length) return;
+            const action = document.getElementById('teacherMultiAction').value;
+            const payload = {{action, schedule_ids: ids}};
+            if (action === 'set_status') payload.status = document.getElementById('teacherMultiStatus').value;
+            if (action === 'cancel_lessons' && !confirm('Cancel selected lessons?')) return;
+            if (action === 'change_room') {{
+                payload.location_id = document.getElementById('teacherMultiLocation').value;
+                payload.room_id = document.getElementById('teacherMultiRoom').value;
+                if (!payload.location_id || !payload.room_id) {{ alert('Please choose location and room.'); return; }}
+            }}
+            if (action === 'private_note') {{
+                payload.private_note = document.getElementById('teacherMultiPrivateNote').value;
+                if (!payload.private_note.trim()) {{ alert('Please enter a private note.'); return; }}
+            }}
+            fetch('/teacher_multi_select_action', {{
+                method:'POST',
+                headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
+                body:JSON.stringify(payload)
+            }}).then(async r => {{
+                const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}}));
+                if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed');
+                location.reload();
+            }}).catch(e => alert(e.message));
+        }}
+        teacherMultiActionChanged();
+        teacherMultiRefreshRooms();
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
+            card.addEventListener("click", e => {{
+                if (!teacherMultiOn) return;
+                if (e.target.closest('select,button,form,input,label')) return;
+                const cb = card.querySelector('.teacher-select-input');
+                if (cb) {{
+                    cb.checked = !cb.checked;
+                    teacherMultiUpdate();
+                }}
+                e.preventDefault();
+                e.stopPropagation();
+            }});
             card.addEventListener("dragstart", e => {{
+                if (teacherMultiOn) {{
+                    e.preventDefault();
+                    return;
+                }}
                 teacherDrag = {{
                     id: card.dataset.id,
                     from: card.dataset.date,
@@ -12936,6 +13119,183 @@ def calendar_lesson_action():
 
     conn.close()
     return {"ok": False, "error": "Unknown action"}, 400
+
+
+@app.route("/teacher_multi_select_action", methods=["POST"])
+def teacher_multi_select_action():
+    ensure_calendar_lesson_panel_schema()
+    ensure_location_room_schema()
+    if not require_teacher() or require_owner():
+        return {"ok": False, "error": "Teacher login required"}, 401
+
+    teacher_name = session.get("teacher_name") or ""
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip()
+    raw_ids = data.get("schedule_ids") or data.get("ids") or []
+    schedule_ids = []
+    for raw_id in raw_ids:
+        try:
+            schedule_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    schedule_ids = list(dict.fromkeys(schedule_ids))[:100]
+    if not schedule_ids:
+        return {"ok": False, "error": "Choose at least one lesson."}, 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(schedule_ids))
+    cursor.execute(f"""
+        SELECT id, student_name, teacher, lesson_date, lesson_time, COALESCE(classroom, ''), COALESCE(private_note, '')
+        FROM schedule
+        WHERE id IN ({placeholders})
+        AND teacher = ?
+    """, (*schedule_ids, teacher_name))
+    rows = cursor.fetchall()
+    if not rows:
+        conn.close()
+        return {"ok": False, "error": "No selected lessons belong to this teacher."}, 403
+
+    owned_ids = [int(row[0]) for row in rows]
+    owned_placeholders = ",".join(["?"] * len(owned_ids))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    actor = f"teacher:{teacher_name}"
+    teacher_permissions = get_teacher_permissions(teacher_name)
+
+    if action == "set_status":
+        status = (data.get("status") or "").strip()
+        allowed_statuses = {
+            "scheduled", "present", "no_show", "last_min_cancel",
+            "excused_24h", "teacher_cancelled"
+        }
+        if status not in allowed_statuses:
+            conn.close()
+            return {"ok": False, "error": "Invalid status."}, 400
+        if not teacher_permissions.get("attendance"):
+            conn.close()
+            return {"ok": False, "error": "Attendance permission is not enabled."}, 403
+        conn.close()
+        updated = 0
+        errors = []
+        for schedule_id in owned_ids:
+            result = apply_lesson_status(schedule_id, status, actor=actor)
+            if result.get("ok"):
+                updated += 1
+            else:
+                errors.append(result.get("error") or f"Lesson {schedule_id} failed")
+        if updated:
+            create_notification(
+                "owner", "owner", "Teacher batch attendance update",
+                f"{teacher_name} updated {updated} lesson(s) to {calendar_status_label(status)}.",
+                "/calendar", related_type="teacher_multi_select", related_id=0
+            )
+        return {
+            "ok": updated > 0,
+            "message": f"Updated {updated} lesson(s).",
+            "error": "; ".join(errors[:3]) if errors and not updated else "",
+        }
+
+    if action == "cancel_lessons":
+        if not teacher_permissions.get("attendance"):
+            conn.close()
+            return {"ok": False, "error": "Attendance permission is not enabled."}, 403
+        conn.close()
+        updated = 0
+        errors = []
+        for schedule_id in owned_ids:
+            result = apply_lesson_status(schedule_id, "teacher_cancelled", actor=actor, reason="Teacher bulk cancel")
+            if result.get("ok"):
+                updated += 1
+            else:
+                errors.append(result.get("error") or f"Lesson {schedule_id} failed")
+        if updated:
+            create_notification(
+                "owner", "owner", "Teacher cancelled multiple lessons",
+                f"{teacher_name} cancelled {updated} lesson(s).",
+                "/calendar", related_type="teacher_multi_select_cancel", related_id=0
+            )
+        return {
+            "ok": updated > 0,
+            "message": f"Cancelled {updated} lesson(s).",
+            "error": "; ".join(errors[:3]) if errors and not updated else "",
+        }
+
+    if action == "change_room":
+        try:
+            location_id = int(data.get("location_id") or 0)
+            room_id = int(data.get("room_id") or 0)
+        except (TypeError, ValueError):
+            conn.close()
+            return {"ok": False, "error": "Invalid location or room."}, 400
+        cursor.execute("""
+            SELECT location_name
+            FROM studio_locations
+            WHERE id = ?
+            AND COALESCE(active, 1) = 1
+        """, (location_id,))
+        location_row = cursor.fetchone()
+        cursor.execute("""
+            SELECT room_name
+            FROM studio_rooms
+            WHERE id = ?
+            AND location_id = ?
+            AND COALESCE(active, 1) = 1
+        """, (room_id, location_id))
+        room_row = cursor.fetchone()
+        if not location_row or not room_row:
+            conn.close()
+            return {"ok": False, "error": "Choose an active location and room."}, 400
+        location_name = location_row[0] or ""
+        room_name = room_row[0] or ""
+        cursor.execute(f"""
+            UPDATE schedule
+            SET location_id = ?, room_id = ?, location = ?, classroom = ?, owner_calendar_updated_at = ?
+            WHERE id IN ({owned_placeholders})
+            AND teacher = ?
+        """, (location_id, room_id, location_name, room_name, now, *owned_ids, teacher_name))
+        updated = cursor.rowcount
+        conn.commit()
+        conn.close()
+        if updated:
+            create_notification(
+                "owner", "owner", "Teacher changed lesson rooms",
+                f"{teacher_name} moved {updated} lesson(s) to {location_name} / {room_name}.",
+                "/calendar", related_type="teacher_multi_select_room", related_id=0
+            )
+        return {"ok": True, "message": f"Updated {updated} lesson(s)."}
+
+    if action == "private_note":
+        if not teacher_permissions.get("private_notes"):
+            conn.close()
+            return {"ok": False, "error": "Private note permission is not enabled."}, 403
+        private_note = (data.get("private_note") or "").strip()
+        if not private_note:
+            conn.close()
+            return {"ok": False, "error": "Private note is required."}, 400
+        updated = 0
+        for row in rows:
+            existing = (row[6] or "").strip()
+            next_note = f"{existing}\n{private_note}" if existing else private_note
+            cursor.execute("""
+                UPDATE schedule
+                SET private_note = ?, owner_calendar_updated_at = ?
+                WHERE id = ?
+                AND teacher = ?
+            """, (next_note, now, int(row[0]), teacher_name))
+            updated += cursor.rowcount
+        conn.commit()
+        conn.close()
+        if updated:
+            create_notification(
+                "owner", "owner", "Teacher added private notes",
+                f"{teacher_name} added private notes to {updated} lesson(s).",
+                "/calendar", related_type="teacher_multi_select_note", related_id=0
+            )
+        return {"ok": True, "message": f"Updated {updated} lesson(s)."}
+
+    conn.close()
+    return {"ok": False, "error": "Unknown action."}, 400
+
 
 @app.route("/create_package_invoice/<name>", methods=["GET", "POST"])
 def create_package_invoice(name):
