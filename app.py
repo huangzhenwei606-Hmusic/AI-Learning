@@ -1872,7 +1872,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
         {created_html}
         {duration_request_html}
         <section class="td-card">
-            <form method="POST" action="/add_schedule" class="td-form td-form-grid">
+            <form method="POST" action="/teacher_add_schedule" class="td-form td-form-grid">
                 {return_to_html}
                 <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
                 <div class="full student-mode-row">
@@ -8374,6 +8374,15 @@ def calendar_today():
     <a href="/calendar">Back Calendar</a>
     """
 
+@app.route("/teacher_add_schedule", methods=["GET", "POST"])
+def teacher_add_schedule():
+    if not require_teacher() or require_owner():
+        return redirect("/teacher_login")
+    if request.method == "GET":
+        return redirect("/teacher_dashboard?view=schedule&open_add=1")
+    return add_schedule()
+
+
 @app.route("/add_schedule", methods=["GET", "POST"])
 def add_schedule():
     if not (require_owner() or require_teacher()):
@@ -8440,6 +8449,9 @@ def add_schedule():
         action = request.form.get("action")
         student_mode = request.form.get("student_mode", "existing")
         teacher_portal_schedule = require_teacher() and not require_owner()
+        if teacher_portal_schedule:
+            owner_calendar_return = safe_schedule_return(request.form.get("return_to"), "/teacher_dashboard?view=schedule")
+            add_schedule_href = "/teacher_dashboard?view=schedule&open_add=1"
         new_student_schedule_request = teacher_portal_schedule and student_mode == "new"
         allow_unassigned_teacher_schedule = (
             teacher_portal_schedule
@@ -8500,7 +8512,7 @@ def add_schedule():
                 temporary_schedule_note += f" Parent backup: {parent_name or 'N/A'} | {parent_contact or 'N/A'}."
             if not student_name:
                 conn.close()
-                return f"<h1>Please enter the student name.</h1><p><a href='/teacher_dashboard?view=add_schedule'>Back</a></p>", 400
+                return f"<h1>Please enter the student name.</h1><p><a href='/teacher_dashboard?view=schedule&open_add=1'>Back</a></p>", 400
         teacher = request.form.get("teacher")
         if teacher_portal_schedule:
             teacher = session.get("teacher_name")
@@ -8551,7 +8563,7 @@ def add_schedule():
                     <div class="container">
                         <h1>Student Not In Your Enrollment List</h1>
                         <p><b>{student_name}</b> is not in your active enrollment list yet. You may create a temporary schedule only if you write the student name and reason in the note below. Owner will be notified automatically.</p>
-                        <form method="POST" action="/add_schedule">
+                        <form method="POST" action="/teacher_add_schedule">
                             {hidden_html}
                             Required note to owner:<br>
                             <textarea name="temporary_schedule_note" required placeholder="Example: Student name: {escape(str(student_name or ''))}. This is my new trial student. Please add them to my list / create enrollment."></textarea>
@@ -8943,7 +8955,7 @@ def add_schedule():
         conn.commit()
         conn.close()
         back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else owner_calendar_return
-        add_another_href = "/teacher_dashboard?view=add_schedule" if require_teacher() and not require_owner() else add_schedule_href
+        add_another_href = "/teacher_dashboard?view=schedule&open_add=1" if require_teacher() and not require_owner() else add_schedule_href
 
         if allow_unassigned_teacher_schedule:
             subject = f"Temporary Schedule Created - {student_name}"
@@ -8975,7 +8987,7 @@ def add_schedule():
             )
 
         if require_teacher() and not require_owner():
-            teacher_return_to = safe_schedule_return(request.form.get("return_to"), "/teacher_dashboard?view=add_schedule")
+            teacher_return_to = safe_schedule_return(request.form.get("return_to"), "/teacher_dashboard?view=schedule")
             joiner = "&" if "?" in teacher_return_to else "?"
             return redirect(f"{teacher_return_to}{joiner}created={generated_count}")
 
@@ -10577,13 +10589,13 @@ def teacher_dashboard():
 
         week_active = "active" if schedule_mode == "week" else ""
         month_active = "active" if schedule_mode == "month" else ""
-        direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
-        direct_cancel = bool(teacher_perms.get("direct_cancel"))
+        direct_reschedule = True
+        direct_cancel = True
         sub_allowed = bool(teacher_perms.get("sub_request"))
         reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
-        reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
-        cancel_label = "Cancel lesson" if direct_cancel else "Cancel request"
-        owner_policy_copy = "Direct reschedule is enabled for your own lessons. Delete, billing, and student profile changes still require owner approval." if direct_reschedule else "Owner approval required for final reschedule, delete, billing, sub assignment, and cancellation. Parents are notified only after owner confirmation."
+        reschedule_label = "Reschedule"
+        cancel_label = "Cancel lesson"
+        owner_policy_copy = "Teachers can reschedule or cancel their own lessons directly. Billing and student profile changes stay owner-managed."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
         created_notice = f'<div class="td-success">{escape(request.args.get("created"))} lesson(s) created.</div>' if request.args.get("created") else ''
@@ -10672,7 +10684,7 @@ def teacher_dashboard():
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
         function saveTeacherLessonPanel(quiet) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!quiet) teacherPanelToast(d.message || 'Saved.'); return d; }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
-        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
+        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? 'Cancel this lesson now?' : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
@@ -12120,8 +12132,9 @@ def calendar_lesson_action():
         conn.close()
         return {"ok": False, "error": "Lesson not found"}, 404
     is_owner = require_owner()
+    is_teacher = require_teacher() and not is_owner
     teacher_name = session.get("teacher_name")
-    if require_teacher() and not is_owner and row[2] != teacher_name:
+    if is_teacher and row[2] != teacher_name:
         conn.close()
         return {"ok": False, "error": "Permission denied"}, 403
 
@@ -12451,7 +12464,7 @@ def calendar_lesson_action():
         return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
 
     if action == "reschedule":
-        if is_owner or teacher_permissions.get("direct_reschedule"):
+        if is_owner or is_teacher:
             new_date = (data.get("new_date") or "").strip()
             new_time = (data.get("new_time") or row[4] or "").strip()
             classroom = (data.get("classroom") or row[5] or "").strip()
@@ -12508,7 +12521,7 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Sub request sent to owner."}
 
     if action == "cancel_request":
-        if is_owner or teacher_permissions.get("direct_cancel"):
+        if is_owner or is_teacher:
             status = (data.get("status") or "teacher_cancelled").strip()
             conn.close()
             result = apply_lesson_status(schedule_id, status, actor=actor, reason=data.get("reason"))
@@ -32749,7 +32762,7 @@ def request_course_duration():
     except:
         duration_int = 0
     if duration_int <= 0:
-        return "<h1>Please enter a valid duration.</h1><p><a href='/teacher_dashboard?view=add_schedule'>Back</a></p>", 400
+        return "<h1>Please enter a valid duration.</h1><p><a href='/teacher_dashboard?view=schedule&open_add=1'>Back</a></p>", 400
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -32757,7 +32770,7 @@ def request_course_duration():
     course_row = cursor.fetchone()
     if not course_row:
         conn.close()
-        return "<h1>Course Type not found.</h1><p><a href='/teacher_dashboard?view=add_schedule'>Back</a></p>", 404
+        return "<h1>Course Type not found.</h1><p><a href='/teacher_dashboard?view=schedule&open_add=1'>Back</a></p>", 404
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("""
@@ -32815,7 +32828,7 @@ def request_course_duration():
         related_id=request_id
     )
 
-    return redirect("/teacher_dashboard?view=add_schedule&duration_request=1")
+    return redirect("/teacher_dashboard?view=schedule&open_add=1&duration_request=1")
 
 
 def ensure_location_room_schema():
@@ -39177,9 +39190,6 @@ def reschedule_schedule():
         if lesson[2] != session.get("teacher_name"):
             conn.close()
             return {"ok": False, "error": "Permission denied"}, 403
-        if not teacher_has_permission(session.get("teacher_name"), "direct_reschedule"):
-            conn.close()
-            return {"ok": False, "error": "Owner approval required. Ask the owner to enable Direct reschedule in Teacher Permissions."}, 403
 
     old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
     day_delta    = (new_date_obj - old_date_obj).days
