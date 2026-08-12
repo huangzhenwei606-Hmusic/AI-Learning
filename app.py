@@ -8386,6 +8386,314 @@ def teacher_add_schedule():
     return add_schedule()
 
 
+@app.route("/owner_batch_xueyang_wed_20260812", methods=["GET", "POST"])
+def owner_batch_xueyang_wed_20260812():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v18_schema()
+    ensure_v18c_schema()
+    ensure_location_room_schema()
+
+    batch_start = date(2026, 8, 12)
+    repeat_count = 260
+    teacher_candidates = ["Xueyang(Mike) Wang", "Xueyang Wang"]
+    requested_lessons = [
+        {"student": "Savannah Zhao", "time": "14:00", "duration": 30},
+        {"student": "Jonah Seyum", "time": "15:00", "duration": 45},
+        {"student": "Theo Cheng", "time": "18:00", "duration": 30},
+        {"student": "Arthur Zhu", "time": "19:00", "duration": 45},
+        {"student": "Ezra Chen", "time": "19:45", "duration": 30},
+    ]
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT teacher_name
+    FROM teachers
+    WHERE teacher_name IN (?, ?)
+    ORDER BY CASE WHEN teacher_name = ? THEN 0 ELSE 1 END
+    LIMIT 1
+    """, (teacher_candidates[0], teacher_candidates[1], teacher_candidates[0]))
+    teacher_row = cursor.fetchone()
+    teacher_name = teacher_row[0] if teacher_row else teacher_candidates[0]
+
+    cursor.execute("""
+    SELECT id, location_name, address
+    FROM studio_locations
+    WHERE active = 1
+    AND (
+        location_name LIKE '1101%'
+        OR address LIKE '%1101%'
+        OR location_name LIKE '%Marlin%'
+        OR address LIKE '%Marlin%'
+    )
+    ORDER BY
+        CASE WHEN location_name LIKE '1101%' THEN 0 ELSE 1 END,
+        sort_order,
+        id
+    LIMIT 1
+    """)
+    location_row = cursor.fetchone()
+
+    room_row = None
+    if location_row:
+        cursor.execute("""
+        SELECT id, room_name
+        FROM studio_rooms
+        WHERE active = 1
+        AND location_id = ?
+        AND (
+            room_name LIKE 'Room 1%'
+            OR room_name LIKE '1%'
+            OR room_name LIKE '%Room 1%'
+        )
+        ORDER BY
+            CASE WHEN room_name LIKE 'Room 1%' THEN 0 ELSE 1 END,
+            sort_order,
+            id
+        LIMIT 1
+        """, (location_row[0],))
+        room_row = cursor.fetchone()
+
+    student_names = [lesson["student"] for lesson in requested_lessons]
+    placeholders = ",".join(["?"] * len(student_names))
+    cursor.execute(f"SELECT name FROM students WHERE name IN ({placeholders})", student_names)
+    existing_students = {row[0] for row in cursor.fetchall()}
+    missing_students = [name for name in student_names if name not in existing_students]
+
+    course_by_duration = {}
+    for duration in sorted({lesson["duration"] for lesson in requested_lessons}):
+        cursor.execute("""
+        SELECT id, name, duration, student_billing_method, student_price,
+               teacher_billing_method, teacher_pay, is_group
+        FROM course_types
+        WHERE active = 1
+        AND COALESCE(is_group, 0) = 0
+        AND duration = ?
+        ORDER BY
+            CASE WHEN lower(name) LIKE '%private%' THEN 0 ELSE 1 END,
+            id
+        LIMIT 1
+        """, (duration,))
+        course_by_duration[duration] = cursor.fetchone()
+
+    missing_courses = [
+        str(duration) for duration, row in course_by_duration.items() if not row
+    ]
+
+    errors = []
+    if not location_row:
+        errors.append("Could not find active location 1101 / Marlin.")
+    if not room_row:
+        errors.append("Could not find active Room 1 under location 1101.")
+    if missing_students:
+        errors.append("Missing students: " + ", ".join(missing_students))
+    if missing_courses:
+        errors.append("Missing private course types for duration(s): " + ", ".join(missing_courses))
+
+    def duplicate_count_for(lesson):
+        if not location_row or not room_row:
+            return 0
+        count = 0
+        for i in range(repeat_count):
+            lesson_date = (batch_start + timedelta(days=7 * i)).strftime("%Y-%m-%d")
+            cursor.execute("""
+            SELECT id
+            FROM schedule
+            WHERE student_name = ?
+            AND teacher = ?
+            AND lesson_date = ?
+            AND lesson_time = ?
+            AND COALESCE(room_id, 0) = ?
+            LIMIT 1
+            """, (lesson["student"], teacher_name, lesson_date, lesson["time"], room_row[0]))
+            if cursor.fetchone():
+                count += 1
+        return count
+
+    preview_rows = []
+    for lesson in requested_lessons:
+        duplicates = duplicate_count_for(lesson)
+        preview_rows.append((lesson, duplicates, repeat_count - duplicates))
+
+    if request.method == "POST" and not errors:
+        create_hmusic_backup("before_xueyang_wed_20260812_batch")
+        inserted = 0
+        skipped = 0
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        location_id, location_name, location_address = location_row
+        room_id, room_name = room_row
+
+        cursor.execute("PRAGMA table_info(schedule)")
+        schedule_columns = {row[1] for row in cursor.fetchall()}
+
+        for lesson in requested_lessons:
+            course = course_by_duration[lesson["duration"]]
+            pricing = get_final_pricing(
+                lesson["student"],
+                teacher_name,
+                course[0],
+                None,
+                duration_override=lesson["duration"]
+            )
+            if not pricing:
+                continue
+
+            auto_link_student_teacher(cursor, lesson["student"], teacher_name)
+            for i in range(repeat_count):
+                lesson_date = (batch_start + timedelta(days=7 * i)).strftime("%Y-%m-%d")
+                cursor.execute("""
+                SELECT id
+                FROM schedule
+                WHERE student_name = ?
+                AND teacher = ?
+                AND lesson_date = ?
+                AND lesson_time = ?
+                AND COALESCE(room_id, 0) = ?
+                LIMIT 1
+                """, (lesson["student"], teacher_name, lesson_date, lesson["time"], room_id))
+                if cursor.fetchone():
+                    skipped += 1
+                    continue
+
+                payload = {
+                    "student_name": lesson["student"],
+                    "teacher": teacher_name,
+                    "location_id": location_id,
+                    "room_id": room_id,
+                    "location": location_name,
+                    "classroom": room_name,
+                    "weekday": "Wednesday",
+                    "lesson_time": lesson["time"],
+                    "schedule_type": "weekly",
+                    "package_type": "ongoing",
+                    "start_date": batch_start.strftime("%Y-%m-%d"),
+                    "lesson_date": lesson_date,
+                    "course_type_id": pricing["course_id"],
+                    "course_type_name": pricing["course_name"],
+                    "duration": pricing["duration"],
+                    "student_billing_method": pricing["student_billing_method"],
+                    "student_price": pricing["student_price"],
+                    "teacher_billing_method": pricing["teacher_billing_method"],
+                    "teacher_pay": pricing["teacher_pay"],
+                    "student_charge_amount": pricing["student_charge_amount"],
+                    "teacher_pay_amount": pricing["teacher_pay_amount"],
+                    "is_group": 0,
+                    "notes": "Batch added: Xueyang Wednesday ongoing schedule from 2026-08-12.",
+                    "group_size": None,
+                    "group_student_names": None,
+                    "billing_decision": "existing_credits",
+                    "custom_lesson_count": None,
+                    "status": "scheduled",
+                    "charge_lessons": 1,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                columns = [key for key in payload.keys() if key in schedule_columns]
+                values = [payload[key] for key in columns]
+                cursor.execute(
+                    f"INSERT INTO schedule ({', '.join(columns)}) VALUES ({', '.join(['?'] * len(columns))})",
+                    values
+                )
+                inserted += 1
+
+        conn.commit()
+        conn.close()
+        return f"""
+        <!doctype html>
+        <html><head><meta charset="utf-8"><title>Xueyang Wednesday Batch</title>
+        <style>
+        body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#111827;padding:32px}}
+        .card{{max-width:760px;background:white;border:1px solid #e5e7eb;border-radius:14px;padding:24px;box-shadow:0 12px 28px rgba(15,23,42,.06)}}
+        .ok{{background:#dcfce7;color:#166534;border-radius:10px;padding:12px 14px;font-weight:850}}
+        a{{color:#1f6fb8;font-weight:800}}
+        </style></head><body><div class="card">
+        <h1>Xueyang Wednesday schedule updated</h1>
+        <p class="ok">Inserted {inserted} lesson(s). Skipped {skipped} duplicate lesson(s).</p>
+        <p>Teacher: {escape(teacher_name)}</p>
+        <p>Location: {escape(location_name)} · {escape(location_address or '')}</p>
+        <p>Room: {escape(room_name)}</p>
+        <p><a href="/calendar?month=2026-08&teacher={quote(teacher_name)}">Open August calendar</a></p>
+        <p><a href="/owner_batch_xueyang_wed_20260812">Back to batch page</a></p>
+        </div></body></html>
+        """
+
+    location_summary = "Not found"
+    if location_row:
+        location_summary = f"{location_row[1]} · {location_row[2] or ''}"
+    room_summary = room_row[1] if room_row else "Not found"
+
+    rows_html = "".join([
+        f"""
+        <tr>
+            <td>{escape(row[0]['student'])}</td>
+            <td>Wed {escape(row[0]['time'])}</td>
+            <td>{row[0]['duration']} min private</td>
+            <td>{row[1]}</td>
+            <td>{row[2]}</td>
+        </tr>
+        """
+        for row in preview_rows
+    ])
+    errors_html = ""
+    if errors:
+        errors_html = "<div class='error'><b>Cannot run yet:</b><br>" + "<br>".join(escape(e) for e in errors) + "</div>"
+    button_disabled = "disabled" if errors else ""
+    csrf_field = csrf_input()
+
+    conn.close()
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Xueyang Wednesday Batch - H-Music CRM</title>
+        <style>
+        body{{margin:0;background:#f6f7fb;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:28px}}
+        .card{{max-width:980px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:24px;box-shadow:0 12px 28px rgba(15,23,42,.06)}}
+        h1{{margin:0 0 8px;font-size:28px}}
+        p{{margin:6px 0;color:#667085;font-weight:700}}
+        .meta{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0}}
+        .box{{border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#f8fafc}}
+        .label{{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#667085;font-weight:850}}
+        .value{{margin-top:4px;font-size:16px;font-weight:900}}
+        table{{width:100%;border-collapse:collapse;margin-top:14px}}
+        th,td{{padding:10px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:14px}}
+        th{{background:#f1f5f9;color:#667085;text-transform:uppercase;font-size:12px;letter-spacing:.04em}}
+        .error{{margin:16px 0;padding:12px 14px;border-radius:10px;background:#fef2f2;color:#991b1b;font-weight:800}}
+        button{{margin-top:18px;background:#1f6fb8;color:white;border:0;border-radius:10px;padding:12px 18px;font-size:15px;font-weight:900;cursor:pointer}}
+        button:disabled{{background:#94a3b8;cursor:not-allowed}}
+        a{{color:#1f6fb8;font-weight:800}}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>Xueyang Wednesday ongoing schedule</h1>
+            <p>Preview before adding weekly ongoing lessons from 2026-08-12. Existing exact matches will be skipped.</p>
+            <div class="meta">
+                <div class="box"><div class="label">Teacher</div><div class="value">{escape(teacher_name)}</div></div>
+                <div class="box"><div class="label">Location</div><div class="value">{escape(location_summary)}</div></div>
+                <div class="box"><div class="label">Room</div><div class="value">{escape(room_summary)}</div></div>
+            </div>
+            {errors_html}
+            <table>
+                <thead><tr><th>Student</th><th>Time</th><th>Course</th><th>Already exists</th><th>Will add</th></tr></thead>
+                <tbody>{rows_html}</tbody>
+            </table>
+            <form method="POST">
+                {csrf_field}
+                <button type="submit" {button_disabled}>Apply batch update</button>
+            </form>
+            <p style="margin-top:16px"><a href="/calendar?month=2026-08&teacher={quote(teacher_name)}">Back to calendar</a></p>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.route("/add_schedule", methods=["GET", "POST"])
 def add_schedule():
     if not (require_owner() or require_teacher()):
