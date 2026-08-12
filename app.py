@@ -8641,7 +8641,7 @@ def owner_batch_xueyang_wed_20260812():
     if errors:
         errors_html = "<div class='error'><b>Cannot run yet:</b><br>" + "<br>".join(escape(e) for e in errors) + "</div>"
     button_disabled = "disabled" if errors else ""
-    csrf_field = csrf_input()
+    csrf_field = f'<input type="hidden" name="_csrf_token" value="{escape(hmusic_csrf_token(), quote=True)}">'
 
     conn.close()
     return f"""
