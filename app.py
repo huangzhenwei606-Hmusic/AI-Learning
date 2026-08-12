@@ -21,6 +21,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import HTTPException
 
 try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
+
+try:
     import stripe
 except ImportError:
     stripe = None
@@ -52,6 +57,8 @@ HMUSIC_BACKUP_DIR = os.environ.get(
     "HMUSIC_BACKUP_DIR",
     os.path.join(os.path.dirname(HMUSIC_DB_PATH) or ".", "backups")
 )
+HMUSIC_TIMEZONE_NAME = os.environ.get("HMUSIC_TIMEZONE", "America/Los_Angeles")
+HMUSIC_TIMEZONE = ZoneInfo(HMUSIC_TIMEZONE_NAME) if ZoneInfo else None
 DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
@@ -15794,7 +15801,7 @@ def parse_lesson_time_value(time_text):
     if not time_text:
         return None
 
-    for fmt in ("%H:%M", "%I:%M %p"):
+    for fmt in ("%H:%M", "%I:%M %p", "%I:%M%p"):
         try:
             return datetime.strptime(time_text.strip(), fmt)
         except ValueError:
@@ -15834,6 +15841,49 @@ def format_lesson_time_range(time_text, duration_minutes=None):
     start_label = format_display_time(time_text)
     end_label = format_display_time(time_text_from_minutes((start_minutes + duration) % (24 * 60)))
     return f"{start_label}-{end_label}"
+
+
+def hmusic_now():
+    if HMUSIC_TIMEZONE:
+        return datetime.now(HMUSIC_TIMEZONE)
+    return datetime.now()
+
+
+def hmusic_today():
+    return hmusic_now().date()
+
+
+def hmusic_lesson_end_datetime(lesson_date, lesson_time, duration_minutes=None):
+    try:
+        lesson_day = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+    parsed_time = parse_lesson_time_value(str(lesson_time or ""))
+    if not parsed_time:
+        return None
+
+    try:
+        duration = int(float(duration_minutes or 30))
+    except (TypeError, ValueError):
+        duration = 30
+
+    lesson_start = datetime.combine(lesson_day, parsed_time.time())
+    if HMUSIC_TIMEZONE:
+        lesson_start = lesson_start.replace(tzinfo=HMUSIC_TIMEZONE)
+    return lesson_start + timedelta(minutes=duration)
+
+
+def hmusic_lesson_is_upcoming(lesson_date, lesson_time, duration_minutes=None, now=None):
+    current_time = now or hmusic_now()
+    lesson_end = hmusic_lesson_end_datetime(lesson_date, lesson_time, duration_minutes)
+    if lesson_end:
+        return lesson_end > current_time
+    try:
+        lesson_day = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d").date()
+        return lesson_day >= current_time.date()
+    except ValueError:
+        return False
 
 
 def ensure_v282_schema():
@@ -16619,7 +16669,8 @@ def create_child_os_request(parent_id, parent_name, student_name, request_text, 
 
 
 def child_os_next_lesson(cursor, student_name):
-    today = date.today().strftime("%Y-%m-%d")
+    now_local = hmusic_now()
+    today = now_local.date().strftime("%Y-%m-%d")
     cursor.execute("""
     SELECT id, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), COALESCE(status, 'scheduled')
     FROM schedule
@@ -16627,9 +16678,12 @@ def child_os_next_lesson(cursor, student_name):
     AND lesson_date >= ?
     AND (status IS NULL OR status = '' OR status = 'scheduled')
     ORDER BY lesson_date, lesson_time
-    LIMIT 1
+    LIMIT 12
     """, (student_name, today))
-    return cursor.fetchone()
+    for row in cursor.fetchall():
+        if hmusic_lesson_is_upcoming(row[1], row[2], row[5], now_local):
+            return row
+    return None
 
 
 def handle_child_os_request(parent_id, parent_name, student_name, request_text):
@@ -23935,7 +23989,9 @@ def parent_dashboard():
         session.clear()
         return redirect("/parent_login")
 
-    today = date.today().strftime("%Y-%m-%d")
+    now_local = hmusic_now()
+    today_obj = now_local.date()
+    today = today_obj.strftime("%Y-%m-%d")
 
     cursor.execute("""
     SELECT
@@ -23957,9 +24013,12 @@ def parent_dashboard():
     AND lesson_date >= ?
     AND (status IS NULL OR status='scheduled')
     ORDER BY s.lesson_date, s.lesson_time
-    LIMIT 3
+    LIMIT 12
     """, (current_student, today))
-    upcoming_lessons = cursor.fetchall()
+    upcoming_lessons = [
+        row for row in cursor.fetchall()
+        if hmusic_lesson_is_upcoming(row[0], row[1], row[5], now_local)
+    ][:3]
 
     cursor.execute("""
     SELECT lesson_date, lesson_content, performance, homework
@@ -24212,13 +24271,13 @@ def parent_dashboard():
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No parent activity yet.</td></tr>"
 
-    cal_month_param = request.args.get("calendar_month") or date.today().strftime("%Y-%m")
+    cal_month_param = request.args.get("calendar_month") or today_obj.strftime("%Y-%m")
     try:
         cal_year = int(cal_month_param[:4])
         cal_month = int(cal_month_param[5:7])
         cal_start = date(cal_year, cal_month, 1)
     except Exception:
-        cal_start = date.today().replace(day=1)
+        cal_start = today_obj.replace(day=1)
     if cal_start.month == 12:
         cal_end = date(cal_start.year + 1, 1, 1) - timedelta(days=1)
         next_cal = date(cal_start.year + 1, 1, 1)
@@ -24268,7 +24327,7 @@ def parent_dashboard():
         next_lesson_course = escape(str(next_lesson[8] or "Lesson"))
         try:
             lesson_date_obj = datetime.strptime(str(next_lesson[0]), "%Y-%m-%d").date()
-            delta = (lesson_date_obj - date.today()).days
+            delta = (lesson_date_obj - today_obj).days
             next_lesson_pill = "Today" if delta == 0 else "Tomorrow" if delta == 1 else lesson_date_obj.strftime("%b %-d")
         except Exception:
             next_lesson_pill = "Next"
@@ -24279,7 +24338,6 @@ def parent_dashboard():
     weekday_header = "".join(f"<div>{d}</div>" for d in ["S", "M", "T", "W", "T", "F", "S"])
     cal_cells = ""
     calendar_grid = calendar_lib.Calendar(firstweekday=6).monthdatescalendar(cal_start.year, cal_start.month)
-    today_obj = date.today()
     for week in calendar_grid:
         for day_obj in week:
             in_month = day_obj.month == cal_start.month
@@ -24967,7 +25025,8 @@ def parent_schedule():
         return redirect("/parent_schedule?sent=1")
 
     placeholders = ",".join("?" for _ in linked_names)
-    today = date.today().strftime("%Y-%m-%d")
+    now_local = hmusic_now()
+    today = now_local.date().strftime("%Y-%m-%d")
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute(f"""
@@ -24977,9 +25036,12 @@ def parent_schedule():
     AND lesson_date >= ?
     AND (status IS NULL OR status = '' OR status = 'scheduled')
     ORDER BY lesson_date, lesson_time
-    LIMIT 16
+    LIMIT 32
     """, tuple(linked_names) + (today,))
-    upcoming = cursor.fetchall()
+    upcoming = [
+        row for row in cursor.fetchall()
+        if hmusic_lesson_is_upcoming(row[2], row[3], row[6], now_local)
+    ][:16]
 
     cursor.execute("""
     SELECT request_type, student_name, notes, status, created_at
