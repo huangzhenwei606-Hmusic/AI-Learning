@@ -1863,6 +1863,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     created_html = f'<div class="td-success">{escape(created)} lesson(s) created.</div>' if created else ''
     duration_request_html = '<div class="td-success">Duration request sent to owner.</div>' if request.args.get('duration_request') else ''
     return_to_html = f'<input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">' if return_to else ''
+    csrf_hidden = f'<input type="hidden" name="_csrf_token" value="{escape(hmusic_csrf_token(), quote=True)}">'
     weekday_options = ''.join(
         f'<option{" selected" if day == prefill_weekday else ""}>{day}</option>'
         for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -1873,6 +1874,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
         {duration_request_html}
         <section class="td-card">
             <form method="POST" action="/teacher_add_schedule" class="td-form td-form-grid">
+                {csrf_hidden}
                 {return_to_html}
                 <input type="hidden" name="teacher" value="{escape(teacher_name or '')}">
                 <div class="full student-mode-row">
@@ -7210,6 +7212,7 @@ def calendar():
     <!-- Add lesson drawer -->
     <div class="popover" id="popover">
       <form id="quickLessonForm" method="POST" action="/add_schedule">
+        <input type="hidden" name="_csrf_token" value="{escape(hmusic_csrf_token(), quote=True)}">
         <input type="hidden" name="return_to" value="{escape(current_calendar_url, quote=True)}">
         <input type="hidden" name="source" value="owner_calendar_drawer">
         <div class="pop-inner">
@@ -8393,6 +8396,12 @@ def add_schedule():
         <p>The owner can enable this from Teacher Permissions.</p>
         <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
         """, 403
+    if request.method == "GET" and require_teacher() and not require_owner():
+        prefill_date = (request.args.get("prefill_date") or request.args.get("start_date") or "").strip()
+        params = {"view": "schedule", "open_add": "1"}
+        if prefill_date:
+            params["prefill_date"] = prefill_date
+        return redirect(f"/teacher_dashboard?{urlencode(params)}")
 
     ensure_v18_schema()
     ensure_location_room_schema()
@@ -10595,7 +10604,7 @@ def teacher_dashboard():
         reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
         reschedule_label = "Reschedule"
         cancel_label = "Cancel lesson"
-        owner_policy_copy = "Teachers can reschedule or cancel their own lessons directly. Billing and student profile changes stay owner-managed."
+        owner_policy_copy = "Teachers can reschedule, cancel, or delete their own lessons directly. Billing and student profile changes stay owner-managed."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
         created_notice = f'<div class="td-success">{escape(request.args.get("created"))} lesson(s) created.</div>' if request.args.get("created") else ''
@@ -10637,7 +10646,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
-            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button><button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel()">Save changes</button></div>
         </aside>
@@ -10687,6 +10696,7 @@ def teacher_dashboard():
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? 'Cancel this lesson now?' : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+        function teacherDeleteLesson() {{ if (!activeTeacherLesson) return; if (!confirm('Delete this lesson from your calendar?')) return; teacherLessonAction({{action:'delete', schedule_id:activeTeacherLesson.id, delete_scope:'once'}}).then(d => {{ teacherPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
 
         let teacherDrag = null;
@@ -12551,9 +12561,14 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Duplicated to next week.", "new_id": new_id}
 
     if action == "delete":
-        if not is_owner:
+        if not (is_owner or is_teacher):
             conn.close()
-            return {"ok": False, "error": "Only owner can delete lessons."}, 403
+            return {"ok": False, "error": "Only owner or assigned teacher can delete lessons."}, 403
+        if is_teacher:
+            delete_scope_raw = (data.get("delete_scope") or data.get("scope") or "once").strip()
+            if delete_scope_raw != "once":
+                conn.close()
+                return {"ok": False, "error": "Teachers can delete one lesson at a time."}, 403
         delete_scope = (data.get("delete_scope") or data.get("scope") or "once").strip()
         delete_scope = delete_scope if delete_scope in {"once", "following", "range"} else "once"
         delete_params = [
@@ -12606,6 +12621,8 @@ def calendar_lesson_action():
         deleted = cursor.rowcount
         conn.commit()
         conn.close()
+        if is_teacher and deleted:
+            create_notification("owner", "owner", "Teacher deleted lesson", f"{row[2]} deleted {row[1]}'s lesson on {row[3]} {row[4]}.", "/calendar", related_type="teacher_direct_delete", related_id=int(schedule_id))
         scope_message = "lesson" if deleted == 1 else "lessons"
         return {"ok": True, "message": f"Deleted {deleted} {scope_message}."}
 
