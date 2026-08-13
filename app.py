@@ -6649,10 +6649,11 @@ def calendar():
         """
 
     month_label = month_start.strftime("%B %Y")
-    calendar_weeks = calendar_lib.Calendar(firstweekday=0).monthdatescalendar(month_start.year, month_start.month)
-    weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    calendar_weeks = calendar_lib.Calendar(firstweekday=6).monthdatescalendar(month_start.year, month_start.month)
+    weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    today_weekday_index = (date.today().weekday() + 1) % 7
     weekday_header = "".join(
-        f'<th class="today-th">{name}</th>' if i == date.today().weekday() and month_start.strftime("%Y-%m") == date.today().strftime("%Y-%m")
+        f'<th class="today-th">{name}</th>' if i == today_weekday_index and month_start.strftime("%Y-%m") == date.today().strftime("%Y-%m")
         else f"<th>{name}</th>"
         for i, name in enumerate(weekday_names)
     )
@@ -10511,10 +10512,14 @@ def teacher_dashboard():
     selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
     view = request.args.get("view", "home")
     selected_week = request.args.get("week")
+
+    def sunday_week_start(day):
+        return day - timedelta(days=(day.weekday() + 1) % 7)
+
     if selected_week:
         week_start = datetime.strptime(selected_week, "%Y-%m-%d").date()
     else:
-        week_start = today_obj - timedelta(days=today_obj.weekday())
+        week_start = sunday_week_start(today_obj)
     week_end = week_start + timedelta(days=6)
 
     month_year = int(selected_month[:4])
@@ -10910,8 +10915,8 @@ def teacher_dashboard():
             schedule_return_url = f"/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}"
 
         if schedule_mode == "month":
-            month_grid_start = month_start - timedelta(days=month_start.weekday())
-            month_grid_end = month_end + timedelta(days=(6 - month_end.weekday()))
+            month_grid_start = sunday_week_start(month_start)
+            month_grid_end = month_end + timedelta(days=(5 - month_end.weekday()) % 7)
             by_date = {}
             for lesson in lessons:
                 by_date.setdefault(lesson[1], []).append(lesson)
