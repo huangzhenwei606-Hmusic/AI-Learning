@@ -286,6 +286,169 @@ def ensure_student_ledger_schema(cursor):
         add_column_if_missing(cursor, "student_ledger", column_name, column_sql)
 
 
+def ensure_student_detail_schema(cursor):
+    ensure_student_profile_schema(cursor)
+    ensure_student_ledger_schema(cursor)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        lesson_content TEXT,
+        performance TEXT,
+        homework TEXT,
+        lesson_date TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("lesson_content", "lesson_content TEXT"),
+        ("performance", "performance TEXT"),
+        ("homework", "homework TEXT"),
+        ("lesson_date", "lesson_date TEXT"),
+    ]:
+        add_column_if_missing(cursor, "lessons", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        amount REAL,
+        lessons_added REAL,
+        payment_method TEXT,
+        payment_date TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("amount", "amount REAL"),
+        ("lessons_added", "lessons_added REAL"),
+        ("payment_method", "payment_method TEXT"),
+        ("payment_date", "payment_date TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("notes", "notes TEXT"),
+        ("visible_to_parent", "visible_to_parent INTEGER DEFAULT 1"),
+        ("related_invoice_id", "related_invoice_id INTEGER"),
+    ]:
+        add_column_if_missing(cursor, "payments", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        schedule_id INTEGER,
+        charge_lessons REAL,
+        amount REAL,
+        status TEXT,
+        invoice_type TEXT,
+        created_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("parent_name", "parent_name TEXT"),
+        ("parent_email", "parent_email TEXT"),
+        ("schedule_id", "schedule_id INTEGER"),
+        ("charge_lessons", "charge_lessons REAL"),
+        ("amount", "amount REAL"),
+        ("status", "status TEXT DEFAULT 'unpaid'"),
+        ("invoice_type", "invoice_type TEXT DEFAULT 'package_invoice'"),
+        ("created_at", "created_at TEXT"),
+        ("paid_at", "paid_at TEXT"),
+        ("due_date", "due_date TEXT"),
+        ("notes", "notes TEXT"),
+        ("payment_methods", "payment_methods TEXT"),
+        ("package_options", "package_options TEXT"),
+        ("manual_payment_status", "manual_payment_status TEXT"),
+        ("coverage_title", "coverage_title TEXT"),
+        ("coverage_class", "coverage_class TEXT"),
+        ("coverage_start", "coverage_start TEXT"),
+        ("coverage_note", "coverage_note TEXT"),
+        ("payment_reminder_sent_at", "payment_reminder_sent_at TEXT"),
+        ("payment_reminder_count", "payment_reminder_count INTEGER DEFAULT 0"),
+        ("stripe_checkout_session_id", "stripe_checkout_session_id TEXT"),
+        ("stripe_payment_intent_id", "stripe_payment_intent_id TEXT"),
+        ("autopay_status", "autopay_status TEXT"),
+    ]:
+        add_column_if_missing(cursor, "invoices", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        classroom TEXT,
+        location TEXT,
+        duration INTEGER,
+        notes TEXT,
+        schedule_type TEXT,
+        total_lessons INTEGER,
+        weekday TEXT,
+        package_type TEXT,
+        start_date TEXT,
+        status TEXT DEFAULT 'scheduled'
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("teacher", "teacher TEXT"),
+        ("lesson_date", "lesson_date TEXT"),
+        ("lesson_time", "lesson_time TEXT"),
+        ("classroom", "classroom TEXT"),
+        ("location", "location TEXT"),
+        ("duration", "duration INTEGER"),
+        ("notes", "notes TEXT"),
+        ("schedule_type", "schedule_type TEXT"),
+        ("total_lessons", "total_lessons INTEGER"),
+        ("weekday", "weekday TEXT"),
+        ("package_type", "package_type TEXT"),
+        ("start_date", "start_date TEXT"),
+        ("status", "status TEXT DEFAULT 'scheduled'"),
+        ("charge_lessons", "charge_lessons REAL DEFAULT 0"),
+        ("cancellation_reason", "cancellation_reason TEXT"),
+        ("cancelled_at", "cancelled_at TEXT"),
+        ("lesson_note", "lesson_note TEXT"),
+        ("private_note", "private_note TEXT"),
+        ("homework", "homework TEXT"),
+        ("room_id", "room_id INTEGER"),
+        ("location_id", "location_id INTEGER"),
+        ("series_id", "series_id TEXT"),
+        ("recurrence_scope", "recurrence_scope TEXT"),
+    ]:
+        add_column_if_missing(cursor, "schedule", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS enrollments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher_name TEXT,
+        status TEXT DEFAULT 'active'
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("teacher_name", "teacher_name TEXT"),
+        ("status", "status TEXT DEFAULT 'active'"),
+    ]:
+        add_column_if_missing(cursor, "enrollments", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teachers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT UNIQUE
+    )
+    """)
+    for column_name, column_sql in [
+        ("teacher_name", "teacher_name TEXT"),
+        ("active", "active INTEGER DEFAULT 1"),
+    ]:
+        add_column_if_missing(cursor, "teachers", column_name, column_sql)
+
+
 def migrate_legacy_passwords(cursor, table, limit=None):
     if os.environ.get("HMUSIC_RUN_PASSWORD_MIGRATION") != "1":
         return 0
@@ -4252,8 +4415,7 @@ def edit_student(name):
     ensure_teacher_management_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    ensure_student_profile_schema(cursor)
-    ensure_student_ledger_schema(cursor)
+    ensure_student_detail_schema(cursor)
     conn.commit()
 
     if request.method == "POST":
@@ -4921,8 +5083,7 @@ def student_detail(name):
     ensure_v27_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    ensure_student_profile_schema(cursor)
-    ensure_student_ledger_schema(cursor)
+    ensure_student_detail_schema(cursor)
     conn.commit()
 
     cursor.execute("""
@@ -5524,8 +5685,7 @@ def set_student_credits(name):
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    ensure_student_profile_schema(cursor)
-    ensure_student_ledger_schema(cursor)
+    ensure_student_detail_schema(cursor)
     conn.commit()
     cursor.execute("SELECT COALESCE(lessons_left, 0) FROM students WHERE name = ?", (name,))
     row = cursor.fetchone()
@@ -15482,8 +15642,7 @@ def ensure_v27_schema():
     )
     """)
 
-    ensure_student_profile_schema(cursor)
-    ensure_student_ledger_schema(cursor)
+    ensure_student_detail_schema(cursor)
 
     cursor.execute("PRAGMA table_info(students)")
     student_columns = [row[1] for row in cursor.fetchall()]
