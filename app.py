@@ -116,6 +116,18 @@ def hmusic_parent_visible_lesson_note(value):
     text = str(value or "").strip()
     if not text:
         return ""
+    if re.match(r"^Confirmed from parent booking request\b", text, flags=re.IGNORECASE):
+        return ""
+    if re.match(r"^Teacher-created schedule\.\s*Billing is owner-managed\b", text, flags=re.IGNORECASE):
+        return ""
+    text = re.sub(
+        r"Confirmed from parent booking request\s*#?\d*\.?\s*Request type:\s*[^.。]*(?:[.。]\s*)?Parent note:\s*[^.。]*(?:[.。]\s*)?Owner note:\s*[^.。]*(?:[.。]\s*)?",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"Confirmed from parent booking request\s*#?\d*\.?", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"Teacher-created schedule\.\s*Billing is owner-managed and no invoice was created\.?", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"(?:^|\s)Billing decision:\s*[^.。]*(?:[.。]|$)", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"(?:^|\s)Lesson count:\s*[^.。]*(?:[.。]|$)", " ", text, flags=re.IGNORECASE)
     return " ".join(text.split()).strip()
@@ -10795,7 +10807,7 @@ def teacher_dashboard():
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
     .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.early_cancel{background:#98A2B3}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
-    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
+    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-scope-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-scope-option{display:flex;gap:9px;align-items:flex-start;border:1px solid #D9DEE8;border-radius:8px;background:#fff;padding:10px 11px;cursor:pointer}.panel-scope-option.active{border-color:#B8CCE3;background:var(--blue-bg);box-shadow:inset 3px 0 0 var(--blue)}.panel-scope-option input{margin-top:2px;accent-color:var(--blue)}.panel-scope-option span{display:block;line-height:1.25}.panel-scope-option b{display:block;color:#172033;font-size:13px}.panel-scope-option small{display:block;color:#667085;font-size:11px;margin-top:3px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
     </style>
     """
@@ -11038,7 +11050,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
-            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button><button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button><button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><div class="panel-scope-row"><label class="panel-scope-option active" id="tPanelScopeOnce" onclick="setTeacherRescheduleScope('once')"><input type="radio" name="tPanelRescheduleScope" value="once" checked><span><b>Only this lesson</b><small>Move just this class.</small></span></label><label class="panel-scope-option" id="tPanelScopeFollowing" onclick="setTeacherRescheduleScope('following')"><input type="radio" name="tPanelRescheduleScope" value="following"><span><b>This and following lessons</b><small>Move this recurring series forward.</small></span></label></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel()">Save changes</button></div>
         </aside>
@@ -11073,6 +11085,7 @@ def teacher_dashboard():
         const TEACHER_MULTI_ROOMS = {teacher_room_payload};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
+        let teacherRescheduleScope = 'once';
         let teacherPanelSaving = false;
         let teacherMultiOn = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
@@ -11080,14 +11093,15 @@ def teacher_dashboard():
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
+        function setTeacherRescheduleScope(scope) {{ teacherRescheduleScope = scope === 'following' ? 'following' : 'once'; const once = document.getElementById('tPanelScopeOnce'); const following = document.getElementById('tPanelScopeFollowing'); if (once) once.classList.toggle('active', teacherRescheduleScope === 'once'); if (following) following.classList.toggle('active', teacherRescheduleScope === 'following'); document.querySelectorAll('[name="tPanelRescheduleScope"]').forEach(input => input.checked = input.value === teacherRescheduleScope); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
-        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
         function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
         function saveTeacherLessonPanel(quiet) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!quiet) teacherPanelToast(d.message || 'Saved.'); return d; }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
-        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? 'Cancel this lesson now?' : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherDeleteLesson() {{ if (!activeTeacherLesson) return; if (!confirm('Delete this lesson from your calendar?')) return; teacherLessonAction({{action:'delete', schedule_id:activeTeacherLesson.id, delete_scope:'once'}}).then(d => {{ teacherPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
@@ -12969,26 +12983,81 @@ def calendar_lesson_action():
             new_date = (data.get("new_date") or "").strip()
             new_time = (data.get("new_time") or row[4] or "").strip()
             classroom = (data.get("classroom") or row[5] or "").strip()
+            reschedule_scope = (data.get("reschedule_scope") or data.get("scope") or "once").strip()
+            reschedule_scope = reschedule_scope if reschedule_scope in {"once", "following"} else "once"
             try:
                 new_date_obj = datetime.strptime(new_date, "%Y-%m-%d").date()
+                old_date_obj = datetime.strptime(row[3], "%Y-%m-%d").date()
             except ValueError:
                 conn.close()
                 return {"ok": False, "error": "Invalid date"}, 400
             if not parse_lesson_time_value(new_time):
                 conn.close()
                 return {"ok": False, "error": "Invalid time"}, 400
-            cursor.execute("""
-            UPDATE schedule SET lesson_date = ?, weekday = ?, lesson_time = ?, classroom = ?, status = 'scheduled'
-            WHERE id = ?
-            """, (new_date, new_date_obj.strftime("%A"), new_time, classroom, schedule_id))
+            moved_rows = [(int(schedule_id), row[3])]
+            if reschedule_scope == "following":
+                cursor.execute("""
+                SELECT id, lesson_date
+                FROM schedule
+                WHERE COALESCE(student_name, '') = ?
+                  AND COALESCE(teacher, '') = ?
+                  AND COALESCE(lesson_time, '') = ?
+                  AND COALESCE(classroom, '') = ?
+                  AND COALESCE(course_type_name, '') = ?
+                  AND COALESCE(schedule_type, '') = ?
+                  AND COALESCE(package_type, '') = ?
+                  AND COALESCE(duration, 30) = ?
+                  AND COALESCE(is_group, 0) = ?
+                  AND lesson_date >= ?
+                  AND id != ?
+                ORDER BY lesson_date, lesson_time
+                """, (
+                    row[1] or "",
+                    row[2] or "",
+                    row[4] or "",
+                    row[5] or "",
+                    row[7] or "",
+                    row[8] or "",
+                    row[9] or "",
+                    int(row[10] or 30),
+                    int(row[18] or 0),
+                    row[3] or "",
+                    int(schedule_id),
+                ))
+                moved_rows.extend((int(r[0]), r[1]) for r in cursor.fetchall())
+            day_delta = (new_date_obj - old_date_obj).days
+            for moved_id, old_lesson_date in moved_rows:
+                if moved_id == int(schedule_id):
+                    target_date_obj = new_date_obj
+                else:
+                    try:
+                        target_date_obj = datetime.strptime(old_lesson_date, "%Y-%m-%d").date() + timedelta(days=day_delta)
+                    except ValueError:
+                        target_date_obj = new_date_obj
+                cursor.execute("""
+                UPDATE schedule SET lesson_date = ?, weekday = ?, lesson_time = ?, classroom = ?, status = 'scheduled'
+                WHERE id = ?
+                """, (target_date_obj.strftime("%Y-%m-%d"), target_date_obj.strftime("%A"), new_time, classroom, moved_id))
             conn.commit()
             conn.close()
+            following_count = max(0, len(moved_rows) - 1)
             if is_owner and row[2]:
-                create_notification("teacher", row[2], "Lesson rescheduled", f"{row[1]}'s lesson moved to {new_date} at {new_time}.", "/teacher_dashboard?view=schedule", related_type="owner_reschedule", related_id=int(schedule_id))
+                detail = f"{row[1]}'s lesson moved to {new_date} at {new_time}."
+                if following_count:
+                    detail += f" {following_count} following lesson(s) were updated."
+                create_notification("teacher", row[2], "Lesson rescheduled", detail, "/teacher_dashboard?view=schedule", related_type="owner_reschedule", related_id=int(schedule_id))
             elif not is_owner:
-                create_notification("owner", "owner", "Teacher rescheduled lesson", f"{row[2]} moved {row[1]}'s lesson to {new_date} at {new_time}.", "/calendar", related_type="teacher_direct_reschedule", related_id=int(schedule_id))
-            queue_teacher_lesson_reminder(int(schedule_id), row[2])
-            return {"ok": True, "message": "Lesson rescheduled." if is_owner else "Lesson moved. Owner was notified."}
+                detail = f"{row[2]} moved {row[1]}'s lesson to {new_date} at {new_time}."
+                if following_count:
+                    detail += f" {following_count} following lesson(s) were updated."
+                create_notification("owner", "owner", "Teacher rescheduled lesson", detail, "/calendar", related_type="teacher_direct_reschedule", related_id=int(schedule_id))
+            for moved_id, _old_lesson_date in moved_rows:
+                queue_teacher_lesson_reminder(int(moved_id), row[2])
+            if following_count:
+                msg = f"Moved this lesson and {following_count} following lesson(s)."
+            else:
+                msg = "Lesson rescheduled." if is_owner else "Lesson moved. Owner was notified."
+            return {"ok": True, "message": msg}
         requested_date = (data.get("new_date") or row[3] or "").strip()
         requested_time = (data.get("new_time") or row[4] or "").strip()
         reason = (data.get("reason") or "Teacher requested from calendar panel").strip()
