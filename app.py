@@ -5006,6 +5006,20 @@ def student_detail(name):
         teacher_options += f'<option value="{escape(t[0])}" {selected}>{escape(t[0])}</option>'
 
     student_url_name = quote(student[0])
+    credits_value = hmusic_number(student[4] or 0)
+    credit_card_html = f"""
+        <div class="kpi"><span>Credits</span><b>{escape(credits_value)}</b></div>
+    """
+    if require_owner():
+        credit_card_html = f"""
+        <form class="credit-set-form" method="POST" action="/set_student_credits/{student_url_name}">
+            <span>Credits</span>
+            <div class="credit-row">
+                <input type="number" step="0.5" name="lessons_left" value="{escape(credits_value, quote=True)}" aria-label="Credits">
+                <button type="submit">Save</button>
+            </div>
+        </form>
+        """
     teacher_link_form = ""
     if require_owner():
         teacher_link_form = f"""
@@ -5251,6 +5265,11 @@ def student_detail(name):
             .kpi {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; }}
             .kpi span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
             .kpi b {{ display:block; font-size:24px; margin-top:4px; }}
+            .credit-set-form {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; margin:0; }}
+            .credit-set-form span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
+            .credit-row {{ display:grid; grid-template-columns:minmax(0, 1fr) 54px; gap:6px; margin-top:4px; }}
+            .credit-row input {{ width:100%; min-width:0; height:32px; border:1px solid var(--border); border-radius:8px; padding:0 8px; font-size:20px; font-weight:800; box-sizing:border-box; background:white; }}
+            .credit-row button {{ min-height:32px; border-radius:8px; padding:0 8px; font-size:12px; }}
             .info-list {{ display:grid; gap:10px; margin-top:12px; }}
             .info-line {{ display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:start; }}
             .info-line span {{ color:var(--muted); font-size:13px; }}
@@ -5332,7 +5351,7 @@ def student_detail(name):
                             </div>
                         </div>
                         <div class="kpis">
-                            <div class="kpi"><span>Credits</span><b>{escape(str(student[4] or 0))}</b></div>
+                            {credit_card_html}
                             <div class="kpi"><span>Balance</span><b>{balance_text}</b></div>
                             <div class="kpi"><span>Next</span><b>{'Set' if next_lesson else 'None'}</b></div>
                         </div>
@@ -5436,6 +5455,45 @@ def link_student_teacher(name):
     conn.commit()
     conn.close()
     return redirect(f"/student/{name}")
+
+
+@app.route("/set_student_credits/<name>", methods=["POST"])
+def set_student_credits(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    raw_credits = (request.form.get("lessons_left") or "").strip()
+    try:
+        new_credits = round(float(raw_credits), 2)
+    except ValueError:
+        return redirect(f"/student/{quote(name)}")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(lessons_left, 0) FROM students WHERE name = ?", (name,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    old_credits = round(float(row[0] or 0), 2)
+    cursor.execute("UPDATE students SET lessons_left = ? WHERE name = ?", (new_credits, name))
+    cursor.execute("""
+    INSERT INTO student_ledger (
+        student_name, entry_type, amount, description,
+        related_invoice_id, related_payment_id, created_at, related_schedule_id
+    )
+    VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)
+    """, (
+        name,
+        "credit_adjustment",
+        round(new_credits - old_credits, 2),
+        f"Credits adjusted from {hmusic_number(old_credits)} to {hmusic_number(new_credits)}",
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+    ))
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{quote(name)}")
 
 
 @app.route("/delete_invoice/<int:invoice_id>", methods=["POST"])
