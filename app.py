@@ -230,6 +230,62 @@ def add_column_if_missing(cursor, table, column_name, column_sql):
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
 
 
+def ensure_student_profile_schema(cursor):
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        teacher TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        parent_phone TEXT,
+        lessons_left REAL DEFAULT 0,
+        free_cancel_used INTEGER DEFAULT 0
+    )
+    """)
+    for column_name, column_sql in [
+        ("name", "name TEXT"),
+        ("teacher", "teacher TEXT"),
+        ("parent_name", "parent_name TEXT"),
+        ("parent_email", "parent_email TEXT"),
+        ("parent_phone", "parent_phone TEXT"),
+        ("lessons_left", "lessons_left REAL DEFAULT 0"),
+        ("free_cancel_used", "free_cancel_used INTEGER DEFAULT 0"),
+        ("program", "program TEXT DEFAULT 'Piano private lesson'"),
+        ("status", "status TEXT DEFAULT 'Active'"),
+        ("lesson_length", "lesson_length TEXT DEFAULT '30 minutes'"),
+        ("internal_note", "internal_note TEXT"),
+    ]:
+        add_column_if_missing(cursor, "students", column_name, column_sql)
+
+
+def ensure_student_ledger_schema(cursor):
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        entry_type TEXT,
+        amount REAL,
+        description TEXT,
+        related_invoice_id INTEGER,
+        related_payment_id INTEGER,
+        created_at TEXT,
+        related_schedule_id INTEGER
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("entry_type", "entry_type TEXT"),
+        ("amount", "amount REAL"),
+        ("description", "description TEXT"),
+        ("related_invoice_id", "related_invoice_id INTEGER"),
+        ("related_payment_id", "related_payment_id INTEGER"),
+        ("created_at", "created_at TEXT"),
+        ("related_schedule_id", "related_schedule_id INTEGER"),
+    ]:
+        add_column_if_missing(cursor, "student_ledger", column_name, column_sql)
+
+
 def migrate_legacy_passwords(cursor, table, limit=None):
     if os.environ.get("HMUSIC_RUN_PASSWORD_MIGRATION") != "1":
         return 0
@@ -4196,13 +4252,8 @@ def edit_student(name):
     ensure_teacher_management_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    for column_name, column_sql in [
-        ("status", "status TEXT DEFAULT 'Active'"),
-        ("program", "program TEXT DEFAULT 'Piano private lesson'"),
-        ("lesson_length", "lesson_length TEXT DEFAULT '30 minutes'"),
-        ("internal_note", "internal_note TEXT")
-    ]:
-        add_column_if_missing(cursor, "students", column_name, column_sql)
+    ensure_student_profile_schema(cursor)
+    ensure_student_ledger_schema(cursor)
     conn.commit()
 
     if request.method == "POST":
@@ -4870,6 +4921,9 @@ def student_detail(name):
     ensure_v27_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    ensure_student_profile_schema(cursor)
+    ensure_student_ledger_schema(cursor)
+    conn.commit()
 
     cursor.execute("""
     SELECT name, teacher, parent_email, parent_phone, lessons_left, COALESCE(parent_name, '')
@@ -5470,6 +5524,9 @@ def set_student_credits(name):
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    ensure_student_profile_schema(cursor)
+    ensure_student_ledger_schema(cursor)
+    conn.commit()
     cursor.execute("SELECT COALESCE(lessons_left, 0) FROM students WHERE name = ?", (name,))
     row = cursor.fetchone()
     if not row:
@@ -15424,6 +15481,9 @@ def ensure_v27_schema():
         created_at TEXT
     )
     """)
+
+    ensure_student_profile_schema(cursor)
+    ensure_student_ledger_schema(cursor)
 
     cursor.execute("PRAGMA table_info(students)")
     student_columns = [row[1] for row in cursor.fetchall()]
