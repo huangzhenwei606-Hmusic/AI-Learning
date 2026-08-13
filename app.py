@@ -33279,10 +33279,15 @@ def update_inquiry(inquiry_id):
 def convert_inquiry_to_student(inquiry_id):
     ensure_owner()
     ensure_v17_schema()
+    ensure_v27_schema()
+    ensure_parent_portal_feature_schema()
 
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    ensure_student_detail_schema(cursor)
+    conn.commit()
+
     cursor.execute("SELECT * FROM inquiries WHERE id=?", (inquiry_id,))
     inquiry = cursor.fetchone()
 
@@ -33290,11 +33295,11 @@ def convert_inquiry_to_student(inquiry_id):
         conn.close()
         return "Lead not found"
 
-    student_name = inquiry["student_name"] or "New Student"
-    teacher = inquiry["trial_teacher"] or "Unassigned"
-    parent_email = inquiry["parent_email"] or ""
-    parent_name = inquiry["parent_name"] or "Parent"
-    parent_phone = inquiry["phone"] or ""
+    student_name = (inquiry["student_name"] or "New Student").strip() or "New Student"
+    teacher = (inquiry["trial_teacher"] or "Unassigned").strip() or "Unassigned"
+    parent_email = (inquiry["parent_email"] or "").strip()
+    parent_name = (inquiry["parent_name"] or "Parent").strip() or "Parent"
+    parent_phone = (inquiry["phone"] or "").strip()
 
     cursor.execute("SELECT id FROM students WHERE name=?", (student_name,))
     existing = cursor.fetchone()
@@ -33347,8 +33352,10 @@ def convert_inquiry_to_student(inquiry_id):
     conn.commit()
     conn.close()
 
+    student_url = f"/student/{quote(student_name, safe='')}"
+
     try:
-        create_notification("owner", "owner", "Lead Converted", f"{student_name} was converted into a student record.", f"/student/{student_name}", "trial_lead", inquiry_id)
+        create_notification("owner", "owner", "Lead Converted", f"{student_name} was converted into a student record.", student_url, "trial_lead", inquiry_id)
         if parent_id:
             create_notification(
                 "parent",
@@ -33383,7 +33390,7 @@ def convert_inquiry_to_student(inquiry_id):
     except Exception:
         pass
 
-    return redirect(f"/student/{student_name}")
+    return redirect(student_url)
 
 
 # =========================
