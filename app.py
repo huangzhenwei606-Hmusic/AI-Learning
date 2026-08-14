@@ -2302,6 +2302,7 @@ def teacher_dashboard_time_off_content(teacher_name):
 
 @app.route("/")
 def home():
+    ensure_owner()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -32445,7 +32446,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             {payment_html}
             <p>Trial payment can be made by ACH, PayPal, or Zelle. Credit cards are not accepted for trial lessons. PayPal/Zelle: hmusicjustplay@gmail.com.</p>
             <div class="box">Request #{inquiry_id}</div>
-            <p><a href="/">Back to H-Music</a></p>
+            <p><a href="/trial">Submit another trial request</a></p>
         </div></div>
     </body>
     </html>
