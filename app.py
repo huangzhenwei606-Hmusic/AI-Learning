@@ -16697,6 +16697,12 @@ def parent_admin(parent_id):
         conn.close()
         for invoice_id, student_name, amount in created_invoices:
             try:
+                log_parent_activity(
+                    parent_id,
+                    student_name,
+                    "invoice_created",
+                    f"Invoice #{invoice_id} created for ${hmusic_money(amount)}."
+                )
                 notify_parent_tuition_due(
                     student_name,
                     parent_id,
@@ -16737,6 +16743,31 @@ def parent_admin(parent_id):
     LIMIT 20
     """, (parent_id,))
     activities = cursor.fetchall()
+
+    family_invoice_records = []
+    active_student_names = [row[1] for row in linked_students if row[3] == 1]
+    if active_student_names:
+        placeholders = ",".join(["?"] * len(active_student_names))
+        cursor.execute(f"""
+        SELECT
+            id,
+            student_name,
+            COALESCE(charge_lessons, 0),
+            COALESCE(amount, 0),
+            COALESCE(status, 'unpaid'),
+            COALESCE(invoice_type, 'invoice'),
+            COALESCE(created_at, ''),
+            COALESCE(due_date, ''),
+            COALESCE(coverage_title, ''),
+            COALESCE(coverage_class, ''),
+            COALESCE(coverage_start, ''),
+            COALESCE(coverage_note, '')
+        FROM invoices
+        WHERE student_name IN ({placeholders})
+        ORDER BY COALESCE(created_at, '') DESC, id DESC
+        LIMIT 20
+        """, active_student_names)
+        family_invoice_records = cursor.fetchall()
 
     conn.close()
 
@@ -16836,6 +16867,30 @@ def parent_admin(parent_id):
 
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No activity yet.</td></tr>"
+
+    family_invoice_record_rows = ""
+    for inv in family_invoice_records:
+        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at, due_date, coverage_title, coverage_class, coverage_start, coverage_note = inv
+        coverage_bits = [str(item or "").strip() for item in (coverage_title, coverage_class, f"Starts {coverage_start}" if coverage_start else "", coverage_note) if str(item or "").strip()]
+        coverage_html = "".join(f"<span>{escape(bit)}</span>" for bit in coverage_bits) or "<span>No coverage details</span>"
+        family_invoice_record_rows += f"""
+        <tr>
+            <td>
+                <a class="invoice-link" href="/parent_invoice/{invoice_id}">#{invoice_id}</a>
+                <span>{escape(str(created_at or ''))}</span>
+            </td>
+            <td>{escape(str(student_name or ''))}</td>
+            <td>{escape(str(lessons or 0))} lesson(s)</td>
+            <td>${hmusic_money(amount)}</td>
+            <td><div class="coverage-summary">{coverage_html}</div></td>
+            <td>{escape(str(due_date or ''))}</td>
+            <td><span class="pill {'good' if str(invoice_status).lower() == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span></td>
+            <td><a class="button" href="/edit_invoice/{invoice_id}">Edit</a></td>
+        </tr>
+        """
+
+    if not family_invoice_record_rows:
+        family_invoice_record_rows = "<tr><td colspan='8' class='empty'>No invoices for this family yet.</td></tr>"
 
     status = "Active" if parent[5] == 1 else "Inactive"
     status_class = "good" if parent[5] == 1 else "neutral"
@@ -16968,6 +17023,11 @@ def parent_admin(parent_id):
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
             .activity-table {{ min-width:760px; }}
             .invoice-table {{ min-width:1180px; }}
+            .family-invoice-table {{ min-width:1000px; }}
+            .invoice-link {{ color:var(--blue-dark); font-weight:900; display:block; }}
+            .invoice-link + span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
+            .coverage-summary {{ display:flex; flex-wrap:wrap; gap:4px; }}
+            .coverage-summary span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:800; }}
             @media (max-width:900px) {{
                 .topbar, .head, .layout, .add-grid {{ grid-template-columns:1fr; }}
                 .tabs, .top-actions {{ justify-content:flex-start; }}
@@ -17122,6 +17182,25 @@ def parent_admin(parent_id):
                                     <button class="primary" type="submit">Create selected invoices</button>
                                 </div>
                             </form>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Family invoice records</h2><span>Latest 20</span></div>
+                        <div class="table-wrap">
+                            <table class="family-invoice-table">
+                                <tr>
+                                    <th>Invoice</th>
+                                    <th>Child</th>
+                                    <th>Lessons</th>
+                                    <th>Amount</th>
+                                    <th>Coverage</th>
+                                    <th>Due</th>
+                                    <th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                                {family_invoice_record_rows}
+                            </table>
                         </div>
                     </section>
 
