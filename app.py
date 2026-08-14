@@ -7403,6 +7403,17 @@ def calendar():
             .att-btn:hover{{background:#F7FAFD;border-color:#C8D3E2}}
             .att-btn.active{{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}}
             .att-btn[data-status="present"].active{{background:var(--s-present)}} .att-btn[data-status="last_min_cancel"].active{{background:var(--s-cancelled)}} .att-btn[data-status="no_show"].active{{background:var(--s-noshow)}} .att-btn[data-status="excused_24h"].active{{background:var(--s-excused)}}
+            .group-roster{{display:grid;gap:10px}}
+            .group-roster-row{{border:1px solid var(--line);border-radius:10px;background:#FAFBFD;padding:11px;display:grid;gap:10px}}
+            .group-roster-head{{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}}
+            .group-roster-name{{font-size:16px;font-weight:900;color:var(--text);line-height:1.2}}
+            .group-roster-meta{{font-size:12px;color:var(--muted);font-weight:700;margin-top:3px;line-height:1.35}}
+            .group-roster-balance{{border-radius:999px;background:#FFF4E5;color:#B54708;font-weight:900;font-size:12px;padding:5px 9px;white-space:nowrap}}
+            .group-roster-fields{{display:grid;grid-template-columns:1.2fr .7fr .8fr 1.1fr;gap:8px}}
+            .group-roster-fields label{{min-width:0}}
+            .group-roster-fields .detail-label{{font-size:10px}}
+            .group-roster-empty{{border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);font-weight:800;background:#fff}}
+            @media(max-width:620px){{.group-roster-fields{{grid-template-columns:1fr 1fr}}}}
             .panel-field{{width:100%;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}}
             .panel-field:focus{{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}}
             .panel-field::placeholder{{color:#98A2B3}}
@@ -7774,7 +7785,8 @@ def calendar():
           <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
           <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
         </div>
-        <div class="panel-section"><h3>Attendance</h3><div class="att-row">
+        <div class="panel-section" id="panelGroupRosterSection" style="display:none"><h3>Group roster</h3><div class="group-roster" id="panelGroupRoster"></div></div>
+        <div class="panel-section"><h3 id="panelAttendanceTitle">Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
           <button class="att-btn" data-status="no_show" onclick="setPanelStatus('no_show')">No show</button>
           <button class="att-btn" data-status="last_min_cancel" onclick="setPanelStatus('last_min_cancel')">Last min</button>
@@ -7922,6 +7934,11 @@ def calendar():
     // ---- owner lesson panel ----
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
+    function escapePanelText(value) {{
+      return String(value == null ? '' : value)
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+    }}
     function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
     function statusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
@@ -7939,7 +7956,77 @@ def calendar():
       badge.className = 'panel-status ' + statusClass(activePanelStatus);
       document.querySelectorAll('.att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activePanelStatus));
     }}
-    function setPanelStatus(st) {{ paintPanelStatus(st); saveLessonPanel(true); }}
+    function setPanelStatus(st) {{
+      paintPanelStatus(st);
+      if (activePanelLesson && Number(activePanelLesson.is_group || 0)) {{
+        document.querySelectorAll('#panelGroupRoster .group-attendance').forEach(sel => sel.value = st);
+      }}
+      saveLessonPanel(true);
+    }}
+    function billingRuleLabel(value) {{
+      return value === 'invoice_later' ? 'Invoice later' : value === 'makeup_credit' ? 'Makeup credit' : value === 'no_charge' ? 'No charge' : 'Use credits';
+    }}
+    function renderPanelGroupRoster(lesson) {{
+      const section = document.getElementById('panelGroupRosterSection');
+      const rosterEl = document.getElementById('panelGroupRoster');
+      const attendanceTitle = document.getElementById('panelAttendanceTitle');
+      const roster = Array.isArray(lesson.group_students) ? lesson.group_students : [];
+      const isGroup = Number(lesson.is_group || 0) === 1;
+      if (attendanceTitle) attendanceTitle.textContent = isGroup ? 'Bulk attendance' : 'Attendance';
+      if (!section || !rosterEl) return;
+      section.style.display = isGroup ? '' : 'none';
+      if (!isGroup) {{
+        rosterEl.innerHTML = '';
+        return;
+      }}
+      if (!roster.length) {{
+        rosterEl.innerHTML = '<div class="group-roster-empty">No students are attached to this group lesson yet.</div>';
+        return;
+      }}
+      rosterEl.innerHTML = roster.map((student, index) => {{
+        const name = escapePanelText(student.student_name || '');
+        const parentParts = [student.parent_name, student.parent_email, student.parent_phone].filter(Boolean).map(escapePanelText);
+        const left = Number(student.lessons_left || 0);
+        const creditUnits = Number(student.credit_units || 1);
+        const rate = Number(student.student_rate || lesson.student_price || 0);
+        const billingRule = student.billing_rule || 'existing_credits';
+        const attendance = student.attendance_status || lesson.status || 'scheduled';
+        const ruleOptions = ['existing_credits','invoice_later','makeup_credit','no_charge'].map(rule =>
+          `<option value="${{rule}}" ${{rule === billingRule ? 'selected' : ''}}>${{billingRuleLabel(rule)}}</option>`
+        ).join('');
+        const statusOptions = ['scheduled','present','no_show','last_min_cancel','excused_24h'].map(status =>
+          `<option value="${{status}}" ${{status === attendance ? 'selected' : ''}}>${{statusLabel(status)}}</option>`
+        ).join('');
+        return `
+          <div class="group-roster-row" data-index="${{index}}">
+            <div class="group-roster-head">
+              <div>
+                <div class="group-roster-name">${{name || 'Student'}}</div>
+                <div class="group-roster-meta">${{parentParts.join(' · ') || 'No parent contact'}}</div>
+              </div>
+              <div class="group-roster-balance">${{Number.isFinite(left) ? left : 0}} left</div>
+            </div>
+            <div class="group-roster-fields">
+              <label><span class="detail-label">Attendance</span><select class="panel-field group-attendance">${{statusOptions}}</select></label>
+              <label><span class="detail-label">Credits</span><input class="panel-field group-credit-units" type="number" min="0" step="0.5" value="${{creditUnits}}"></label>
+              <label><span class="detail-label">Rate</span><input class="panel-field group-student-rate" type="number" min="0" step="0.01" value="${{rate.toFixed(2)}}"></label>
+              <label><span class="detail-label">Billing</span><select class="panel-field group-billing-rule">${{ruleOptions}}</select></label>
+              <input type="hidden" class="group-student-name" value="${{name}}">
+              <input type="hidden" class="group-roster-id" value="${{Number(student.id || 0)}}">
+            </div>
+          </div>`;
+      }}).join('');
+    }}
+    function collectPanelGroupRoster() {{
+      return Array.from(document.querySelectorAll('#panelGroupRoster .group-roster-row')).map(row => ({{
+        id: row.querySelector('.group-roster-id')?.value || '',
+        student_name: row.querySelector('.group-student-name')?.value || '',
+        attendance_status: row.querySelector('.group-attendance')?.value || 'scheduled',
+        credit_units: row.querySelector('.group-credit-units')?.value || '1',
+        student_rate: row.querySelector('.group-student-rate')?.value || '0',
+        billing_rule: row.querySelector('.group-billing-rule')?.value || 'existing_credits'
+      }}));
+    }}
     function showPanelToast(msg) {{ const t = document.getElementById('panelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
     function lessonAction(payload) {{
       return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}})
@@ -7949,7 +8036,8 @@ def calendar():
       fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{
         if (!d.ok) throw new Error(d.error || 'Lesson not found');
         activePanelLesson = d.lesson;
-        document.getElementById('panelStudent').textContent = d.lesson.student || 'Student';
+        const isGroupLesson = Number(d.lesson.is_group || 0) === 1;
+        document.getElementById('panelStudent').textContent = isGroupLesson ? 'Group Class' : (d.lesson.student || 'Student');
         document.getElementById('panelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || '');
         document.getElementById('panelDate').textContent = d.lesson.date || '';
         document.getElementById('panelTime').textContent = d.lesson.time_range || d.lesson.time || '';
@@ -7965,12 +8053,13 @@ def calendar():
         document.getElementById('panelNewRoom').value = d.lesson.classroom || '';
         document.getElementById('panelReason').value = '';
         fillPanelDetails(d.lesson);
+        renderPanelGroupRoster(d.lesson);
         const detailsBilling = document.getElementById('panelDetailsBilling');
         if (detailsBilling) detailsBilling.open = true;
         const bal = document.getElementById('panelBalance');
         const left = Number(d.lesson.lessons_left || 0);
-        bal.style.display = left <= 2 ? 'inline-flex' : 'none';
-        bal.textContent = left <= 0 ? '0 left' : left + ' left';
+        bal.style.display = isGroupLesson ? 'inline-flex' : (left <= 2 ? 'inline-flex' : 'none');
+        bal.textContent = isGroupLesson ? ((d.lesson.group_students || []).length + ' students') : (left <= 0 ? '0 left' : left + ' left');
         paintPanelStatus(d.lesson.status || 'scheduled');
         document.getElementById('lessonScrim').classList.add('show');
         document.getElementById('lessonPanel').classList.add('show');
@@ -8005,7 +8094,8 @@ def calendar():
         custom_lesson_count:document.getElementById('panelDetailCustomCount').value,
         billing_basis:document.getElementById('panelBillingBasis').value,
         student_rate:document.getElementById('panelStudentRate').value,
-        billing_decision:document.getElementById('panelBillingDecision').value
+        billing_decision:document.getElementById('panelBillingDecision').value,
+        group_students: activePanelLesson && Number(activePanelLesson.is_group || 0) ? collectPanelGroupRoster() : []
       }};
     }}
     function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) {{ showPanelToast(d.message || 'Saved.'); setTimeout(() => location.reload(), 900); }} }}).catch(e => alert(e.message)); }}
@@ -12783,8 +12873,32 @@ def ensure_calendar_lesson_panel_schema():
         ("updated_at", "updated_at TEXT"),
     ]:
         add_column_if_missing(cursor, "lessons", column_name, column_sql)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS group_schedule_students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER,
+        student_name TEXT,
+        parent_name TEXT,
+        credit_units REAL DEFAULT 1,
+        student_rate REAL DEFAULT 0,
+        billing_rule TEXT DEFAULT 'existing_credits',
+        billing_status TEXT DEFAULT 'planned',
+        attendance_status TEXT DEFAULT 'scheduled',
+        lesson_note TEXT,
+        homework TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("attendance_status", "attendance_status TEXT DEFAULT 'scheduled'"),
+        ("lesson_note", "lesson_note TEXT"),
+        ("homework", "homework TEXT"),
+    ]:
+        add_column_if_missing(cursor, "group_schedule_students", column_name, column_sql)
     try:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_schedule_id ON lessons(schedule_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_group_schedule_students_schedule_id ON group_schedule_students(schedule_id)")
     except sqlite3.Error:
         pass
     conn.commit()
@@ -12889,12 +13003,88 @@ def calendar_lesson_row(cursor, schedule_id):
         COALESCE(s.course_type_id, 0), COALESCE(s.location_id, 0), COALESCE(s.room_id, 0),
         COALESCE(s.student_billing_method, ''), COALESCE(s.student_price, 0),
         COALESCE(s.student_charge_amount, 0), COALESCE(s.billing_decision, ''),
-        COALESCE(s.custom_lesson_count, 0), COALESCE(s.location, '')
+        COALESCE(s.custom_lesson_count, 0), COALESCE(s.location, ''),
+        COALESCE(s.group_student_names, '')
     FROM schedule s
     LEFT JOIN students st ON s.student_name = st.name
     WHERE s.id = ?
     """, (schedule_id,))
     return cursor.fetchone()
+
+
+def calendar_group_roster(cursor, schedule_id, fallback_names="", primary_student="", schedule_status="scheduled"):
+    cursor.execute("""
+    SELECT
+        g.id,
+        COALESCE(g.student_name, ''),
+        COALESCE(g.parent_name, st.parent_name, ''),
+        COALESCE(st.parent_email, ''),
+        COALESCE(st.parent_phone, ''),
+        COALESCE(st.lessons_left, 0),
+        COALESCE(g.credit_units, 1),
+        COALESCE(g.student_rate, 0),
+        COALESCE(g.billing_rule, 'existing_credits'),
+        COALESCE(g.billing_status, 'planned'),
+        COALESCE(g.attendance_status, ?),
+        COALESCE(g.lesson_note, ''),
+        COALESCE(g.homework, '')
+    FROM group_schedule_students g
+    LEFT JOIN students st ON st.name = g.student_name
+    WHERE g.schedule_id = ?
+    ORDER BY g.id
+    """, (schedule_status or "scheduled", schedule_id))
+    rows = cursor.fetchall()
+    roster = []
+    for row in rows:
+        roster.append({
+            "id": int(row[0] or 0),
+            "student_name": row[1] or "",
+            "parent_name": row[2] or "",
+            "parent_email": row[3] or "",
+            "parent_phone": row[4] or "",
+            "lessons_left": row[5] or 0,
+            "credit_units": row[6] or 0,
+            "student_rate": float(row[7] or 0),
+            "billing_rule": row[8] or "existing_credits",
+            "billing_status": row[9] or "planned",
+            "attendance_status": row[10] or schedule_status or "scheduled",
+            "lesson_note": row[11] or "",
+            "homework": row[12] or "",
+        })
+    if roster:
+        return roster
+
+    names = []
+    for raw_name in str(fallback_names or "").split(","):
+        clean_name = raw_name.strip()
+        if clean_name and clean_name not in names:
+            names.append(clean_name)
+    primary = str(primary_student or "").strip()
+    if primary and primary not in names:
+        names.insert(0, primary)
+    for name in names:
+        cursor.execute("""
+        SELECT COALESCE(parent_name, ''), COALESCE(parent_email, ''), COALESCE(parent_phone, ''), COALESCE(lessons_left, 0)
+        FROM students
+        WHERE name = ?
+        """, (name,))
+        student_row = cursor.fetchone() or ("", "", "", 0)
+        roster.append({
+            "id": 0,
+            "student_name": name,
+            "parent_name": student_row[0] or "",
+            "parent_email": student_row[1] or "",
+            "parent_phone": student_row[2] or "",
+            "lessons_left": student_row[3] or 0,
+            "credit_units": 1,
+            "student_rate": 0,
+            "billing_rule": "existing_credits",
+            "billing_status": "planned",
+            "attendance_status": schedule_status or "scheduled",
+            "lesson_note": "",
+            "homework": "",
+        })
+    return roster
 
 
 @app.route("/calendar_lesson_detail/<int:schedule_id>")
@@ -12905,13 +13095,16 @@ def calendar_lesson_detail(schedule_id):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     row = calendar_lesson_row(cursor, schedule_id)
-    conn.close()
     if not row:
+        conn.close()
         return {"ok": False, "error": "Lesson not found"}, 404
     if require_teacher() and not require_owner() and row[2] != session.get("teacher_name"):
+        conn.close()
         return {"ok": False, "error": "Permission denied"}, 403
     teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
     course_name = row[7] or row[8] or row[9] or "Lesson"
+    group_roster = calendar_group_roster(cursor, schedule_id, row[28] or "", row[1] or "", row[6] or "scheduled") if int(row[18] or 0) else []
+    conn.close()
     response = {
         "ok": True,
         "lesson": {
@@ -12925,6 +13118,8 @@ def calendar_lesson_detail(schedule_id):
             "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
             "course_type_id": int(row[19] or 0), "location_id": int(row[20] or 0), "room_id": int(row[21] or 0),
             "custom_lesson_count": int(row[26] or 0), "location": row[27] or "",
+            "group_student_names": row[28] or "",
+            "group_students": group_roster,
             "permissions": teacher_permissions,
         }
     }
@@ -13250,6 +13445,90 @@ def calendar_lesson_action():
                     )
                     for following_id in following_ids
                 ])
+            if int((detail_update or {}).get("is_group", row[18]) or 0):
+                roster_payload = data.get("group_students") if isinstance(data.get("group_students"), list) else []
+                cleaned_roster = []
+                allowed_roster_statuses = {"scheduled", "present", "no_show", "last_min_cancel", "excused_24h", "teacher_cancelled"}
+                allowed_billing_rules = {"existing_credits", "invoice_later", "makeup_credit", "no_charge"}
+                for roster_item in roster_payload[:20]:
+                    if not isinstance(roster_item, dict):
+                        continue
+                    roster_name = hmusic_clean_student_picker_value(roster_item.get("student_name") or "")
+                    if not roster_name:
+                        continue
+                    try:
+                        roster_id = int(float(roster_item.get("id") or 0))
+                    except (TypeError, ValueError):
+                        roster_id = 0
+                    roster_status = (roster_item.get("attendance_status") or "scheduled").strip()
+                    if roster_status not in allowed_roster_statuses:
+                        roster_status = "scheduled"
+                    roster_billing_rule = (roster_item.get("billing_rule") or "existing_credits").strip()
+                    if roster_billing_rule not in allowed_billing_rules:
+                        roster_billing_rule = "existing_credits"
+                    try:
+                        roster_credit_units = max(0, float(roster_item.get("credit_units") or 0))
+                    except (TypeError, ValueError):
+                        roster_credit_units = 1
+                    try:
+                        roster_student_rate = max(0, float(roster_item.get("student_rate") or 0))
+                    except (TypeError, ValueError):
+                        roster_student_rate = 0
+                    cursor.execute("SELECT COALESCE(parent_name, '') FROM students WHERE name = ?", (roster_name,))
+                    parent_row = cursor.fetchone()
+                    roster_parent_name = parent_row[0] if parent_row else ""
+                    billing_status = {
+                        "existing_credits": "deduct_from_package",
+                        "invoice_later": "needs_invoice",
+                        "makeup_credit": "use_makeup_credit",
+                        "no_charge": "no_charge",
+                    }.get(roster_billing_rule, "planned")
+                    cleaned_roster.append(roster_name)
+                    if roster_id:
+                        cursor.execute("""
+                        UPDATE group_schedule_students
+                        SET student_name = ?, parent_name = ?, credit_units = ?, student_rate = ?,
+                            billing_rule = ?, billing_status = ?, attendance_status = ?, updated_at = ?
+                        WHERE id = ? AND schedule_id = ?
+                        """, (
+                            roster_name, roster_parent_name, roster_credit_units, roster_student_rate,
+                            roster_billing_rule, billing_status, roster_status, now, roster_id, schedule_id
+                        ))
+                        if cursor.rowcount:
+                            continue
+                    cursor.execute("""
+                    SELECT id FROM group_schedule_students
+                    WHERE schedule_id = ? AND student_name = ?
+                    ORDER BY id LIMIT 1
+                    """, (schedule_id, roster_name))
+                    existing_group_row = cursor.fetchone()
+                    if existing_group_row:
+                        cursor.execute("""
+                        UPDATE group_schedule_students
+                        SET parent_name = ?, credit_units = ?, student_rate = ?, billing_rule = ?,
+                            billing_status = ?, attendance_status = ?, updated_at = ?
+                        WHERE id = ?
+                        """, (
+                            roster_parent_name, roster_credit_units, roster_student_rate, roster_billing_rule,
+                            billing_status, roster_status, now, existing_group_row[0]
+                        ))
+                    else:
+                        cursor.execute("""
+                        INSERT INTO group_schedule_students (
+                            schedule_id, student_name, parent_name, credit_units, student_rate,
+                            billing_rule, billing_status, attendance_status, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            schedule_id, roster_name, roster_parent_name, roster_credit_units, roster_student_rate,
+                            roster_billing_rule, billing_status, roster_status, now, now
+                        ))
+                if cleaned_roster:
+                    cursor.execute("""
+                    UPDATE schedule
+                    SET group_size = ?, group_student_names = ?, student_name = ?, owner_calendar_updated_at = ?
+                    WHERE id = ?
+                    """, (len(cleaned_roster), ", ".join(cleaned_roster), cleaned_roster[0], now, schedule_id))
         else:
             cursor.execute("""
             UPDATE schedule
