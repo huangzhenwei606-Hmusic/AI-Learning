@@ -2543,9 +2543,9 @@ def home():
         <div class="task-row high">
             <div>
                 <span class="task-badge">Trial</span>
-                <a href="/new_students">{pending_trial_count} new student intake request(s) need review</a>
+                <a href="/trial_leads">{pending_trial_count} trial intake request(s) need review</a>
             </div>
-            <span>Open lead intake</span>
+            <span>Open trial requests</span>
         </div>
         """
     if missing_homework_lessons:
@@ -2931,9 +2931,9 @@ def home():
                         <strong>New Enrollment</strong>
                         <span>Create package and tuition invoice</span>
                     </a>
-                    <a class="primary-action" href="/new_students">
-                        <strong>New Students / Intake{trial_red_badge}</strong>
-                        <span>Family form, trial scheduling, parent account setup</span>
+                    <a class="primary-action" href="/trial_leads">
+                        <strong>Trial Requests / Intake{trial_red_badge}</strong>
+                        <span>Public trial form, owner review, trial scheduling</span>
                     </a>
                     <a class="primary-action" href="/missing_homework">
                         <strong>Missing Homework{homework_red_badge}</strong>
@@ -2987,8 +2987,8 @@ def home():
                         <div class="label">Low Lessons</div>
                         <div class="value">{renewal_count}</div>
                     </a>
-                    <a class="attention-card {'alert' if pending_trial_count else ''}" href="/new_students">
-                        <div class="label">New Student Intake</div>
+                    <a class="attention-card {'alert' if pending_trial_count else ''}" href="/trial_leads">
+                        <div class="label">Trial Requests</div>
                         <div class="value">{pending_trial_count}</div>
                     </a>
                     <a class="attention-card {'alert' if missing_homework_count else ''}" href="/missing_homework">
@@ -3016,7 +3016,7 @@ def home():
     <div class="action-group">
         <a href="/enrollments">Enrollment Detail</a>
         <a href="/add_enrollment">New Enrollment</a>
-        <a href="/new_students">New Students / Intake{trial_badge}</a>
+        <a href="/trial_leads">Trial Requests / Intake{trial_badge}</a>
         <a href="/new_student_intake">Manual Entry</a>
         <a href="/missing_homework">Missing Homework{homework_badge}</a>
         <a href="/add_student">Add Student</a>
@@ -33007,10 +33007,14 @@ def inquiries():
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM inquiries ORDER BY datetime(updated_at) DESC, id DESC")
     rows = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead', 'Inquiry', 'Registration Submitted')")
-    new_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE ai_recommendation IS NOT NULL AND COALESCE(owner_verified, 0) = 0")
-    ai_count = cursor.fetchone()[0]
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM inquiries
+    WHERE status IN ('New Lead', 'Inquiry', 'Registration Submitted')
+    OR trial_status = 'Needs Review'
+    OR COALESCE(owner_verified, 0) = 0
+    """)
+    review_count = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status='Trial Scheduled' OR trial_status='Scheduled'")
     scheduled_count = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Trial Completed', 'Follow Up') OR follow_up_status='Follow Up'")
@@ -33037,7 +33041,7 @@ def inquiries():
 
     cards = "".join([
         f"<div class='metric'><span>Active</span><b>{active_count}</b></div>",
-        f"<div class='metric'><span>Needs review</span><b>{ai_count}</b></div>",
+        f"<div class='metric'><span>Needs review</span><b>{review_count}</b></div>",
         f"<div class='metric'><span>Trial scheduled</span><b>{scheduled_count}</b></div>",
         f"<div class='metric'><span>Missing info</span><b>{missing_info_count}</b></div>",
         f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
@@ -33210,8 +33214,9 @@ def inquiries():
                     <span class="control-label">Queue</span>
                     <div class="segmented" role="tablist" aria-label="Lead queue">
                         <button class="tab active" type="button" data-queue="all" role="tab" aria-selected="true">All active <span class="count-badge">{active_count}</span></button>
+                        <button class="tab" type="button" data-queue="review" role="tab" aria-selected="false">Needs review <span class="count-badge">{review_count}</span></button>
                         <button class="tab" type="button" data-queue="hot" role="tab" aria-selected="false">Hot <span class="count-badge">{hot_count}</span></button>
-                        <button class="tab" type="button" data-queue="trial" role="tab" aria-selected="false">Trial <span class="count-badge">{scheduled_count}</span></button>
+                        <button class="tab" type="button" data-queue="trial" role="tab" aria-selected="false">Scheduled trial <span class="count-badge">{scheduled_count}</span></button>
                         <button class="tab" type="button" data-queue="registration" role="tab" aria-selected="false">Registration <span class="count-badge">{registration_count}</span></button>
                         <button class="tab" type="button" data-queue="converted" role="tab" aria-selected="false">Converted <span class="count-badge">{converted_count}</span></button>
                     </div>
@@ -33257,6 +33262,7 @@ def inquiries():
 
             function rowMatchesQueue(row) {{
                 if (activeQueue === "all") return true;
+                if (activeQueue === "review") return row.dataset.stage === "review";
                 if (activeQueue === "hot") return row.dataset.temp === "hot";
                 if (activeQueue === "trial") return row.dataset.stage === "trial";
                 if (activeQueue === "registration") return row.dataset.status === "registration submitted";
