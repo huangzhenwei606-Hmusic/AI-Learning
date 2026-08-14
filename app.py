@@ -7413,6 +7413,10 @@ def calendar():
             .group-roster-fields label{{min-width:0}}
             .group-roster-fields .detail-label{{font-size:10px}}
             .group-roster-empty{{border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);font-weight:800;background:#fff}}
+            .group-detail-roster{{border-top:1px solid var(--line);background:#FBFCFF;padding:16px;display:none}}
+            .group-detail-roster.show{{display:block}}
+            .group-detail-title{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;font-size:15px;font-weight:900;color:var(--text)}}
+            .group-detail-title span{{color:var(--muted);font-size:12px;font-weight:800}}
             @media(max-width:620px){{.group-roster-fields{{grid-template-columns:1fr 1fr}}}}
             .panel-field{{width:100%;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}}
             .panel-field:focus{{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}}
@@ -7785,7 +7789,6 @@ def calendar():
           <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
           <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
         </div>
-        <div class="panel-section" id="panelGroupRosterSection" style="display:none"><h3>Student attendance and billing</h3><div class="group-roster" id="panelGroupRoster"></div></div>
         <div class="panel-section" id="panelAttendanceSection"><h3>Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
           <button class="att-btn" data-status="no_show" onclick="setPanelStatus('no_show')">No show</button>
@@ -7802,7 +7805,7 @@ def calendar():
         <details class="panel-details" id="panelDetailsBilling" open>
           <summary>Edit schedule and billing <span class="panel-details-scope">applies to this lesson</span></summary>
           <div class="detail-grid">
-            <label><span class="detail-label">Student</span><input class="panel-field student-picker-compact" id="panelDetailStudent" list="popStudentList"></label>
+            <label id="panelDetailStudentWrap"><span class="detail-label">Student</span><input class="panel-field student-picker-compact" id="panelDetailStudent" list="popStudentList"></label>
             <label><span class="detail-label">Teacher</span><select class="panel-field" id="panelDetailTeacher">{teacher_picker_options}</select></label>
             <label><span class="detail-label">Course</span><select class="panel-field" id="panelDetailCourse" onchange="updatePanelCourseBilling()">{quick_course_options}</select></label>
             <label><span class="detail-label">Duration</span><input class="panel-field" type="number" id="panelDetailDuration" min="15" max="240" step="5" onchange="updatePanelChargePreview()"></label>
@@ -7810,15 +7813,19 @@ def calendar():
             <label><span class="detail-label">Room</span><select class="panel-field" id="panelDetailRoom" onchange="updatePanelRoomId()"></select></label>
             <label><span class="detail-label">Start</span><input class="panel-field" type="time" id="panelDetailTime" onchange="updatePanelChargePreview()"></label>
             <label><span class="detail-label">Repeat</span><select class="panel-field" id="panelDetailScheduleType"><option value="one_time">One time</option><option value="weekly">Weekly</option></select></label>
-            <label><span class="detail-label">Price type</span><select class="panel-field" id="panelBillingBasis" onchange="updatePanelChargePreview()"><option value="hourly">Hourly</option><option value="per_class">Per class</option></select></label>
-            <label><span class="detail-label">Student rate</span><input class="panel-field" type="number" id="panelStudentRate" min="0" step="0.01" onchange="updatePanelChargePreview()"></label>
+            <label class="panel-private-billing-field"><span class="detail-label">Price type</span><select class="panel-field" id="panelBillingBasis" onchange="updatePanelChargePreview()"><option value="hourly">Hourly</option><option value="per_class">Per class</option></select></label>
+            <label class="panel-private-billing-field"><span class="detail-label">Student rate</span><input class="panel-field" type="number" id="panelStudentRate" min="0" step="0.01" onchange="updatePanelChargePreview()"></label>
             <label><span class="detail-label">Format</span><select class="panel-field" id="panelDetailFormat"><option value="private">Private</option><option value="group">Group</option></select></label>
             <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
-            <label class="full"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
-            <label><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
-            <label><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
+            <label class="full panel-private-billing-field"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
+            <label class="panel-private-billing-field"><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
+            <label class="panel-private-billing-field"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
             <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following">This and all following lessons</option></select></label>
             <div class="detail-sync" id="panelBillingPreview">Student app + invoice will use the saved schedule price.</div>
+          </div>
+          <div class="group-detail-roster" id="panelGroupRosterSection">
+            <div class="group-detail-title">Student billing and attendance <span>each student is separate</span></div>
+            <div class="group-roster" id="panelGroupRoster"></div>
           </div>
         </details>
         <div class="panel-section"><h3>Quick actions</h3><div class="panel-actions">
@@ -7968,6 +7975,7 @@ def calendar():
       const isGroup = Number(lesson.is_group || 0) === 1;
       if (attendanceSection) attendanceSection.style.display = isGroup ? 'none' : '';
       if (!section || !rosterEl) return;
+      section.classList.toggle('show', isGroup);
       section.style.display = isGroup ? '' : 'none';
       if (!isGroup) {{
         rosterEl.innerHTML = '';
@@ -8606,6 +8614,10 @@ def calendar():
     function updatePanelChargePreview() {{
       const preview = document.getElementById('panelBillingPreview');
       if (!preview) return;
+      if (activePanelLesson && Number(activePanelLesson.is_group || 0)) {{
+        preview.textContent = 'This section edits the group class itself. Student status, credits, rate, and billing are set separately below.';
+        return;
+      }}
       const basis = (document.getElementById('panelBillingBasis') || {{value:DEFAULT_STUDENT_BILLING_BASIS}}).value || DEFAULT_STUDENT_BILLING_BASIS;
       const rate = Number((document.getElementById('panelStudentRate') || {{value:DEFAULT_STUDENT_RATE}}).value || DEFAULT_STUDENT_RATE);
       const duration = Number((document.getElementById('panelDetailDuration') || {{value:30}}).value || 30);
@@ -8615,6 +8627,7 @@ def calendar():
     }}
     function fillPanelDetails(lesson) {{
       const setValue = (id, value) => {{ const el = document.getElementById(id); if (el) el.value = value == null ? '' : value; }};
+      const isGroupLesson = Number(lesson.is_group || 0) === 1;
       setValue('panelDetailStudent', lesson.student || '');
       setValue('panelDetailTeacher', lesson.teacher || '');
       setValue('panelDetailCourse', lesson.course_type_id || '');
@@ -8639,6 +8652,13 @@ def calendar():
       updatePanelRooms(lesson.room_id, lesson.classroom);
       updatePanelPackageFields();
       updatePanelChargePreview();
+      const studentWrap = document.getElementById('panelDetailStudentWrap');
+      if (studentWrap) studentWrap.style.display = isGroupLesson ? 'none' : '';
+      document.querySelectorAll('.panel-private-billing-field').forEach(el => el.style.display = isGroupLesson ? 'none' : '');
+      const preview = document.getElementById('panelBillingPreview');
+      if (preview && isGroupLesson) {{
+        preview.textContent = 'This section edits the group class itself. Student status, credits, rate, and billing are set separately below.';
+      }}
     }}
     function weekdayName(dateStr) {{
       const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
