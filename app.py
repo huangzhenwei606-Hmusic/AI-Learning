@@ -7785,8 +7785,8 @@ def calendar():
           <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
           <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
         </div>
-        <div class="panel-section" id="panelGroupRosterSection" style="display:none"><h3>Group roster</h3><div class="group-roster" id="panelGroupRoster"></div></div>
-        <div class="panel-section"><h3 id="panelAttendanceTitle">Attendance</h3><div class="att-row">
+        <div class="panel-section" id="panelGroupRosterSection" style="display:none"><h3>Student attendance and billing</h3><div class="group-roster" id="panelGroupRoster"></div></div>
+        <div class="panel-section" id="panelAttendanceSection"><h3>Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
           <button class="att-btn" data-status="no_show" onclick="setPanelStatus('no_show')">No show</button>
           <button class="att-btn" data-status="last_min_cancel" onclick="setPanelStatus('last_min_cancel')">Last min</button>
@@ -7956,23 +7956,17 @@ def calendar():
       badge.className = 'panel-status ' + statusClass(activePanelStatus);
       document.querySelectorAll('.att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activePanelStatus));
     }}
-    function setPanelStatus(st) {{
-      paintPanelStatus(st);
-      if (activePanelLesson && Number(activePanelLesson.is_group || 0)) {{
-        document.querySelectorAll('#panelGroupRoster .group-attendance').forEach(sel => sel.value = st);
-      }}
-      saveLessonPanel(true);
-    }}
+    function setPanelStatus(st) {{ paintPanelStatus(st); saveLessonPanel(true); }}
     function billingRuleLabel(value) {{
       return value === 'invoice_later' ? 'Invoice later' : value === 'makeup_credit' ? 'Makeup credit' : value === 'no_charge' ? 'No charge' : 'Use credits';
     }}
     function renderPanelGroupRoster(lesson) {{
       const section = document.getElementById('panelGroupRosterSection');
       const rosterEl = document.getElementById('panelGroupRoster');
-      const attendanceTitle = document.getElementById('panelAttendanceTitle');
+      const attendanceSection = document.getElementById('panelAttendanceSection');
       const roster = Array.isArray(lesson.group_students) ? lesson.group_students : [];
       const isGroup = Number(lesson.is_group || 0) === 1;
-      if (attendanceTitle) attendanceTitle.textContent = isGroup ? 'Bulk attendance' : 'Attendance';
+      if (attendanceSection) attendanceSection.style.display = isGroup ? 'none' : '';
       if (!section || !rosterEl) return;
       section.style.display = isGroup ? '' : 'none';
       if (!isGroup) {{
