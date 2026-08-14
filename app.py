@@ -5220,8 +5220,15 @@ def student_detail(name):
         selected = "selected" if t[0] == student[1] else ""
         teacher_options += f'<option value="{escape(t[0])}" {selected}>{escape(t[0])}</option>'
 
+    def lesson_count(value):
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
     student_url_name = quote(student[0])
-    credits_value = hmusic_number(student[4] or 0)
+    lessons_left = lesson_count(student[4])
+    credits_value = hmusic_number(lessons_left)
     credit_card_html = f"""
         <div class="kpi"><span>Credits</span><b>{escape(credits_value)}</b></div>
     """
@@ -5375,8 +5382,8 @@ def student_detail(name):
         {payment_html}
         """
 
-    balance_class = "danger" if (student[4] or 0) <= 2 else "ok"
-    balance_text = "Renewal needed" if (student[4] or 0) <= 2 else "Good standing"
+    balance_class = "danger" if lessons_left <= 2 else "ok"
+    balance_text = "Renewal needed" if lessons_left <= 2 else "Good standing"
     next_lesson_label = "Not scheduled"
     next_lesson_meta = "Create a recurring lesson before activating parent app use."
     if next_lesson:
@@ -5559,7 +5566,7 @@ def student_detail(name):
                             <div>
                                 <div class="name-row">
                                     <h2>{escape(student[0])}</h2>
-                                    <span class="pill {balance_class}">{escape(str(student[4] or 0))} left</span>
+                                    <span class="pill {balance_class}">{escape(str(lessons_left))} left</span>
                                     <span class="pill {parent_status_class}">{parent_status}</span>
                                 </div>
                                 <p class="muted">Primary teacher: {escape(student[1] or 'Unassigned')}</p>
@@ -27708,6 +27715,16 @@ def hmusic_money(value):
         return f"{float(value or 0):.2f}"
     except Exception:
         return "0.00"
+
+
+def hmusic_number(value):
+    try:
+        number = float(value or 0)
+    except Exception:
+        return "0"
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:g}"
 
 
 def hmusic_invoice_payment_reminder_body(invoice_row, invoice_link):
