@@ -1993,6 +1993,50 @@ def home():
     """)
     pending_sub_requests = cursor.fetchall()
 
+    try:
+        ensure_parent_portal_feature_schema()
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM parent_booking_requests
+        WHERE status IN ('pending', 'pending_owner_review')
+        """)
+        pending_booking_count = cursor.fetchone()[0] or 0
+
+        cursor.execute("""
+        SELECT id, student_name, request_type, preferred_date, preferred_time
+        FROM parent_booking_requests
+        WHERE status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 5
+        """)
+        pending_booking_requests = cursor.fetchall()
+    except sqlite3.Error:
+        pending_booking_count = 0
+        pending_booking_requests = []
+
+    try:
+        ensure_v321_schema()
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        AND status IN ('pending', 'pending_owner_review')
+        """)
+        pending_cancel_count = cursor.fetchone()[0] or 0
+
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, policy_status
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        AND status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 5
+        """)
+        pending_cancel_requests = cursor.fetchall()
+    except sqlite3.Error:
+        pending_cancel_count = 0
+        pending_cancel_requests = []
+
     cursor.execute("""
     SELECT COUNT(*)
     FROM invoices
@@ -2071,6 +2115,30 @@ def home():
                 <span>{r[1]} · {r[3]} {r[4]}</span>
             </div>
             """
+    if pending_booking_requests:
+        for r in pending_booking_requests:
+            request_label = str(r[2] or "booking").replace("_", " ").title()
+            date_label = f"{r[3] or 'Date TBD'} {r[4] or ''}".strip()
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Booking</span>
+                    <a href="/owner_booking_requests">Request #{r[0]} · {escape(str(r[1] or 'Student'))}</a>
+                </div>
+                <span>{escape(request_label)} · {escape(date_label)}</span>
+            </div>
+            """
+    if pending_cancel_requests:
+        for r in pending_cancel_requests:
+            attention_html += f"""
+            <div class="task-row high">
+                <div>
+                    <span class="task-badge">Cancel</span>
+                    <a href="/lesson_change_request/{r[0]}">Request #{r[0]} · {escape(str(r[1] or 'Student'))}</a>
+                </div>
+                <span>{escape(str(r[2] or ''))} {escape(str(r[3] or ''))} · {escape(hmusic_policy_status_label(r[4]))}</span>
+            </div>
+            """
     if unread_owner_messages:
         attention_html += f"""
         <div class="task-row medium">
@@ -2118,6 +2186,8 @@ def home():
     message_badge = f" ({unread_owner_messages})" if unread_owner_messages else ""
     reschedule_badge = f" ({pending_reschedule_count})" if pending_reschedule_count else ""
     sub_badge = f" ({pending_sub_count})" if pending_sub_count else ""
+    booking_badge = f" ({pending_booking_count})" if pending_booking_count else ""
+    cancel_badge = f" ({pending_cancel_count})" if pending_cancel_count else ""
     invoice_badge = f" ({unpaid_invoice_count})" if unpaid_invoice_count else ""
     trial_badge = f" ({pending_trial_count})" if pending_trial_count else ""
     homework_badge = f" ({missing_homework_count})" if missing_homework_count else ""
@@ -2511,6 +2581,14 @@ def home():
                         <div class="label">Sub Requests</div>
                         <div class="value">{pending_sub_count}</div>
                     </a>
+                    <a class="attention-card {'alert' if pending_booking_count else ''}" href="/owner_booking_requests">
+                        <div class="label">Booking Requests</div>
+                        <div class="value">{pending_booking_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if pending_cancel_count else ''}" href="/owner_cancel_requests">
+                        <div class="label">Cancel Requests</div>
+                        <div class="value">{pending_cancel_count}</div>
+                    </a>
                     <a class="attention-card {'alert' if unpaid_invoice_count else ''}" href="/invoices">
                         <div class="label">Open Invoices</div>
                         <div class="value">{unpaid_invoice_count}</div>
@@ -2572,6 +2650,8 @@ def home():
     <div class="action-group">
         <a href="/parents">Parent Management</a>
         <a href="/owner_reschedule_requests">Reschedule Requests{reschedule_badge}</a>
+        <a href="/owner_booking_requests">Booking Requests{booking_badge}</a>
+        <a href="/owner_cancel_requests">Cancel Requests{cancel_badge}</a>
         <a href="/messages">Message Center{message_badge}</a>
         <a href="/open_slots">Open Slots</a>
         <a href="/enrollment_renewals">Enrollment Renewals</a>
@@ -4615,9 +4695,202 @@ def delete_student(name):
     return redirect("/students")
 
 
+def ensure_student_detail_schema():
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        teacher TEXT,
+        parent_name TEXT,
+        parent_email TEXT,
+        parent_phone TEXT,
+        lessons_left INTEGER DEFAULT 0
+    )
+    """)
+    for column_name, column_sql in [
+        ("name", "name TEXT"),
+        ("teacher", "teacher TEXT"),
+        ("parent_name", "parent_name TEXT"),
+        ("parent_email", "parent_email TEXT"),
+        ("parent_phone", "parent_phone TEXT"),
+        ("lessons_left", "lessons_left INTEGER DEFAULT 0"),
+    ]:
+        add_column_if_missing(cursor, "students", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        lesson_date TEXT,
+        lesson_content TEXT,
+        performance TEXT,
+        homework TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("lesson_date", "lesson_date TEXT"),
+        ("lesson_content", "lesson_content TEXT"),
+        ("performance", "performance TEXT"),
+        ("homework", "homework TEXT"),
+    ]:
+        add_column_if_missing(cursor, "lessons", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        payment_date TEXT,
+        amount REAL,
+        lessons_added INTEGER,
+        payment_method TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("payment_date", "payment_date TEXT"),
+        ("amount", "amount REAL"),
+        ("lessons_added", "lessons_added INTEGER"),
+        ("payment_method", "payment_method TEXT"),
+    ]:
+        add_column_if_missing(cursor, "payments", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        charge_lessons REAL,
+        amount REAL,
+        status TEXT,
+        invoice_type TEXT,
+        created_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("charge_lessons", "charge_lessons REAL"),
+        ("amount", "amount REAL"),
+        ("status", "status TEXT"),
+        ("invoice_type", "invoice_type TEXT"),
+        ("created_at", "created_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "invoices", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        entry_type TEXT,
+        amount REAL,
+        description TEXT,
+        related_invoice_id INTEGER,
+        created_at TEXT,
+        related_schedule_id INTEGER
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("entry_type", "entry_type TEXT"),
+        ("amount", "amount REAL"),
+        ("description", "description TEXT"),
+        ("related_invoice_id", "related_invoice_id INTEGER"),
+        ("created_at", "created_at TEXT"),
+        ("related_schedule_id", "related_schedule_id INTEGER"),
+    ]:
+        add_column_if_missing(cursor, "student_ledger", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        teacher TEXT,
+        classroom TEXT,
+        status TEXT DEFAULT 'scheduled',
+        duration INTEGER,
+        schedule_type TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("lesson_date", "lesson_date TEXT"),
+        ("lesson_time", "lesson_time TEXT"),
+        ("teacher", "teacher TEXT"),
+        ("classroom", "classroom TEXT"),
+        ("status", "status TEXT DEFAULT 'scheduled'"),
+        ("duration", "duration INTEGER"),
+        ("schedule_type", "schedule_type TEXT"),
+    ]:
+        add_column_if_missing(cursor, "schedule", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_name TEXT,
+        email TEXT UNIQUE,
+        phone TEXT,
+        active INTEGER DEFAULT 1,
+        must_change_password INTEGER DEFAULT 0
+    )
+    """)
+    for column_name, column_sql in [
+        ("parent_name", "parent_name TEXT"),
+        ("email", "email TEXT"),
+        ("phone", "phone TEXT"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("must_change_password", "must_change_password INTEGER DEFAULT 0"),
+    ]:
+        add_column_if_missing(cursor, "parent_profiles", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        student_name TEXT,
+        active INTEGER DEFAULT 1
+    )
+    """)
+    for column_name, column_sql in [
+        ("parent_id", "parent_id INTEGER"),
+        ("student_name", "student_name TEXT"),
+        ("active", "active INTEGER DEFAULT 1"),
+    ]:
+        add_column_if_missing(cursor, "parent_students", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teachers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT UNIQUE
+    )
+    """)
+    add_column_if_missing(cursor, "teachers", "teacher_name", "teacher_name TEXT")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS enrollments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher_name TEXT,
+        status TEXT DEFAULT 'active'
+    )
+    """)
+    for column_name, column_sql in [
+        ("student_name", "student_name TEXT"),
+        ("teacher_name", "teacher_name TEXT"),
+        ("status", "status TEXT DEFAULT 'active'"),
+    ]:
+        add_column_if_missing(cursor, "enrollments", column_name, column_sql)
+
+    conn.commit()
+    conn.close()
+
+
 @app.route("/student/<name>")
 def student_detail(name):
-    ensure_v27_schema()
+    ensure_student_detail_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -4830,6 +5103,13 @@ def student_detail(name):
                 <button type="submit">Mark paid</button>
             </form>
             """
+        delete_html = ""
+        if require_owner() and status_text in ("unpaid", "payment_failed"):
+            delete_html = f"""
+            <form class="inline-pay-form" method="POST" action="/delete_invoice/{invoice_id}" onsubmit="return confirm('Delete invoice #{invoice_id}? This invoice has not been paid. This cannot be undone.');">
+                <button class="danger-link" type="submit">Delete</button>
+            </form>
+            """
         payment_html += f"""
             <div class="timeline-item billing">
                 <div class="timeline-date">{escape(str(created_at or 'Invoice'))}</div>
@@ -4840,6 +5120,7 @@ def student_detail(name):
                 <div class="payment-actions">
                     <span class="pill {'ok' if status_text == 'paid' else 'amber'}">{escape(str(status_text).title())}</span>
                     {action_html}
+                    {delete_html}
                 </div>
             </div>
         """
@@ -4888,8 +5169,15 @@ def student_detail(name):
         {payment_html}
         """
 
-    balance_class = "danger" if (student[4] or 0) <= 2 else "ok"
-    balance_text = "Renewal needed" if (student[4] or 0) <= 2 else "Good standing"
+    def lesson_count(value):
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    lessons_left = lesson_count(student[4])
+    balance_class = "danger" if lessons_left <= 2 else "ok"
+    balance_text = "Renewal needed" if lessons_left <= 2 else "Good standing"
     next_lesson_label = "Not scheduled"
     next_lesson_meta = "Create a recurring lesson before activating parent app use."
     if next_lesson:
@@ -5067,14 +5355,14 @@ def student_detail(name):
                             <div>
                                 <div class="name-row">
                                     <h2>{escape(student[0])}</h2>
-                                    <span class="pill {balance_class}">{escape(str(student[4] or 0))} left</span>
+                                    <span class="pill {balance_class}">{escape(str(lessons_left))} left</span>
                                     <span class="pill {parent_status_class}">{parent_status}</span>
                                 </div>
                                 <p class="muted">Primary teacher: {escape(student[1] or 'Unassigned')}</p>
                             </div>
                         </div>
                         <div class="kpis">
-                            <div class="kpi"><span>Credits</span><b>{escape(str(student[4] or 0))}</b></div>
+                            <div class="kpi"><span>Credits</span><b>{escape(str(lessons_left))}</b></div>
                             <div class="kpi"><span>Balance</span><b>{balance_text}</b></div>
                             <div class="kpi"><span>Next</span><b>{'Set' if next_lesson else 'None'}</b></div>
                         </div>
@@ -5178,6 +5466,40 @@ def link_student_teacher(name):
     conn.commit()
     conn.close()
     return redirect(f"/student/{name}")
+
+
+@app.route("/delete_invoice/<int:invoice_id>", methods=["POST"])
+def delete_invoice(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, status
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return "<h1>Invoice not found</h1>"
+
+    student_name = invoice[1]
+    status = invoice[2] or "unpaid"
+    if status not in ("unpaid", "payment_failed"):
+        conn.close()
+        return f"""
+        <h1>Invoice Cannot Be Deleted</h1>
+        <p>Invoice #{invoice_id} is currently {escape(status)}. Only unpaid or failed invoices can be deleted.</p>
+        <p><a href="/student/{quote(student_name)}#payments">Back to Student</a></p>
+        """
+
+    cursor.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+    conn.commit()
+    conn.close()
+    return redirect(f"/student/{quote(student_name)}#payments")
 
 
 @app.route("/teacher_lesson_notes", methods=["GET", "POST"])
@@ -11127,6 +11449,7 @@ def lesson_change_request_detail(request_id):
     status_label = hmusic_policy_status_label(req[9])
     fee_preview = hmusic_money(req[10])
     waiver_text = "Available" if req[11] else "Not available"
+    request_status_display = "confirmed" if (req[13] or "") == "approved" else (req[13] or "pending")
     current_state = ""
     if schedule_state:
         current_state = f"{hmusic_policy_status_label(schedule_state[0])} · credit {schedule_state[1]} · waiver {schedule_state[2]} · pending fee ${hmusic_money(schedule_state[3])}"
@@ -11162,7 +11485,7 @@ def lesson_change_request_detail(request_id):
                 <h1>{escape(req[2])} cancellation request</h1>
                 <p>{escape(req[5] or '')} {escape(req[6] or '')} · {escape(req[7] or '')} · {escape(req[8] or '')}</p>
                 <p><b>Reason:</b> {escape(req[12] or 'No reason provided.')}</p>
-                <p><b>Request status:</b> {escape(req[13] or 'pending')}</p>
+                <p><b>Request status:</b> {escape(request_status_display)}</p>
                 <p><b>Current lesson state:</b> {escape(current_state or 'Lesson not found')}</p>
                 <div class="grid">
                     <div class="metric"><span>Policy preview</span><b>{status_label}</b></div>
@@ -11174,12 +11497,13 @@ def lesson_change_request_detail(request_id):
                 <label class="muted">Owner note</label>
                 <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
                 <div class="actions">
-                    <button class="primary" name="action" value="apply_policy" type="submit">Apply policy</button>
-                    <button class="warn" name="action" value="charge" type="submit">Charge / deduct</button>
-                    <button name="action" value="no_charge" type="submit">No charge</button>
+                    <button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button>
+                    <button class="warn" name="action" value="charge" type="submit">Confirm + charge</button>
+                    <button name="action" value="no_charge" type="submit">Confirm no charge</button>
                     <button class="danger" name="action" value="reject" type="submit">Reject request</button>
                 </div>
             </form>
+            <a class="button" href="/owner_cancel_requests">Back to cancel requests</a>
             <a class="button" href="/calendar">Back to calendar</a>
         </div>
     </body>
@@ -11302,6 +11626,29 @@ def calendar_queue_parent_notice(student_name, title, body, related_type, relate
     return new_count
 
 
+def hmusic_practice_reminder_title(student_name):
+    name = str(student_name or "your student").strip() or "your student"
+    return f"H-Music Practice Reminder for {name}"
+
+
+def hmusic_practice_reminder_body(student_name, homework):
+    name = str(student_name or "your student").strip() or "your student"
+    first_name = name.split()[0] if name else "your student"
+    homework_text = str(homework or "").strip()
+    return f"""Hi,
+
+Here is {first_name}'s practice assignment from today's lesson:
+
+{homework_text}
+
+Please open the H-Music parent app to review lesson notes and homework details:
+https://hmusic-crm.onrender.com/parent_login
+
+Thank you,
+H-Music
+"""
+
+
 def upsert_calendar_lesson_record(cursor, schedule_id, student_name, lesson_note, homework, private_note, actor):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1", (schedule_id,))
@@ -11355,24 +11702,30 @@ def calendar_lesson_detail(schedule_id):
         return {"ok": False, "error": "Permission denied"}, 403
     teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
     course_name = row[7] or row[8] or row[9] or "Lesson"
-    return {
+    response = {
         "ok": True,
         "lesson": {
             "id": row[0], "student": row[1] or "", "teacher": row[2] or "", "date": row[3] or "",
             "time": row[4] or "", "time_range": format_lesson_time_range(row[4], row[10]),
             "classroom": row[5] or "", "status": row[6] or "scheduled", "status_label": calendar_status_label(row[6]),
             "course_name": course_name, "schedule_type": row[8] or row[9] or "Lesson", "duration": row[10] or 30,
-            "lessons_left": row[11] or 0, "lesson_note": row[12] or "", "private_note": row[13] or "",
+            "lessons_left": row[11] or 0, "lesson_note": hmusic_parent_visible_lesson_note(row[12]), "private_note": row[13] or "",
             "homework": row[14] or "", "parent_lesson_reminder_enabled": int(row[15] or 0),
             "practice_reminder_enabled": int(row[16] or 0), "low_balance_alert_enabled": int(row[17] or 0),
             "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
             "course_type_id": int(row[19] or 0), "location_id": int(row[20] or 0), "room_id": int(row[21] or 0),
-            "student_billing_method": row[22] or "", "student_price": float(row[23] or 0),
-            "student_charge_amount": float(row[24] or 0), "billing_decision": row[25] or "existing_credits",
             "custom_lesson_count": int(row[26] or 0), "location": row[27] or "",
             "permissions": teacher_permissions,
         }
     }
+    if require_owner():
+        response["lesson"].update({
+            "student_billing_method": row[22] or "",
+            "student_price": float(row[23] or 0),
+            "student_charge_amount": float(row[24] or 0),
+            "billing_decision": row[25] or "existing_credits",
+        })
+    return response
 
 
 @app.route("/calendar_lesson_action", methods=["POST"])
@@ -11404,7 +11757,7 @@ def calendar_lesson_action():
 
     if action == "save":
         status = (data.get("status") or row[6] or "scheduled").strip()
-        lesson_note = (data.get("lesson_note") or "").strip()
+        lesson_note = hmusic_parent_visible_lesson_note(data.get("lesson_note") or "")
         private_note = (data.get("private_note") or "").strip()
         homework_items = data.get("homework_items")
         if isinstance(homework_items, list):
@@ -11702,9 +12055,20 @@ def calendar_lesson_action():
         conn.close()
         queued = 0
         if homework and (practice_reminder or data.get("send_homework_now")):
-            queued += calendar_queue_parent_notice(effective_student_name, "Practice reminder", f"Homework for {effective_student_name}:\n{homework}", "homework_assignment", int(schedule_id))
-        # The 24h lesson reminder checkbox only controls the scheduled reminder job.
-        # Saving lesson details should not immediately notify parents.
+            queued += calendar_queue_parent_notice(
+                effective_student_name,
+                hmusic_practice_reminder_title(effective_student_name),
+                hmusic_practice_reminder_body(effective_student_name, homework),
+                "homework_assignment",
+                int(schedule_id)
+            )
+        if parent_reminder and effective_lesson_date:
+            reminder_dates = {
+                date.today().strftime("%Y-%m-%d"),
+                (date.today() + timedelta(days=1)).strftime("%Y-%m-%d"),
+            }
+            if effective_lesson_date in reminder_dates:
+                queued += create_lesson_reminders_for_date(effective_lesson_date)
         if is_owner and low_balance_alert:
             queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
         scope_count = len(following_ids) if is_owner and detail_update else 0
@@ -11903,7 +12267,25 @@ def create_package_invoice(name):
         amount_due = max(round(subtotal_amount - discount_amount, 2), 0)
         due_date = request.form.get("due_date") or default_due_date
         payment_methods = ",".join(request.form.getlist("payment_methods")) or "ach,zelle,paypal"
+        package_option_values = request.form.getlist("package_options")
         notes = (request.form.get("notes") or "").strip()
+        package_options = []
+        if "1" in package_option_values:
+            package_options.append({
+                "lessons": 1,
+                "amount": money_value(request.form.get("option_1_amount"), round(package_subtotal_amount / max(charge_lessons, 1), 2))
+            })
+        if "10" in package_option_values:
+            package_options.append({
+                "lessons": 10,
+                "amount": money_value(request.form.get("option_10_amount"), package_subtotal_amount)
+            })
+        if not package_options:
+            package_options.append({
+                "lessons": charge_lessons,
+                "amount": package_subtotal_amount
+            })
+        package_options_json = json.dumps(package_options)
 
         if charge_lessons <= 0 or amount_due < 0:
             conn.close()
@@ -11931,9 +12313,10 @@ def create_package_invoice(name):
             discount_code,
             discount_amount,
             payment_methods,
+            package_options,
             manual_payment_status
         )
-        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, (
             student[0],
             charge_lessons,
@@ -11944,7 +12327,8 @@ def create_package_invoice(name):
             subtotal_amount,
             discount_code,
             discount_amount,
-            payment_methods
+            payment_methods,
+            package_options_json
         ))
         invoice_id = cursor.lastrowid
         if include_pending_fees and pending_fee_total > 0:
@@ -12018,15 +12402,35 @@ def create_package_invoice(name):
             .methods {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
             .method {{ border:1px solid #d1d5db; border-radius:12px; padding:12px; display:flex; align-items:center; gap:8px; font-weight:850; }}
             .method input {{ width:auto; min-height:auto; }}
+            .offer-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            .offer-card {{ border:1px solid #d1d5db; border-radius:14px; padding:12px; background:#fff; }}
+            .offer-card .method {{ border:0; padding:0 0 8px; }}
+            .offer-card input[type="number"] {{ margin:0; }}
             .actions {{ display:flex; gap:12px; margin-top:22px; }}
             button, .button {{ border:0; border-radius:12px; padding:13px 18px; font-size:15px; font-weight:900; text-decoration:none; background:#1d65ad; color:white; cursor:pointer; }}
             .button.secondary {{ background:white; color:#111827; border:1px solid #d1d5db; }}
             .alert.danger {{ background:#fef2f2; border:1px solid #fecaca; color:#991b1b; border-radius:12px; padding:12px; margin-bottom:16px; font-weight:850; }}
-            @media(max-width:760px) {{ body {{ padding:16px; }} .grid,.methods {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
+            @media(max-width:760px) {{ body {{ padding:16px; }} .grid,.methods,.offer-grid {{ grid-template-columns:1fr; }} h1 {{ font-size:26px; }} }}
         </style>
         <script>
+            let packageOptionDefaultsTouched = false;
+            function applyPackageOptionDefaults(force) {{
+                const type = document.querySelector('[name="package_type"]').value;
+                const oneOption = document.querySelector('[name="package_options"][value="1"]');
+                const tenOption = document.querySelector('[name="package_options"][value="10"]');
+                if (!oneOption || !tenOption) return;
+                if (!force && packageOptionDefaultsTouched) return;
+                if (type === '10') {{
+                    oneOption.checked = false;
+                    tenOption.checked = true;
+                }} else {{
+                    oneOption.checked = false;
+                    tenOption.checked = false;
+                }}
+            }}
             function syncInvoicePreview() {{
                 const type = document.querySelector('[name="package_type"]').value;
+                applyPackageOptionDefaults(false);
                 const lessons = type === '10' ? 10 : parseFloat(document.querySelector('[name="custom_lessons"]').value || '0');
                 const baseSubtotal = parseFloat(document.querySelector('[name="subtotal_amount"]').value || '0');
                 const discount = parseFloat(document.querySelector('[name="discount_amount"]').value || '0');
@@ -12034,10 +12438,29 @@ def create_package_invoice(name):
                 const pendingFees = pendingBox && pendingBox.checked ? {pending_fee_total} : 0;
                 const subtotal = baseSubtotal + pendingFees;
                 const total = Math.max(subtotal - discount, 0);
+                const oneAmount = lessons ? baseSubtotal / lessons : baseSubtotal;
+                const oneInput = document.querySelector('[name="option_1_amount"]');
+                const tenInput = document.querySelector('[name="option_10_amount"]');
+                if (oneInput && oneInput.dataset.touched !== "1") oneInput.value = oneAmount.toFixed(2);
+                if (tenInput && tenInput.dataset.touched !== "1") tenInput.value = (oneAmount * 10).toFixed(2);
                 document.getElementById('invoicePreview').textContent =
                     `Parent app will show ${{lessons || 0}} lesson(s), subtotal $${{subtotal.toFixed(2)}}${{pendingFees ? ' including pending fee(s) $' + pendingFees.toFixed(2) : ''}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
             }}
-            window.addEventListener('DOMContentLoaded', syncInvoicePreview);
+            window.addEventListener('DOMContentLoaded', function() {{
+                document.querySelectorAll('[data-option-amount="1"]').forEach(function(input) {{
+                    input.addEventListener('input', function() {{ input.dataset.touched = "1"; }});
+                }});
+                document.querySelectorAll('[name="package_options"]').forEach(function(input) {{
+                    input.addEventListener('change', function() {{ packageOptionDefaultsTouched = true; }});
+                }});
+                document.querySelector('[name="package_type"]').addEventListener('change', function() {{
+                    packageOptionDefaultsTouched = false;
+                    applyPackageOptionDefaults(true);
+                    syncInvoicePreview();
+                }});
+                applyPackageOptionDefaults(true);
+                syncInvoicePreview();
+            }});
         </script>
     </head>
     <body>
@@ -12054,7 +12477,7 @@ def create_package_invoice(name):
                 <div class="grid">
                     <div>
                         <label>Package</label>
-                        <select name="package_type" onchange="syncInvoicePreview()">
+                        <select name="package_type">
                             <option value="10">10 lessons</option>
                             <option value="custom">Custom</option>
                         </select>
@@ -12086,6 +12509,20 @@ def create_package_invoice(name):
                             <label class="method"><input type="checkbox" name="payment_methods" value="zelle" checked> Zelle</label>
                             <label class="method"><input type="checkbox" name="payment_methods" value="paypal" checked> PayPal</label>
                         </div>
+                    </div>
+                    <div class="span-2">
+                        <label>Package options shown to parent</label>
+                        <div class="offer-grid">
+                            <div class="offer-card">
+                                <label class="method"><input type="checkbox" name="package_options" value="1"> 1 lesson</label>
+                                <input name="option_1_amount" data-option-amount="1" type="number" step="0.01" value="65.00">
+                            </div>
+                            <div class="offer-card">
+                                <label class="method"><input type="checkbox" name="package_options" value="10" checked> 10 lessons</label>
+                                <input name="option_10_amount" data-option-amount="1" type="number" step="0.01" value="{hmusic_money(default_subtotal)}">
+                            </div>
+                        </div>
+                        <p class="muted">If no preset option is checked, the parent will see only this invoice's current package.</p>
                     </div>
                     {pending_fee_html}
                     <div class="span-2">
@@ -15551,9 +15988,8 @@ def send_email_delivery(destination, title, body, link_url):
     message["Subject"] = title or "H-Music Notification"
     message["From"] = from_email
     message["To"] = destination
-    message.set_content(
-        f"{body or ''}\n\nOpen: {link_url or '/'}\n\nH-Music"
-    )
+    footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
+    message.set_content(f"{body or ''}{footer}")
 
     with smtplib.SMTP(smtp_host, smtp_port) as server:
         server.starttls()
@@ -15692,25 +16128,86 @@ def queue_parent_lesson_reminder(parent_id, title, body, link_url, schedule_id):
     )
 
 
+def hmusic_public_app_url(path="/parent_dashboard"):
+    base = (os.environ.get("HMUSIC_PUBLIC_URL") or "https://hmusic-crm.onrender.com").rstrip("/")
+    clean_path = "/" + str(path or "").lstrip("/")
+    return base + clean_path
+
+
+def hmusic_lesson_reminder_date_label(lesson_date):
+    try:
+        parsed = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d")
+        return parsed.strftime("%A, %B %-d, %Y")
+    except Exception:
+        return str(lesson_date or "Date TBD")
+
+
+def hmusic_lesson_reminder_time_label(lesson_time):
+    return format_display_time(lesson_time) if lesson_time else "Time TBD"
+
+
+def hmusic_lesson_reminder_title(student_name, lesson_date, lesson_time):
+    name = str(student_name or "Student").strip() or "Student"
+    try:
+        date_part = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d").strftime("%b %-d")
+    except Exception:
+        date_part = str(lesson_date or "Date TBD")
+    return f"H-Music Lesson Reminder: {name} - {date_part} at {hmusic_lesson_reminder_time_label(lesson_time)}"
+
+
+def hmusic_lesson_reminder_body(student_name, lesson_date, lesson_time, teacher, location_name, location_address=""):
+    name = str(student_name or "your student").strip() or "your student"
+    first_name = name.split()[0] if name else "your student"
+    location = str(location_name or "H-Music Studio").strip() or "H-Music Studio"
+    address = str(location_address or "").strip()
+    address_line = f"\nAddress: {address}" if address else ""
+    return f"""Hi,
+
+This is a reminder that {first_name} has a lesson tomorrow.
+
+Student: {name}
+Date: {hmusic_lesson_reminder_date_label(lesson_date)}
+Time: {hmusic_lesson_reminder_time_label(lesson_time)}
+Teacher: {teacher or 'H-Music teacher'}
+Location: {location}{address_line}
+
+Please open the H-Music Parent App to view schedule details.
+
+Thank you,
+H-Music
+"""
+
+
 def create_lesson_reminders_for_date(target_date):
     ensure_v33_schema()
+    ensure_parent_portal_feature_schema()
+    ensure_location_room_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, student_name, teacher, lesson_date, lesson_time, classroom
-    FROM schedule
+    SELECT
+        s.id,
+        s.student_name,
+        s.teacher,
+        s.lesson_date,
+        s.lesson_time,
+        COALESCE(l.location_name, s.location, 'H-Music Studio'),
+        COALESCE(l.address, '')
+    FROM schedule s
+    LEFT JOIN studio_locations l
+        ON s.location_id = l.id
     WHERE lesson_date = ?
-    AND COALESCE(status, 'scheduled') = 'scheduled'
-    AND COALESCE(parent_lesson_reminder_enabled, 0) = 1
-    ORDER BY lesson_time
+    AND COALESCE(s.status, 'scheduled') = 'scheduled'
+    AND COALESCE(s.parent_lesson_reminder_enabled, 0) = 1
+    ORDER BY s.lesson_time
     """, (target_date,))
     lessons = cursor.fetchall()
 
     created = 0
     for lesson in lessons:
-        schedule_id, student_name, teacher, lesson_date, lesson_time, classroom = lesson
+        schedule_id, student_name, teacher, lesson_date, lesson_time, location_name, location_address = lesson
 
         cursor.execute("""
         SELECT parent_id
@@ -15722,6 +16219,15 @@ def create_lesson_reminders_for_date(target_date):
 
         for parent_row in parent_rows:
             parent_id = parent_row[0]
+            cursor.execute("""
+            SELECT COALESCE(lesson_reminders, 1)
+            FROM parent_notification_preferences
+            WHERE parent_id = ?
+            """, (parent_id,))
+            pref_row = cursor.fetchone()
+            if pref_row and int(pref_row[0] or 0) != 1:
+                continue
+
             cursor.execute("""
             SELECT id
             FROM notification_delivery_queue
@@ -15737,10 +16243,9 @@ def create_lesson_reminders_for_date(target_date):
             if existing:
                 continue
 
-            title = "Lesson reminder"
-            studio_room = classroom or "the studio"
-            body = f"{student_name} has a lesson on {lesson_date} at {lesson_time} with {teacher} in {studio_room}."
-            link = "/parent_dashboard"
+            title = hmusic_lesson_reminder_title(student_name, lesson_date, lesson_time)
+            body = hmusic_lesson_reminder_body(student_name, lesson_date, lesson_time, teacher, location_name, location_address)
+            link = hmusic_public_app_url("/parent_dashboard")
             conn.commit()
             queue_id = queue_parent_lesson_reminder(parent_id, title, body, link, schedule_id)
             if queue_id:
@@ -15748,6 +16253,47 @@ def create_lesson_reminders_for_date(target_date):
 
     conn.close()
     return created
+
+
+def maybe_run_daily_lesson_reminders():
+    if os.environ.get("HMUSIC_DISABLE_AUTO_REMINDERS") == "1":
+        return
+
+    today = date.today().isoformat()
+    target_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'last_auto_lesson_reminder_date'")
+    row = cursor.fetchone()
+    if row and row[0] == today:
+        conn.close()
+        return
+
+    cursor.execute("""
+    INSERT OR REPLACE INTO settings (key, value)
+    VALUES ('last_auto_lesson_reminder_date', ?)
+    """, (today,))
+    cursor.execute("""
+    INSERT OR REPLACE INTO settings (key, value)
+    VALUES ('last_auto_lesson_reminder_target_date', ?)
+    """, (target_date,))
+    conn.commit()
+    conn.close()
+
+    try:
+        parent_created = create_lesson_reminders_for_date(target_date)
+        teacher_created = create_teacher_lesson_reminders_for_date(target_date)
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT OR REPLACE INTO settings (key, value)
+        VALUES ('last_auto_lesson_reminder_result', ?)
+        """, (f"{datetime.now().strftime('%Y-%m-%d %H:%M')} | {target_date} | parents {parent_created} | teachers {teacher_created}",))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"[reminders] automatic lesson reminder run failed: {exc}")
 
 
 def create_autopay_due_notifications(target_date=None):
@@ -16761,6 +17307,8 @@ def ensure_parent_portal_feature_schema():
         ("parent_notification_preferences", "quiet_hours_end", "quiet_hours_end TEXT"),
         ("student_credit_wallets", "makeup_credits", "makeup_credits REAL DEFAULT 0"),
         ("parent_booking_requests", "preferred_room", "preferred_room TEXT"),
+        ("parent_booking_requests", "owner_note", "owner_note TEXT"),
+        ("parent_booking_requests", "confirmed_schedule_id", "confirmed_schedule_id INTEGER"),
         ("guardian_invites", "guardian_phone", "guardian_phone TEXT"),
         ("studio_events", "status", "status TEXT DEFAULT 'published'"),
         ("event_rsvps", "notes", "notes TEXT"),
@@ -17066,11 +17614,11 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         student_name,
         amount,
         lessons_added,
-        "Stripe Test Mode",
+        "Stripe ACH",
         payment_date,
         enrollment_id,
         "Tuition Invoice",
-        f"Invoice #{invoice_id} paid via Stripe test mode ({source})",
+        f"Invoice #{invoice_id} paid via Stripe ACH ({source})",
         1
     ))
 
@@ -17088,7 +17636,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     SET status = 'paid',
         stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
         stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
-        autopay_status = 'paid_test'
+        autopay_status = 'paid'
     WHERE id = ?
     """, (
         checkout_session_id,
@@ -17112,7 +17660,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         student_name,
         "invoice_payment",
         amount,
-        f"Invoice #{invoice_id} paid via Stripe test mode",
+        f"Invoice #{invoice_id} paid via Stripe ACH",
         invoice_id,
         payment_id,
         None,
@@ -17131,6 +17679,71 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         amount=amount
     )
 
+    return True
+
+
+def mark_stripe_invoice_payment_failed(invoice_id=None, payment_intent_id=None, checkout_session_id=None, reason="Stripe payment failed"):
+    ensure_v321_schema()
+
+    if not invoice_id and payment_intent_id:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id
+        FROM invoices
+        WHERE stripe_payment_intent_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """, (payment_intent_id,))
+        row = cursor.fetchone()
+        conn.close()
+        invoice_id = row[0] if row else None
+
+    if not invoice_id:
+        return False
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    reason_text = str(reason or "Stripe payment failed")[:180]
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoices
+    SET status = CASE WHEN status = 'paid' THEN status ELSE 'payment_failed' END,
+        stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+        stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+        autopay_status = ?
+    WHERE id = ?
+    """, (
+        checkout_session_id,
+        payment_intent_id,
+        f"failed: {reason_text}",
+        invoice_id
+    ))
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES ('owner', 'owner', 'push', 'owner:owner', ?, ?, ?, 'invoice', ?, 'pending', ?)
+    """, (
+        "Stripe payment failed",
+        f"Invoice #{invoice_id} Stripe/ACH payment failed or was returned. Reason: {reason_text}",
+        f"/pay_invoice/{invoice_id}",
+        invoice_id,
+        now
+    ))
+    conn.commit()
+    conn.close()
     return True
 
 
@@ -19008,6 +19621,505 @@ def notifications():
     """
 
 
+@app.route("/owner_booking_requests")
+def owner_booking_requests():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_parent_portal_feature_schema()
+    status_filter = (request.args.get("status") or "pending").strip()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    if status_filter == "all":
+        cursor.execute("""
+        SELECT id, parent_id, student_name, request_type, preferred_date, preferred_time,
+               preferred_teacher, preferred_room, notes, status, created_at
+        FROM parent_booking_requests
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    else:
+        cursor.execute("""
+        SELECT id, parent_id, student_name, request_type, preferred_date, preferred_time,
+               preferred_teacher, preferred_room, notes, status, created_at
+        FROM parent_booking_requests
+        WHERE status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    requests = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in requests:
+        request_type = str(r[3] or "booking").replace("_", " ").title()
+        status_display = "confirmed" if (r[9] or "") in ("confirmed", "approved") else (r[9] or "")
+        action_html = f"<a class='mini-button' href='/parent_booking_request_review/{r[0]}'>Review / Confirm</a>"
+        rows += f"""
+        <tr>
+            <td>#{r[0]}</td>
+            <td>{escape(str(r[10] or ""))}</td>
+            <td><a href="/student/{quote(str(r[2] or ''))}">{escape(str(r[2] or ""))}</a></td>
+            <td>{escape(request_type)}</td>
+            <td>{escape(str(r[4] or "Date TBD"))} {escape(str(r[5] or ""))}</td>
+            <td>{escape(str(r[6] or "Any teacher"))}</td>
+            <td>{escape(str(r[7] or "Any room"))}</td>
+            <td>{escape(str(r[8] or ""))}</td>
+            <td>{escape(status_display)}</td>
+            <td>{action_html}</td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='10'>No booking requests found.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Booking Requests</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:30px; color:#111827; }}
+            .container {{ max-width:1180px; margin:0 auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            h1 {{ margin:0 0 10px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 18px; }}
+            .button {{ display:inline-block; background:#1f6fb8; color:white; padding:9px 12px; border-radius:8px; text-decoration:none; font-weight:800; }}
+            .button.secondary {{ background:#eef4ff; color:#155d9e; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }}
+            th {{ background:#f3f4f6; color:#667085; font-size:12px; text-transform:uppercase; }}
+            td {{ font-size:14px; }}
+            a {{ color:#155d9e; font-weight:800; }}
+            .mini-button {{ display:inline-block; background:#1f6fb8; color:white; padding:7px 10px; border-radius:8px; text-decoration:none; white-space:nowrap; }}
+            .muted {{ color:#667085; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Booking Requests</h1>
+            <p class="muted">Parent requests for extra lessons, makeup lessons, trials, and general schedule notes.</p>
+            <div class="actions">
+                <a class="button" href="/owner_booking_requests">Pending</a>
+                <a class="button secondary" href="/owner_booking_requests?status=all">All</a>
+                <a class="button secondary" href="/">Dashboard</a>
+            </div>
+            <table>
+                <tr>
+                    <th>ID</th><th>Created</th><th>Student</th><th>Type</th><th>Preferred time</th>
+                    <th>Teacher</th><th>Room</th><th>Notes</th><th>Status</th><th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/parent_booking_request_review/<int:request_id>", methods=["GET", "POST"])
+def parent_booking_request_review(request_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_parent_portal_feature_schema()
+    ensure_v18_schema()
+    ensure_location_room_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, parent_id, student_name, request_type, preferred_date, preferred_time,
+           preferred_teacher, preferred_room, notes, status, created_at,
+           COALESCE(owner_note, ''), confirmed_schedule_id
+    FROM parent_booking_requests
+    WHERE id = ?
+    """, (request_id,))
+    req = cursor.fetchone()
+    if not req:
+        conn.close()
+        return "<h1>Booking request not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
+        owner_note = (request.form.get("owner_note") or "").strip()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if action == "reject":
+            cursor.execute("""
+            UPDATE parent_booking_requests
+            SET status = 'rejected',
+                owner_note = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (owner_note, now, request_id))
+            conn.commit()
+            conn.close()
+            if req[1]:
+                create_notification(
+                    "parent",
+                    str(req[1]),
+                    "Booking request updated",
+                    f"H-Music reviewed {req[2]}'s booking request. Status: rejected.",
+                    "/parent_schedule",
+                    related_type="parent_booking_request",
+                    related_id=request_id
+                )
+            return redirect(f"/parent_booking_request_review/{request_id}")
+
+        if action != "confirm":
+            conn.close()
+            return "<h1>Unknown action.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 400
+
+        student_name = (request.form.get("student_name") or req[2] or "").strip()
+        teacher = (request.form.get("teacher") or req[6] or "").strip()
+        lesson_date = (request.form.get("lesson_date") or req[4] or "").strip()
+        lesson_time = (request.form.get("lesson_time") or req[5] or "").strip()
+        room_id = (request.form.get("room_id") or "").strip()
+        course_type_id = (request.form.get("course_type_id") or "").strip()
+        billing_decision = (request.form.get("billing_decision") or "existing_credits").strip()
+        if not student_name or not teacher or not lesson_date or not lesson_time or not room_id or not course_type_id:
+            conn.close()
+            return "<h1>Student, teacher, date, time, room, and course are required.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 400
+
+        cursor.execute("""
+        SELECT r.id, r.room_name, r.location_id, COALESCE(l.location_name, '')
+        FROM studio_rooms r
+        LEFT JOIN studio_locations l ON r.location_id = l.id
+        WHERE r.id = ?
+        """, (room_id,))
+        room_row = cursor.fetchone()
+        if not room_row:
+            conn.close()
+            return "<h1>Room not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
+        classroom = room_row[1]
+        location_id = room_row[2]
+        location = room_row[3]
+
+        cursor.execute("""
+        SELECT id, name, COALESCE(duration, 30), student_billing_method, student_price,
+               teacher_billing_method, teacher_pay, COALESCE(is_group, 0)
+        FROM course_types
+        WHERE id = ?
+        """, (course_type_id,))
+        course = cursor.fetchone()
+        if not course:
+            conn.close()
+            return "<h1>Course type not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
+
+        duration = course[2] or 30
+        conflict = schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, duration=duration)
+        if conflict.get("has_conflict"):
+            conn.close()
+            return f"""
+            <h1>Cannot Confirm Booking</h1>
+            <p>{escape(conflict.get("message") or "Schedule conflict found.")}</p>
+            <p><a href="/parent_booking_request_review/{request_id}">Back to request</a></p>
+            """, 409
+
+        pricing = get_final_pricing(student_name, teacher, course_type_id)
+        if pricing:
+            course_id = pricing["course_id"]
+            course_name = pricing["course_name"]
+            duration = pricing["duration"] or duration
+            student_billing_method = pricing["student_billing_method"]
+            student_price = pricing["student_price"]
+            teacher_billing_method = pricing["teacher_billing_method"]
+            teacher_pay = pricing["teacher_pay"]
+            student_charge_amount = pricing["student_charge_amount"]
+            teacher_pay_amount = pricing["teacher_pay_amount"]
+            is_group = pricing["is_group"]
+        else:
+            course_id = course[0]
+            course_name = course[1]
+            student_billing_method = course[3]
+            student_price = course[4]
+            teacher_billing_method = course[5]
+            teacher_pay = course[6]
+            student_charge_amount = calculate_course_amount(student_billing_method, student_price, duration)
+            teacher_pay_amount = calculate_course_amount(teacher_billing_method, teacher_pay, duration)
+            is_group = course[7]
+
+        if billing_decision in ("makeup_credit", "no_charge", "trial_free"):
+            student_charge_amount = 0
+
+        try:
+            weekday = datetime.strptime(lesson_date, "%Y-%m-%d").strftime("%A")
+        except ValueError:
+            weekday = ""
+
+        schedule_note = ""
+        auto_link_student_teacher(cursor, student_name, teacher)
+        cursor.execute("""
+        INSERT INTO schedule (
+            student_name, teacher, location_id, room_id, location, classroom,
+            weekday, lesson_time, schedule_type, package_type, start_date, lesson_date,
+            course_type_id, course_type_name, duration, student_billing_method, student_price,
+            teacher_billing_method, teacher_pay, student_charge_amount, teacher_pay_amount,
+            is_group, notes, billing_decision, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'one_time', 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+        """, (
+            student_name,
+            teacher,
+            location_id,
+            int(room_id),
+            location,
+            classroom,
+            weekday,
+            lesson_time,
+            lesson_date,
+            lesson_date,
+            course_id,
+            course_name,
+            duration,
+            student_billing_method,
+            student_price,
+            teacher_billing_method,
+            teacher_pay,
+            student_charge_amount,
+            teacher_pay_amount,
+            is_group,
+            schedule_note,
+            billing_decision,
+        ))
+        schedule_id = cursor.lastrowid
+        cursor.execute("""
+        UPDATE parent_booking_requests
+        SET status = 'confirmed',
+            owner_note = ?,
+            confirmed_schedule_id = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (owner_note, schedule_id, now, request_id))
+        conn.commit()
+        conn.close()
+
+        if req[1]:
+            create_notification(
+                "parent",
+                str(req[1]),
+                "Booking request confirmed",
+                f"H-Music confirmed {student_name}'s lesson for {lesson_date} {lesson_time}.",
+                "/parent_schedule",
+                related_type="parent_booking_request",
+                related_id=request_id
+            )
+        return redirect(f"/parent_booking_request_review/{request_id}")
+
+    cursor.execute("SELECT teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
+    teachers = [row[0] for row in cursor.fetchall()]
+    cursor.execute("""
+    SELECT r.id, r.room_name, COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON r.location_id = l.id
+    WHERE COALESCE(r.active, 1) = 1
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(r.sort_order, 0), r.room_name
+    """)
+    rooms = cursor.fetchall()
+    cursor.execute("""
+    SELECT id, name, COALESCE(duration, 30), COALESCE(is_group, 0)
+    FROM course_types
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY COALESCE(is_group, 0), name, COALESCE(duration, 0)
+    """)
+    courses = cursor.fetchall()
+    cursor.execute("""
+    SELECT course_type_id, COALESCE(course_type_name, ''), COALESCE(duration, 30), teacher, room_id
+    FROM schedule
+    WHERE student_name = ?
+    AND course_type_id IS NOT NULL
+    ORDER BY lesson_date DESC, id DESC
+    LIMIT 1
+    """, (req[2],))
+    last_schedule = cursor.fetchone()
+    conn.close()
+
+    preferred_teacher = req[6] or (last_schedule[3] if last_schedule else "") or (teachers[0] if teachers else "")
+    preferred_course_id = str(last_schedule[0]) if last_schedule and last_schedule[0] else (str(courses[0][0]) if courses else "")
+    preferred_room_id = str(last_schedule[4]) if last_schedule and last_schedule[4] else ""
+    if not preferred_room_id and req[7]:
+        for room in rooms:
+            if str(room[1]).lower() == str(req[7]).lower():
+                preferred_room_id = str(room[0])
+                break
+    if not preferred_room_id and rooms:
+        preferred_room_id = str(rooms[0][0])
+
+    teacher_options = "".join(
+        f"<option value='{escape(str(t))}' {'selected' if str(t) == str(preferred_teacher) else ''}>{escape(str(t))}</option>"
+        for t in teachers
+    )
+    room_options = "".join(
+        f"<option value='{room[0]}' {'selected' if str(room[0]) == str(preferred_room_id) else ''}>{escape(str(room[1]))} · {escape(str(room[2] or ''))}</option>"
+        for room in rooms
+    )
+    course_options = "".join(
+        f"<option value='{course[0]}' {'selected' if str(course[0]) == str(preferred_course_id) else ''}>{escape(str(course[1]))} · {int(course[2] or 30)} min{' · Group' if course[3] else ''}</option>"
+        for course in courses
+    )
+    status_display = "confirmed" if (req[9] or "") in ("confirmed", "approved") else (req[9] or "pending")
+    confirmed_link = f"<p><b>Calendar schedule:</b> <a href='/calendar'>#{req[12]}</a></p>" if req[12] else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Review Booking Request</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:30px; }}
+            .wrap {{ max-width:920px; margin:0 auto; }}
+            .card {{ background:white; border-radius:14px; border:1px solid #e5e7eb; padding:22px; margin-bottom:14px; box-shadow:0 8px 22px rgba(15,23,42,.05); }}
+            h1 {{ margin:0 0 8px; }}
+            .muted {{ color:#667085; }}
+            .grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }}
+            label {{ display:block; color:#667085; font-weight:800; font-size:13px; margin-bottom:5px; }}
+            input, select, textarea {{ width:100%; min-height:42px; border:1px solid #d1d5db; border-radius:10px; padding:9px 11px; font:inherit; }}
+            textarea {{ min-height:92px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }}
+            button,.button {{ border:0; border-radius:10px; padding:11px 14px; font-weight:900; text-decoration:none; cursor:pointer; }}
+            .primary {{ background:#1f6fb8; color:white; }}
+            .secondary {{ background:#eef4ff; color:#155d9e; }}
+            .danger {{ background:#fef2f2; color:#991b1b; }}
+            @media(max-width:720px) {{ body {{ padding:14px; }} .grid {{ grid-template-columns:1fr; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <section class="card">
+                <p class="muted">Request #{req[0]} · {escape(str(req[10] or ''))}</p>
+                <h1>{escape(str(req[2] or 'Student'))} booking request</h1>
+                <p><b>Status:</b> {escape(status_display)}</p>
+                <p><b>Type:</b> {escape(str(req[3] or '').replace('_', ' ').title())}</p>
+                <p><b>Requested:</b> {escape(str(req[4] or 'Date TBD'))} {escape(str(req[5] or ''))} · {escape(str(req[6] or 'Any teacher'))} · {escape(str(req[7] or 'Any room'))}</p>
+                <p><b>Parent note:</b> {escape(str(req[8] or ''))}</p>
+                {confirmed_link}
+            </section>
+            <form class="card" method="POST">
+                <div class="grid">
+                    <div><label>Student</label><input name="student_name" value="{escape(str(req[2] or ''))}" required></div>
+                    <div><label>Teacher</label><select name="teacher" required>{teacher_options}</select></div>
+                    <div><label>Date</label><input type="date" name="lesson_date" value="{escape(str(req[4] or ''))}" required></div>
+                    <div><label>Time</label><input type="time" name="lesson_time" value="{escape(str(req[5] or ''))}" required></div>
+                    <div><label>Room</label><select name="room_id" required>{room_options}</select></div>
+                    <div><label>Course</label><select name="course_type_id" required>{course_options}</select></div>
+                    <div><label>Billing handling</label><select name="billing_decision">
+                        <option value="existing_credits">Use existing credits / package</option>
+                        <option value="invoice_later">Invoice later</option>
+                        <option value="makeup_credit">Use makeup credit</option>
+                        <option value="trial_free">Free trial</option>
+                        <option value="no_charge">No charge</option>
+                    </select></div>
+                </div>
+                <label style="margin-top:12px;">Owner note</label>
+                <textarea name="owner_note" placeholder="Optional note for parent/internal record">{escape(str(req[11] or ''))}</textarea>
+                <div class="actions">
+                    <button class="primary" name="action" value="confirm" type="submit">Confirm + add to calendar</button>
+                    <button class="danger" name="action" value="reject" type="submit">Reject request</button>
+                    <a class="button secondary" href="/owner_booking_requests">Back to requests</a>
+                    <a class="button secondary" href="/calendar">Calendar</a>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/owner_cancel_requests")
+def owner_cancel_requests():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    status_filter = (request.args.get("status") or "pending").strip()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    if status_filter == "all":
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, teacher, classroom,
+               policy_status, fee_preview, waiver_available, reason, status, created_at
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    else:
+        cursor.execute("""
+        SELECT id, student_name, original_date, original_time, teacher, classroom,
+               policy_status, fee_preview, waiver_available, reason, status, created_at
+        FROM lesson_change_requests
+        WHERE request_type = 'cancel_lesson'
+        AND status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 100
+        """)
+    requests = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for r in requests:
+        waiver = "Yes" if r[8] else "No"
+        status_display = "confirmed" if (r[10] or "") == "approved" else (r[10] or "")
+        action_html = f"<a class='mini-button' href='/lesson_change_request/{r[0]}'>Review / Confirm</a>"
+        rows += f"""
+        <tr>
+            <td><a href="/lesson_change_request/{r[0]}">#{r[0]}</a></td>
+            <td>{escape(str(r[11] or ""))}</td>
+            <td><a href="/student/{quote(str(r[1] or ''))}">{escape(str(r[1] or ""))}</a></td>
+            <td>{escape(str(r[2] or ""))} {escape(str(r[3] or ""))}</td>
+            <td>{escape(str(r[4] or ""))}</td>
+            <td>{escape(str(r[5] or ""))}</td>
+            <td>{escape(hmusic_policy_status_label(r[6]))}</td>
+            <td>${hmusic_money(r[7] or 0)}</td>
+            <td>{waiver}</td>
+            <td>{escape(str(r[9] or ""))}</td>
+            <td>{escape(status_display)}</td>
+            <td>{action_html}</td>
+        </tr>
+        """
+    if not rows:
+        rows = "<tr><td colspan='12'>No cancellation requests found.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Owner Cancel Requests</title>
+        <style>
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:30px; color:#111827; }}
+            .container {{ max-width:1240px; margin:0 auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
+            h1 {{ margin:0 0 10px; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 18px; }}
+            .button {{ display:inline-block; background:#1f6fb8; color:white; padding:9px 12px; border-radius:8px; text-decoration:none; font-weight:800; }}
+            .button.secondary {{ background:#eef4ff; color:#155d9e; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }}
+            th {{ background:#f3f4f6; color:#667085; font-size:12px; text-transform:uppercase; }}
+            td {{ font-size:14px; }}
+            a {{ color:#155d9e; font-weight:800; }}
+            .mini-button {{ display:inline-block; background:#1f6fb8; color:white; padding:7px 10px; border-radius:8px; text-decoration:none; white-space:nowrap; }}
+            .muted {{ color:#667085; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Cancellation Requests</h1>
+            <p class="muted">Parent cancellation requests that need owner policy review.</p>
+            <div class="actions">
+                <a class="button" href="/owner_cancel_requests">Pending</a>
+                <a class="button secondary" href="/owner_cancel_requests?status=all">All</a>
+                <a class="button secondary" href="/">Dashboard</a>
+            </div>
+            <table>
+                <tr>
+                    <th>ID</th><th>Created</th><th>Student</th><th>Lesson</th><th>Teacher</th>
+                    <th>Room</th><th>Policy</th><th>Fee preview</th><th>Waiver</th><th>Reason</th><th>Status</th><th>Action</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.route("/parent_reschedule", methods=["GET", "POST"])
 def parent_reschedule():
     if not require_parent():
@@ -19512,7 +20624,7 @@ def parent_reschedule_group():
                 "owner",
                 "Schedule request manager note",
                 f"{session.get('parent_name', 'Parent')} sent a schedule request. {note_body}",
-                "/dashboard",
+                "/owner_booking_requests",
                 related_type="parent_booking_request",
                 related_id=request_id
             )
@@ -22519,7 +23631,7 @@ def parent_schedule():
             "owner",
             request_label,
             f"{session.get('parent_name', 'Parent')} sent schedule notes. {note_body}",
-            "/dashboard",
+            "/owner_booking_requests",
             related_type="parent_booking_request",
             related_id=request_id
         )
@@ -22765,7 +23877,7 @@ def parent_booking_request():
         create_notification(
             "owner", "owner", "Parent booking request",
             f"{session.get('parent_name', 'Parent')} requested {request_type.replace('_', ' ')} for {student_name}.",
-            "/dashboard", related_type="parent_booking_request", related_id=request_id
+            "/owner_booking_requests", related_type="parent_booking_request", related_id=request_id
         )
         return redirect("/parent_schedule?sent=1")
 
@@ -23276,7 +24388,7 @@ def parent_billing():
                     parent_id,
                     customer_id,
                     checkout_session.id,
-                    "Stripe test-mode ACH setup session created.",
+                    "Stripe ACH setup session created.",
                     now,
                     now
                 ))
@@ -23344,7 +24456,7 @@ def parent_billing():
     if request.args.get("requested") == "1":
         requested_alert = "<div class='alert'>Request sent. The owner will send the secure Stripe setup link.</div>"
     if request.args.get("connected") == "1":
-        requested_alert = "<div class='alert'>Bank setup completed in Stripe test mode.</div>"
+        requested_alert = "<div class='alert'>Bank setup completed securely through Stripe.</div>"
     if request.args.get("stripe_missing") == "1":
         requested_alert = "<div class='warn'>Stripe is not configured yet. Add STRIPE_SECRET_KEY in Render first.</div>"
     if request.args.get("cancelled") == "1":
@@ -23355,7 +24467,7 @@ def parent_billing():
         stripe_button = """
         <form method="POST">
             <input type="hidden" name="action" value="start_stripe_setup">
-            <button type="submit">Connect Bank with Stripe Test Mode</button>
+            <button type="submit">Connect Bank with Stripe</button>
         </form>
         """
     else:
@@ -23590,10 +24702,25 @@ def stripe_webhook():
                 parent_id=parent_id
             )
 
-    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and data_object.get("mode") == "payment":
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed") and data_object.get("mode") == "payment":
         invoice_id = metadata.get("invoice_id")
         if invoice_id:
-            if event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
+            if event_type == "checkout.session.async_payment_failed":
+                mark_stripe_invoice_payment_failed(
+                    invoice_id=invoice_id,
+                    checkout_session_id=data_object.get("id"),
+                    payment_intent_id=data_object.get("payment_intent"),
+                    reason=data_object.get("payment_status") or event_type
+                )
+                record_stripe_webhook_event(
+                    event_id,
+                    event_type,
+                    "invoice_payment_failed",
+                    "Invoice marked failed from Stripe async payment failure.",
+                    invoice_id=invoice_id,
+                    parent_id=metadata.get("parent_id")
+                )
+            elif event_type == "checkout.session.async_payment_succeeded" or data_object.get("payment_status") == "paid":
                 finalize_stripe_invoice_payment(
                     int(invoice_id),
                     checkout_session_id=data_object.get("id"),
@@ -23675,6 +24802,26 @@ def stripe_webhook():
                 parent_id=metadata.get("parent_id")
             )
 
+    if event_type in ("payment_intent.payment_failed", "charge.failed"):
+        invoice_id = metadata.get("invoice_id")
+        payment_intent_id = data_object.get("id") if event_type == "payment_intent.payment_failed" else data_object.get("payment_intent")
+        error_obj = data_object.get("last_payment_error") or data_object.get("failure_message") or data_object.get("failure_code") or event_type
+        if isinstance(error_obj, dict):
+            error_obj = error_obj.get("message") or error_obj.get("code") or event_type
+        marked = mark_stripe_invoice_payment_failed(
+            invoice_id=invoice_id,
+            payment_intent_id=payment_intent_id,
+            reason=error_obj
+        )
+        record_stripe_webhook_event(
+            event_id,
+            event_type,
+            "invoice_payment_failed" if marked else "payment_failed_no_invoice",
+            str(error_obj),
+            invoice_id=invoice_id,
+            parent_id=metadata.get("parent_id")
+        )
+
     return Response("ok", status=200)
 
 
@@ -23683,6 +24830,46 @@ def hmusic_money(value):
         return f"{float(value or 0):.2f}"
     except Exception:
         return "0.00"
+
+
+def hmusic_invoice_package_options(options_text, current_lessons, current_amount):
+    options = []
+    try:
+        parsed = json.loads(options_text or "[]")
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    lessons = float(item.get("lessons") or 0)
+                    amount = float(item.get("amount") or 0)
+                    if lessons > 0 and amount >= 0:
+                        options.append({"lessons": lessons, "amount": round(amount, 2)})
+    except Exception:
+        options = []
+
+    if not options:
+        try:
+            lessons = float(current_lessons or 0)
+            amount = float(current_amount or 0)
+            if lessons > 0:
+                options.append({"lessons": lessons, "amount": round(amount, 2)})
+        except Exception:
+            pass
+
+    deduped = {}
+    for option in options:
+        key = hmusic_lesson_count_label(option["lessons"])
+        deduped[key] = option
+    return sorted(deduped.values(), key=lambda item: item["lessons"])
+
+
+def hmusic_lesson_count_label(value):
+    try:
+        number = float(value or 0)
+    except Exception:
+        number = 0
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:g}"
 
 
 def hmusic_card_gross_up(base_amount):
@@ -24077,7 +25264,8 @@ def parent_invoice(invoice_id):
         COALESCE(i.discount_code, ''),
         COALESCE(i.discount_amount, 0),
         COALESCE(i.payment_methods, ''),
-        COALESCE(i.manual_payment_status, '')
+        COALESCE(i.manual_payment_status, ''),
+        COALESCE(i.package_options, '')
     FROM invoices i
     LEFT JOIN enrollments e
         ON i.enrollment_id = e.id
@@ -24112,6 +25300,39 @@ def parent_invoice(invoice_id):
                 invoice[7]
             ))
             conn.commit()
+            conn.close()
+            return redirect(f"/parent_invoice/{invoice_id}")
+
+        if action == "select_package_option" and invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+            try:
+                selected_lessons = float(request.form.get("selected_lessons") or 0)
+                selected_amount = float(request.form.get("selected_amount") or 0)
+            except Exception:
+                selected_lessons = 0
+                selected_amount = 0
+            package_options = hmusic_invoice_package_options(invoice[17], invoice[2], invoice[12] or invoice[3])
+            allowed_option = any(
+                abs(float(option["lessons"]) - selected_lessons) < 0.001
+                and abs(float(option["amount"]) - selected_amount) < 0.01
+                for option in package_options
+            )
+            if allowed_option and selected_lessons > 0 and selected_amount >= 0:
+                discount_amount = float(invoice[14] or 0)
+                amount_due = max(round(selected_amount - discount_amount, 2), 0)
+                cursor.execute("""
+                UPDATE invoices
+                SET charge_lessons = ?,
+                    subtotal_amount = ?,
+                    amount = ?
+                WHERE id = ?
+                AND status NOT IN ('paid', 'pending_confirmation', 'stripe_processing', 'square_processing')
+                """, (
+                    selected_lessons,
+                    selected_amount,
+                    amount_due,
+                    invoice_id
+                ))
+                conn.commit()
             conn.close()
             return redirect(f"/parent_invoice/{invoice_id}")
 
@@ -24157,76 +25378,61 @@ def parent_invoice(invoice_id):
     allowed_methods = {m.strip().lower() for m in (invoice[15] or "ach,zelle,paypal").split(",") if m.strip()}
     if not allowed_methods:
         allowed_methods = {"ach", "zelle", "paypal"}
-    online_payment_html = ""
+    package_options = hmusic_invoice_package_options(invoice[17], invoice[2], subtotal_amount)
+    package_options_html = ""
+    if package_options:
+        package_cards = []
+        for option in package_options:
+            lessons_label = hmusic_lesson_count_label(option["lessons"])
+            lesson_word = "Lesson" if lessons_label == "1" else "Lessons"
+            selected = abs(float(option["lessons"]) - float(invoice[2] or 0)) < 0.001
+            selected_class = " active" if selected else ""
+            option_button = "<div class='selected-chip'>Selected</div>"
+            if not selected and invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+                option_button = f"""
+                    <form method="POST">
+                        <input type="hidden" name="action" value="select_package_option">
+                        <input type="hidden" name="selected_lessons" value="{option['lessons']}">
+                        <input type="hidden" name="selected_amount" value="{option['amount']}">
+                        <button type="submit" class="choose-package">Choose</button>
+                    </form>
+                """
+            package_cards.append(f"""
+                <div class="package-choice{selected_class}">
+                    <div class="package-name">{lessons_label} {lesson_word}</div>
+                    <div class="package-price">${hmusic_money(option["amount"])}</div>
+                    {option_button}
+                </div>
+            """)
+        package_options_html = f"""
+            <div class="section-title">Package Options</div>
+            <div class="package-row">
+                {''.join(package_cards)}
+            </div>
+        """
+
     payment_status_alert = ""
-    if request.args.get("square_missing") == "1":
-        payment_status_alert = "<div class='warn'>Online card payment is not available yet. Please use ACH, Zelle, PayPal, or contact H-Music for help.</div>"
-    elif request.args.get("square_invalid_amount") == "1":
-        payment_status_alert = "<div class='warn'>This invoice needs a valid amount before Square checkout can start.</div>"
-    elif request.args.get("square_processing") == "1" or invoice[4] == "square_processing":
-        payment_status_alert = "<div class='alert'>Square checkout returned successfully. H-Music will confirm the card payment and mark this invoice paid.</div>"
-    elif request.args.get("stripe_missing") == "1":
-        payment_status_alert = "<div class='warn'>Stripe is not configured yet. Please use the studio's current payment method.</div>"
+    if request.args.get("stripe_missing") == "1":
+        payment_status_alert = "<div class='warn'>ACH is not connected yet. Please use Zelle or PayPal for now.</div>"
     elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
         payment_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
     elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
-        payment_status_alert = "<div class='alert'>Stripe payment is processing. ACH/bank payments can take several business days to fully settle.</div>"
+        payment_status_alert = "<div class='alert'>ACH payment is processing. Bank transfers can take several business days to fully settle.</div>"
+    elif invoice[4] == "pending_confirmation":
+        payment_status_alert = "<div class='alert'>Payment notice sent. H-Music will confirm and add lesson credits after review.</div>"
+    elif invoice[4] == "payment_failed":
+        payment_status_alert = "<div class='warn'>The previous Stripe/ACH payment did not complete. Please try again or use Zelle / PayPal.</div>"
     elif request.args.get("cancelled") == "1":
-        payment_status_alert = "<div class='warn'>Online checkout was cancelled. You can try again or use the current studio payment method.</div>"
+        payment_status_alert = "<div class='warn'>ACH checkout was cancelled. You can try again or use Zelle / PayPal.</div>"
 
-    if invoice[4] not in ("paid", "stripe_processing", "square_processing"):
+    online_payment_html = ""
+    if invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
         payment_choices = []
-        if square_is_configured():
-            payment_choices.append(f"""
-                <div class="payment-choice recommended">
-                    <div class="choice-kicker">Card payment</div>
-                    <h3>Pay with Square</h3>
-                    <p>Use Square's secure checkout to pay this invoice by credit or debit card.</p>
-                    <div class="pay-summary">
-                        <span>Invoice</span><b>${hmusic_money(invoice[3])}</b>
-                        <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
-                    </div>
-                    <a class="button square-button" href="/square/invoice/{invoice_id}/checkout">Pay by card</a>
-                </div>
-            """)
-        else:
-            payment_choices.append("""
-                <div class="payment-choice disabled">
-                    <div class="choice-kicker">Card payment</div>
-                    <h3>Pay by card</h3>
-                    <p>Online card payment is not available yet. Please use ACH, Zelle, PayPal, or contact H-Music for help.</p>
-                </div>
-            """)
-
-        if "ach" in allowed_methods and stripe_is_configured():
-            payment_choices.append(f"""
-                <div class="payment-choice">
-                    <div class="choice-kicker">Bank option</div>
-                    <h3>Bank Payment / ACH</h3>
-                    <p>No processing fee for families. H-Music covers the ACH bank transfer fee.</p>
-                    <div class="pay-summary">
-                        <span>Package</span><b>${hmusic_money(invoice[3])}</b>
-                        <span>Family fee</span><b>$0.00</b>
-                        <span>Total today</span><b>${hmusic_money(invoice[3])}</b>
-                    </div>
-                    <a class="button stripe-button" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
-                </div>
-            """)
-        elif "ach" in allowed_methods:
-            payment_choices.append("""
-                <div class="payment-choice disabled">
-                    <div class="choice-kicker">Bank option</div>
-                    <h3>ACH / Bank</h3>
-                    <p>Secure bank payment setup is being prepared. Please use Zelle, PayPal, or contact H-Music for now.</p>
-                </div>
-            """)
-
         if "zelle" in allowed_methods:
             payment_choices.append("""
-                <div class="payment-choice manual-pay">
-                    <div class="choice-kicker">Manual transfer</div>
-                    <h3>Zelle</h3>
-                    <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
+                <div class="payment-choice">
+                    <div class="method-head"><h3>Zelle</h3><span class="badge">Manual confirm</span></div>
+                    <p>Send from your bank app, then mark the invoice as paid.</p>
                     <div class="account-box">
                         <span class="copy-account-text">hmusicjustplay@gmail.com</span>
                         <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
@@ -24242,10 +25448,9 @@ def parent_invoice(invoice_id):
 
         if "paypal" in allowed_methods:
             payment_choices.append("""
-                <div class="payment-choice manual-pay">
-                    <div class="choice-kicker">Manual transfer</div>
-                    <h3>PayPal</h3>
-                    <p>Send payment to H-Music, then tap I Paid so we can confirm your invoice.</p>
+                <div class="payment-choice">
+                    <div class="method-head"><h3>PayPal</h3><span class="badge">Manual confirm</span></div>
+                    <p>Use the H-Music PayPal email, then notify the owner.</p>
                     <div class="account-box">
                         <span class="copy-account-text">hmusicjustplay@gmail.com</span>
                         <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
@@ -24259,15 +25464,36 @@ def parent_invoice(invoice_id):
                 </div>
             """)
 
+        if "ach" in allowed_methods and stripe_is_configured():
+            payment_choices.append(f"""
+                <div class="payment-choice">
+                    <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
+                    <p>Pay securely by bank transfer through Stripe. Processing may take several business days.</p>
+                    <div class="pay-summary">
+                        <span>Amount due</span><b>${hmusic_money(invoice[3])}</b>
+                    </div>
+                    <a class="button primary-action" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
+                </div>
+            """)
+        elif "ach" in allowed_methods:
+            payment_choices.append("""
+                <div class="payment-choice disabled">
+                    <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
+                    <p>ACH online payment is being set up. Please use Zelle or PayPal for now.</p>
+                    <button type="button" class="primary-action" disabled>Pay by ACH</button>
+                </div>
+            """)
+
         if payment_choices:
             online_payment_html = f"""
+            <div class="section-title">Pay With</div>
             <div class="payment-choice-grid">
                 {''.join(payment_choices)}
             </div>
             """
         else:
             online_payment_html = """
-            <p class="hint">Online payment is not enabled yet. Please use the current studio payment method below.</p>
+            <p class="hint">No payment method is enabled for this invoice yet. Please contact H-Music.</p>
             """
 
     return f"""
@@ -24276,42 +25502,53 @@ def parent_invoice(invoice_id):
         {parent_app_meta("Tuition Invoice")}
         <style>
             * {{ box-sizing:border-box; }}
-            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
-            .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:760px; margin:0 auto; }}
-            h1 {{ font-size:30px; margin:0 0 18px; }}
-            .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; margin:14px 0; }}
-            .label {{ color:#6b7280; font-size:13px; }}
-            .value {{ font-size:28px; font-weight:900; margin-top:4px; }}
+            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#fff; margin:0; color:#111827; }}
+            .container {{ background:white; min-height:100vh; padding:max(24px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:520px; margin:0 auto; }}
+            .top-row {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }}
+            h1 {{ font-size:32px; line-height:1.05; margin:0; letter-spacing:0; }}
+            h3 {{ margin:0; font-size:17px; }}
+            .status-pill {{ border-radius:999px; padding:7px 10px; background:#fff7ed; color:#9a3412; font-size:12px; font-weight:900; white-space:nowrap; }}
+            .subcopy {{ color:#6b7280; margin:0 0 16px; font-size:15px; line-height:1.35; font-weight:650; }}
+            .summary {{ display:grid; grid-template-columns:1fr auto; gap:8px 16px; padding:14px; border:1px solid #d8dee9; border-radius:18px; background:#f5f7fb; margin-bottom:14px; }}
+            .summary-label {{ color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .summary-value {{ font-size:15px; font-weight:900; }}
+            .amount {{ font-size:28px; font-weight:950; line-height:1; }}
+            .section-title {{ margin:16px 0 8px; color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.05em; }}
             .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             .hint {{ color:#6b7280; line-height:1.45; }}
-            input, select, textarea {{ width:100%; min-height:48px; padding:12px 14px; margin:8px 0 16px; font-size:16px; border:1px solid #d1d5db; border-radius:10px; }}
-            textarea {{ min-height:100px; }}
-            button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; padding:12px 16px; border-radius:8px; font-weight:bold; text-decoration:none; min-height:48px; margin-right:8px; }}
-            .secondary {{ background:#111827 !important; }}
-            .stripe-button {{ background:#4f46e5 !important; }}
-            .square-button {{ background:#1d65ad !important; }}
-            .card-button {{ background:#111827 !important; }}
-            .payment-choice-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:14px 0; }}
-            .payment-choice {{ border:1px solid #e5e7eb; border-radius:14px; padding:14px; background:#fff; }}
-            .payment-choice.recommended {{ border-color:#bfdbfe; background:#eff6ff; }}
+            .package-row {{ display:grid; grid-template-columns:1fr 1fr; gap:9px; }}
+            .package-choice {{ min-height:86px; padding:12px; border:1px solid #d8dee9; border-radius:16px; background:#fff; display:flex; flex-direction:column; justify-content:space-between; gap:8px; }}
+            .package-choice.active {{ border:2px solid #5747e8; background:#eef2ff; padding:11px; }}
+            .package-name {{ font-size:16px; line-height:1.1; font-weight:900; }}
+            .package-price {{ color:#6b7280; font-size:13px; font-weight:800; }}
+            .selected-chip {{ color:#5747e8; font-size:12px; font-weight:900; }}
+            .choose-package {{ min-height:34px; width:100%; background:#eef2ff; color:#5747e8; }}
+            .payment-choice-grid {{ display:grid; gap:9px; }}
+            .payment-choice {{ border:1px solid #d8dee9; border-radius:17px; padding:12px; background:#fff; }}
             .payment-choice.disabled {{ opacity:.72; }}
-            .payment-choice h3 {{ margin:4px 0 8px; }}
-            .payment-choice p {{ color:#6b7280; line-height:1.45; }}
-            .account-box {{ background:#f8fafc; border:1px dashed #94a3b8; border-radius:10px; padding:10px; font-weight:900; margin:10px 0; display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; }}
+            .payment-choice p {{ color:#6b7280; line-height:1.35; font-size:13px; font-weight:650; margin:7px 0 8px; }}
+            .method-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; }}
+            .badge {{ background:#dcfce7; color:#166534; border-radius:999px; padding:5px 8px; font-size:11px; font-weight:900; white-space:nowrap; }}
+            .account-box {{ background:#f5f7fb; border-radius:12px; padding:9px; font-weight:900; margin:8px 0; display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; font-size:12px; }}
             .copy-account-text {{ word-break:break-all; }}
-            .copy-account-button {{ min-height:38px; margin:0; padding:8px 12px; border-radius:8px; background:#1d65ad; font-size:14px; }}
-            .invoice-breakdown .line {{ display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:#4b5563; font-size:16px; }}
-            .invoice-breakdown .total {{ border-top:1px solid #d1d5db; padding-top:10px; color:#111827; font-size:18px; }}
-            .choice-kicker {{ color:#047857; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
-            .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f8fafc; border-radius:10px; padding:10px; margin:10px 0 12px; }}
+            input, select, textarea {{ width:100%; min-height:44px; padding:10px 12px; margin:8px 0; font-size:15px; border:1px solid #d1d5db; border-radius:12px; }}
+            textarea {{ min-height:64px; resize:vertical; }}
+            button, a.button {{ display:inline-block; border:none; border-radius:13px; padding:11px 14px; font-weight:900; text-decoration:none; min-height:42px; font-size:14px; }}
+            button {{ background:#eef2ff; color:#5747e8; }}
+            .copy-account-button {{ min-height:30px; margin:0; padding:6px 9px; border-radius:10px; background:#fff; color:#5747e8; border:1px solid #d8dee9; font-size:12px; }}
+            .primary-action {{ width:100%; margin-top:8px; color:#fff !important; background:#5747e8 !important; text-align:center; }}
+            .primary-action:disabled {{ background:#d8dee9 !important; color:#6b7280 !important; }}
+            .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f5f7fb; border-radius:10px; padding:10px; margin:8px 0; }}
             .pay-summary span {{ color:#6b7280; }}
             .pay-summary b {{ text-align:right; }}
-            @media(max-width:760px) {{ .payment-choice-grid {{ grid-template-columns:1fr; }} }}
+            .auto-renew-panel {{ margin-top:14px; border-top:1px solid #e5e7eb; padding-top:12px; }}
+            .auto-renew-panel summary {{ font-weight:900; color:#111827; cursor:pointer; }}
+            .back-link {{ display:inline-block; margin-top:14px; color:#5747e8; font-weight:900; text-decoration:none; }}
+            @media(max-width:360px) {{ .package-row {{ grid-template-columns:1fr; }} h1 {{ font-size:28px; }} }}
             .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
             .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
             .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
-            @media (min-width:900px) {{ body {{ padding:32px; }} .container {{ min-height:auto; padding:32px; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }} }}
         </style>
         <script>
             function copyParentPaymentAccount(button) {{
@@ -24354,49 +25591,40 @@ def parent_invoice(invoice_id):
     </head>
     <body>
         <div class="container">
-            <h1>Tuition Invoice</h1>
+            <div class="top-row">
+                <h1>Invoice</h1>
+                <div class="status-pill">{escape(str(invoice[4] or "unpaid")).replace("_", " ")}</div>
+            </div>
+            <p class="subcopy">{escape(str(invoice[1]))} lesson package from H-Music. Choose a package and payment method.</p>
             {payment_status_alert}
-            <div class="card">
-                <div class="label">Student</div>
-                <div class="value">{invoice[1]}</div>
+            <div class="summary">
+                <div>
+                    <div class="summary-label">Student</div>
+                    <div class="summary-value">{escape(str(invoice[1]))}</div>
+                </div>
+                <div>
+                    <div class="summary-label">Amount due</div>
+                    <div class="amount">${hmusic_money(invoice[3])}</div>
+                </div>
             </div>
-            <div class="card invoice-breakdown">
-                <div class="label">Package</div>
-                <div class="value">{invoice[2]:g} lessons</div>
-                <div class="line"><span>Subtotal</span><b>${hmusic_money(subtotal_amount)}</b></div>
-                <div class="line"><span>Discount {escape(discount_code)}</span><b>-${hmusic_money(discount_amount)}</b></div>
-                <div class="line total"><span>Amount Due</span><b>${hmusic_money(invoice[3])}</b></div>
-            </div>
-            <p><b>Status:</b> {invoice[4]}</p>
-            <p><b>Due Date:</b> {invoice[8] or ''}</p>
-            <p>{invoice[9] or ''}</p>
-
-            <h2>Payment</h2>
+            {package_options_html}
             {online_payment_html}
-            <p class="hint">Card payments open a secure checkout when available. Bank/ACH, Zelle, and PayPal may also be offered by H-Music.</p>
-            <p>Please use the manual confirmation below only if you paid outside the online payment flow.</p>
-            <form method="POST">
-                <input type="hidden" name="action" value="notify_paid">
-                Payment note (optional):<br>
-                <textarea name="payment_note" rows="3" placeholder="Example: Zelle sent today, check number, or payment reference."></textarea>
-                <button type="submit">I Paid / Notify Owner</button>
-                <a class="button secondary" href="/parent_dashboard">Back</a>
-            </form>
-
-            <h2>Auto-Renew</h2>
-            <form method="POST">
-                <input type="hidden" name="action" value="save_autorenew">
-                Auto-renew after package ends:<br>
-                <select name="auto_renew_enabled">
-                    <option value="0" {checked_no}>No - remind me first</option>
-                    <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
-                </select>
-                Lessons per renewal:<br>
-                <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
-                <button type="submit">Save Auto-Renew</button>
-            </form>
+            <p class="hint">Lessons are added after payment is confirmed or ACH succeeds.</p>
+            <details class="auto-renew-panel">
+                <summary>Auto-renew settings</summary>
+                <form method="POST">
+                    <input type="hidden" name="action" value="save_autorenew">
+                    <select name="auto_renew_enabled">
+                        <option value="0" {checked_no}>No - remind me first</option>
+                        <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
+                    </select>
+                    <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
+                    <button type="submit">Save Auto-Renew</button>
+                </form>
+            </details>
+            <a class="back-link" href="/parent_profile">Back to invoices</a>
         </div>
-        {parent_bottom_nav("home")}
+        {parent_bottom_nav("profile")}
     </body>
     </html>
     """
@@ -24764,6 +25992,37 @@ def parent_profile():
                 color:var(--muted);
                 font-size:13px;
                 font-weight:650;
+            }}
+            .parent-bottom-nav {{
+                position:fixed;
+                left:0;
+                right:0;
+                bottom:0;
+                display:grid;
+                grid-template-columns:repeat(4,1fr);
+                gap:4px;
+                padding:7px 10px calc(7px + env(safe-area-inset-bottom));
+                background:rgba(255,255,255,.97);
+                border-top:1px solid #e5e7eb;
+                box-shadow:0 -4px 18px rgba(0,0,0,.08);
+                z-index:20;
+            }}
+            .parent-bottom-nav a {{
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                min-height:38px;
+                text-align:center;
+                color:#6b7280;
+                font-size:11px;
+                font-weight:850;
+                padding:8px 4px;
+                border-radius:8px;
+                text-decoration:none;
+            }}
+            .parent-bottom-nav a.active {{
+                color:#1d65ad;
+                background:#eef6ff;
             }}
             @media (min-width:720px) {{
                 .container {{ padding-left:24px; padding-right:24px; }}
@@ -26230,14 +27489,15 @@ def renewal_emails():
     rows = ""
 
     for s in students:
+        student_url_name = quote(str(s[0] or ""))
         rows += f"""
         <tr>
-            <td><a href="/student/{s[0]}">{s[0]}</a></td>
-            <td>{s[1]}</td>
-            <td>{s[2]}</td>
+            <td><a href="/student/{student_url_name}">{escape(str(s[0] or ""))}</a></td>
+            <td>{escape(str(s[1] or ""))}</td>
+            <td>{escape(str(s[2] or ""))}</td>
             <td>
-                <a href="/send_renewal_email/{s[0]}">
-                    Send Renewal Email
+                <a href="/review_renewal_email/{student_url_name}">
+                    Review Renewal
                 </a>
             </td>
         </tr>
@@ -26263,8 +27523,230 @@ def renewal_emails():
     """
 
 
-@app.route("/send_renewal_email/<student_name>")
+def renewal_package_count(lessons_left, package_size=10):
+    try:
+        balance = int(float(lessons_left or 0))
+    except (TypeError, ValueError):
+        balance = 0
+    if balance < 0:
+        overage = abs(balance)
+        return max(1, (overage + package_size - 1) // package_size)
+    if balance <= 2:
+        return 1
+    return 0
+
+
+def renewal_email_copy(student_name, lessons_left, package_count, package_size=10):
+    try:
+        balance = int(float(lessons_left or 0))
+    except (TypeError, ValueError):
+        balance = 0
+
+    first_name = str(student_name or "your student").split()[0] if student_name else "your student"
+    package_word = "package" if package_count == 1 else "packages"
+    subject = f"{student_name} - Lesson Package Renewal"
+
+    if balance < 0:
+        overage = abs(balance)
+        balance_line = (
+            f"Our records show that {first_name} has used {overage} lesson"
+            f"{'' if overage == 1 else 's'} beyond the current package balance. "
+            f"Since H-Music packages are {package_size} lessons each, this renewal is for "
+            f"{package_count} {package_word}."
+        )
+    elif balance == 0:
+        balance_line = (
+            f"Our records show that {first_name}'s current package balance is at 0 lessons. "
+            f"This renewal is for {package_count} {package_word}."
+        )
+    else:
+        balance_line = (
+            f"Our records show that {first_name} currently has {balance} lesson"
+            f"{'' if balance == 1 else 's'} remaining. "
+            f"This renewal is for {package_count} {package_word}."
+        )
+
+    body = f"""Dear Parent,
+
+This is a friendly reminder that {first_name}'s lesson package is due for renewal.
+
+{balance_line}
+
+Please open the H-Music parent app to review the renewal details and payment information:
+
+https://hmusic-crm.onrender.com/parent_login
+
+If you have any questions before completing the renewal, please reply to this email.
+
+Thank you,
+H-Music
+"""
+    return subject, body
+
+
+@app.route("/review_renewal_email/<student_name>")
+def review_renewal_email(student_name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v145_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT name, parent_email, lessons_left
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+
+    student = cursor.fetchone()
+
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>"
+
+    name = student[0]
+    parent_email = student[1]
+    lessons_left = student[2]
+    conn.close()
+
+    package_size = 10
+    default_package_count = renewal_package_count(lessons_left, package_size)
+    package_options = ""
+    for count in range(1, 6):
+        selected = "selected" if count == default_package_count else ""
+        package_word = "package" if count == 1 else "packages"
+        label = f"{count} {package_word}"
+        if count == default_package_count:
+            label += " - system trigger"
+        package_options += f'<option value="{count}" {selected}>{label}</option>'
+
+    subject, email_text = renewal_email_copy(name, lessons_left, default_package_count, package_size)
+    try:
+        balance_int = int(float(lessons_left or 0))
+    except (TypeError, ValueError):
+        balance_int = 0
+    if balance_int < 0:
+        trigger_reason = (
+            f"Student is {abs(balance_int)} lessons over balance. "
+            f"At {package_size} lessons per package, this triggers {default_package_count} package"
+            f"{'' if default_package_count == 1 else 's'}."
+        )
+    else:
+        trigger_reason = (
+            f"Student has {balance_int} lesson{'' if balance_int == 1 else 's'} left, "
+            f"so the renewal queue triggers 1 package."
+        )
+
+    student_url_name = quote(str(name or ""))
+    missing_email_warning = ""
+    if not parent_email or "@" not in parent_email:
+        missing_email_warning = """
+        <div class="warning">This student does not have a valid parent email. Fix the student profile before sending.</div>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Review Renewal Email</title>
+        <style>
+            body {{ margin:0; background:#f5f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            .shell {{ max-width:1180px; margin:0 auto; padding:28px 24px 44px; }}
+            .head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }}
+            .eyebrow {{ display:inline-block; padding:4px 10px; border-radius:999px; background:#fff7ed; color:#9a5b13; font-weight:800; font-size:12px; margin-bottom:8px; }}
+            h1 {{ margin:0; font-size:32px; line-height:1.1; }}
+            p {{ color:#667085; line-height:1.45; }}
+            .actions {{ display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end; }}
+            .button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:10px 14px; border-radius:8px; border:1px solid #d9e0ea; background:#fff; color:#344054; font:inherit; font-weight:800; text-decoration:none; cursor:pointer; }}
+            button.primary {{ background:#1f6fb8; color:#fff; border-color:#1f6fb8; }}
+            .grid {{ display:grid; grid-template-columns:minmax(290px,390px) minmax(0,1fr); gap:16px; align-items:start; }}
+            .panel {{ background:#fff; border:1px solid #d9e0ea; border-radius:10px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.05); }}
+            h2 {{ margin:0 0 14px; font-size:20px; }}
+            .kv {{ display:grid; grid-template-columns:132px minmax(0,1fr); gap:8px 12px; padding:10px 0; border-bottom:1px solid #eef2f7; }}
+            .kv:last-child {{ border-bottom:0; }}
+            .label {{ color:#667085; }}
+            .value {{ font-weight:800; overflow-wrap:anywhere; }}
+            .trigger {{ margin-top:14px; padding:12px; border-radius:8px; border:1px solid #fed7aa; background:#fff7ed; line-height:1.45; }}
+            .trigger b {{ color:#9a5b13; }}
+            .info {{ margin-top:12px; padding:12px; border-radius:8px; border:1px solid #bfdbfe; background:#eef4ff; line-height:1.45; }}
+            .info b {{ color:#1f6fb8; }}
+            .warning {{ margin:12px 0; padding:12px; border-radius:8px; border:1px solid #fecaca; background:#fef2f2; color:#991b1b; font-weight:800; }}
+            label {{ display:block; color:#667085; font-weight:800; font-size:13px; margin:14px 0 6px; }}
+            select, input, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d9e0ea; border-radius:8px; padding:10px; font:inherit; }}
+            textarea {{ min-height:74px; resize:vertical; }}
+            .email-meta {{ display:grid; gap:8px; margin-bottom:12px; }}
+            .email-row {{ display:grid; grid-template-columns:70px minmax(0,1fr); gap:10px; color:#667085; }}
+            .email-row strong {{ color:#111827; overflow-wrap:anywhere; }}
+            pre {{ margin:0; white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid #d9e0ea; border-radius:8px; background:#fcfcfd; padding:15px; min-height:300px; font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+            .footer {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; flex-wrap:wrap; }}
+            .status {{ color:#166534; font-weight:800; }}
+            @media (max-width:820px) {{
+                .head {{ display:block; }}
+                .actions {{ justify-content:flex-start; margin-top:12px; }}
+                .grid {{ grid-template-columns:1fr; }}
+                .kv {{ grid-template-columns:1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="shell">
+            <div class="head">
+                <div>
+                    <div class="eyebrow">Owner review required</div>
+                    <h1>Review Renewal Email</h1>
+                    <p>Nothing sends until you review the package count and confirm.</p>
+                </div>
+                <div class="actions">
+                    <a class="button" href="/renewal_emails">Back to Queue</a>
+                    <a class="button" href="/student/{student_url_name}">Student Profile</a>
+                </div>
+            </div>
+            {missing_email_warning}
+            <form method="POST" action="/send_renewal_email/{student_url_name}">
+                <div class="grid">
+                    <section class="panel">
+                        <h2>Renewal Decision</h2>
+                        <div class="kv"><div class="label">Student</div><div class="value">{escape(str(name))}</div></div>
+                        <div class="kv"><div class="label">Parent email</div><div class="value">{escape(str(parent_email or ''))}</div></div>
+                        <div class="kv"><div class="label">Current balance</div><div class="value">{escape(str(lessons_left))} lessons</div></div>
+                        <div class="kv"><div class="label">Package size</div><div class="value">{package_size} lessons</div></div>
+                        <div class="trigger"><b>System trigger: {default_package_count} package{'' if default_package_count == 1 else 's'}</b><br>{escape(trigger_reason)}</div>
+                        <div class="info"><b>Email only</b><br>Payment details stay inside the parent app. This email sends the parent back to the app to review renewal details and payment information.</div>
+                        <label for="package_count">Package to send</label>
+                        <select id="package_count" name="package_count">
+                            {package_options}
+                        </select>
+                        <label for="custom_package_count">Custom package count</label>
+                        <input id="custom_package_count" name="custom_package_count" type="number" min="1" max="20" step="1" placeholder="Optional override">
+                        <label for="manager_note">Internal manager note</label>
+                        <textarea id="manager_note" name="manager_note">Balance reviewed. System triggered {default_package_count} package{'' if default_package_count == 1 else 's'}.</textarea>
+                    </section>
+                    <section class="panel">
+                        <h2>Email Preview</h2>
+                        <div class="email-meta">
+                            <div class="email-row"><span>To</span><strong>{escape(str(parent_email or ''))}</strong></div>
+                            <div class="email-row"><span>Subject</span><strong>{escape(subject)}</strong></div>
+                        </div>
+                        <pre>{escape(email_text)}</pre>
+                        <div class="footer">
+                            <div class="status">Ready after manager review</div>
+                            <button class="primary" type="submit">Send Email</button>
+                        </div>
+                    </section>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/send_renewal_email/<student_name>", methods=["GET", "POST"])
 def send_renewal_email(student_name):
+    if request.method != "POST":
+        return redirect(f"/review_renewal_email/{quote(str(student_name or ''))}")
+
     if not require_owner():
         return redirect("/owner_login")
 
@@ -26289,55 +27771,73 @@ def send_renewal_email(student_name):
     parent_email = student[1]
     lessons_left = student[2]
 
-    email_text = f"""
-Dear Parent,
-
-This is a friendly reminder that {name} currently has {lessons_left} lesson(s) remaining.
-
-To avoid any interruption in scheduling, please renew the lesson package when convenient.
-
-Thank you,
-H-Music
-"""
-
-    msg = EmailMessage()
-    msg["Subject"] = f"{name}'s Lesson Package Renewal Reminder"
-    msg["From"] = "huangzhenwei606@gmail.com"
-    msg["To"] = parent_email
-    msg.set_content(email_text)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(
-            "huangzhenwei606@gmail.com",
-            os.getenv("GMAIL_APP_PASSWORD")
+    def record_renewal_status(status):
+        cursor.execute("""
+        INSERT INTO renewal_email_logs (
+            student_name,
+            parent_email,
+            lessons_left,
+            sent_at,
+            status
         )
-        smtp.send_message(msg)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            name,
+            parent_email,
+            lessons_left,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            status
+        ))
+        conn.commit()
 
-    cursor.execute("""
-    INSERT INTO renewal_email_logs (
-        student_name,
-        parent_email,
-        lessons_left,
-        sent_at,
-        status
-    )
-    VALUES (?, ?, ?, ?, ?)
-    """, (
-        name,
-        parent_email,
-        lessons_left,
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "sent"
-    ))
+    package_size = 10
+    default_package_count = renewal_package_count(lessons_left, package_size)
+    package_count_raw = (request.form.get("custom_package_count") or request.form.get("package_count") or "").strip()
+    try:
+        package_count = int(float(package_count_raw))
+    except (TypeError, ValueError):
+        package_count = default_package_count
+    package_count = max(1, min(package_count, 20))
+    subject, email_text = renewal_email_copy(name, lessons_left, package_count, package_size)
 
-    conn.commit()
+    if not parent_email or "@" not in parent_email:
+        record_renewal_status("failed: missing parent email")
+        conn.close()
+        return f"""
+        <h1>Renewal Email Not Sent</h1>
+        <p>{escape(str(name))} does not have a valid parent email.</p>
+        <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
+        """, 400
+
+    subject = f"{name}'s Lesson Package Renewal Reminder"
+    try:
+        sent, response = send_email_delivery(parent_email, subject, email_text, "")
+    except Exception as exc:
+        sent = False
+        response = f"Email send failed: {exc}"
+
+    if not sent:
+        record_renewal_status(f"failed: {response}; packages={package_count}"[:200])
+        conn.close()
+        return f"""
+        <h1>Renewal Email Not Sent</h1>
+        <p>Student: {escape(str(name))}</p>
+        <p>To: {escape(str(parent_email))}</p>
+        <p>Package count: {package_count}</p>
+        <p><b>Reason:</b> {escape(str(response))}</p>
+        <pre>{escape(email_text)}</pre>
+        <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
+        """, 502
+
+    record_renewal_status(f"sent; packages={package_count}")
     conn.close()
 
     return f"""
     <h1>Renewal Email Sent</h1>
-    <p>Student: {name}</p>
-    <p>To: {parent_email}</p>
-    <pre>{email_text}</pre>
+    <p>Student: {escape(str(name))}</p>
+    <p>To: {escape(str(parent_email))}</p>
+    <p>Package count: {package_count}</p>
+    <pre>{escape(email_text)}</pre>
     <p><a href="/renewal_emails">Back to Renewal Queue</a></p>
     """
 
@@ -33146,6 +34646,7 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "discount_code", "discount_code TEXT")
     add_column_if_missing("invoices", "discount_amount", "discount_amount REAL DEFAULT 0")
     add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
+    add_column_if_missing("invoices", "package_options", "package_options TEXT")
     add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
     add_column_if_missing("schedule", "policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0")
@@ -35273,6 +36774,7 @@ def prepare_database_for_request():
     # run automatic backups when explicitly enabled in Render env vars.
     if os.environ.get("HMUSIC_ENABLE_AUTO_BACKUP") == "1":
         maybe_run_daily_backup()
+    maybe_run_daily_lesson_reminders()
     public_paths = (
         "/static/",
         "/favicon.ico",
