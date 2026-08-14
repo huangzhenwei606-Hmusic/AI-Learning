@@ -7076,6 +7076,25 @@ def calendar():
 
             /* ---- top bar ---- */
             .cal-shell{{display:flex;flex-direction:column;min-height:100vh}}
+            .owner-calendar-sticky{{
+                position:-webkit-sticky;
+                position:sticky;
+                top:0;
+                z-index:80;
+                background:rgba(255,255,255,.97);
+                -webkit-backdrop-filter:blur(10px);
+                backdrop-filter:blur(10px);
+                border-bottom:1px solid var(--line);
+                box-shadow:0 8px 18px rgba(15,23,42,.05);
+            }}
+            .owner-calendar-sticky .cal-topbar,
+            .owner-calendar-sticky .filter-bar,
+            .owner-calendar-sticky .legend,
+            .owner-calendar-sticky .month-nav{{
+                background:rgba(255,255,255,.97);
+            }}
+            .owner-calendar-sticky .month-nav{{padding-top:8px;padding-bottom:8px}}
+            .owner-calendar-sticky .success-strip{{margin-bottom:8px}}
             .cal-topbar{{display:flex;align-items:center;justify-content:space-between;
                          padding:10px 18px;background:var(--surface);
                          border-bottom:1px solid var(--line);gap:12px;flex-wrap:wrap}}
@@ -7424,6 +7443,7 @@ def calendar():
     </head>
     <body>
     <div class="cal-shell">
+      <div class="owner-calendar-sticky">
 
       <!-- Top bar -->
       <div class="cal-topbar">
@@ -7487,6 +7507,7 @@ def calendar():
         <i class="ti ti-check" style="font-size:14px"></i>
         <span id="successMsg"></span>
       </div>
+      </div><!-- /owner-calendar-sticky -->
 
       <!-- Calendar grid -->
       <div class="cal-grid-wrap">
