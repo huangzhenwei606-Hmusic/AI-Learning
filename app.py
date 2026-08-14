@@ -5236,10 +5236,8 @@ def student_detail(name):
         credit_card_html = f"""
         <form class="credit-set-form" method="POST" action="/set_student_credits/{student_url_name}">
             <span>Credits</span>
-            <div class="credit-row">
-                <input type="number" step="0.5" name="lessons_left" value="{escape(credits_value, quote=True)}" aria-label="Credits">
-                <button type="submit">Save</button>
-            </div>
+            <input type="number" step="0.5" name="lessons_left" value="{escape(credits_value, quote=True)}" aria-label="Credits">
+            <button type="submit">Save</button>
         </form>
         """
     teacher_link_form = ""
@@ -5487,11 +5485,10 @@ def student_detail(name):
             .kpi {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; }}
             .kpi span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
             .kpi b {{ display:block; font-size:24px; margin-top:4px; }}
-            .credit-set-form {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; margin:0; }}
+            .credit-set-form {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; margin:0; display:grid; gap:8px; align-content:start; }}
             .credit-set-form span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
-            .credit-row {{ display:grid; grid-template-columns:minmax(0, 1fr) 54px; gap:6px; margin-top:4px; }}
-            .credit-row input {{ width:100%; min-width:0; height:32px; border:1px solid var(--border); border-radius:8px; padding:0 8px; font-size:20px; font-weight:800; box-sizing:border-box; background:white; }}
-            .credit-row button {{ min-height:32px; border-radius:8px; padding:0 8px; font-size:12px; }}
+            .credit-set-form input {{ width:100%; min-width:0; height:42px; border:1px solid var(--border); border-radius:8px; padding:0 12px; font-size:24px; font-weight:800; box-sizing:border-box; background:white; color:var(--text); text-align:center; }}
+            .credit-set-form button {{ min-height:34px; border-radius:8px; padding:0 10px; font-size:12px; }}
             .info-list {{ display:grid; gap:10px; margin-top:12px; }}
             .info-line {{ display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:start; }}
             .info-line span {{ color:var(--muted); font-size:13px; }}
