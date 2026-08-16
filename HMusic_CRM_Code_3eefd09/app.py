@@ -211,6 +211,21 @@ def add_column_if_missing(cursor, table, column_name, column_sql):
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
 
 
+def safe_minutes(value, default=0):
+    if value in (None, ""):
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        match = re.search(r"\d+(?:\.\d+)?", str(value))
+        if not match:
+            return default
+        try:
+            return int(float(match.group(0)))
+        except (TypeError, ValueError):
+            return default
+
+
 def migrate_legacy_passwords(cursor, table, limit=None):
     if os.environ.get("HMUSIC_RUN_PASSWORD_MIGRATION") != "1":
         return 0
@@ -1817,7 +1832,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     students = cursor.fetchall()
     conn.close()
     room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in classrooms)
-    course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {int(c[2] or 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
+    course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
     student_options = ''.join(
         f'<option value="{escape(str(r[0]))}">{escape(hmusic_student_parent_label(r[0], r[1]))}</option>'
         for r in students
@@ -6559,12 +6574,13 @@ def calendar():
     quick_course_options = ""
     for c in quick_course_rows:
         group_label = "Group" if c[7] else "Private"
-        quick_course_options += f'<option value="{c[0]}">{escape(str(c[1] or "Course"))} · {int(c[2] or 0)}m · {group_label}</option>'
+        duration_minutes = safe_minutes(c[2], 0)
+        quick_course_options += f'<option value="{c[0]}">{escape(str(c[1] or "Course"))} · {duration_minutes}m · {group_label}</option>'
     quick_course_data_json = json.dumps([
         {
             "id": c[0],
             "name": c[1],
-            "duration": c[2] or 30,
+            "duration": safe_minutes(c[2], 30),
             "student_billing_method": c[3],
             "student_price": c[4] or 0,
             "is_group": c[7] or 0,
@@ -6668,8 +6684,9 @@ def calendar():
 
     course_legend_html = ""
     for course_name, duration, is_group, display_color in course_legend_rows:
-        color = normalize_hex_color(display_color) or default_course_color(course_name, duration, is_group)
-        label = f"{course_name} {int(duration or 0)}m" if duration else str(course_name or "Course")
+        legend_minutes = safe_minutes(duration, 0)
+        color = normalize_hex_color(display_color) or default_course_color(course_name, legend_minutes, is_group)
+        label = f"{course_name} {legend_minutes}m" if legend_minutes else str(course_name or "Course")
         course_legend_html += f"""
         <span class="leg">
           <span class="leg-bar" style="background:{course_color_background(color)};border-left-color:{color}"></span>
@@ -11556,7 +11573,43 @@ def ensure_calendar_lesson_panel_schema():
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS course_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            duration INTEGER DEFAULT 30,
+            student_billing_method TEXT DEFAULT 'per_lesson',
+            student_price REAL DEFAULT 0,
+            teacher_billing_method TEXT DEFAULT 'per_lesson',
+            teacher_pay REAL DEFAULT 0,
+            is_group INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            display_color TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
     for column_name, column_sql in [
+        ("course_type_id", "course_type_id INTEGER"),
+        ("course_type_name", "course_type_name TEXT"),
+        ("duration", "duration INTEGER DEFAULT 30"),
+        ("student_billing_method", "student_billing_method TEXT"),
+        ("student_price", "student_price REAL"),
+        ("teacher_billing_method", "teacher_billing_method TEXT"),
+        ("teacher_pay", "teacher_pay REAL"),
+        ("student_charge_amount", "student_charge_amount REAL"),
+        ("teacher_pay_amount", "teacher_pay_amount REAL"),
+        ("is_group", "is_group INTEGER DEFAULT 0"),
+        ("status", "status TEXT DEFAULT 'scheduled'"),
+        ("charge_lessons", "charge_lessons REAL DEFAULT 0"),
+        ("location", "location TEXT"),
+        ("location_id", "location_id INTEGER"),
+        ("room_id", "room_id INTEGER"),
+        ("notes", "notes TEXT"),
+        ("group_size", "group_size INTEGER"),
+        ("group_student_names", "group_student_names TEXT"),
+        ("billing_decision", "billing_decision TEXT"),
+        ("custom_lesson_count", "custom_lesson_count INTEGER"),
         ("private_note", "private_note TEXT"),
         ("homework_assignment", "homework_assignment TEXT"),
         ("parent_lesson_reminder_enabled", "parent_lesson_reminder_enabled INTEGER DEFAULT 0"),
@@ -11565,6 +11618,20 @@ def ensure_calendar_lesson_panel_schema():
         ("owner_calendar_updated_at", "owner_calendar_updated_at TEXT"),
     ]:
         add_column_if_missing(cursor, "schedule", column_name, column_sql)
+    for column_name, column_sql in [
+        ("name", "name TEXT"),
+        ("duration", "duration INTEGER DEFAULT 30"),
+        ("student_billing_method", "student_billing_method TEXT DEFAULT 'per_lesson'"),
+        ("student_price", "student_price REAL DEFAULT 0"),
+        ("teacher_billing_method", "teacher_billing_method TEXT DEFAULT 'per_lesson'"),
+        ("teacher_pay", "teacher_pay REAL DEFAULT 0"),
+        ("is_group", "is_group INTEGER DEFAULT 0"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("display_color", "display_color TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "course_types", column_name, column_sql)
     for column_name, column_sql in [
         ("schedule_id", "schedule_id INTEGER"),
         ("private_note", "private_note TEXT"),
@@ -11575,6 +11642,11 @@ def ensure_calendar_lesson_panel_schema():
         add_column_if_missing(cursor, "lessons", column_name, column_sql)
     try:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_schedule_id ON lessons(schedule_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule(date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_teacher ON schedule(teacher)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_course_type_id ON schedule(course_type_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_location_id ON schedule(location_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_room_id ON schedule(room_id)")
     except sqlite3.Error:
         pass
     conn.commit()
@@ -14534,10 +14606,7 @@ def format_lesson_time_range(time_text, duration_minutes=None):
     start_minutes = minutes_from_time_text(time_text)
     if start_minutes is None:
         return time_text or ""
-    try:
-        duration = int(float(duration_minutes or 30))
-    except (TypeError, ValueError):
-        duration = 30
+    duration = safe_minutes(duration_minutes, 30)
     start_label = format_display_time(time_text)
     end_label = format_display_time(time_text_from_minutes((start_minutes + duration) % (24 * 60)))
     return f"{start_label}-{end_label}"
@@ -14612,10 +14681,7 @@ def get_auto_open_slots(teachers=None, start_date=None, days_ahead=60, step_minu
         if start_minute is None:
             continue
 
-        try:
-            duration = int(lesson[3] or 30)
-        except:
-            duration = 30
+        duration = safe_minutes(lesson[3], 30)
 
         key = (lesson[0], lesson[1])
         by_teacher_day.setdefault(key, []).append({
@@ -19264,10 +19330,7 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
     if target_start is None:
         return {"has_conflict": False, "message": ""}
 
-    try:
-        duration = int(duration or 30)
-    except:
-        duration = 30
+    duration = safe_minutes(duration, 30)
 
     target_end = target_start + duration
 
@@ -19302,10 +19365,7 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
         if row_start is None:
             continue
 
-        try:
-            row_duration = int(row[5] or 30)
-        except:
-            row_duration = 30
+        row_duration = safe_minutes(row[5], 30)
 
         row_end = row_start + row_duration
 
