@@ -12871,23 +12871,44 @@ def ensure_calendar_lesson_panel_schema():
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    for column_name, column_sql in [
-        ("private_note", "private_note TEXT"),
-        ("homework_assignment", "homework_assignment TEXT"),
-        ("parent_lesson_reminder_enabled", "parent_lesson_reminder_enabled INTEGER DEFAULT 0"),
-        ("practice_reminder_enabled", "practice_reminder_enabled INTEGER DEFAULT 0"),
-        ("low_balance_alert_enabled", "low_balance_alert_enabled INTEGER DEFAULT 0"),
-        ("owner_calendar_updated_at", "owner_calendar_updated_at TEXT"),
-    ]:
-        add_column_if_missing(cursor, "schedule", column_name, column_sql)
-    for column_name, column_sql in [
-        ("schedule_id", "schedule_id INTEGER"),
-        ("private_note", "private_note TEXT"),
-        ("created_by", "created_by TEXT"),
-        ("created_at", "created_at TEXT"),
-        ("updated_at", "updated_at TEXT"),
-    ]:
-        add_column_if_missing(cursor, "lessons", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        classroom TEXT,
+        location TEXT,
+        duration INTEGER DEFAULT 30,
+        notes TEXT,
+        schedule_type TEXT DEFAULT 'weekly',
+        total_lessons INTEGER DEFAULT 10,
+        weekday TEXT,
+        package_type TEXT,
+        status TEXT DEFAULT 'scheduled',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT,
+        teacher TEXT,
+        lesson_date TEXT,
+        lesson_time TEXT,
+        status TEXT DEFAULT 'scheduled',
+        lesson_content TEXT,
+        performance TEXT,
+        homework_assignment TEXT,
+        private_note TEXT,
+        schedule_id INTEGER,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS group_schedule_students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12905,15 +12926,189 @@ def ensure_calendar_lesson_panel_schema():
         updated_at TEXT
     )
     """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_open_slots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher TEXT,
+        slot_date TEXT,
+        slot_time TEXT,
+        classroom TEXT,
+        location_id INTEGER,
+        room_id INTEGER,
+        notes TEXT,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS studio_locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        location_name TEXT,
+        address TEXT,
+        notes TEXT,
+        sort_order INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS studio_rooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        location_id INTEGER,
+        room_name TEXT,
+        notes TEXT,
+        sort_order INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS course_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        duration INTEGER DEFAULT 30,
+        format TEXT DEFAULT 'Private',
+        active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
     for column_name, column_sql in [
+        ("course_type_id", "course_type_id INTEGER"),
+        ("course_type_name", "course_type_name TEXT"),
+        ("is_group", "is_group INTEGER DEFAULT 0"),
+        ("group_size", "group_size INTEGER DEFAULT 1"),
+        ("group_student_names", "group_student_names TEXT"),
+        ("location_id", "location_id INTEGER"),
+        ("room_id", "room_id INTEGER"),
+        ("charge_lessons", "charge_lessons REAL DEFAULT 1"),
+        ("student_billing_method", "student_billing_method TEXT"),
+        ("student_price", "student_price REAL DEFAULT 0"),
+        ("student_charge_amount", "student_charge_amount REAL DEFAULT 0"),
+        ("billing_decision", "billing_decision TEXT"),
+        ("custom_lesson_count", "custom_lesson_count INTEGER"),
+        ("teacher_billing_method", "teacher_billing_method TEXT"),
+        ("teacher_pay", "teacher_pay REAL DEFAULT 0"),
+        ("teacher_pay_amount", "teacher_pay_amount REAL DEFAULT 0"),
+        ("auto_invoice_enabled", "auto_invoice_enabled INTEGER DEFAULT 0"),
+        ("auto_invoice_hours_before", "auto_invoice_hours_before INTEGER DEFAULT 12"),
+        ("auto_invoice_payment_methods", "auto_invoice_payment_methods TEXT"),
+        ("private_note", "private_note TEXT"),
+        ("homework_assignment", "homework_assignment TEXT"),
+        ("lesson_note", "lesson_note TEXT"),
+        ("homework", "homework TEXT"),
+        ("parent_lesson_reminder_enabled", "parent_lesson_reminder_enabled INTEGER DEFAULT 0"),
+        ("practice_reminder_enabled", "practice_reminder_enabled INTEGER DEFAULT 0"),
+        ("low_balance_alert_enabled", "low_balance_alert_enabled INTEGER DEFAULT 0"),
+        ("owner_calendar_updated_at", "owner_calendar_updated_at TEXT"),
+        ("series_id", "series_id TEXT"),
+        ("recurrence_scope", "recurrence_scope TEXT"),
+        ("recurrence_id", "recurrence_id TEXT"),
+        ("repeat_group_id", "repeat_group_id TEXT"),
+        ("cancellation_reason", "cancellation_reason TEXT"),
+        ("cancelled_at", "cancelled_at TEXT"),
+        ("policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0"),
+        ("pending_fee_amount", "pending_fee_amount REAL DEFAULT 0"),
+    ]:
+        add_column_if_missing(cursor, "schedule", column_name, column_sql)
+    for column_name, column_sql in [
+        ("schedule_id", "schedule_id INTEGER"),
+        ("private_note", "private_note TEXT"),
+        ("homework_assignment", "homework_assignment TEXT"),
+        ("lesson_content", "lesson_content TEXT"),
+        ("performance", "performance TEXT"),
+        ("student_name", "student_name TEXT"),
+        ("teacher", "teacher TEXT"),
+        ("lesson_date", "lesson_date TEXT"),
+        ("lesson_time", "lesson_time TEXT"),
+        ("status", "status TEXT DEFAULT 'scheduled'"),
+        ("lesson_note", "lesson_note TEXT"),
+        ("homework", "homework TEXT"),
+        ("created_by", "created_by TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "lessons", column_name, column_sql)
+    for column_name, column_sql in [
+        ("student_id", "student_id INTEGER"),
+        ("parent_name", "parent_name TEXT"),
+        ("credit_units", "credit_units REAL DEFAULT 1"),
+        ("student_rate", "student_rate REAL DEFAULT 0"),
+        ("billing_rule", "billing_rule TEXT DEFAULT 'existing_credits'"),
+        ("billing_status", "billing_status TEXT DEFAULT 'planned'"),
         ("attendance_status", "attendance_status TEXT DEFAULT 'scheduled'"),
         ("lesson_note", "lesson_note TEXT"),
         ("homework", "homework TEXT"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
     ]:
         add_column_if_missing(cursor, "group_schedule_students", column_name, column_sql)
+
+    for table_name, columns in [
+        ("studio_locations", [
+            ("location_name", "location_name TEXT"),
+            ("address", "address TEXT"),
+            ("notes", "notes TEXT"),
+            ("sort_order", "sort_order INTEGER DEFAULT 0"),
+            ("active", "active INTEGER DEFAULT 1"),
+            ("created_at", "created_at TEXT"),
+            ("updated_at", "updated_at TEXT"),
+        ]),
+        ("studio_rooms", [
+            ("location_id", "location_id INTEGER"),
+            ("room_name", "room_name TEXT"),
+            ("notes", "notes TEXT"),
+            ("sort_order", "sort_order INTEGER DEFAULT 0"),
+            ("active", "active INTEGER DEFAULT 1"),
+            ("created_at", "created_at TEXT"),
+            ("updated_at", "updated_at TEXT"),
+        ]),
+        ("teacher_open_slots", [
+            ("teacher", "teacher TEXT"),
+            ("slot_date", "slot_date TEXT"),
+            ("slot_time", "slot_time TEXT"),
+            ("classroom", "classroom TEXT"),
+            ("location_id", "location_id INTEGER"),
+            ("room_id", "room_id INTEGER"),
+            ("notes", "notes TEXT"),
+            ("active", "active INTEGER DEFAULT 1"),
+            ("created_at", "created_at TEXT"),
+            ("updated_at", "updated_at TEXT"),
+        ]),
+        ("course_types", [
+            ("name", "name TEXT"),
+            ("duration", "duration INTEGER DEFAULT 30"),
+            ("format", "format TEXT DEFAULT 'Private'"),
+            ("is_group", "is_group INTEGER DEFAULT 0"),
+            ("display_color", "display_color TEXT"),
+            ("student_billing_method", "student_billing_method TEXT"),
+            ("student_price", "student_price REAL DEFAULT 0"),
+            ("student_rate", "student_rate REAL DEFAULT 0"),
+            ("price_type", "price_type TEXT"),
+            ("pricing_basis", "pricing_basis TEXT"),
+            ("billing_decision", "billing_decision TEXT"),
+            ("package_type", "package_type TEXT"),
+            ("teacher_billing_method", "teacher_billing_method TEXT"),
+            ("teacher_pay", "teacher_pay REAL DEFAULT 0"),
+            ("active", "active INTEGER DEFAULT 1"),
+            ("sort_order", "sort_order INTEGER DEFAULT 0"),
+            ("created_at", "created_at TEXT"),
+            ("updated_at", "updated_at TEXT"),
+        ]),
+    ]:
+        for column_name, column_sql in columns:
+            add_column_if_missing(cursor, table_name, column_name, column_sql)
+
     try:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_schedule_id ON lessons(schedule_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_group_schedule_students_schedule_id ON group_schedule_students(schedule_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_teacher_date ON schedule(teacher, lesson_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_teacher_open_slots_teacher_date ON teacher_open_slots(teacher, slot_date)")
     except sqlite3.Error:
         pass
     conn.commit()
