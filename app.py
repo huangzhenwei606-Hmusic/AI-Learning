@@ -7638,7 +7638,8 @@ def calendar():
                     <td>
                       <select class="pop-sel group-rule" name="group_billing_rule">
                         <option value="existing_credits">Use credits</option>
-                        <option value="invoice_later">Charge later</option>
+                        <option value="invoice_later">Invoice later</option>
+                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
                         <option value="makeup_credit">Makeup</option>
                         <option value="no_charge">No charge</option>
                       </select>
@@ -7652,7 +7653,8 @@ def calendar():
                     <td>
                       <select class="pop-sel group-rule" name="group_billing_rule">
                         <option value="existing_credits">Use credits</option>
-                        <option value="invoice_later">Charge later</option>
+                        <option value="invoice_later">Invoice later</option>
+                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
                         <option value="makeup_credit">Makeup</option>
                         <option value="no_charge">No charge</option>
                       </select>
@@ -7664,7 +7666,7 @@ def calendar():
               <button class="group-compact-add" type="button" onclick="addGroupStudentRow()">+ Add student</button>
               <input type="hidden" name="group_size" id="popGroupSize">
               <input type="hidden" name="group_student_names" id="popGroupStudentNames">
-              <div class="group-billing-note">Saving this schedule will not create invoices. Charge later items can be invoiced later from Student or Family Billing.</div>
+              <div class="group-billing-note">Saving this schedule will not create invoices immediately. Invoice later and Auto invoice per lesson items can be managed from Student or Family Billing.</div>
             </div>
             <div class="pop-summary" id="popPriceSummary"></div>
           </div>
@@ -7673,12 +7675,13 @@ def calendar():
             <h3>Billing</h3>
             <label class="pop-label">Billing decision</label>
             <select class="pop-sel" name="billing_decision" id="popBillingDecision" onchange="updateBillingControls()">
-              <option value="existing_credits">Use existing credits</option>
+              <option value="existing_credits">Use credits</option>
+              <option value="invoice_later">Invoice later</option>
+              <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
               <option value="new_package">Create new package</option>
               <option value="trial_free">Free trial</option>
               <option value="makeup_credit">Use makeup credit</option>
               <option value="no_charge">No charge</option>
-              <option value="invoice_later">Invoice later</option>
               <option value="custom_price">Custom price</option>
             </select>
             <div class="pop-row">
@@ -7820,7 +7823,7 @@ def calendar():
             <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
             <label class="full panel-private-billing-field"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
             <label class="panel-private-billing-field"><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
-            <label class="panel-private-billing-field"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
+            <label class="panel-private-billing-field"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="custom_price">Custom price</option></select></label>
             <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following">This and all following lessons</option></select></label>
             <div class="detail-sync" id="panelBillingPreview">Student app + invoice will use the saved schedule price.</div>
           </div>
@@ -7966,7 +7969,7 @@ def calendar():
     }}
     function setPanelStatus(st) {{ paintPanelStatus(st); saveLessonPanel(true); }}
     function billingRuleLabel(value) {{
-      return value === 'invoice_later' ? 'Invoice later' : value === 'makeup_credit' ? 'Makeup credit' : value === 'no_charge' ? 'No charge' : 'Use credits';
+      return value === 'auto_invoice_per_lesson' ? 'Auto invoice per lesson' : value === 'invoice_later' ? 'Invoice later' : value === 'makeup_credit' ? 'Makeup credit' : value === 'no_charge' ? 'No charge' : 'Use credits';
     }}
     function renderPanelGroupRoster(lesson) {{
       const section = document.getElementById('panelGroupRosterSection');
@@ -7994,7 +7997,7 @@ def calendar():
         const rate = Number(student.student_rate || lesson.student_price || 0);
         const billingRule = student.billing_rule || 'existing_credits';
         const attendance = student.attendance_status || lesson.status || 'scheduled';
-        const ruleOptions = ['existing_credits','invoice_later','makeup_credit','no_charge'].map(rule =>
+        const ruleOptions = ['existing_credits','invoice_later','auto_invoice_per_lesson','makeup_credit','no_charge'].map(rule =>
           `<option value="${{rule}}" ${{rule === billingRule ? 'selected' : ''}}>${{billingRuleLabel(rule)}}</option>`
         ).join('');
         const statusOptions = ['scheduled','present','no_show','last_min_cancel','excused_24h'].map(status =>
@@ -8262,14 +8265,15 @@ def calendar():
     }}
     function billingLabel(value) {{
       return {{
-        existing_credits: 'Use existing credits',
+        existing_credits: 'Use credits',
         new_package: 'Create new package',
         trial_free: 'Free trial',
         makeup_credit: 'Use makeup credit',
         no_charge: 'No charge',
         invoice_later: 'Invoice later',
+        auto_invoice_per_lesson: 'Auto invoice per lesson',
         custom_price: 'Custom price'
-      }}[value] || value || 'Use existing credits';
+      }}[value] || value || 'Use credits';
     }}
     function updateBillingControls() {{
       const isGroup = isQuickGroupMode();
@@ -8362,7 +8366,8 @@ def calendar():
           <td>
             <select class="pop-sel group-rule" name="group_billing_rule">
               <option value="existing_credits">Use credits</option>
-              <option value="invoice_later">Charge later</option>
+              <option value="invoice_later">Invoice later</option>
+              <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
               <option value="makeup_credit">Makeup</option>
               <option value="no_charge">No charge</option>
             </select>
@@ -9363,7 +9368,7 @@ def add_schedule():
             except Exception:
                 student_rate_value = 0
             billing_rule = (raw_group_rules[idx] if idx < len(raw_group_rules) else "existing_credits") or "existing_credits"
-            if billing_rule not in ("existing_credits", "invoice_later", "makeup_credit", "no_charge"):
+            if billing_rule not in ("existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge"):
                 billing_rule = "existing_credits"
             group_participants.append({
                 "student_name": participant_name,
@@ -9427,7 +9432,7 @@ def add_schedule():
                     "student_name": name,
                     "credit_units": 1,
                     "student_rate": 0,
-                    "billing_rule": billing_decision if billing_decision in ("existing_credits", "invoice_later", "makeup_credit", "no_charge") else "existing_credits",
+                    "billing_rule": billing_decision if billing_decision in ("existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge") else "existing_credits",
                 }
                 for name in parsed_names
             ]
@@ -9510,6 +9515,7 @@ def add_schedule():
             "makeup_credit": "Use makeup credit",
             "no_charge": "No charge",
             "invoice_later": "Invoice later",
+            "auto_invoice_per_lesson": "Auto invoice per lesson",
             "custom_price": "Custom price",
         }
         if teacher_portal_schedule:
@@ -9631,6 +9637,7 @@ def add_schedule():
                     billing_status = {
                         "existing_credits": "deduct_from_package",
                         "invoice_later": "needs_invoice",
+                        "auto_invoice_per_lesson": "needs_invoice",
                         "makeup_credit": "use_makeup_credit",
                         "no_charge": "no_charge",
                     }.get(participant["billing_rule"], "planned")
@@ -9661,8 +9668,9 @@ def add_schedule():
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
                     ))
-                    ledger_type = "group_class_charge_later" if participant["billing_rule"] == "invoice_later" else "group_class_billing_rule"
-                    ledger_amount = participant_rate if participant["billing_rule"] == "invoice_later" else 0
+                    invoice_like_rule = participant["billing_rule"] in ("invoice_later", "auto_invoice_per_lesson")
+                    ledger_type = "group_class_charge_later" if invoice_like_rule else "group_class_billing_rule"
+                    ledger_amount = participant_rate if invoice_like_rule else 0
                     cursor.execute("""
                     INSERT INTO student_ledger (
                         student_name,
@@ -13659,7 +13667,7 @@ def calendar_lesson_action():
                 roster_payload = data.get("group_students") if isinstance(data.get("group_students"), list) else []
                 cleaned_roster = []
                 allowed_roster_statuses = {"scheduled", "present", "no_show", "last_min_cancel", "excused_24h", "teacher_cancelled"}
-                allowed_billing_rules = {"existing_credits", "invoice_later", "makeup_credit", "no_charge"}
+                allowed_billing_rules = {"existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge"}
                 for roster_item in roster_payload[:20]:
                     if not isinstance(roster_item, dict):
                         continue
@@ -13690,6 +13698,7 @@ def calendar_lesson_action():
                     billing_status = {
                         "existing_credits": "deduct_from_package",
                         "invoice_later": "needs_invoice",
+                        "auto_invoice_per_lesson": "needs_invoice",
                         "makeup_credit": "use_makeup_credit",
                         "no_charge": "no_charge",
                     }.get(roster_billing_rule, "planned")
@@ -23311,6 +23320,7 @@ def parent_booking_request_review(request_id):
                     <div><label>Billing handling</label><select name="billing_decision">
                         <option value="existing_credits">Use existing credits / package</option>
                         <option value="invoice_later">Invoice later</option>
+                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
                         <option value="makeup_credit">Use makeup credit</option>
                         <option value="trial_free">Free trial</option>
                         <option value="no_charge">No charge</option>
