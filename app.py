@@ -1559,8 +1559,8 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-event.group-large {{ border-left-color:#4c1d95; background:#c4b5fd; border-color:#7c3aed; }}
             .calendar-event.trial {{ border-left-color:#eab308; background:#fde68a; border-color:#facc15; }}
             .event-top {{ display:flex; align-items:center; justify-content:space-between; gap:3px; margin-bottom:1px; }}
-            .event-time {{ flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:3px; font-size:8.5px; color:#334155; line-height:1; font-weight:650; white-space:nowrap; }}
-            .event-time-text {{ color:#334155; font-weight:650; white-space:nowrap; }}
+            .event-time {{ flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:3px; font-size:8.5px; color:#475569; line-height:1; font-weight:500; white-space:nowrap; }}
+            .event-time-text {{ color:#475569; font-weight:500; white-space:nowrap; }}
             .event-student {{ display:block; min-width:0; overflow-wrap:anywhere; color:var(--td-text); font-size:10px; font-weight:650; line-height:1.04; margin-bottom:1px; }}
             .event-line {{ overflow-wrap:anywhere; font-size:8.5px; color:#334155; line-height:1.04; margin-top:0; }}
             .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 28px; gap:2px; margin-top:2px; align-items:center; }}
@@ -7183,7 +7183,7 @@ def calendar():
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
             .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:3px;margin-bottom:1px}}
-            .ev-time{{font-size:8.5px;line-height:1.05;opacity:.82;display:block}}
+            .ev-time{{font-size:8.5px;line-height:1.05;opacity:.9;display:block;color:#475569;font-weight:500}}
             .ev-sub{{font-size:8.2px;line-height:1.05;opacity:.68;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
             .ev-cancel-result{{font-size:8px;line-height:1.05;opacity:.78;display:block;margin-top:0}}
