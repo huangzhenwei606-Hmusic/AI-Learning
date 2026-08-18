@@ -1418,6 +1418,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
         return f'<a class="td-nav-item{active_class}" href="{href}"><i class="ti {icon}"></i><span>{label}</span>{extra}</a>'
 
     messages_item = item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge) if perms.get("message_parents") else ""
+    room_availability_item = item("room_availability", "/room_availability", "ti-door", "Room Availability") if perms.get("view_room_availability") else ""
     add_schedule_item = item("add_schedule", "/teacher_dashboard?view=schedule&open_add=1", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
     payroll_item = item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>') if perms.get("view_payroll") else ""
     sub_item = item("sub", "/teacher_sub_request", "ti-replace", "Sub Request") if perms.get("sub_request") else ""
@@ -1426,6 +1427,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
         <div class="td-nav-section">Today</div>
         {item("home", "/teacher_dashboard", "ti-home", "Home")}
         {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Calendar")}
+        {room_availability_item}
         {messages_item}
         <div class="td-nav-section">Lessons</div>
         {item("records", "/teacher_dashboard?view=records", "ti-notes", "Lesson Records", homework_badge)}
@@ -1600,6 +1602,7 @@ TEACHER_PERMISSION_DEFAULTS = {
     "message_parents": 1,
     "lesson_history": 1,
     "schedule_reminders": 1,
+    "view_room_availability": 1,
     "add_own_schedule": 1,
     "direct_reschedule": 1,
     "direct_cancel": 0,
@@ -1620,6 +1623,7 @@ TEACHER_PERMISSION_LABELS = [
     ("message_parents", "Message parents", "Message families from teacher inbox."),
     ("lesson_history", "Lesson history", "Open student lesson history."),
     ("schedule_reminders", "Schedule reminders", "Receive lesson schedule reminders before class."),
+    ("view_room_availability", "Room availability", "See status-only room availability without student, teacher, or course details."),
     ("add_own_schedule", "Add own schedule", "Create lessons on the teacher's own calendar."),
     ("direct_reschedule", "Direct reschedule", "Move the teacher's own lessons without owner approval."),
     ("direct_cancel", "Direct cancel", "Cancel the teacher's own lessons without owner approval."),
@@ -1818,7 +1822,7 @@ def teacher_permissions_admin():
         for t in teachers
     )
     rows = ""
-    direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders"}
+    direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders", "view_room_availability"}
     approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule"}
     hidden_keys = {"view_billing", "delete_lessons", "edit_student_profile", "view_other_teachers"}
     for key, label, hint in TEACHER_PERMISSION_LABELS:
@@ -6726,7 +6730,9 @@ def calendar():
         COALESCE(s.duration, 30),
         COALESCE(st.lessons_left, 0),
         COALESCE(s.is_group, 0),
-        COALESCE(s.group_student_names, '')
+        COALESCE(s.group_student_names, ''),
+        COALESCE(s.trial_hold, 0),
+        COALESCE(s.trial_form_status, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN students st    ON s.student_name    = st.name
@@ -6956,14 +6962,29 @@ def calendar():
                 warning = warning_pill(event[13], event[8])
                 is_group_event = bool(event[14])
                 group_names = event[15] or ""
+                is_trial_hold = bool(event[16])
+                trial_form_status = event[17] or ""
                 group_size = len([name for name in group_names.split(",") if name.strip()]) if group_names else 0
-                display_name = "Group Class" if is_group_event else str(event[3] or "")
+                display_name = "Trial hold" if is_trial_hold else ("Group Class" if is_group_event else str(event[3] or ""))
                 display_sub = group_names if is_group_event and group_names else str(event[4] or "")
+                if is_trial_hold:
+                    trial_status_text = {
+                        "form_missing": "Form missing",
+                        "form_sent": "Form sent",
+                        "form_complete": "Form complete",
+                        "converted": "Converted",
+                    }.get(trial_form_status, "Form missing")
+                    display_sub = f"{display_sub} · {trial_status_text}" if display_sub else trial_status_text
                 group_count = f" · {group_size} students" if is_group_event and group_size else ""
-                warning = "" if is_group_event else warning
+                warning = "" if (is_group_event or is_trial_hold) else warning
                 course_color = event[10] or default_course_color(course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
+                name_html = (
+                    f'<span class="ev-name">{escape(display_name)}</span>'
+                    if is_trial_hold
+                    else f'<a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(display_name)}</a>'
+                )
                 early_cancel = event_status in ("excused_24h", "excused")
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
@@ -6974,7 +6995,7 @@ def calendar():
                      data-student="{escape(str(display_name or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
                     <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span><span class="ev-icon-stack">{status_icons}</span></span>
-                    <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(display_name)}</a>
+                    {name_html}
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))}{group_count} · {escape(display_sub)}</span>
                     {cancel_result}
@@ -7279,6 +7300,15 @@ def calendar():
             .pop-summary{{background:#f8fafc;border:1px solid var(--line);border-radius:12px;
                           padding:12px;font-size:12px;color:var(--muted);line-height:1.6}}
             .pop-summary strong{{color:var(--text)}}
+            .trial-hold-box{{display:none;background:#fff;border:1px solid var(--line);border-radius:10px;
+                             padding:12px;margin:10px 0 0;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
+            .trial-hold-box.show{{display:block}}
+            .trial-hold-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}}
+            .trial-hold-head strong{{display:block;font-size:13px;color:var(--text);font-weight:900}}
+            .trial-hold-head span{{display:block;font-size:11px;color:var(--muted);line-height:1.35;margin-top:2px}}
+            .trial-badge{{white-space:nowrap;border:1px solid #FACC15;background:#FEF9C3;color:#854D0E;
+                          border-radius:999px;padding:4px 8px;font-size:10px;font-weight:900}}
+            textarea.pop-inp{{min-height:74px;resize:vertical;line-height:1.4}}
             .pop-mini-action{{border:1px dashed #B8CCE3;background:#F8FBFF;color:var(--blue);
                               border-radius:10px;padding:9px 10px;font-size:12px;font-weight:900;
                               cursor:pointer;font-family:inherit;margin:0 0 10px;width:100%;text-align:left}}
@@ -7475,7 +7505,7 @@ def calendar():
           <a class="btn" href="/">Home</a>
           <a class="btn" href="{add_schedule_href}">+ Add Schedule</a>
           <a class="btn" href="/locations_rooms">Locations & Rooms</a>
-          <a class="btn" href="/room_schedule">Room Schedule</a>
+          <a class="btn" href="/room_availability">Room Availability</a>
           <a class="btn btn-primary" href="/owner_dashboard">Dashboard</a>
         </div>
       </div>
@@ -7561,11 +7591,55 @@ def calendar():
 
           <div class="pop-section" id="popStudentSection">
             <h3>Student</h3>
-            <label class="pop-label">Student</label>
+            <label class="pop-label" id="popStudentLabel">Student</label>
             <input class="pop-sel student-picker-compact" id="popStudent" name="student_name" list="popStudentList" placeholder="Search existing or type new student" required>
             <datalist id="popStudentList">
               {student_picker_datalist_options}
             </datalist>
+            <div class="trial-hold-box" id="popTrialFields">
+              <input type="hidden" name="trial_visibility" value="owner_only">
+              <div class="trial-hold-head">
+                <div>
+                  <strong>Trial hold</strong>
+                  <span>Use this when the trial is scheduled before the full form is complete.</span>
+                </div>
+                <span class="trial-badge">Owner only</span>
+              </div>
+              <label class="pop-choice" style="margin-bottom:10px">
+                <input type="checkbox" id="popTrialNoForm" name="trial_no_form" value="1" checked onchange="syncTrialHoldFields()">
+                Form missing / temporary hold
+              </label>
+              <div class="pop-row">
+                <div>
+                  <label class="pop-label">Temporary student name</label>
+                  <input class="pop-inp" id="popTrialStudentName" name="trial_student_name" placeholder="Student or family name" oninput="syncTrialHoldFields()">
+                </div>
+                <div>
+                  <label class="pop-label">Age</label>
+                  <input class="pop-inp" id="popTrialAge" name="trial_student_age" placeholder="Optional">
+                </div>
+              </div>
+              <div class="pop-row">
+                <div>
+                  <label class="pop-label">Instrument</label>
+                  <input class="pop-inp" id="popTrialInstrument" name="trial_instrument" placeholder="Piano, voice...">
+                </div>
+                <div>
+                  <label class="pop-label">Form status</label>
+                  <select class="pop-sel" id="popTrialFormStatus" name="trial_form_status">
+                    <option value="form_missing">Form missing</option>
+                    <option value="form_sent">Form sent</option>
+                    <option value="form_complete">Form complete</option>
+                    <option value="converted">Converted</option>
+                  </select>
+                </div>
+              </div>
+              <label class="pop-label">Parent / contact</label>
+              <input class="pop-inp" id="popTrialContact" name="trial_parent_contact" placeholder="Phone, email, parent name">
+              <label class="pop-label">Private note</label>
+              <textarea class="pop-inp" id="popTrialNote" name="trial_private_note" placeholder="Owner-only notes for the trial."></textarea>
+              <p class="pop-help">Teacher and room availability views will show only Trial hold / Form missing status, not names or contact.</p>
+            </div>
           </div>
 
           <div class="pop-section">
@@ -7792,6 +7866,17 @@ def calendar():
           <div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="panelTime"></div></div>
           <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
           <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
+        </div>
+        <div class="panel-section" id="panelTrialSection" style="display:none">
+          <h3>Trial details</h3>
+          <div class="detail-grid" style="padding:0">
+            <label><span class="detail-label">Temporary student name</span><input class="panel-field" id="panelTrialStudentName"></label>
+            <label><span class="detail-label">Age</span><input class="panel-field" id="panelTrialAge"></label>
+            <label><span class="detail-label">Instrument</span><input class="panel-field" id="panelTrialInstrument"></label>
+            <label><span class="detail-label">Form status</span><select class="panel-field" id="panelTrialFormStatus"><option value="form_missing">Form missing</option><option value="form_sent">Form sent</option><option value="form_complete">Form complete</option><option value="converted">Converted</option></select></label>
+            <label class="full"><span class="detail-label">Parent / contact</span><input class="panel-field" id="panelTrialContact"></label>
+            <label class="full"><span class="detail-label">Owner-only note</span><textarea class="panel-field" id="panelTrialPrivateNote"></textarea></label>
+          </div>
         </div>
         <div class="panel-section" id="panelAttendanceSection"><h3>Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
@@ -8043,7 +8128,8 @@ def calendar():
         if (!d.ok) throw new Error(d.error || 'Lesson not found');
         activePanelLesson = d.lesson;
         const isGroupLesson = Number(d.lesson.is_group || 0) === 1;
-        document.getElementById('panelStudent').textContent = isGroupLesson ? 'Group Class' : (d.lesson.student || 'Student');
+        const isTrialHold = Number(d.lesson.trial_hold || 0) === 1;
+        document.getElementById('panelStudent').textContent = isTrialHold ? 'Trial hold' : (isGroupLesson ? 'Group Class' : (d.lesson.student || 'Student'));
         document.getElementById('panelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || '');
         document.getElementById('panelDate').textContent = d.lesson.date || '';
         document.getElementById('panelTime').textContent = d.lesson.time_range || d.lesson.time || '';
@@ -8080,6 +8166,12 @@ def calendar():
         status:activePanelStatus,
         lesson_note:document.getElementById('panelLessonNote').value,
         homework:document.getElementById('panelHomework').value,
+        trial_student_name:document.getElementById('panelTrialStudentName') ? document.getElementById('panelTrialStudentName').value : '',
+        trial_student_age:document.getElementById('panelTrialAge') ? document.getElementById('panelTrialAge').value : '',
+        trial_instrument:document.getElementById('panelTrialInstrument') ? document.getElementById('panelTrialInstrument').value : '',
+        trial_form_status:document.getElementById('panelTrialFormStatus') ? document.getElementById('panelTrialFormStatus').value : '',
+        trial_parent_contact:document.getElementById('panelTrialContact') ? document.getElementById('panelTrialContact').value : '',
+        trial_private_note:document.getElementById('panelTrialPrivateNote') ? document.getElementById('panelTrialPrivateNote').value : '',
         parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked,
         practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked,
         low_balance_alert_enabled:document.getElementById('panelLowBalance').checked,
@@ -8277,10 +8369,12 @@ def calendar():
     }}
     function updateBillingControls() {{
       const isGroup = isQuickGroupMode();
+      const isTrial = isQuickTrialMode();
       const billingSection = document.getElementById('popBillingSection');
       const studentSection = document.getElementById('popStudentSection');
       if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
       if (studentSection) studentSection.style.display = isGroup ? 'none' : 'block';
+      if (isTrial) syncTrialHoldFields();
       const packageSelect = document.getElementById('popPackageType');
       const customCount = document.getElementById('popCustomLessonCount');
       const billingDecision = document.getElementById('popBillingDecision');
@@ -8356,6 +8450,40 @@ def calendar():
       const course = selectedQuickCourse();
       const formatSelect = document.getElementById('popLessonFormat');
       return kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+    }}
+    function isQuickTrialMode() {{
+      const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
+      const course = selectedQuickCourse();
+      return kind === 'trial' || (course && String(course.name || '').toLowerCase().includes('trial'));
+    }}
+    function trialStatusLabel(value) {{
+      return {{
+        form_missing: 'Form missing',
+        form_sent: 'Form sent',
+        form_complete: 'Form complete',
+        converted: 'Converted'
+      }}[value] || 'Form missing';
+    }}
+    function syncTrialHoldFields() {{
+      const trialFields = document.getElementById('popTrialFields');
+      const studentInput = document.getElementById('popStudent');
+      const studentLabel = document.getElementById('popStudentLabel');
+      const trialName = document.getElementById('popTrialStudentName');
+      const noForm = document.getElementById('popTrialNoForm');
+      const status = document.getElementById('popTrialFormStatus');
+      const isTrial = isQuickTrialMode();
+      if (trialFields) trialFields.classList.toggle('show', isTrial);
+      if (studentLabel) studentLabel.textContent = isTrial ? 'Internal schedule label' : 'Student';
+      if (studentInput) {{
+        studentInput.placeholder = isTrial ? 'Temporary trial label or existing student' : 'Search existing or type new student';
+        studentInput.required = !isQuickGroupMode();
+        if (isTrial && trialName && trialName.value.trim() && !studentInput.value.trim()) {{
+          studentInput.value = trialName.value.trim();
+        }}
+      }}
+      if (status && noForm && noForm.checked && (!status.value || status.value === 'form_complete')) {{
+        status.value = 'form_missing';
+      }}
     }}
     function groupRowTemplate() {{
       return `
@@ -8451,12 +8579,15 @@ def calendar():
       const courseSelect = document.getElementById('popCourse');
       const formatSelect = document.getElementById('popLessonFormat');
       const groupFields = document.getElementById('popGroupFields');
+      const trialFields = document.getElementById('popTrialFields');
       if (kind === 'trial') {{
         const trial = QUICK_COURSE_DATA.find(c => String(c.name || '').toLowerCase().includes('trial'));
         if (trial) courseSelect.value = trial.id;
         document.getElementById('popScheduleType').value = 'one_time';
         document.getElementById('popPackageType').value = '10';
         document.getElementById('popBillingDecision').value = 'trial_free';
+        const trialStatus = document.getElementById('popTrialFormStatus');
+        if (trialStatus && !trialStatus.value) trialStatus.value = 'form_missing';
       }}
       if (kind === 'makeup') {{
         document.getElementById('popScheduleType').value = 'one_time';
@@ -8469,10 +8600,13 @@ def calendar():
       }}
       const course = selectedQuickCourse();
       const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+      const isTrial = kind === 'trial' || (course && String(course.name || '').toLowerCase().includes('trial'));
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
+      if (trialFields) trialFields.classList.toggle('show', isTrial);
       const studentSectionInput = document.getElementById('popStudent');
       if (studentSectionInput) studentSectionInput.required = !isGroup;
       if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
+      syncTrialHoldFields();
       updateBillingControls();
       updateQuickCourseBilling();
       syncGroupFieldsForSubmit();
@@ -8532,6 +8666,7 @@ def calendar():
       const course = selectedQuickCourse();
       if (!course) return;
       const isGroup = isQuickGroupMode();
+      const isTrial = isQuickTrialMode();
       const groupFields = document.getElementById('popGroupFields');
       const billingSection = document.getElementById('popBillingSection');
       const studentSection = document.getElementById('popStudentSection');
@@ -8540,6 +8675,11 @@ def calendar():
       if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
       if (studentSection) studentSection.style.display = isGroup ? 'none' : 'block';
       if (studentInput) studentInput.required = !isGroup;
+      if (isTrial) {{
+        const billingDecision = document.getElementById('popBillingDecision');
+        if (billingDecision) billingDecision.value = 'trial_free';
+      }}
+      syncTrialHoldFields();
       const basis = document.getElementById('popParentBillingBasis');
       const rate = document.getElementById('popParentChargeRate');
       if (basis) basis.value = DEFAULT_STUDENT_BILLING_BASIS;
@@ -8634,6 +8774,7 @@ def calendar():
     function fillPanelDetails(lesson) {{
       const setValue = (id, value) => {{ const el = document.getElementById(id); if (el) el.value = value == null ? '' : value; }};
       const isGroupLesson = Number(lesson.is_group || 0) === 1;
+      const isTrialHold = Number(lesson.trial_hold || 0) === 1;
       setValue('panelDetailStudent', lesson.student || '');
       setValue('panelDetailTeacher', lesson.teacher || '');
       setValue('panelDetailCourse', lesson.course_type_id || '');
@@ -8647,6 +8788,12 @@ def calendar():
       setValue('panelBillingBasis', methodToBillingBasis(lesson.student_billing_method));
       setValue('panelStudentRate', Number(lesson.student_price || lesson.student_charge_amount || 0).toFixed(2));
       setValue('panelBillingDecision', lesson.billing_decision || 'existing_credits');
+      setValue('panelTrialStudentName', lesson.trial_student_name || '');
+      setValue('panelTrialAge', lesson.trial_student_age || '');
+      setValue('panelTrialInstrument', lesson.trial_instrument || '');
+      setValue('panelTrialFormStatus', lesson.trial_form_status || 'form_missing');
+      setValue('panelTrialContact', lesson.trial_parent_contact || '');
+      setValue('panelTrialPrivateNote', lesson.trial_private_note || '');
       const locationSelect = document.getElementById('panelDetailLocation');
       if (locationSelect) {{
         if (lesson.location_id) locationSelect.value = String(lesson.location_id);
@@ -8660,6 +8807,8 @@ def calendar():
       updatePanelChargePreview();
       const studentWrap = document.getElementById('panelDetailStudentWrap');
       if (studentWrap) studentWrap.style.display = isGroupLesson ? 'none' : '';
+      const trialSection = document.getElementById('panelTrialSection');
+      if (trialSection) trialSection.style.display = isTrialHold ? 'block' : 'none';
       document.querySelectorAll('.panel-private-billing-field').forEach(el => el.style.display = isGroupLesson ? 'none' : '');
       const preview = document.getElementById('panelBillingPreview');
       if (preview && isGroupLesson) {{
@@ -8705,6 +8854,17 @@ def calendar():
       if (isQuickGroupMode() && groupNames.length < 2) {{
         alert('Add at least two students for a group class.');
         return;
+      }}
+      if (isQuickTrialMode()) {{
+        syncTrialHoldFields();
+        const studentInput = document.getElementById('popStudent');
+        const trialName = document.getElementById('popTrialStudentName');
+        const start = document.getElementById('popStart');
+        if (studentInput && !studentInput.value.trim()) {{
+          studentInput.value = (trialName && trialName.value.trim())
+            ? trialName.value.trim()
+            : `Trial guest ${{activePopDate}} ${{start ? start.value : ''}}`.trim();
+        }}
       }}
       updateQuickRooms();
       updateQuickRoomId();
@@ -9190,6 +9350,7 @@ def add_schedule():
 
     if request.method == "POST":
         action = request.form.get("action")
+        lesson_kind = (request.form.get("lesson_kind") or "").strip().lower()
         student_mode = request.form.get("student_mode", "existing")
         teacher_portal_schedule = require_teacher() and not require_owner()
         if teacher_portal_schedule:
@@ -9256,6 +9417,34 @@ def add_schedule():
             if not student_name:
                 conn.close()
                 return f"<h1>Please enter the student name.</h1><p><a href='/teacher_dashboard?view=schedule&open_add=1'>Back</a></p>", 400
+        trial_student_name = (request.form.get("trial_student_name") or "").strip()
+        trial_student_age = (request.form.get("trial_student_age") or "").strip()
+        trial_instrument = (request.form.get("trial_instrument") or "").strip()
+        trial_parent_contact = (request.form.get("trial_parent_contact") or "").strip()
+        trial_private_note = (request.form.get("trial_private_note") or "").strip()
+        trial_visibility = (request.form.get("trial_visibility") or "owner_only").strip()
+        trial_no_form = request.form.get("trial_no_form") == "1"
+        trial_form_status = (request.form.get("trial_form_status") or "").strip()
+        trial_status_values = {"form_missing", "form_sent", "form_complete", "converted"}
+        if trial_form_status not in trial_status_values:
+            trial_form_status = "form_missing" if trial_no_form else "form_complete"
+        if trial_visibility != "owner_only":
+            trial_visibility = "owner_only"
+        trial_hold = 1 if (
+            lesson_kind == "trial"
+            or request.form.get("billing_decision") == "trial_free"
+            or any([trial_student_name, trial_student_age, trial_instrument, trial_parent_contact, trial_private_note])
+        ) else 0
+        if trial_hold:
+            if not trial_student_name and student_name:
+                trial_student_name = student_name
+            if not student_name:
+                trial_label_parts = [
+                    "Trial guest",
+                    request.form.get("start_date") or "",
+                    request.form.get("lesson_time") or "",
+                ]
+                student_name = " ".join([part for part in trial_label_parts if part]).strip()
         teacher = request.form.get("teacher")
         if teacher_portal_schedule:
             teacher = session.get("teacher_name")
@@ -9335,6 +9524,10 @@ def add_schedule():
         schedule_type = request.form.get("schedule_type")
         package_type = request.form.get("package_type") or "10"
         billing_decision = request.form.get("billing_decision") or "existing_credits"
+        if trial_hold:
+            billing_decision = "trial_free"
+            schedule_type = "one_time"
+            package_type = "trial"
         if teacher_portal_schedule:
             billing_decision = "owner_review"
             package_type = "teacher_schedule"
@@ -9384,6 +9577,15 @@ def add_schedule():
             )
         elif teacher_portal_schedule:
             schedule_note = "Teacher-created schedule. Billing is owner-managed and no invoice was created."
+        if trial_hold:
+            trial_status_label = {
+                "form_missing": "Form missing",
+                "form_sent": "Form sent",
+                "form_complete": "Form complete",
+                "converted": "Converted",
+            }.get(trial_form_status, "Form missing")
+            trial_note = f"Trial hold. {trial_status_label}."
+            schedule_note = (schedule_note + " " + trial_note).strip()
 
         cursor.execute("""
         SELECT
@@ -9547,9 +9749,10 @@ def add_schedule():
 
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         generated_count = 0
-        auto_link_student_teacher(cursor, student_name, teacher)
-        for participant in group_participants:
-            auto_link_student_teacher(cursor, participant["student_name"], teacher)
+        if not trial_hold:
+            auto_link_student_teacher(cursor, student_name, teacher)
+            for participant in group_participants:
+                auto_link_student_teacher(cursor, participant["student_name"], teacher)
 
         for i in range(number_of_lessons):
             if schedule_type == "weekly":
@@ -9592,9 +9795,17 @@ def add_schedule():
                 group_student_names,
                 billing_decision,
                 custom_lesson_count,
+                trial_hold,
+                trial_form_status,
+                trial_student_name,
+                trial_student_age,
+                trial_instrument,
+                trial_parent_contact,
+                trial_private_note,
+                trial_visibility,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
@@ -9623,6 +9834,14 @@ def add_schedule():
                 group_student_names if is_group else None,
                 billing_decision,
                 int(float(custom_lesson_count or 0)) if package_type == "custom" else None,
+                trial_hold,
+                trial_form_status if trial_hold else None,
+                trial_student_name if trial_hold else None,
+                trial_student_age if trial_hold else None,
+                trial_instrument if trial_hold else None,
+                trial_parent_contact if trial_hold else None,
+                trial_private_note if trial_hold else None,
+                trial_visibility if trial_hold else None,
                 "scheduled"
             ))
 
@@ -10379,60 +10598,7 @@ def add_schedule():
 
 @app.route("/room_schedule")
 def room_schedule():
-    conn = sqlite3.connect("hmusic.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    SELECT
-        lesson_date,
-        lesson_time,
-        classroom,
-        student_name,
-        teacher,
-        location
-    FROM schedule
-    ORDER BY lesson_date, classroom, lesson_time
-    """)
-
-    schedules = cursor.fetchall()
-    conn.close()
-
-    rows = ""
-
-    for s in schedules:
-        rows += f"""
-        <tr>
-            <td>{s[0]}</td>
-            <td>{s[1]}</td>
-            <td>{s[2]}</td>
-            <td><a href="/student/{s[3]}">{s[3]}</a></td>
-            <td>{s[4]}</td>
-            <td>{s[5]}</td>
-        </tr>
-        """
-
-    return f"""
-    <h1>Room Schedule</h1>
-
-    <p>This page helps teachers and owner find available rooms.</p>
-
-    <table border="1" cellpadding="8">
-        <tr>
-            <th>Date</th>
-            <th>Time</th>
-            <th>Room</th>
-            <th>Student</th>
-            <th>Teacher</th>
-            <th>Location</th>
-        </tr>
-
-        {rows}
-    </table>
-
-    <br>
-
-    <a href="/calendar">Back to Calendar</a>
-    """
+    return redirect("/room_availability")
 
 
 @app.route("/locations_rooms", methods=["GET", "POST"])
@@ -10653,258 +10819,348 @@ def locations_rooms():
 
 @app.route("/room_availability", methods=["GET", "POST"])
 def room_availability():
+    ensure_calendar_lesson_panel_schema()
+    is_owner = require_owner()
+    is_teacher = require_teacher() and not is_owner
+    if not (is_owner or is_teacher):
+        return redirect("/owner_login")
+    if is_teacher and not teacher_has_permission(session.get("teacher_name"), "view_room_availability"):
+        content = """
+        <section class="td-card">
+            <h2>Room Availability Requires Owner Permission</h2>
+            <p class="muted">The owner can enable this from Teacher Permissions.</p>
+        </section>
+        """
+        return hstudio_teacher_dark_shell(
+            session.get("teacher_name") or "Teacher",
+            get_unread_message_count("teacher", session.get("teacher_name")),
+            content,
+            active="room_availability",
+            missing_homework_count=get_missing_homework_count(session.get("teacher_name"))
+        )
+
+    selected_date = request.values.get("selected_date") or date.today().strftime("%Y-%m-%d")
+    selected_location = (request.values.get("location_id") or "").strip()
+    selected_start = (request.values.get("start_time") or "15:45").strip()
+    selected_duration_raw = request.values.get("duration") or "45"
+    try:
+        datetime.strptime(selected_date, "%Y-%m-%d")
+    except Exception:
+        selected_date = date.today().strftime("%Y-%m-%d")
+    try:
+        selected_duration = max(5, min(240, int(float(selected_duration_raw))))
+    except Exception:
+        selected_duration = 45
+
+    day_start = 9 * 60
+    day_end = 21 * 60
+    selected_start_minutes = minutes_from_time_text(selected_start)
+    if selected_start_minutes is None:
+        selected_start = "15:45"
+        selected_start_minutes = 15 * 60 + 45
+    selected_end_minutes = selected_start_minutes + selected_duration
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
-    selected_date = request.form.get("selected_date")
+    cursor.execute("""
+    SELECT id, location_name
+    FROM studio_locations
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY COALESCE(sort_order, 0), location_name
+    """)
+    locations = cursor.fetchall()
 
-    if not selected_date:
-        selected_date = date.today().strftime("%Y-%m-%d")
+    room_params = []
+    location_filter = ""
+    if selected_location:
+        location_filter = "AND r.location_id = ?"
+        room_params.append(selected_location)
+    cursor.execute(f"""
+    SELECT r.id, r.location_id, r.room_name, COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON l.id = r.location_id
+    WHERE COALESCE(r.active, 1) = 1
+    AND COALESCE(l.active, 1) = 1
+    {location_filter}
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(r.sort_order, 0), r.room_name
+    """, room_params)
+    rooms = cursor.fetchall()
 
     cursor.execute("""
-    SELECT room_name
-    FROM classrooms
-    ORDER BY room_name
-    """)
-    rooms = [row[0] for row in cursor.fetchall()]
-
-    time_slots = [
-        "09:00", "09:30",
-        "10:00", "10:30",
-        "11:00", "11:30",
-        "12:00", "12:30",
-        "13:00", "13:30",
-        "14:00", "14:30",
-        "15:00", "15:30",
-        "16:00", "16:30",
-        "17:00", "17:30",
-        "18:00", "18:30",
-        "19:00", "19:30",
-        "20:00"
-    ]
-
-    header_cells = ""
-    for room in rooms:
-        header_cells += f"<th>{room}</th>"
-
-    table_rows = ""
-
-    for time_slot in time_slots:
-        row_html = f"<tr><td class='time-cell'>{time_slot}</td>"
-
-        for room in rooms:
-            slot_start = datetime.strptime(time_slot, "%H:%M")
-            slot_end = slot_start + timedelta(minutes=30)
-
-            cursor.execute("""
-            SELECT student_name, teacher, lesson_time
-            FROM schedule
-            WHERE lesson_date = ?
-            AND classroom = ?
-            """, (selected_date, room))
-
-            all_bookings = cursor.fetchall()
-            bookings = []
-
-            for booking in all_bookings:
-                booking_time = datetime.strptime(booking[2], "%H:%M")
-
-                if slot_start <= booking_time < slot_end:
-                    bookings.append(booking)
-
-            if len(bookings) == 0:
-                cell_class = "available"
-                cell_content = "Available"
-
-            elif len(bookings) == 1:
-                cell_class = "occupied"
-
-                student_name = bookings[0][0]
-                teacher = bookings[0][1]
-                actual_time = bookings[0][2]
-
-                cell_content = f"""
-                {actual_time}<br>
-                <b>Occupied</b>
-                """
-
-            else:
-                cell_class = "conflict"
-
-                conflict_items = ""
-                for booking in bookings:
-                    student_name = booking[0]
-                    teacher = booking[1]
-                    actual_time = booking[2]
-
-                    conflict_items += f"""
-                    {actual_time}<br>
-                    """
-
-                cell_content = f"""
-                <strong>CONFLICT</strong><br>
-                {conflict_items}
-                """
-
-            row_html += f"""
-            <td class="{cell_class}">
-                {cell_content}
-            </td>
-            """
-
-        row_html += "</tr>"
-        table_rows += row_html
+    SELECT id, lesson_time, COALESCE(duration, 30), COALESCE(status, 'scheduled'),
+           COALESCE(room_id, 0), COALESCE(classroom, ''), COALESCE(location_id, 0)
+    FROM schedule
+    WHERE lesson_date = ?
+    ORDER BY lesson_time
+    """, (selected_date,))
+    lesson_rows = cursor.fetchall()
 
     conn.close()
+
+    location_options = '<option value="">All locations</option>'
+    for location_id, location_name in locations:
+        location_options += f'<option value="{location_id}" {"selected" if str(location_id) == selected_location else ""}>{escape(location_name or "Location")}</option>'
+
+    if not rooms:
+        empty_content = f"""
+        <div class="room-avail-empty">
+            <h2>No active rooms found</h2>
+            <p>Add active locations and rooms before using Room Availability.</p>
+        </div>
+        """
+        if is_teacher:
+            return hstudio_teacher_dark_shell(
+                session.get("teacher_name") or "Teacher",
+                get_unread_message_count("teacher", session.get("teacher_name")),
+                empty_content,
+                active="room_availability",
+                missing_homework_count=get_missing_homework_count(session.get("teacher_name"))
+            )
+        return f"<html><body>{empty_content}<p><a href='/locations_rooms'>Locations & Rooms</a> <a href='/calendar'>Calendar</a></p></body></html>"
+
+    room_count = len(rooms)
+    room_headers = "".join(f'<div class="ra-room-head">{escape(room[2] or "Room")}</div>' for room in rooms)
+
+    def room_lesson_matches(room, lesson):
+        room_id, location_id, room_name = room[0], room[1], room[2] or ""
+        lesson_room_id = int(lesson[4] or 0)
+        lesson_location_id = int(lesson[6] or 0)
+        if lesson_room_id:
+            return lesson_room_id == int(room_id)
+        if lesson_location_id and int(location_id or 0) != lesson_location_id:
+            return False
+        return (lesson[5] or "").strip().lower() == room_name.strip().lower()
+
+    def lesson_blocks_for_room(room):
+        blocks = []
+        for lesson in lesson_rows:
+            status = str(lesson[3] or "scheduled").strip().lower()
+            if status.startswith("cancel") or status in ("excused_24h", "excused", "teacher_cancelled"):
+                continue
+            start = minutes_from_time_text(lesson[1])
+            if start is None:
+                continue
+            try:
+                duration = int(float(lesson[2] or 30))
+            except Exception:
+                duration = 30
+            end = start + max(5, duration)
+            if end <= day_start or start >= day_end:
+                continue
+            if room_lesson_matches(room, lesson):
+                blocks.append({
+                    "start": max(day_start, start),
+                    "end": min(day_end, end),
+                })
+        return blocks
+
+    room_blocks = {room[0]: lesson_blocks_for_room(room) for room in rooms}
+
+    def block_count(room_id, start, end):
+        return len([
+            block for block in room_blocks.get(room_id, [])
+            if max(start, block["start"]) < min(end, block["end"])
+        ])
+
+    def block_status(room_id, start, end):
+        count = block_count(room_id, start, end)
+        if count == 0:
+            return "available"
+        if count == 1:
+            return "booked"
+        return "conflict"
+
+    def block_label(status):
+        if status == "available":
+            return "Available"
+        if status == "conflict":
+            return "Conflict"
+        if status == "closed":
+            return "Closed"
+        return "Booked"
+
+    def top_for_minute(minute):
+        return max(0, min(100, ((minute - day_start) / (day_end - day_start)) * 100))
+
+    def room_timeline_html(room):
+        intervals = []
+        boundaries = {day_start, day_end, selected_start_minutes, selected_end_minutes}
+        for block in room_blocks.get(room[0], []):
+            boundaries.add(block["start"])
+            boundaries.add(block["end"])
+        points = sorted(min(max(day_start, point), day_end) for point in boundaries if day_start <= point <= day_end)
+        for idx in range(len(points) - 1):
+            start = points[idx]
+            end = points[idx + 1]
+            if end <= start:
+                continue
+            status = block_status(room[0], start, end)
+            top = top_for_minute(start)
+            height = max(2.2, top_for_minute(end) - top)
+            intervals.append(f"""
+            <div class="ra-block {status}" style="top:{top:.3f}%;height:{height:.3f}%">
+                <span>{block_label(status)}</span>
+                <small>{format_display_time(time_text_from_minutes(start))}-{format_display_time(time_text_from_minutes(end))}</small>
+            </div>
+            """)
+        selection_top = top_for_minute(selected_start_minutes)
+        selection_height = max(2.2, top_for_minute(selected_end_minutes) - selection_top)
+        return f"""
+        <div class="ra-room-col">
+            <div class="ra-selection" style="top:{selection_top:.3f}%;height:{selection_height:.3f}%"></div>
+            {"".join(intervals)}
+        </div>
+        """
+
+    room_columns = "".join(room_timeline_html(room) for room in rooms)
+    hour_marks = "".join(
+        f'<div class="ra-time-mark">{format_display_time(time_text_from_minutes(hour * 60)).replace(":00", "")}</div>'
+        for hour in range(day_start // 60, day_end // 60)
+    )
+    selected_rows = ""
+    available_count = 0
+    for room in rooms:
+        status = block_status(room[0], selected_start_minutes, selected_end_minutes)
+        if status == "available":
+            available_count += 1
+        selected_rows += f"""
+        <div class="ra-fit-row">
+            <div class="ra-fit-room">{escape(room[2] or "Room")}</div>
+            <div>
+                <div>{format_lesson_time_range(selected_start, selected_duration)}</div>
+                <small>{'Clear for full duration' if status == 'available' else 'Overlaps booking(s)' if status == 'booked' else 'Overlaps multiple bookings'}</small>
+            </div>
+            <span class="ra-fit-status {status}">{block_label(status)}</span>
+        </div>
+        """
+
+    back_href = "/teacher_dashboard?view=schedule" if is_teacher else "/calendar"
+    add_href = (
+        f"/teacher_dashboard?view=schedule&open_add=1&prefill_date={quote(selected_date)}"
+        if is_teacher else
+        f"/add_schedule?{urlencode({'start_date': selected_date, 'return_to': '/room_availability'})}"
+    )
+    shell_class = " teacher-mode" if is_teacher else ""
+    page_html = f"""
+    <style>
+        .room-avail{{color:#17202a}}
+        .room-avail *{{box-sizing:border-box}}
+        .room-avail-shell{{background:#fff;border:1px solid #e3e7ee;border-radius:10px;overflow:hidden;box-shadow:0 10px 24px rgba(15,23,42,.06)}}
+        .room-avail-top{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid #e3e7ee;background:#fff}}
+        .room-avail-title h1{{margin:0 0 3px;font-size:22px;font-weight:600}}
+        .room-avail-title p{{margin:0;color:#667085;font-size:13px}}
+        .room-avail-actions,.room-avail-filters,.ra-legend{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}}
+        .ra-btn,.room-avail-filters input,.room-avail-filters select{{height:30px;border:1px solid #d6dce6;border-radius:8px;background:#fff;color:#354052;padding:0 10px;font:inherit;font-size:12px;font-weight:650;text-decoration:none}}
+        .ra-btn.primary{{background:#2563eb;border-color:#2563eb;color:#fff}}
+        .room-avail-toolbar{{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#fbfcfd;border-bottom:1px solid #e3e7ee}}
+        .ra-legend span{{height:26px;display:inline-flex;align-items:center;gap:6px;border:1px solid #d6dce6;border-radius:8px;background:#fff;padding:0 8px;color:#475467;font-size:11px;font-weight:750}}
+        .ra-dot{{width:9px;height:9px;border-radius:999px;display:inline-block}}
+        .ra-dot.available{{background:#16803c}}.ra-dot.booked{{background:#818b9b}}.ra-dot.conflict{{background:#b42318}}.ra-dot.closed{{background:#c7ced8}}
+        .room-avail-layout{{display:grid;grid-template-columns:minmax(0,1fr) 292px;min-height:650px}}
+        .ra-timeline-wrap{{overflow:auto;border-right:1px solid #e3e7ee;background:#fff}}
+        .ra-timeline{{min-width:{max(760, 66 + room_count * 158)}px;display:grid;grid-template-columns:66px repeat({room_count},minmax(150px,1fr));position:relative}}
+        .ra-time-head,.ra-room-head{{height:42px;position:sticky;top:0;z-index:4;background:#fff;border-bottom:1px solid #e5e9f0;border-right:1px solid #e5e9f0;padding:8px;font-size:12px;font-weight:850}}
+        .ra-time-head{{left:0;z-index:5}}
+        .ra-time-col{{position:sticky;left:0;z-index:2;background:#fbfcfd;border-right:1px solid #e5e9f0}}
+        .ra-time-mark{{height:52px;border-bottom:1px solid #edf0f5;padding:6px 7px 0 0;text-align:right;color:#697487;font-size:11px;font-weight:750}}
+        .ra-room-col{{position:relative;height:624px;border-right:1px solid #e5e9f0;background:linear-gradient(#edf0f5 1px,transparent 1px) 0 0/100% 52px,linear-gradient(#f4f6f9 1px,transparent 1px) 0 26px/100% 52px,#fff}}
+        .ra-block{{position:absolute;left:7px;right:7px;border-radius:5px;border:1px solid transparent;padding:4px 7px;display:flex;flex-direction:column;justify-content:center;overflow:hidden;font-size:11px;line-height:1.14;font-weight:850;z-index:2}}
+        .ra-block span,.ra-block small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+        .ra-block small{{margin-top:2px;font-size:10px;font-weight:750;opacity:.82}}
+        .ra-block.available{{background:#e9f8ef;border-color:#bee8cb;color:#16803c}}
+        .ra-block.booked{{background:#eef1f5;border-color:#d3dae4;color:#465163}}
+        .ra-block.conflict{{background:#fff0ef;border-color:#f4aaa3;color:#b42318}}
+        .ra-selection{{position:absolute;left:5px;right:5px;border:2px solid #2563eb;background:rgba(37,99,235,.08);border-radius:6px;z-index:1;pointer-events:none}}
+        .ra-side{{background:#fbfcfd;padding:14px}}
+        .ra-panel{{background:#fff;border:1px solid #e1e6ee;border-radius:8px;overflow:hidden;margin-bottom:12px}}
+        .ra-panel-head{{padding:11px 12px;border-bottom:1px solid #e8ecf2}}
+        .ra-panel-head strong{{display:block;font-size:13px}}.ra-panel-head span{{display:block;margin-top:3px;color:#667085;font-size:11px}}
+        .ra-fit-row{{display:grid;grid-template-columns:46px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid #eef1f5;font-size:12px}}
+        .ra-fit-row:last-child{{border-bottom:0}}.ra-fit-room{{font-weight:850}}.ra-fit-row small{{display:block;color:#667085;font-size:11px;margin-top:2px}}
+        .ra-fit-status{{border-radius:999px;padding:3px 7px;font-size:10px;font-weight:850;text-transform:uppercase;white-space:nowrap}}
+        .ra-fit-status.available{{background:#e9f8ef;color:#16803c}}.ra-fit-status.booked{{background:#eef1f5;color:#536173}}.ra-fit-status.conflict{{background:#fff0ef;color:#b42318}}
+        .ra-note{{padding:10px 12px;color:#344054;font-size:12px;line-height:1.45}}.ra-note b{{color:#111827}}
+        .room-avail-empty{{background:#fff;border:1px solid #e3e7ee;border-radius:10px;padding:22px}}
+        @media(max-width:900px){{.room-avail-top,.room-avail-toolbar{{align-items:flex-start;flex-direction:column}}.room-avail-layout{{grid-template-columns:1fr}}.ra-timeline-wrap{{border-right:0}}}}
+    </style>
+    <div class="room-avail{shell_class}">
+        <div class="room-avail-shell">
+            <div class="room-avail-top">
+                <div class="room-avail-title">
+                    <h1>Room Availability</h1>
+                    <p>Status-only room calendar. No student, teacher, or course details are shown.</p>
+                </div>
+                <div class="room-avail-actions">
+                    <a class="ra-btn" href="{back_href}">Back</a>
+                    <a class="ra-btn primary" href="{add_href}">Add Schedule</a>
+                </div>
+            </div>
+            <form class="room-avail-toolbar" method="GET" action="/room_availability">
+                <div class="room-avail-filters">
+                    <input type="date" name="selected_date" value="{escape(selected_date)}">
+                    <select name="location_id">{location_options}</select>
+                    <input type="time" name="start_time" value="{escape(time_text_from_minutes(selected_start_minutes))}">
+                    <select name="duration">
+                        {''.join(f'<option value="{minutes}" {"selected" if minutes == selected_duration else ""}>{minutes} min</option>' for minutes in (15, 30, 45, 60, 75, 90))}
+                    </select>
+                    <button class="ra-btn" type="submit">View</button>
+                </div>
+                <div class="ra-legend">
+                    <span><i class="ra-dot available"></i>Available</span>
+                    <span><i class="ra-dot booked"></i>Booked</span>
+                    <span><i class="ra-dot conflict"></i>Conflict</span>
+                </div>
+            </form>
+            <div class="room-avail-layout">
+                <div class="ra-timeline-wrap">
+                    <div class="ra-timeline">
+                        <div class="ra-time-head"></div>
+                        {room_headers}
+                        <div class="ra-time-col">{hour_marks}</div>
+                        {room_columns}
+                    </div>
+                </div>
+                <aside class="ra-side">
+                    <section class="ra-panel">
+                        <div class="ra-panel-head">
+                            <strong>Selected Window</strong>
+                            <span>{format_lesson_time_range(selected_start, selected_duration)} · {available_count}/{room_count} available</span>
+                        </div>
+                        {selected_rows}
+                    </section>
+                    <section class="ra-panel">
+                        <div class="ra-panel-head">
+                            <strong>Logic</strong>
+                            <span>exact-minute overlap check</span>
+                        </div>
+                        <div class="ra-note">
+                            <b>Available</b> means zero active lessons overlap the selected room and time range. <b>Conflict</b> means two or more active lessons overlap the same room.
+                        </div>
+                    </section>
+                </aside>
+            </div>
+        </div>
+    </div>
+    """
+
+    if is_teacher:
+        return hstudio_teacher_dark_shell(
+            session.get("teacher_name") or "Teacher",
+            get_unread_message_count("teacher", session.get("teacher_name")),
+            page_html,
+            active="room_availability",
+            missing_homework_count=get_missing_homework_count(session.get("teacher_name"))
+        )
 
     return f"""
     <html>
     <head>
         <title>Room Availability</title>
-
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #f7f7fb;
-                padding: 40px;
-            }}
-
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            }}
-
-            h1 {{
-                margin-bottom: 20px;
-            }}
-
-            form {{
-                margin-bottom: 25px;
-            }}
-
-            input, button {{
-                padding: 8px;
-                font-size: 14px;
-            }}
-
-            button {{
-                background: #5b5cff;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 9px 16px;
-                font-weight: bold;
-            }}
-
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 20px;
-            }}
-
-            th {{
-                background: #eeeeff;
-                padding: 12px;
-                border: 1px solid #ddd;
-            }}
-
-            td {{
-                padding: 12px;
-                border: 1px solid #ddd;
-                text-align: center;
-                min-width: 120px;
-            }}
-
-            .time-cell {{
-                font-weight: bold;
-                background: #f5f5f5;
-            }}
-
-            .available {{
-                background: #e8f8ed;
-                color: #1b7f3a;
-                font-weight: bold;
-            }}
-
-            .occupied {{
-                background: #e5e5e5;
-                color: #333;
-            }}
-
-            .conflict {{
-                background: #ffdddd;
-                color: #b00020;
-                font-weight: bold;
-            }}
-
-            .legend {{
-                margin-top: 20px;
-            }}
-
-            .legend span {{
-                display: inline-block;
-                padding: 8px 12px;
-                border-radius: 6px;
-                margin-right: 10px;
-                font-weight: bold;
-            }}
-
-            .green {{
-                background: #e8f8ed;
-                color: #1b7f3a;
-            }}
-
-            .gray {{
-                background: #e5e5e5;
-                color: #333;
-            }}
-
-            .red {{
-                background: #ffdddd;
-                color: #b00020;
-            }}
-
-            a.button {{
-                display: inline-block;
-                margin-top: 25px;
-                background: #5b5cff;
-                color: white;
-                padding: 10px 16px;
-                border-radius: 6px;
-                text-decoration: none;
-                font-weight: bold;
-            }}
-        </style>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
     </head>
-
-    <body>
-        <div class="container">
-            <h1>Room Availability</h1>
-
-            <form method="POST">
-                Date:
-                <input type="date" name="selected_date" value="{selected_date}">
-                <button type="submit">View</button>
-            </form>
-
-            <div class="legend">
-                <span class="green">Available</span>
-                <span class="gray">Occupied</span>
-                <span class="red">Conflict</span>
-            </div>
-
-            <table>
-                <tr>
-                    <th>Time</th>
-                    {header_cells}
-                </tr>
-                {table_rows}
-            </table>
-
-            <a class="button" href="/calendar">Back to Calendar</a>
-        </div>
+    <body style="margin:0;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px">
+        {page_html}
     </body>
     </html>
     """
@@ -10953,7 +11209,8 @@ def teacher_dashboard():
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
-        COALESCE(l.location_name, s.location, '')
+        COALESCE(l.location_name, s.location, ''), COALESCE(s.trial_hold, 0),
+        COALESCE(s.trial_form_status, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON s.location_id = l.id
@@ -10968,7 +11225,8 @@ def teacher_dashboard():
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
-        COALESCE(l.location_name, s.location, '')
+        COALESCE(l.location_name, s.location, ''), COALESCE(s.trial_hold, 0),
+        COALESCE(s.trial_form_status, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON s.location_id = l.id
@@ -11057,12 +11315,23 @@ def teacher_dashboard():
 
     def lesson_row(lesson):
         key = hstudio_status_key(lesson[5])
+        is_trial_hold = bool(lesson[13]) if len(lesson) > 13 else False
+        trial_status = lesson[14] if len(lesson) > 14 else ""
+        trial_label = {
+            "form_missing": "Form missing",
+            "form_sent": "Form sent",
+            "form_complete": "Form complete",
+            "converted": "Converted",
+        }.get(trial_status, "Trial hold")
+        display_student = "Trial hold" if is_trial_hold else (lesson[3] or "-")
+        meta_suffix = f" · {trial_label}" if is_trial_hold else ""
+        href = "#" if is_trial_hold else f"/add_lesson/{quote(str(lesson[3] or ''))}"
         return f"""
-        <a class="td-lesson-row {key}" href="/add_lesson/{lesson[3]}">
+        <a class="td-lesson-row {key}" href="{href}">
             <div class="td-date">{hstudio_date_short(lesson[1])}</div>
             <div>
-                <div class="td-student">{escape(lesson[3] or '-')}</div>
-                <div class="td-meta">{lesson[2] or '-'} · {escape(lesson[4] or '-')}</div>
+                <div class="td-student">{escape(display_student)}</div>
+                <div class="td-meta">{lesson[2] or '-'} · {escape(lesson[4] or '-')}{escape(meta_suffix)}</div>
             </div>
             <div class="td-status">{status_label(lesson[5])}</div>
         </a>
@@ -11245,12 +11514,22 @@ def teacher_dashboard():
         course_style = course_calendar_style(course_color)
         place_label = lesson[12] or lesson[4] or "-"
         course_label = compact_course_label(lesson[7])
+        is_trial_hold = bool(lesson[13]) if len(lesson) > 13 else False
+        trial_status = lesson[14] if len(lesson) > 14 else ""
+        trial_label = {
+            "form_missing": "Form missing",
+            "form_sent": "Form sent",
+            "form_complete": "Form complete",
+            "converted": "Converted",
+        }.get(trial_status, "Trial hold")
+        display_student = "Trial hold" if is_trial_hold else (lesson[3] or "-")
+        display_line = f"{place_label} · {trial_label}" if is_trial_hold else f"{place_label} · {course_label}"
         return f"""
         <div class="calendar-event{event_class}"
              draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
              data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
              data-time="{escape(str(lesson[2] or ''))}"
-            data-student="{escape(str(lesson[3] or ''))}"
+            data-student="{escape(str(display_student or ''))}"
             data-teacher="{escape(str(teacher_name or ''))}">
             <label class="teacher-select-box" onclick="event.stopPropagation();">
                 <input type="checkbox" class="teacher-select-input" value="{lesson[0]}" onchange="teacherMultiUpdate()">
@@ -11261,8 +11540,8 @@ def teacher_dashboard():
                   <span class="event-time-text">{time_range}</span>
                 </span>
             </div>
-            <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
-            <div class="event-line">{escape(place_label)} · {escape(course_label)}</div>
+            <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(display_student)}</button>
+            <div class="event-line">{escape(display_line)}</div>
             {cancel_result}
             <form method="POST" action="/update_lesson_status" class="event-status-form">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
@@ -11403,6 +11682,7 @@ def teacher_dashboard():
         owner_policy_copy = "Teachers can reschedule, cancel, or delete their own lessons directly. Billing and student profile changes stay owner-managed."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
+        room_availability_control = '<a href="/room_availability">Room Availability</a>' if teacher_perms.get("view_room_availability") else ''
         created_notice = f'<div class="td-success">{escape(request.args.get("created"))} lesson(s) created.</div>' if request.args.get("created") else ''
         open_add_on_load = request.args.get("open_add") == "1"
         auto_add_date = (request.args.get("prefill_date") or today).strip()
@@ -11425,6 +11705,7 @@ def teacher_dashboard():
                         <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
                         <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
                     </div>
+                    {room_availability_control}
                     <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" onclick="teacherMultiToggle()">Multi-Select</button>
                     {controls}
                 </div>
@@ -11767,6 +12048,7 @@ def teacher_dashboard():
                     <h2>Quick Actions</h2>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i>This Week</a>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=month"><i class="ti ti-calendar-month"></i>This Month</a>
+                    {'<a class="td-action" href="/room_availability"><i class="ti ti-door"></i>Room Availability</a>' if teacher_perms.get("view_room_availability") else ''}
                     <a class="td-action" href="/teacher_missing_homework"><i class="ti ti-alert-circle"></i>Missing Homework {homework_badge}</a>
                     <a class="td-action" href="/teacher_dashboard?view=records"><i class="ti ti-notes"></i>Write Lesson Notes</a>
                     <a class="td-action" href="/teacher_reschedule"><i class="ti ti-calendar-x"></i>Reschedule</a>
@@ -13022,6 +13304,14 @@ def ensure_calendar_lesson_panel_schema():
         ("cancelled_at", "cancelled_at TEXT"),
         ("policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0"),
         ("pending_fee_amount", "pending_fee_amount REAL DEFAULT 0"),
+        ("trial_hold", "trial_hold INTEGER DEFAULT 0"),
+        ("trial_form_status", "trial_form_status TEXT"),
+        ("trial_student_name", "trial_student_name TEXT"),
+        ("trial_student_age", "trial_student_age TEXT"),
+        ("trial_instrument", "trial_instrument TEXT"),
+        ("trial_parent_contact", "trial_parent_contact TEXT"),
+        ("trial_private_note", "trial_private_note TEXT"),
+        ("trial_visibility", "trial_visibility TEXT DEFAULT 'owner_only'"),
     ]:
         add_column_if_missing(cursor, "schedule", column_name, column_sql)
     for column_name, column_sql in [
@@ -13222,7 +13512,11 @@ def calendar_lesson_row(cursor, schedule_id):
         COALESCE(s.student_billing_method, ''), COALESCE(s.student_price, 0),
         COALESCE(s.student_charge_amount, 0), COALESCE(s.billing_decision, ''),
         COALESCE(s.custom_lesson_count, 0), COALESCE(s.location, ''),
-        COALESCE(s.group_student_names, '')
+        COALESCE(s.group_student_names, ''), COALESCE(s.trial_hold, 0),
+        COALESCE(s.trial_form_status, ''), COALESCE(s.trial_student_name, ''),
+        COALESCE(s.trial_student_age, ''), COALESCE(s.trial_instrument, ''),
+        COALESCE(s.trial_parent_contact, ''), COALESCE(s.trial_private_note, ''),
+        COALESCE(s.trial_visibility, 'owner_only')
     FROM schedule s
     LEFT JOIN students st ON s.student_name = st.name
     WHERE s.id = ?
@@ -13322,11 +13616,12 @@ def calendar_lesson_detail(schedule_id):
     teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
     course_name = row[7] or row[8] or row[9] or "Lesson"
     group_roster = calendar_group_roster(cursor, schedule_id, row[28] or "", row[1] or "", row[6] or "scheduled") if int(row[18] or 0) else []
+    display_student = "Trial hold" if require_teacher() and not require_owner() and int(row[29] or 0) else (row[1] or "")
     conn.close()
     response = {
         "ok": True,
         "lesson": {
-            "id": row[0], "student": row[1] or "", "teacher": row[2] or "", "date": row[3] or "",
+            "id": row[0], "student": display_student, "teacher": row[2] or "", "date": row[3] or "",
             "time": row[4] or "", "time_range": format_lesson_time_range(row[4], row[10]),
             "classroom": row[5] or "", "status": row[6] or "scheduled", "status_label": calendar_status_label(row[6]),
             "course_name": course_name, "schedule_type": row[8] or row[9] or "Lesson", "duration": row[10] or 30,
@@ -13338,6 +13633,8 @@ def calendar_lesson_detail(schedule_id):
             "custom_lesson_count": int(row[26] or 0), "location": row[27] or "",
             "group_student_names": row[28] or "",
             "group_students": group_roster,
+            "trial_hold": int(row[29] or 0),
+            "trial_form_status": row[30] or "",
             "permissions": teacher_permissions,
         }
     }
@@ -13347,6 +13644,12 @@ def calendar_lesson_detail(schedule_id):
             "student_price": float(row[23] or 0),
             "student_charge_amount": float(row[24] or 0),
             "billing_decision": row[25] or "existing_credits",
+            "trial_student_name": row[31] or "",
+            "trial_student_age": row[32] or "",
+            "trial_instrument": row[33] or "",
+            "trial_parent_contact": row[34] or "",
+            "trial_private_note": row[35] or "",
+            "trial_visibility": row[36] or "owner_only",
         })
     return response
 
@@ -13420,7 +13723,9 @@ def calendar_lesson_action():
             if any(key in data for key in (
                 "student_name", "teacher", "course_type_id", "duration", "location_id", "room_id",
                 "classroom", "lesson_date", "lesson_time", "schedule_type", "package_type",
-                "billing_basis", "student_rate", "billing_decision"
+                "billing_basis", "student_rate", "billing_decision", "trial_student_name",
+                "trial_student_age", "trial_instrument", "trial_form_status", "trial_parent_contact",
+                "trial_private_note"
             )):
                 student_name_detail = hmusic_clean_student_picker_value(data.get("student_name") or row[1] or "")
                 teacher_detail = (data.get("teacher") or row[2] or "").strip()
@@ -13500,7 +13805,12 @@ def calendar_lesson_action():
                     location_row = cursor.fetchone()
                     location_detail = location_row[0] if location_row else ""
 
-                auto_link_student_teacher(cursor, student_name_detail, teacher_detail)
+                is_trial_hold_detail = int(row[29] or 0) == 1
+                trial_form_status_detail = (data.get("trial_form_status") or row[30] or "form_missing").strip()
+                if trial_form_status_detail not in {"form_missing", "form_sent", "form_complete", "converted"}:
+                    trial_form_status_detail = "form_missing"
+                if not is_trial_hold_detail:
+                    auto_link_student_teacher(cursor, student_name_detail, teacher_detail)
                 detail_update = {
                     "student_name": student_name_detail,
                     "teacher": teacher_detail,
@@ -13522,6 +13832,12 @@ def calendar_lesson_action():
                     "student_charge_amount": student_charge_amount_detail,
                     "billing_decision": billing_decision_detail,
                     "custom_lesson_count": custom_lesson_count_detail if package_type_detail == "custom" else None,
+                    "trial_form_status": trial_form_status_detail if is_trial_hold_detail else None,
+                    "trial_student_name": (data.get("trial_student_name") or row[31] or "").strip() if is_trial_hold_detail else None,
+                    "trial_student_age": (data.get("trial_student_age") or row[32] or "").strip() if is_trial_hold_detail else None,
+                    "trial_instrument": (data.get("trial_instrument") or row[33] or "").strip() if is_trial_hold_detail else None,
+                    "trial_parent_contact": (data.get("trial_parent_contact") or row[34] or "").strip() if is_trial_hold_detail else None,
+                    "trial_private_note": (data.get("trial_private_note") or row[35] or "").strip() if is_trial_hold_detail else None,
                 }
 
             detail_scope = (data.get("detail_scope") or "once").strip()
@@ -13581,6 +13897,12 @@ def calendar_lesson_action():
                 student_charge_amount = COALESCE(?, student_charge_amount),
                 billing_decision = COALESCE(?, billing_decision),
                 custom_lesson_count = ?,
+                trial_form_status = COALESCE(?, trial_form_status),
+                trial_student_name = COALESCE(?, trial_student_name),
+                trial_student_age = COALESCE(?, trial_student_age),
+                trial_instrument = COALESCE(?, trial_instrument),
+                trial_parent_contact = COALESCE(?, trial_parent_contact),
+                trial_private_note = COALESCE(?, trial_private_note),
                 notes = ?, private_note = ?, homework_assignment = ?,
                 parent_lesson_reminder_enabled = ?, practice_reminder_enabled = ?, low_balance_alert_enabled = ?,
                 owner_calendar_updated_at = ?
@@ -13606,6 +13928,12 @@ def calendar_lesson_action():
                 detail_update.get("student_charge_amount"),
                 detail_update.get("billing_decision"),
                 detail_update.get("custom_lesson_count") if detail_update else row[26] or None,
+                detail_update.get("trial_form_status") if detail_update else None,
+                detail_update.get("trial_student_name") if detail_update else None,
+                detail_update.get("trial_student_age") if detail_update else None,
+                detail_update.get("trial_instrument") if detail_update else None,
+                detail_update.get("trial_parent_contact") if detail_update else None,
+                detail_update.get("trial_private_note") if detail_update else None,
                 lesson_note,
                 private_note,
                 homework,
@@ -34206,6 +34534,14 @@ def ensure_v18_schema():
     add_column_if_missing("schedule", "group_student_names", "group_student_names TEXT")
     add_column_if_missing("schedule", "billing_decision", "billing_decision TEXT")
     add_column_if_missing("schedule", "custom_lesson_count", "custom_lesson_count INTEGER")
+    add_column_if_missing("schedule", "trial_hold", "trial_hold INTEGER DEFAULT 0")
+    add_column_if_missing("schedule", "trial_form_status", "trial_form_status TEXT")
+    add_column_if_missing("schedule", "trial_student_name", "trial_student_name TEXT")
+    add_column_if_missing("schedule", "trial_student_age", "trial_student_age TEXT")
+    add_column_if_missing("schedule", "trial_instrument", "trial_instrument TEXT")
+    add_column_if_missing("schedule", "trial_parent_contact", "trial_parent_contact TEXT")
+    add_column_if_missing("schedule", "trial_private_note", "trial_private_note TEXT")
+    add_column_if_missing("schedule", "trial_visibility", "trial_visibility TEXT DEFAULT 'owner_only'")
     add_column_if_missing("course_types", "display_color", "display_color TEXT")
 
     cursor.execute("SELECT COUNT(*) FROM course_types")
