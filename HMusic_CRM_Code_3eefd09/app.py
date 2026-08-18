@@ -1195,6 +1195,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
         return f'<a class="td-nav-item{active_class}" href="{href}"><i class="ti {icon}"></i><span>{label}</span>{extra}</a>'
 
     messages_item = item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge) if perms.get("message_parents") else ""
+    room_availability_item = item("room_availability", "/room_availability", "ti-door", "Room Availability") if perms.get("view_room_availability") else ""
     add_schedule_item = item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
     payroll_item = item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>') if perms.get("view_payroll") else ""
     sub_item = item("sub", "/teacher_sub_request", "ti-replace", "Sub Request") if perms.get("sub_request") else ""
@@ -1203,6 +1204,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
         <div class="td-nav-section">Today</div>
         {item("home", "/teacher_dashboard", "ti-home", "Home")}
         {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Calendar")}
+        {room_availability_item}
         {messages_item}
         <div class="td-nav-section">Lessons</div>
         {item("records", "/teacher_dashboard?view=records", "ti-notes", "Lesson Records", homework_badge)}
@@ -1376,6 +1378,7 @@ TEACHER_PERMISSION_DEFAULTS = {
     "message_parents": 1,
     "lesson_history": 1,
     "schedule_reminders": 1,
+    "view_room_availability": 1,
     "add_own_schedule": 1,
     "direct_reschedule": 1,
     "direct_cancel": 0,
@@ -1396,6 +1399,7 @@ TEACHER_PERMISSION_LABELS = [
     ("message_parents", "Message parents", "Message families from teacher inbox."),
     ("lesson_history", "Lesson history", "Open student lesson history."),
     ("schedule_reminders", "Schedule reminders", "Receive lesson schedule reminders before class."),
+    ("view_room_availability", "Room availability", "See status-only room availability without student, teacher, or course details."),
     ("add_own_schedule", "Add own schedule", "Create lessons on the teacher's own calendar."),
     ("direct_reschedule", "Direct reschedule", "Move the teacher's own lessons without owner approval."),
     ("direct_cancel", "Direct cancel", "Cancel the teacher's own lessons without owner approval."),
@@ -1594,7 +1598,7 @@ def teacher_permissions_admin():
         for t in teachers
     )
     rows = ""
-    direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders"}
+    direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders", "view_room_availability"}
     approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule"}
     hidden_keys = {"view_billing", "delete_lessons", "edit_student_profile", "view_other_teachers"}
     for key, label, hint in TEACHER_PERMISSION_LABELS:
@@ -9339,60 +9343,7 @@ def add_schedule():
 
 @app.route("/room_schedule")
 def room_schedule():
-    conn = sqlite3.connect("hmusic.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    SELECT
-        lesson_date,
-        lesson_time,
-        classroom,
-        student_name,
-        teacher,
-        location
-    FROM schedule
-    ORDER BY lesson_date, classroom, lesson_time
-    """)
-
-    schedules = cursor.fetchall()
-    conn.close()
-
-    rows = ""
-
-    for s in schedules:
-        rows += f"""
-        <tr>
-            <td>{s[0]}</td>
-            <td>{s[1]}</td>
-            <td>{s[2]}</td>
-            <td><a href="/student/{s[3]}">{s[3]}</a></td>
-            <td>{s[4]}</td>
-            <td>{s[5]}</td>
-        </tr>
-        """
-
-    return f"""
-    <h1>Room Schedule</h1>
-
-    <p>This page helps teachers and owner find available rooms.</p>
-
-    <table border="1" cellpadding="8">
-        <tr>
-            <th>Date</th>
-            <th>Time</th>
-            <th>Room</th>
-            <th>Student</th>
-            <th>Teacher</th>
-            <th>Location</th>
-        </tr>
-
-        {rows}
-    </table>
-
-    <br>
-
-    <a href="/calendar">Back to Calendar</a>
-    """
+    return redirect("/room_availability")
 
 
 @app.route("/locations_rooms", methods=["GET", "POST"])
@@ -9613,258 +9564,348 @@ def locations_rooms():
 
 @app.route("/room_availability", methods=["GET", "POST"])
 def room_availability():
+    ensure_calendar_lesson_panel_schema()
+    is_owner = require_owner()
+    is_teacher = require_teacher() and not is_owner
+    if not (is_owner or is_teacher):
+        return redirect("/owner_login")
+    if is_teacher and not teacher_has_permission(session.get("teacher_name"), "view_room_availability"):
+        content = """
+        <section class="td-card">
+            <h2>Room Availability Requires Owner Permission</h2>
+            <p class="muted">The owner can enable this from Teacher Permissions.</p>
+        </section>
+        """
+        return hstudio_teacher_dark_shell(
+            session.get("teacher_name") or "Teacher",
+            get_unread_message_count("teacher", session.get("teacher_name")),
+            content,
+            active="room_availability",
+            missing_homework_count=get_missing_homework_count(session.get("teacher_name"))
+        )
+
+    selected_date = request.values.get("selected_date") or date.today().strftime("%Y-%m-%d")
+    selected_location = (request.values.get("location_id") or "").strip()
+    selected_start = (request.values.get("start_time") or "15:45").strip()
+    selected_duration_raw = request.values.get("duration") or "45"
+    try:
+        datetime.strptime(selected_date, "%Y-%m-%d")
+    except Exception:
+        selected_date = date.today().strftime("%Y-%m-%d")
+    try:
+        selected_duration = max(5, min(240, int(float(selected_duration_raw))))
+    except Exception:
+        selected_duration = 45
+
+    day_start = 9 * 60
+    day_end = 21 * 60
+    selected_start_minutes = minutes_from_time_text(selected_start)
+    if selected_start_minutes is None:
+        selected_start = "15:45"
+        selected_start_minutes = 15 * 60 + 45
+    selected_end_minutes = selected_start_minutes + selected_duration
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
-    selected_date = request.form.get("selected_date")
+    cursor.execute("""
+    SELECT id, location_name
+    FROM studio_locations
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY COALESCE(sort_order, 0), location_name
+    """)
+    locations = cursor.fetchall()
 
-    if not selected_date:
-        selected_date = date.today().strftime("%Y-%m-%d")
+    room_params = []
+    location_filter = ""
+    if selected_location:
+        location_filter = "AND r.location_id = ?"
+        room_params.append(selected_location)
+    cursor.execute(f"""
+    SELECT r.id, r.location_id, r.room_name, COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON l.id = r.location_id
+    WHERE COALESCE(r.active, 1) = 1
+    AND COALESCE(l.active, 1) = 1
+    {location_filter}
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(r.sort_order, 0), r.room_name
+    """, room_params)
+    rooms = cursor.fetchall()
 
     cursor.execute("""
-    SELECT room_name
-    FROM classrooms
-    ORDER BY room_name
-    """)
-    rooms = [row[0] for row in cursor.fetchall()]
-
-    time_slots = [
-        "09:00", "09:30",
-        "10:00", "10:30",
-        "11:00", "11:30",
-        "12:00", "12:30",
-        "13:00", "13:30",
-        "14:00", "14:30",
-        "15:00", "15:30",
-        "16:00", "16:30",
-        "17:00", "17:30",
-        "18:00", "18:30",
-        "19:00", "19:30",
-        "20:00"
-    ]
-
-    header_cells = ""
-    for room in rooms:
-        header_cells += f"<th>{room}</th>"
-
-    table_rows = ""
-
-    for time_slot in time_slots:
-        row_html = f"<tr><td class='time-cell'>{time_slot}</td>"
-
-        for room in rooms:
-            slot_start = datetime.strptime(time_slot, "%H:%M")
-            slot_end = slot_start + timedelta(minutes=30)
-
-            cursor.execute("""
-            SELECT student_name, teacher, lesson_time
-            FROM schedule
-            WHERE lesson_date = ?
-            AND classroom = ?
-            """, (selected_date, room))
-
-            all_bookings = cursor.fetchall()
-            bookings = []
-
-            for booking in all_bookings:
-                booking_time = datetime.strptime(booking[2], "%H:%M")
-
-                if slot_start <= booking_time < slot_end:
-                    bookings.append(booking)
-
-            if len(bookings) == 0:
-                cell_class = "available"
-                cell_content = "Available"
-
-            elif len(bookings) == 1:
-                cell_class = "occupied"
-
-                student_name = bookings[0][0]
-                teacher = bookings[0][1]
-                actual_time = bookings[0][2]
-
-                cell_content = f"""
-                {actual_time}<br>
-                <b>Occupied</b>
-                """
-
-            else:
-                cell_class = "conflict"
-
-                conflict_items = ""
-                for booking in bookings:
-                    student_name = booking[0]
-                    teacher = booking[1]
-                    actual_time = booking[2]
-
-                    conflict_items += f"""
-                    {actual_time}<br>
-                    """
-
-                cell_content = f"""
-                <strong>CONFLICT</strong><br>
-                {conflict_items}
-                """
-
-            row_html += f"""
-            <td class="{cell_class}">
-                {cell_content}
-            </td>
-            """
-
-        row_html += "</tr>"
-        table_rows += row_html
+    SELECT id, lesson_time, COALESCE(duration, 30), COALESCE(status, 'scheduled'),
+           COALESCE(room_id, 0), COALESCE(classroom, ''), COALESCE(location_id, 0)
+    FROM schedule
+    WHERE lesson_date = ?
+    ORDER BY lesson_time
+    """, (selected_date,))
+    lesson_rows = cursor.fetchall()
 
     conn.close()
+
+    location_options = '<option value="">All locations</option>'
+    for location_id, location_name in locations:
+        location_options += f'<option value="{location_id}" {"selected" if str(location_id) == selected_location else ""}>{escape(location_name or "Location")}</option>'
+
+    if not rooms:
+        empty_content = f"""
+        <div class="room-avail-empty">
+            <h2>No active rooms found</h2>
+            <p>Add active locations and rooms before using Room Availability.</p>
+        </div>
+        """
+        if is_teacher:
+            return hstudio_teacher_dark_shell(
+                session.get("teacher_name") or "Teacher",
+                get_unread_message_count("teacher", session.get("teacher_name")),
+                empty_content,
+                active="room_availability",
+                missing_homework_count=get_missing_homework_count(session.get("teacher_name"))
+            )
+        return f"<html><body>{empty_content}<p><a href='/locations_rooms'>Locations & Rooms</a> <a href='/calendar'>Calendar</a></p></body></html>"
+
+    room_count = len(rooms)
+    room_headers = "".join(f'<div class="ra-room-head">{escape(room[2] or "Room")}</div>' for room in rooms)
+
+    def room_lesson_matches(room, lesson):
+        room_id, location_id, room_name = room[0], room[1], room[2] or ""
+        lesson_room_id = int(lesson[4] or 0)
+        lesson_location_id = int(lesson[6] or 0)
+        if lesson_room_id:
+            return lesson_room_id == int(room_id)
+        if lesson_location_id and int(location_id or 0) != lesson_location_id:
+            return False
+        return (lesson[5] or "").strip().lower() == room_name.strip().lower()
+
+    def lesson_blocks_for_room(room):
+        blocks = []
+        for lesson in lesson_rows:
+            status = str(lesson[3] or "scheduled").strip().lower()
+            if status.startswith("cancel") or status in ("excused_24h", "excused", "teacher_cancelled"):
+                continue
+            start = minutes_from_time_text(lesson[1])
+            if start is None:
+                continue
+            try:
+                duration = int(float(lesson[2] or 30))
+            except Exception:
+                duration = 30
+            end = start + max(5, duration)
+            if end <= day_start or start >= day_end:
+                continue
+            if room_lesson_matches(room, lesson):
+                blocks.append({
+                    "start": max(day_start, start),
+                    "end": min(day_end, end),
+                })
+        return blocks
+
+    room_blocks = {room[0]: lesson_blocks_for_room(room) for room in rooms}
+
+    def block_count(room_id, start, end):
+        return len([
+            block for block in room_blocks.get(room_id, [])
+            if max(start, block["start"]) < min(end, block["end"])
+        ])
+
+    def block_status(room_id, start, end):
+        count = block_count(room_id, start, end)
+        if count == 0:
+            return "available"
+        if count == 1:
+            return "booked"
+        return "conflict"
+
+    def block_label(status):
+        if status == "available":
+            return "Available"
+        if status == "conflict":
+            return "Conflict"
+        if status == "closed":
+            return "Closed"
+        return "Booked"
+
+    def top_for_minute(minute):
+        return max(0, min(100, ((minute - day_start) / (day_end - day_start)) * 100))
+
+    def room_timeline_html(room):
+        intervals = []
+        boundaries = {day_start, day_end, selected_start_minutes, selected_end_minutes}
+        for block in room_blocks.get(room[0], []):
+            boundaries.add(block["start"])
+            boundaries.add(block["end"])
+        points = sorted(min(max(day_start, point), day_end) for point in boundaries if day_start <= point <= day_end)
+        for idx in range(len(points) - 1):
+            start = points[idx]
+            end = points[idx + 1]
+            if end <= start:
+                continue
+            status = block_status(room[0], start, end)
+            top = top_for_minute(start)
+            height = max(2.2, top_for_minute(end) - top)
+            intervals.append(f"""
+            <div class="ra-block {status}" style="top:{top:.3f}%;height:{height:.3f}%">
+                <span>{block_label(status)}</span>
+                <small>{format_display_time(time_text_from_minutes(start))}-{format_display_time(time_text_from_minutes(end))}</small>
+            </div>
+            """)
+        selection_top = top_for_minute(selected_start_minutes)
+        selection_height = max(2.2, top_for_minute(selected_end_minutes) - selection_top)
+        return f"""
+        <div class="ra-room-col">
+            <div class="ra-selection" style="top:{selection_top:.3f}%;height:{selection_height:.3f}%"></div>
+            {"".join(intervals)}
+        </div>
+        """
+
+    room_columns = "".join(room_timeline_html(room) for room in rooms)
+    hour_marks = "".join(
+        f'<div class="ra-time-mark">{format_display_time(time_text_from_minutes(hour * 60)).replace(":00", "")}</div>'
+        for hour in range(day_start // 60, day_end // 60)
+    )
+    selected_rows = ""
+    available_count = 0
+    for room in rooms:
+        status = block_status(room[0], selected_start_minutes, selected_end_minutes)
+        if status == "available":
+            available_count += 1
+        selected_rows += f"""
+        <div class="ra-fit-row">
+            <div class="ra-fit-room">{escape(room[2] or "Room")}</div>
+            <div>
+                <div>{format_lesson_time_range(selected_start, selected_duration)}</div>
+                <small>{'Clear for full duration' if status == 'available' else 'Overlaps booking(s)' if status == 'booked' else 'Overlaps multiple bookings'}</small>
+            </div>
+            <span class="ra-fit-status {status}">{block_label(status)}</span>
+        </div>
+        """
+
+    back_href = "/teacher_dashboard?view=schedule" if is_teacher else "/calendar"
+    add_href = (
+        f"/teacher_dashboard?view=schedule&open_add=1&prefill_date={quote(selected_date)}"
+        if is_teacher else
+        f"/add_schedule?{urlencode({'start_date': selected_date, 'return_to': '/room_availability'})}"
+    )
+    shell_class = " teacher-mode" if is_teacher else ""
+    page_html = f"""
+    <style>
+        .room-avail{{color:#17202a}}
+        .room-avail *{{box-sizing:border-box}}
+        .room-avail-shell{{background:#fff;border:1px solid #e3e7ee;border-radius:10px;overflow:hidden;box-shadow:0 10px 24px rgba(15,23,42,.06)}}
+        .room-avail-top{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid #e3e7ee;background:#fff}}
+        .room-avail-title h1{{margin:0 0 3px;font-size:22px;font-weight:600}}
+        .room-avail-title p{{margin:0;color:#667085;font-size:13px}}
+        .room-avail-actions,.room-avail-filters,.ra-legend{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}}
+        .ra-btn,.room-avail-filters input,.room-avail-filters select{{height:30px;border:1px solid #d6dce6;border-radius:8px;background:#fff;color:#354052;padding:0 10px;font:inherit;font-size:12px;font-weight:650;text-decoration:none}}
+        .ra-btn.primary{{background:#2563eb;border-color:#2563eb;color:#fff}}
+        .room-avail-toolbar{{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#fbfcfd;border-bottom:1px solid #e3e7ee}}
+        .ra-legend span{{height:26px;display:inline-flex;align-items:center;gap:6px;border:1px solid #d6dce6;border-radius:8px;background:#fff;padding:0 8px;color:#475467;font-size:11px;font-weight:750}}
+        .ra-dot{{width:9px;height:9px;border-radius:999px;display:inline-block}}
+        .ra-dot.available{{background:#16803c}}.ra-dot.booked{{background:#818b9b}}.ra-dot.conflict{{background:#b42318}}.ra-dot.closed{{background:#c7ced8}}
+        .room-avail-layout{{display:grid;grid-template-columns:minmax(0,1fr) 292px;min-height:650px}}
+        .ra-timeline-wrap{{overflow:auto;border-right:1px solid #e3e7ee;background:#fff}}
+        .ra-timeline{{min-width:{max(760, 66 + room_count * 158)}px;display:grid;grid-template-columns:66px repeat({room_count},minmax(150px,1fr));position:relative}}
+        .ra-time-head,.ra-room-head{{height:42px;position:sticky;top:0;z-index:4;background:#fff;border-bottom:1px solid #e5e9f0;border-right:1px solid #e5e9f0;padding:8px;font-size:12px;font-weight:850}}
+        .ra-time-head{{left:0;z-index:5}}
+        .ra-time-col{{position:sticky;left:0;z-index:2;background:#fbfcfd;border-right:1px solid #e5e9f0}}
+        .ra-time-mark{{height:52px;border-bottom:1px solid #edf0f5;padding:6px 7px 0 0;text-align:right;color:#697487;font-size:11px;font-weight:750}}
+        .ra-room-col{{position:relative;height:624px;border-right:1px solid #e5e9f0;background:linear-gradient(#edf0f5 1px,transparent 1px) 0 0/100% 52px,linear-gradient(#f4f6f9 1px,transparent 1px) 0 26px/100% 52px,#fff}}
+        .ra-block{{position:absolute;left:7px;right:7px;border-radius:5px;border:1px solid transparent;padding:4px 7px;display:flex;flex-direction:column;justify-content:center;overflow:hidden;font-size:11px;line-height:1.14;font-weight:850;z-index:2}}
+        .ra-block span,.ra-block small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+        .ra-block small{{margin-top:2px;font-size:10px;font-weight:750;opacity:.82}}
+        .ra-block.available{{background:#e9f8ef;border-color:#bee8cb;color:#16803c}}
+        .ra-block.booked{{background:#eef1f5;border-color:#d3dae4;color:#465163}}
+        .ra-block.conflict{{background:#fff0ef;border-color:#f4aaa3;color:#b42318}}
+        .ra-selection{{position:absolute;left:5px;right:5px;border:2px solid #2563eb;background:rgba(37,99,235,.08);border-radius:6px;z-index:1;pointer-events:none}}
+        .ra-side{{background:#fbfcfd;padding:14px}}
+        .ra-panel{{background:#fff;border:1px solid #e1e6ee;border-radius:8px;overflow:hidden;margin-bottom:12px}}
+        .ra-panel-head{{padding:11px 12px;border-bottom:1px solid #e8ecf2}}
+        .ra-panel-head strong{{display:block;font-size:13px}}.ra-panel-head span{{display:block;margin-top:3px;color:#667085;font-size:11px}}
+        .ra-fit-row{{display:grid;grid-template-columns:46px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid #eef1f5;font-size:12px}}
+        .ra-fit-row:last-child{{border-bottom:0}}.ra-fit-room{{font-weight:850}}.ra-fit-row small{{display:block;color:#667085;font-size:11px;margin-top:2px}}
+        .ra-fit-status{{border-radius:999px;padding:3px 7px;font-size:10px;font-weight:850;text-transform:uppercase;white-space:nowrap}}
+        .ra-fit-status.available{{background:#e9f8ef;color:#16803c}}.ra-fit-status.booked{{background:#eef1f5;color:#536173}}.ra-fit-status.conflict{{background:#fff0ef;color:#b42318}}
+        .ra-note{{padding:10px 12px;color:#344054;font-size:12px;line-height:1.45}}.ra-note b{{color:#111827}}
+        .room-avail-empty{{background:#fff;border:1px solid #e3e7ee;border-radius:10px;padding:22px}}
+        @media(max-width:900px){{.room-avail-top,.room-avail-toolbar{{align-items:flex-start;flex-direction:column}}.room-avail-layout{{grid-template-columns:1fr}}.ra-timeline-wrap{{border-right:0}}}}
+    </style>
+    <div class="room-avail{shell_class}">
+        <div class="room-avail-shell">
+            <div class="room-avail-top">
+                <div class="room-avail-title">
+                    <h1>Room Availability</h1>
+                    <p>Status-only room calendar. No student, teacher, or course details are shown.</p>
+                </div>
+                <div class="room-avail-actions">
+                    <a class="ra-btn" href="{back_href}">Back</a>
+                    <a class="ra-btn primary" href="{add_href}">Add Schedule</a>
+                </div>
+            </div>
+            <form class="room-avail-toolbar" method="GET" action="/room_availability">
+                <div class="room-avail-filters">
+                    <input type="date" name="selected_date" value="{escape(selected_date)}">
+                    <select name="location_id">{location_options}</select>
+                    <input type="time" name="start_time" value="{escape(time_text_from_minutes(selected_start_minutes))}">
+                    <select name="duration">
+                        {''.join(f'<option value="{minutes}" {"selected" if minutes == selected_duration else ""}>{minutes} min</option>' for minutes in (15, 30, 45, 60, 75, 90))}
+                    </select>
+                    <button class="ra-btn" type="submit">View</button>
+                </div>
+                <div class="ra-legend">
+                    <span><i class="ra-dot available"></i>Available</span>
+                    <span><i class="ra-dot booked"></i>Booked</span>
+                    <span><i class="ra-dot conflict"></i>Conflict</span>
+                </div>
+            </form>
+            <div class="room-avail-layout">
+                <div class="ra-timeline-wrap">
+                    <div class="ra-timeline">
+                        <div class="ra-time-head"></div>
+                        {room_headers}
+                        <div class="ra-time-col">{hour_marks}</div>
+                        {room_columns}
+                    </div>
+                </div>
+                <aside class="ra-side">
+                    <section class="ra-panel">
+                        <div class="ra-panel-head">
+                            <strong>Selected Window</strong>
+                            <span>{format_lesson_time_range(selected_start, selected_duration)} · {available_count}/{room_count} available</span>
+                        </div>
+                        {selected_rows}
+                    </section>
+                    <section class="ra-panel">
+                        <div class="ra-panel-head">
+                            <strong>Logic</strong>
+                            <span>exact-minute overlap check</span>
+                        </div>
+                        <div class="ra-note">
+                            <b>Available</b> means zero active lessons overlap the selected room and time range. <b>Conflict</b> means two or more active lessons overlap the same room.
+                        </div>
+                    </section>
+                </aside>
+            </div>
+        </div>
+    </div>
+    """
+
+    if is_teacher:
+        return hstudio_teacher_dark_shell(
+            session.get("teacher_name") or "Teacher",
+            get_unread_message_count("teacher", session.get("teacher_name")),
+            page_html,
+            active="room_availability",
+            missing_homework_count=get_missing_homework_count(session.get("teacher_name"))
+        )
 
     return f"""
     <html>
     <head>
         <title>Room Availability</title>
-
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #f7f7fb;
-                padding: 40px;
-            }}
-
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            }}
-
-            h1 {{
-                margin-bottom: 20px;
-            }}
-
-            form {{
-                margin-bottom: 25px;
-            }}
-
-            input, button {{
-                padding: 8px;
-                font-size: 14px;
-            }}
-
-            button {{
-                background: #5b5cff;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 9px 16px;
-                font-weight: bold;
-            }}
-
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 20px;
-            }}
-
-            th {{
-                background: #eeeeff;
-                padding: 12px;
-                border: 1px solid #ddd;
-            }}
-
-            td {{
-                padding: 12px;
-                border: 1px solid #ddd;
-                text-align: center;
-                min-width: 120px;
-            }}
-
-            .time-cell {{
-                font-weight: bold;
-                background: #f5f5f5;
-            }}
-
-            .available {{
-                background: #e8f8ed;
-                color: #1b7f3a;
-                font-weight: bold;
-            }}
-
-            .occupied {{
-                background: #e5e5e5;
-                color: #333;
-            }}
-
-            .conflict {{
-                background: #ffdddd;
-                color: #b00020;
-                font-weight: bold;
-            }}
-
-            .legend {{
-                margin-top: 20px;
-            }}
-
-            .legend span {{
-                display: inline-block;
-                padding: 8px 12px;
-                border-radius: 6px;
-                margin-right: 10px;
-                font-weight: bold;
-            }}
-
-            .green {{
-                background: #e8f8ed;
-                color: #1b7f3a;
-            }}
-
-            .gray {{
-                background: #e5e5e5;
-                color: #333;
-            }}
-
-            .red {{
-                background: #ffdddd;
-                color: #b00020;
-            }}
-
-            a.button {{
-                display: inline-block;
-                margin-top: 25px;
-                background: #5b5cff;
-                color: white;
-                padding: 10px 16px;
-                border-radius: 6px;
-                text-decoration: none;
-                font-weight: bold;
-            }}
-        </style>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
     </head>
-
-    <body>
-        <div class="container">
-            <h1>Room Availability</h1>
-
-            <form method="POST">
-                Date:
-                <input type="date" name="selected_date" value="{selected_date}">
-                <button type="submit">View</button>
-            </form>
-
-            <div class="legend">
-                <span class="green">Available</span>
-                <span class="gray">Occupied</span>
-                <span class="red">Conflict</span>
-            </div>
-
-            <table>
-                <tr>
-                    <th>Time</th>
-                    {header_cells}
-                </tr>
-                {table_rows}
-            </table>
-
-            <a class="button" href="/calendar">Back to Calendar</a>
-        </div>
+    <body style="margin:0;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px">
+        {page_html}
     </body>
     </html>
     """
