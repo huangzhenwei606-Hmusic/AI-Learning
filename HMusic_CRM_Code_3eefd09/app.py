@@ -6733,7 +6733,7 @@ def calendar():
                      data-teacher="{escape(str(event[4] or ''))}">
                     <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span><span class="ev-icon-stack">{status_icons}</span></span>
                     <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event[3] or ""))}</a>
-                    <span class="ev-time">{time_range}</span>
+                    <span class="ev-time calendar-time-chip">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
                     {cancel_result}
                     {warning}
@@ -6921,7 +6921,10 @@ def calendar():
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
             .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:2px}}
-            .ev-time{{font-size:9px;opacity:.75;display:block}}
+            .ev-time{{font-size:9px;display:block}}
+            .calendar-time-chip{{display:inline-block;width:max-content;max-width:100%;
+                                 background:#fff;color:#111827!important;font-weight:900;
+                                 opacity:1!important;text-decoration:none!important}}
             .ev-sub{{font-size:9px;opacity:.6;display:block}}
             .ev-cancel-result{{font-size:9px;opacity:.78;display:block;margin-top:1px}}
             .ev-status-badge{{display:inline-flex;align-items:center;gap:3px;
@@ -6961,6 +6964,8 @@ def calendar():
                                                    text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .owner-status-form select,
             .ev.ev-early-cancel .owner-status-form button{{text-decoration:none}}
+            .ev.ev-early-cancel .calendar-time-chip{{background:#fff!important;color:#111827!important;
+                                                     font-weight:900;text-decoration:none!important}}
             /* instrument colors */
             .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
             .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
@@ -10066,6 +10071,10 @@ def teacher_dashboard():
                     box-shadow:0 1px 2px rgba(0,0,0,.18)}
     .t-status-badge:before{content:"";width:6px;height:6px;border-radius:50%;
                            background:currentColor;filter:brightness(0) invert(1)}
+    .calendar-time-chip{display:inline-block;width:max-content;max-width:100%;
+                        background:#fff;color:#111827!important;font-weight:900;
+                        opacity:1!important;text-decoration:none!important}
+    .event-time-wrap{display:block;margin-top:3px}
     .sd-present  {background:var(--s-present)}
     .sd-scheduled{background:var(--s-scheduled)}
     .sd-late     {background:var(--s-late)}
@@ -10076,10 +10085,10 @@ def teacher_dashboard():
     .calendar-event{border-left:4px solid var(--blue)}
     .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:#667085!important;box-shadow:none!important}
     .calendar-event.early-cancel .t-status-badge{background:#E5E7EB;color:#667085;box-shadow:none;text-decoration:line-through;text-decoration-thickness:1.5px}
-    .calendar-event.early-cancel .event-time span:last-child,
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
     .calendar-event.early-cancel .event-cancel-result{color:#667085!important;text-decoration:line-through;text-decoration-thickness:1.5px}
+    .calendar-event.early-cancel .calendar-time-chip{background:#fff!important;color:#111827!important;font-weight:900;text-decoration:none!important}
     .calendar-event.early-cancel .event-cancel-result{display:block;font-size:10px;margin:2px 0 0;font-weight:800}
     .calendar-event.early-cancel .event-status-form select,
     .calendar-event.early-cancel .event-status-form button{text-decoration:none}
@@ -10128,7 +10137,7 @@ def teacher_dashboard():
             <div class="event-top">
                 <span class="event-time">
                   <span class="t-status-badge {dot}">{status_text}</span>
-                  <span style="display:block;margin-top:3px">{time_range}</span>
+                  <span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>
                 </span>
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
