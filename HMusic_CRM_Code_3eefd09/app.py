@@ -9843,10 +9843,10 @@ def room_availability():
             </div>
             <form class="room-avail-toolbar" method="GET" action="/room_availability">
                 <div class="room-avail-filters">
-                    <input type="date" name="selected_date" value="{escape(selected_date)}">
-                    <select name="location_id">{location_options}</select>
-                    <input type="time" name="start_time" value="{escape(time_text_from_minutes(selected_start_minutes))}">
-                    <select name="duration">
+                    <input type="date" name="selected_date" value="{escape(selected_date)}" onchange="this.form.submit()">
+                    <select name="location_id" onchange="this.form.submit()">{location_options}</select>
+                    <input type="time" name="start_time" value="{escape(time_text_from_minutes(selected_start_minutes))}" onchange="this.form.submit()">
+                    <select name="duration" onchange="this.form.submit()">
                         {''.join(f'<option value="{minutes}" {"selected" if minutes == selected_duration else ""}>{minutes} min</option>' for minutes in (15, 30, 45, 60, 75, 90))}
                     </select>
                     <button class="ra-btn" type="submit">View</button>
