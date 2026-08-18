@@ -6695,10 +6695,11 @@ def calendar():
         """
 
     month_label = month_start.strftime("%B %Y")
-    calendar_weeks = calendar_lib.Calendar(firstweekday=0).monthdatescalendar(month_start.year, month_start.month)
-    weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    calendar_weeks = calendar_lib.Calendar(firstweekday=6).monthdatescalendar(month_start.year, month_start.month)
+    weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    today_weekday_index = (date.today().weekday() + 1) % 7
     weekday_header = "".join(
-        f'<th class="today-th">{name}</th>' if i == date.today().weekday() and month_start.strftime("%Y-%m") == date.today().strftime("%Y-%m")
+        f'<th class="today-th">{name}</th>' if i == today_weekday_index and month_start.strftime("%Y-%m") == date.today().strftime("%Y-%m")
         else f"<th>{name}</th>"
         for i, name in enumerate(weekday_names)
     )
@@ -6958,7 +6959,6 @@ def calendar():
             .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:#667085;box-shadow:none;
                                                   text-decoration:line-through;text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .ev-name,
-            .ev.ev-early-cancel .ev-time,
             .ev.ev-early-cancel .ev-sub,
             .ev.ev-early-cancel .ev-cancel-result{{color:#667085 !important;text-decoration:line-through;
                                                    text-decoration-thickness:1.5px}}
@@ -9891,7 +9891,7 @@ def teacher_dashboard():
     if selected_week:
         week_start = datetime.strptime(selected_week, "%Y-%m-%d").date()
     else:
-        week_start = today_obj - timedelta(days=today_obj.weekday())
+        week_start = today_obj - timedelta(days=(today_obj.weekday() + 1) % 7)
     week_end = week_start + timedelta(days=6)
 
     month_year = int(selected_month[:4])
@@ -10206,8 +10206,8 @@ def teacher_dashboard():
             schedule_mode = "week"
 
         if schedule_mode == "month":
-            month_grid_start = month_start - timedelta(days=month_start.weekday())
-            month_grid_end = month_end + timedelta(days=(6 - month_end.weekday()))
+            month_grid_start = month_start - timedelta(days=(month_start.weekday() + 1) % 7)
+            month_grid_end = month_end + timedelta(days=(5 - month_end.weekday()) % 7)
             by_date = {}
             for lesson in lessons:
                 by_date.setdefault(lesson[1], []).append(lesson)
