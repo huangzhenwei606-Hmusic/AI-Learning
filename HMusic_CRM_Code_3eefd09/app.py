@@ -6326,6 +6326,15 @@ def send_parent_email(name):
         """
 
     parent_email = student[0]
+    if not hmusic_is_real_email(parent_email):
+        conn.close()
+        return f"""
+        <h1>Parent Email Needed</h1>
+        <p>{escape(name)} does not have a real parent email yet. Internal @hmusic.local addresses are not sendable.</p>
+        <p><a href="/edit_student/{quote(name, safe='')}">Edit Student</a></p>
+        <p><a href="/student/{quote(name, safe='')}">Back to Student</a></p>
+        """
+
     visible_lesson_content = hmusic_parent_visible_lesson_note(lesson[1]) or "lesson material"
 
     email_text = f"""
@@ -6508,6 +6517,8 @@ def send_all_feedback(teacher_name):
 
         if result:
             parent_email = result[0]
+            if not hmusic_is_real_email(parent_email):
+                continue
 
             cursor.execute("""
             SELECT lesson_date, lesson_content, performance, homework
@@ -13229,6 +13240,145 @@ def invoices():
     </html>
     """
 
+
+@app.route("/parent_email_audit")
+def parent_email_audit():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v27_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        s.name,
+        COALESCE(s.parent_name, ''),
+        COALESCE(s.parent_email, ''),
+        COALESCE(s.parent_phone, ''),
+        COALESCE(s.teacher, '')
+    FROM students s
+    WHERE TRIM(COALESCE(s.parent_email, '')) = ''
+       OR LOWER(TRIM(COALESCE(s.parent_email, ''))) LIKE '%@hmusic.local'
+       OR TRIM(COALESCE(s.parent_email, '')) NOT LIKE '%@%.%'
+    ORDER BY s.name
+    LIMIT 300
+    """)
+    student_rows = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
+        pp.id,
+        COALESCE(pp.parent_name, ''),
+        COALESCE(pp.email, ''),
+        COALESCE(pp.phone, ''),
+        COALESCE(ps.student_name, '')
+    FROM parent_profiles pp
+    LEFT JOIN parent_students ps
+        ON ps.parent_id = pp.id
+        AND COALESCE(ps.active, 1) = 1
+    WHERE LOWER(TRIM(COALESCE(pp.email, ''))) LIKE '%@hmusic.local'
+       OR TRIM(COALESCE(pp.email, '')) NOT LIKE '%@%.%'
+    ORDER BY pp.id DESC
+    LIMIT 300
+    """)
+    parent_rows = cursor.fetchall()
+    conn.close()
+
+    student_html = ""
+    for name, parent_name, parent_email, parent_phone, teacher in student_rows:
+        label = "Missing" if not (parent_email or "").strip() else "Placeholder"
+        if parent_email and "@hmusic.local" not in parent_email.lower() and "@" in parent_email:
+            label = "Check format"
+        student_url = quote(str(name or ""), safe="")
+        student_html += f"""
+        <tr>
+            <td><a href="/student/{student_url}">{escape(str(name or '-'))}</a></td>
+            <td>{escape(str(parent_name or '-'))}</td>
+            <td>{escape(str(parent_email or '-'))}</td>
+            <td>{escape(str(parent_phone or '-'))}</td>
+            <td>{escape(str(teacher or '-'))}</td>
+            <td><span class="status warn">{label}</span></td>
+            <td><a class="button small" href="/edit_student/{student_url}">Edit</a></td>
+        </tr>
+        """
+    if not student_html:
+        student_html = "<tr><td colspan='7' class='empty'>No student email issues found.</td></tr>"
+
+    parent_html = ""
+    for parent_id, parent_name, email, phone, student_name in parent_rows:
+        parent_html += f"""
+        <tr>
+            <td>#{parent_id}</td>
+            <td>{escape(str(parent_name or '-'))}</td>
+            <td>{escape(str(email or '-'))}</td>
+            <td>{escape(str(phone or '-'))}</td>
+            <td>{escape(str(student_name or '-'))}</td>
+            <td><span class="status warn">Internal account</span></td>
+        </tr>
+        """
+    if not parent_html:
+        parent_html = "<tr><td colspan='6' class='empty'>No placeholder parent accounts found.</td></tr>"
+
+    return f"""
+    <html>
+    <head>
+        <title>Parent Email Audit</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; font-family:Arial, sans-serif; background:#fff; color:#111827; }}
+            .page {{ max-width:1300px; margin:0 auto; padding:24px; }}
+            .top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:14px; margin-bottom:18px; }}
+            h1 {{ margin:0; font-size:30px; }}
+            h2 {{ margin:28px 0 10px; font-size:20px; }}
+            p {{ margin:6px 0 0; color:#667085; font-weight:700; }}
+            .button {{ display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:9px 13px; border-radius:8px; border:1px solid #d9e1ee; background:#fff; color:#111827; text-decoration:none; font-weight:900; }}
+            .button.primary {{ background:#1d65ad; border-color:#1d65ad; color:#fff; }}
+            .button.small {{ min-height:34px; padding:7px 10px; }}
+            .panel {{ border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; background:#fff; }}
+            .note {{ padding:12px 14px; background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; font-weight:800; margin-bottom:16px; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            th,td {{ padding:11px 12px; border-bottom:1px solid #edf0f5; text-align:left; font-size:14px; }}
+            th {{ background:#f5f7fb; color:#667085; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }}
+            a {{ color:#1d65ad; font-weight:900; text-decoration:none; }}
+            .status {{ display:inline-flex; border-radius:999px; padding:6px 9px; font-size:12px; font-weight:900; white-space:nowrap; }}
+            .status.warn {{ background:#fff7ed; color:#9a3412; }}
+            .empty {{ color:#667085; text-align:center; padding:28px; font-weight:800; }}
+            .table-wrap {{ overflow:auto; }}
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <div class="top">
+                <div>
+                    <h1>Parent Email Audit</h1>
+                    <p>Find students or parent accounts that cannot receive email.</p>
+                </div>
+                <div>
+                    <a class="button" href="/">Back to Home</a>
+                    <a class="button primary" href="/students">Students</a>
+                </div>
+            </div>
+            <div class="note">@hmusic.local is an internal placeholder for phone-only parent accounts. It should not receive email.</div>
+            <h2>Students to fix</h2>
+            <div class="panel table-wrap">
+                <table>
+                    <tr><th>Student</th><th>Parent</th><th>Email</th><th>Phone</th><th>Teacher</th><th>Status</th><th>Action</th></tr>
+                    {student_html}
+                </table>
+            </div>
+            <h2>Internal parent accounts</h2>
+            <div class="panel table-wrap">
+                <table>
+                    <tr><th>ID</th><th>Parent</th><th>Email key</th><th>Phone</th><th>Student</th><th>Status</th></tr>
+                    {parent_html}
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def pay_invoice(invoice_id):
     if not require_owner():
@@ -13841,6 +13991,64 @@ def sync_parent_profile_for_student(cursor, student_name, parent_name=None, pare
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
     display_name = parent_name or (email_key.split("@")[0] if "@" in email_key else "Parent")
+
+    if hmusic_is_real_email(parent_email):
+        cursor.execute("""
+        SELECT pp.id, pp.email
+        FROM parent_students ps
+        JOIN parent_profiles pp ON pp.id = ps.parent_id
+        WHERE ps.student_name = ?
+        AND COALESCE(ps.active, 1) = 1
+        AND lower(COALESCE(pp.email, '')) LIKE '%@hmusic.local'
+        ORDER BY pp.id
+        LIMIT 1
+        """, (student_name,))
+        legacy_parent = cursor.fetchone()
+
+        cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (parent_email,))
+        existing_real_parent = cursor.fetchone()
+
+        if legacy_parent and not existing_real_parent:
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET email = ?,
+                parent_name = ?,
+                phone = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                parent_email,
+                display_name,
+                parent_phone,
+                now,
+                legacy_parent[0]
+            ))
+        elif legacy_parent and existing_real_parent:
+            cursor.execute("""
+            INSERT OR IGNORE INTO parent_students (
+                parent_id,
+                student_name,
+                relationship,
+                active,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """, (
+                existing_real_parent[0],
+                student_name,
+                "Parent",
+                1,
+                now
+            ))
+            cursor.execute("""
+            UPDATE parent_students
+            SET active = 0
+            WHERE student_name = ?
+            AND parent_id = ?
+            """, (
+                student_name,
+                legacy_parent[0]
+            ))
 
     cursor.execute("""
     INSERT OR IGNORE INTO parent_profiles (
@@ -16255,23 +16463,52 @@ def should_queue_sms_notification(title):
     return any(keyword in title for keyword in important_keywords)
 
 
-def get_notification_destination(cursor, user_role, user_key, channel):
+def hmusic_is_real_email(email):
+    email = (email or "").strip()
+    if "@" not in email:
+        return False
+    return not email.lower().endswith("@hmusic.local")
+
+
+def get_parent_lesson_reminder_email(cursor, parent_id, schedule_id):
+    if schedule_id:
+        cursor.execute("""
+        SELECT COALESCE(st.parent_email, '')
+        FROM schedule s
+        LEFT JOIN students st ON st.name = s.student_name
+        WHERE s.id = ?
+        LIMIT 1
+        """, (schedule_id,))
+        row = cursor.fetchone()
+        if row and hmusic_is_real_email(row[0]):
+            return row[0].strip()
+
+    cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (parent_id,))
+    row = cursor.fetchone()
+    if row and hmusic_is_real_email(row[0]):
+        return row[0].strip()
+    return None
+
+
+def get_notification_destination(cursor, user_role, user_key, channel, related_type=None, related_id=None):
     if channel == "push":
         return f"{user_role}:{user_key}"
 
     if channel == "email":
         if user_role == "parent":
+            if related_type == "lesson_reminder":
+                return get_parent_lesson_reminder_email(cursor, user_key, related_id)
             cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (user_key,))
             row = cursor.fetchone()
-            return row[0] if row and row[0] else None
+            return row[0] if row and hmusic_is_real_email(row[0]) else None
         if user_role == "teacher":
             cursor.execute("SELECT email FROM teachers WHERE teacher_name = ?", (user_key,))
             row = cursor.fetchone()
-            return row[0] if row and row[0] else None
+            return row[0] if row and hmusic_is_real_email(row[0]) else None
         if user_role == "owner":
             cursor.execute("SELECT value FROM settings WHERE key = 'owner_email'")
             row = cursor.fetchone()
-            return row[0] if row and row[0] else None
+            return row[0] if row and hmusic_is_real_email(row[0]) else None
 
     if channel == "sms":
         if user_role == "parent":
@@ -16295,7 +16532,7 @@ def queue_notification_delivery(user_role, user_key, title, body, link_url, chan
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    destination = get_notification_destination(cursor, user_role, user_key, channel)
+    destination = get_notification_destination(cursor, user_role, user_key, channel, related_type, related_id)
 
     if not destination:
         conn.close()
@@ -16373,6 +16610,8 @@ def queue_direct_delivery(channel, destination, title, body, link_url, related_t
     destination = (destination or "").strip()
     if not destination:
         return None
+    if channel == "email" and not hmusic_is_real_email(destination):
+        return None
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -16426,6 +16665,9 @@ def queue_direct_delivery(channel, destination, title, body, link_url, related_t
 
 
 def send_email_delivery(destination, title, body, link_url):
+    if not hmusic_is_real_email(destination):
+        return False, "Email not sent: destination is missing or is an internal placeholder address."
+
     smtp_host = os.environ.get("HMUSIC_SMTP_HOST")
     smtp_port = int(os.environ.get("HMUSIC_SMTP_PORT", "587"))
     smtp_user = os.environ.get("HMUSIC_SMTP_USER")
@@ -16524,7 +16766,7 @@ def send_parent_email_notice_now(parent_id, title, body, link_url, related_type=
     row = cursor.fetchone()
     conn.close()
 
-    if not row or not row[0]:
+    if not row or not hmusic_is_real_email(row[0]):
         return None
 
     queue_id = queue_direct_delivery(
