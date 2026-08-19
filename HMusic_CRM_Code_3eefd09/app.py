@@ -3368,9 +3368,12 @@ applyFilters();
         .replace("__ROWS__", rows_html)
     )
 
-@app.route("/missing_homework/skip", methods=["POST"])
+@app.route("/missing_homework/skip", methods=["GET", "POST"])
 def missing_homework_skip():
     ensure_owner()
+
+    if request.method == "GET":
+        return redirect("/missing_homework")
 
     ensure_calendar_lesson_panel_schema()
     schedule_ids = []
@@ -3397,10 +3400,9 @@ def missing_homework_skip():
             homework_skip_reason = ?,
             homework_skip_note = ?,
             homework_skipped_by = ?,
-            homework_skipped_at = ?,
-            updated_at = ?
+            homework_skipped_at = ?
         WHERE id IN ({placeholders})
-    """, [reason, note, actor, now, now, *schedule_ids])
+    """, [reason, note, actor, now, *schedule_ids])
     skipped_count = cursor.rowcount or 0
     conn.commit()
     conn.close()
