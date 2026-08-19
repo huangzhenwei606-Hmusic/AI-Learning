@@ -112,6 +112,46 @@ def hmusic_clean_student_picker_value(value):
     return text
 
 
+def hmusic_teacher_student_rows(cursor, teacher_name=None, include_all=False):
+    teacher = str(teacher_name or "").strip()
+    if include_all:
+        cursor.execute("""
+        SELECT name, COALESCE(parent_name, '')
+        FROM students
+        WHERE name IS NOT NULL
+        AND TRIM(name) != ''
+        ORDER BY name
+        """)
+        return cursor.fetchall()
+
+    if not teacher:
+        return []
+
+    cursor.execute("""
+    SELECT base.student_name, COALESCE(st.parent_name, '')
+    FROM (
+        SELECT TRIM(student_name) AS student_name
+        FROM enrollments
+        WHERE LOWER(TRIM(teacher_name)) = LOWER(?)
+        AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+        UNION
+        SELECT TRIM(name) AS student_name
+        FROM students
+        WHERE LOWER(TRIM(teacher)) = LOWER(?)
+        UNION
+        SELECT TRIM(student_name) AS student_name
+        FROM schedule
+        WHERE LOWER(TRIM(teacher)) = LOWER(?)
+    ) base
+    LEFT JOIN students st ON LOWER(TRIM(st.name)) = LOWER(TRIM(base.student_name))
+    WHERE base.student_name IS NOT NULL
+    AND TRIM(base.student_name) != ''
+    GROUP BY LOWER(TRIM(base.student_name))
+    ORDER BY base.student_name
+    """, (teacher, teacher, teacher))
+    return cursor.fetchall()
+
+
 def hmusic_parent_visible_lesson_note(value):
     text = str(value or "").strip()
     if not text:
@@ -2065,18 +2105,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
     rooms = cursor.fetchall()
     cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY COALESCE(is_group, 0), name, duration")
     course_types = cursor.fetchall()
-    cursor.execute("""
-    SELECT base.student_name, COALESCE(st.parent_name, '')
-    FROM (
-        SELECT student_name FROM enrollments WHERE teacher_name = ? AND status = 'active'
-        UNION SELECT name FROM students WHERE teacher = ?
-        UNION SELECT student_name FROM schedule WHERE teacher = ?
-    ) base
-    LEFT JOIN students st ON st.name = base.student_name
-    WHERE base.student_name IS NOT NULL AND base.student_name != ''
-    ORDER BY base.student_name
-    """, (teacher_name, teacher_name, teacher_name))
-    students = cursor.fetchall()
+    students = hmusic_teacher_student_rows(cursor, teacher_name)
     conn.close()
     location_options = ''.join(f'<option value="{location[0]}">{escape(location[1] or "Location")}</option>' for location in locations)
     room_data_json = json.dumps([
@@ -10386,36 +10415,11 @@ def add_schedule():
     """)
     course_types = cursor.fetchall()
 
-    if require_teacher() and not require_owner():
-        cursor.execute("""
-        SELECT base.student_name, COALESCE(st.parent_name, '')
-        FROM (
-            SELECT student_name
-            FROM enrollments
-            WHERE teacher_name = ?
-            AND status = 'active'
-            UNION
-            SELECT name AS student_name
-            FROM students
-            WHERE teacher = ?
-            UNION
-            SELECT student_name
-            FROM schedule
-            WHERE teacher = ?
-        ) base
-        LEFT JOIN students st ON st.name = base.student_name
-        WHERE base.student_name IS NOT NULL
-        AND base.student_name != ''
-        ORDER BY base.student_name
-        """, (
-            session.get("teacher_name"),
-            session.get("teacher_name"),
-            session.get("teacher_name")
-        ))
-        student_rows = cursor.fetchall()
-    else:
-        cursor.execute("SELECT name, COALESCE(parent_name, '') FROM students ORDER BY name")
-        student_rows = cursor.fetchall()
+    student_rows = hmusic_teacher_student_rows(
+        cursor,
+        session.get("teacher_name") if require_teacher() and not require_owner() else None,
+        include_all=not (require_teacher() and not require_owner())
+    )
 
     conn.close()
 
@@ -10505,7 +10509,7 @@ def add_schedule():
     submit_label = "Generate Schedule"
 
     if require_teacher() and not require_owner():
-        existing_student_input = f'<select class="student-picker-compact" id="student_name" name="student_name">{student_options}</select>'
+        existing_student_input = f'<input class="student-picker-compact" id="student_name" name="student_name" list="scheduleStudentList" value="{existing_student_value}" placeholder="Search or type full student name" autocomplete="off" required><datalist id="scheduleStudentList">{student_datalist_options}</datalist>'
         teacher_student_mode_html = """
                 <div class="student-mode">
                     <label><input type="radio" name="student_mode" value="existing" checked onchange="toggleStudentMode()"> Existing student</label>
@@ -17075,8 +17079,8 @@ def teacher_can_access_student_record(cursor, student_name, teacher_name):
     cursor.execute("""
     SELECT 1
     FROM students
-    WHERE name = ?
-    AND teacher = ?
+    WHERE LOWER(TRIM(name)) = LOWER(?)
+    AND LOWER(TRIM(teacher)) = LOWER(?)
     LIMIT 1
     """, (student_name, teacher_name))
     if cursor.fetchone():
@@ -17085,9 +17089,9 @@ def teacher_can_access_student_record(cursor, student_name, teacher_name):
     cursor.execute("""
     SELECT 1
     FROM enrollments
-    WHERE student_name = ?
-    AND teacher_name = ?
-    AND status = 'active'
+    WHERE LOWER(TRIM(student_name)) = LOWER(?)
+    AND LOWER(TRIM(teacher_name)) = LOWER(?)
+    AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
     LIMIT 1
     """, (student_name, teacher_name))
     if cursor.fetchone():
@@ -17096,8 +17100,8 @@ def teacher_can_access_student_record(cursor, student_name, teacher_name):
     cursor.execute("""
     SELECT 1
     FROM schedule
-    WHERE student_name = ?
-    AND teacher = ?
+    WHERE LOWER(TRIM(student_name)) = LOWER(?)
+    AND LOWER(TRIM(teacher)) = LOWER(?)
     LIMIT 1
     """, (student_name, teacher_name))
     return cursor.fetchone() is not None
