@@ -15416,9 +15416,9 @@ def invoices():
         <title>Invoices</title>
         <style>
             * {{ box-sizing: border-box; }}
-            body {{ margin:0; font-family: Inter, Arial, sans-serif; background:#f6f7fb; color:#111827; }}
+            body {{ margin:0; font-family: Inter, Arial, sans-serif; background:#fff; color:#111827; }}
             a {{ color:#1d65ad; font-weight:800; text-decoration:none; }}
-            .page {{ max-width: 1500px; margin: 0 auto; padding: 42px 28px; }}
+            .page {{ max-width: 1500px; margin: 0 auto; padding: 24px 28px; }}
             .shell {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 14px 35px rgba(17,24,39,.06); overflow:hidden; }}
             .head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:28px 30px 18px; }}
             h1 {{ margin:0; font-size:34px; letter-spacing:0; }}
@@ -15485,7 +15485,7 @@ def invoices():
                         <div class="sub">Owner dashboard for package invoices, ACH status, manual payments, and parent-facing coverage.</div>
                     </div>
                     <div class="top-actions">
-                        <a class="button" href="/">Dashboard</a>
+                        <a class="button" href="/">Back to Home</a>
                         <a class="button" href="/billing_settings">Billing Settings</a>
                         <a class="button primary" href="/students">Create Invoice</a>
                     </div>
