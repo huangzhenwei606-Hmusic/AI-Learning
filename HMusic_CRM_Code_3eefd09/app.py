@@ -12593,7 +12593,10 @@ def create_package_invoice(name):
         custom_lessons = money_value(request.form.get("custom_lessons"), 10)
         charge_lessons = 10 if package_type == "10" else custom_lessons
         include_pending_fees = request.form.get("include_pending_fees") == "1"
-        package_subtotal_amount = money_value(request.form.get("subtotal_amount"), 650)
+        unit_price = money_value(request.form.get("unit_price"), 0)
+        package_subtotal_amount = money_value(request.form.get("subtotal_amount"), 0)
+        if package_subtotal_amount <= 0 and unit_price > 0 and charge_lessons > 0:
+            package_subtotal_amount = round(unit_price * charge_lessons, 2)
         subtotal_amount = round(package_subtotal_amount + (pending_fee_total if include_pending_fees else 0), 2)
         discount_code = (request.form.get("discount_code") or "").strip().upper()
         discount_amount = money_value(request.form.get("discount_amount"), 0)
@@ -12612,6 +12615,11 @@ def create_package_invoice(name):
             package_options.append({
                 "lessons": 10,
                 "amount": money_value(request.form.get("option_10_amount"), package_subtotal_amount)
+            })
+        if "custom" in package_option_values:
+            package_options.append({
+                "lessons": charge_lessons,
+                "amount": money_value(request.form.get("option_custom_amount"), package_subtotal_amount)
             })
         if not package_options:
             package_options.append({
@@ -12703,7 +12711,27 @@ def create_package_invoice(name):
 
     pending_fee_html = ""
     pending_checked = ""
-    default_subtotal = 650
+    default_unit_price = 65
+    cursor.execute("""
+    SELECT COALESCE(package_amount, 0), COALESCE(package_lessons, 0), COALESCE(final_price, 0)
+    FROM enrollments
+    WHERE student_name = ?
+    AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+    ORDER BY
+        CASE WHEN COALESCE(LOWER(TRIM(status)), 'active') = 'active' THEN 0 ELSE 1 END,
+        id DESC
+    LIMIT 1
+    """, (student[0],))
+    enrollment_price_row = cursor.fetchone()
+    if enrollment_price_row:
+        package_amount = float(enrollment_price_row[0] or 0)
+        package_lessons = float(enrollment_price_row[1] or 0)
+        final_price = float(enrollment_price_row[2] or 0)
+        if package_amount > 0 and package_lessons > 0:
+            default_unit_price = round(package_amount / package_lessons, 2)
+        elif final_price > 0:
+            default_unit_price = round(final_price, 2)
+    default_subtotal = round(default_unit_price * 10, 2)
     if pending_fee_total > 0:
         pending_checked = "checked"
         pending_fee_html = f"""
@@ -12751,21 +12779,35 @@ def create_package_invoice(name):
                 const type = document.querySelector('[name="package_type"]').value;
                 const oneOption = document.querySelector('[name="package_options"][value="1"]');
                 const tenOption = document.querySelector('[name="package_options"][value="10"]');
-                if (!oneOption || !tenOption) return;
+                const customOption = document.querySelector('[name="package_options"][value="custom"]');
+                if (!oneOption || !tenOption || !customOption) return;
                 if (!force && packageOptionDefaultsTouched) return;
                 if (type === '10') {{
                     oneOption.checked = false;
                     tenOption.checked = true;
+                    customOption.checked = false;
                 }} else {{
                     oneOption.checked = false;
                     tenOption.checked = false;
+                    customOption.checked = true;
                 }}
             }}
-            function syncInvoicePreview() {{
+            function syncInvoicePreview(source) {{
                 const type = document.querySelector('[name="package_type"]').value;
                 applyPackageOptionDefaults(false);
-                const lessons = type === '10' ? 10 : parseFloat(document.querySelector('[name="custom_lessons"]').value || '0');
-                const baseSubtotal = parseFloat(document.querySelector('[name="subtotal_amount"]').value || '0');
+                const customLessonsInput = document.querySelector('[name="custom_lessons"]');
+                const unitInput = document.querySelector('[name="unit_price"]');
+                const subtotalInput = document.querySelector('[name="subtotal_amount"]');
+                const lessons = type === '10' ? 10 : parseFloat(customLessonsInput.value || '0');
+                let unitPrice = parseFloat(unitInput.value || '0');
+                let baseSubtotal = parseFloat(subtotalInput.value || '0');
+                if ((source === 'unit' || source === 'lessons' || source === 'package') && lessons > 0) {{
+                    baseSubtotal = unitPrice * lessons;
+                    subtotalInput.value = baseSubtotal.toFixed(2);
+                }} else if (source === 'subtotal' && lessons > 0) {{
+                    unitPrice = baseSubtotal / lessons;
+                    unitInput.value = unitPrice.toFixed(2);
+                }}
                 const discount = parseFloat(document.querySelector('[name="discount_amount"]').value || '0');
                 const pendingBox = document.querySelector('[name="include_pending_fees"]');
                 const pendingFees = pendingBox && pendingBox.checked ? {pending_fee_total} : 0;
@@ -12774,10 +12816,14 @@ def create_package_invoice(name):
                 const oneAmount = lessons ? baseSubtotal / lessons : baseSubtotal;
                 const oneInput = document.querySelector('[name="option_1_amount"]');
                 const tenInput = document.querySelector('[name="option_10_amount"]');
+                const customInput = document.querySelector('[name="option_custom_amount"]');
+                const customLabel = document.getElementById('customOptionLabel');
                 if (oneInput && oneInput.dataset.touched !== "1") oneInput.value = oneAmount.toFixed(2);
                 if (tenInput && tenInput.dataset.touched !== "1") tenInput.value = (oneAmount * 10).toFixed(2);
+                if (customInput && customInput.dataset.touched !== "1") customInput.value = baseSubtotal.toFixed(2);
+                if (customLabel) customLabel.textContent = `${{lessons || 0}} lessons`;
                 document.getElementById('invoicePreview').textContent =
-                    `Parent app will show ${{lessons || 0}} lesson(s), subtotal $${{subtotal.toFixed(2)}}${{pendingFees ? ' including pending fee(s) $' + pendingFees.toFixed(2) : ''}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
+                    `Parent app will show ${{lessons || 0}} lesson(s) at $${{oneAmount.toFixed(2)}} each, subtotal $${{subtotal.toFixed(2)}}${{pendingFees ? ' including pending fee(s) $' + pendingFees.toFixed(2) : ''}}, discount $${{discount.toFixed(2)}}, amount due $${{total.toFixed(2)}}.`;
             }}
             window.addEventListener('DOMContentLoaded', function() {{
                 document.querySelectorAll('[data-option-amount="1"]').forEach(function(input) {{
@@ -12789,10 +12835,10 @@ def create_package_invoice(name):
                 document.querySelector('[name="package_type"]').addEventListener('change', function() {{
                     packageOptionDefaultsTouched = false;
                     applyPackageOptionDefaults(true);
-                    syncInvoicePreview();
+                    syncInvoicePreview('package');
                 }});
                 applyPackageOptionDefaults(true);
-                syncInvoicePreview();
+                syncInvoicePreview('package');
             }});
         </script>
     </head>
@@ -12817,11 +12863,15 @@ def create_package_invoice(name):
                     </div>
                     <div>
                         <label>Custom lessons</label>
-                        <input name="custom_lessons" type="number" step="0.5" value="10" oninput="syncInvoicePreview()">
+                        <input name="custom_lessons" type="number" step="0.5" value="10" oninput="syncInvoicePreview('lessons')">
+                    </div>
+                    <div>
+                        <label>Price per lesson</label>
+                        <input name="unit_price" type="number" step="0.01" value="{hmusic_money(default_unit_price)}" oninput="syncInvoicePreview('unit')">
                     </div>
                     <div>
                         <label>Subtotal amount</label>
-                        <input name="subtotal_amount" type="number" step="0.01" value="{hmusic_money(default_subtotal)}" oninput="syncInvoicePreview()">
+                        <input name="subtotal_amount" type="number" step="0.01" value="{hmusic_money(default_subtotal)}" oninput="syncInvoicePreview('subtotal')">
                     </div>
                     <div>
                         <label>Due date</label>
@@ -12854,8 +12904,12 @@ def create_package_invoice(name):
                                 <label class="method"><input type="checkbox" name="package_options" value="10" checked> 10 lessons</label>
                                 <input name="option_10_amount" data-option-amount="1" type="number" step="0.01" value="{hmusic_money(default_subtotal)}">
                             </div>
+                            <div class="offer-card">
+                                <label class="method"><input type="checkbox" name="package_options" value="custom"> <span id="customOptionLabel">10 lessons</span></label>
+                                <input name="option_custom_amount" data-option-amount="1" type="number" step="0.01" value="{hmusic_money(default_subtotal)}">
+                            </div>
                         </div>
-                        <p class="muted">If no preset option is checked, the parent will see only this invoice's current package.</p>
+                        <p class="muted">For Custom 20 lessons, keep the custom option checked so the parent sees 20 lessons / $1,100.00.</p>
                     </div>
                     {pending_fee_html}
                     <div class="span-2">
