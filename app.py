@@ -1324,7 +1324,7 @@ def get_missing_homework_lessons(limit=None, teacher_name=None):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
-    filters = ["LOWER(COALESCE(s.status, '')) = 'present'"]
+    filters = ["LOWER(COALESCE(s.status, '')) = 'present'", "COALESCE(s.homework_skipped, 0) = 0"]
     params = []
     if teacher_name:
         filters.append("s.teacher = ?")
@@ -1375,7 +1375,7 @@ def get_missing_homework_count(teacher_name=None):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
-    filters = ["LOWER(COALESCE(s.status, '')) = 'present'"]
+    filters = ["LOWER(COALESCE(s.status, '')) = 'present'", "COALESCE(s.homework_skipped, 0) = 0"]
     params = []
     if teacher_name:
         filters.append("s.teacher = ?")
@@ -3743,6 +3743,46 @@ applyFilters();
         .replace("__ROWS__", rows_html)
     )
 
+@app.route("/missing_homework/skip", methods=["POST"])
+def missing_homework_skip():
+    ensure_owner()
+
+    ensure_calendar_lesson_panel_schema()
+    schedule_ids = []
+    for value in request.form.getlist("schedule_ids"):
+        try:
+            schedule_ids.append(int(value))
+        except (TypeError, ValueError):
+            pass
+
+    if not schedule_ids:
+        return redirect("/missing_homework?error=no_selection")
+
+    reason = (request.form.get("skip_reason") or "No homework needed").strip()
+    note = (request.form.get("skip_note") or "").strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    actor = session.get("username") or "owner"
+
+    placeholders = ",".join(["?"] * len(schedule_ids))
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        UPDATE schedule
+        SET homework_skipped = 1,
+            homework_skip_reason = ?,
+            homework_skip_note = ?,
+            homework_skipped_by = ?,
+            homework_skipped_at = ?,
+            updated_at = ?
+        WHERE id IN ({placeholders})
+    """, [reason, note, actor, now, now, *schedule_ids])
+    skipped_count = cursor.rowcount or 0
+    conn.commit()
+    conn.close()
+
+    return redirect(f"/missing_homework?skipped={skipped_count}")
+
+
 @app.route("/missing_homework")
 def missing_homework():
     ensure_owner()
@@ -3750,35 +3790,87 @@ def missing_homework():
     lessons = get_missing_homework_lessons()
     rows = ""
     for lesson in lessons:
+        student_name = lesson[1] or ""
+        student_href = quote(student_name, safe="")
+        safe_student = escape(student_name or "-")
+        safe_teacher = escape(lesson[2] or "-")
+        safe_room = escape(lesson[5] or "-")
+        safe_date = escape(lesson[3] or "-")
+        safe_time = escape(lesson[4] or "-")
         rows += f"""
-        <tr>
-            <td>{lesson[3]}</td>
-            <td>{lesson[4] or '-'}</td>
-            <td><a href="/student/{lesson[1]}">{escape(lesson[1] or '-')}</a></td>
-            <td>{escape(lesson[2] or '-')}</td>
-            <td>{escape(lesson[5] or '-')}</td>
-            <td><a class="button" href="/add_lesson/{lesson[1]}">Add Homework</a></td>
+        <tr data-row-id="{lesson[0]}">
+            <td class="check-cell"><input class="row-check" type="checkbox" name="schedule_ids" value="{lesson[0]}" aria-label="Select {safe_student}"></td>
+            <td>{safe_date}</td>
+            <td>{safe_time}</td>
+            <td><a href="/student/{student_href}">{safe_student}</a></td>
+            <td>{safe_teacher}</td>
+            <td>{safe_room}</td>
+            <td class="actions">
+                <a class="button add" href="/add_lesson/{student_href}">Add Homework</a>
+                <button class="button skip js-skip-one" type="button" data-id="{lesson[0]}">Skip</button>
+            </td>
         </tr>
         """
 
     if not rows:
-        rows = "<tr><td colspan='6'>No missing homework right now.</td></tr>"
+        rows = "<tr><td colspan='7' class='empty'>No missing homework right now.</td></tr>"
+
+    notice = ""
+    if request.args.get("skipped"):
+        notice = f"""<div class="notice success">{escape(request.args.get("skipped"))} lesson(s) skipped from Missing Homework.</div>"""
+    elif request.args.get("error") == "no_selection":
+        notice = """<div class="notice error">Select at least one lesson to skip.</div>"""
 
     return f"""
     <html>
     <head>
         <title>Missing Homework</title>
         <style>
-            body {{ font-family: Arial, sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
-            .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
-            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
-            table {{ width:100%; border-collapse:collapse; margin-top:20px; background:white; }}
-            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; text-align:left; }}
-            th {{ background:#fee2e2; color:#7f1d1d; }}
+            * {{ box-sizing:border-box; }}
+            body {{ font-family: Arial, sans-serif; background:#f7f7fb; margin:0; padding:24px; color:#111827; }}
+            .panel {{ background:white; border-radius:14px; padding:22px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+            .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:14px; }}
+            h1 {{ margin:0; font-size:30px; line-height:1.1; }}
+            p {{ color:#6b7280; margin:7px 0 0; }}
+            .toolbar {{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 0 16px; border-top:1px solid #eef2f7; }}
+            .toolbar-left, .toolbar-right {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
+            table {{ width:100%; border-collapse:collapse; background:white; }}
+            th, td {{ border-bottom:1px solid #e5e7eb; padding:12px; text-align:left; vertical-align:middle; }}
+            th {{ background:#fee2e2; color:#7f1d1d; font-size:14px; }}
+            td {{ font-size:15px; }}
+            .check-cell {{ width:42px; text-align:center; }}
+            input[type="checkbox"] {{ width:18px; height:18px; accent-color:#111827; }}
             a {{ color:#4f46e5; font-weight:800; text-decoration:none; }}
-            .button {{ display:inline-block; padding:9px 12px; border-radius:8px; background:#dc2626; color:white; }}
+            .button, button {{ border:0; cursor:pointer; font:inherit; font-weight:800; }}
+            .button {{ display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:9px 12px; border-radius:8px; color:white; text-decoration:none; }}
+            .button.add {{ background:#dc2626; }}
+            .button.skip {{ background:#111827; }}
+            .button.bulk {{ background:#111827; }}
+            .button.light {{ background:#f3f4f6; color:#111827; border:1px solid #e5e7eb; }}
             .secondary {{ display:inline-block; padding:10px 14px; border-radius:8px; background:#111827; color:white; }}
-            p {{ color:#6b7280; }}
+            .actions {{ display:flex; gap:8px; flex-wrap:wrap; }}
+            .empty {{ text-align:center; color:#6b7280; padding:30px; }}
+            .selected-count {{ color:#4b5563; font-size:14px; font-weight:700; }}
+            .notice {{ margin:0 0 12px; padding:10px 12px; border-radius:10px; font-weight:800; }}
+            .notice.success {{ background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; }}
+            .notice.error {{ background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }}
+            .modal {{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,.38); padding:18px; z-index:20; }}
+            .modal.show {{ display:flex; }}
+            .dialog {{ width:min(520px, 100%); background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 24px 80px rgba(15,23,42,.24); overflow:hidden; }}
+            .dialog-head {{ display:flex; justify-content:space-between; gap:14px; padding:18px 20px 12px; border-bottom:1px solid #eef2f7; }}
+            .dialog h2 {{ margin:0; font-size:22px; }}
+            .dialog-body {{ padding:16px 20px 20px; display:grid; gap:12px; }}
+            label {{ display:grid; gap:6px; color:#374151; font-weight:800; font-size:13px; }}
+            select, textarea {{ width:100%; border:1px solid #d8dee9; border-radius:10px; padding:10px 11px; font:inherit; background:#fff; color:#111827; }}
+            textarea {{ min-height:88px; resize:vertical; }}
+            .dialog-actions {{ display:flex; justify-content:flex-end; gap:10px; padding-top:4px; }}
+            .x {{ width:34px; height:34px; border-radius:9px; background:#f3f4f6; color:#4b5563; font-size:24px; line-height:1; }}
+            @media (max-width: 760px) {{
+                body {{ padding:12px; }}
+                .top, .toolbar {{ align-items:stretch; flex-direction:column; }}
+                table {{ min-width:760px; }}
+                .table-wrap {{ overflow:auto; }}
+            }}
         </style>
     </head>
     <body>
@@ -3790,18 +3882,115 @@ def missing_homework():
                 </div>
                 <a class="secondary" href="/">Home</a>
             </div>
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Time</th>
-                    <th>Student</th>
-                    <th>Teacher</th>
-                    <th>Room</th>
-                    <th>Action</th>
-                </tr>
-                {rows}
-            </table>
+            {notice}
+            <form id="skipForm" method="post" action="/missing_homework/skip">
+                <div class="toolbar">
+                    <div class="toolbar-left">
+                        <button class="button light" type="button" id="selectVisible">Select visible</button>
+                        <span class="selected-count" id="selectedCount">0 selected</span>
+                    </div>
+                    <div class="toolbar-right">
+                        <button class="button bulk" type="button" id="skipSelected" disabled>Skip selected</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <tr>
+                            <th class="check-cell"><input type="checkbox" id="checkAll" aria-label="Select all"></th>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>Student</th>
+                            <th>Teacher</th>
+                            <th>Room</th>
+                            <th>Action</th>
+                        </tr>
+                        {rows}
+                    </table>
+                </div>
+                <div class="modal" id="skipModal" aria-hidden="true">
+                    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="skipTitle">
+                        <div class="dialog-head">
+                            <div>
+                                <h2 id="skipTitle">Skip homework</h2>
+                                <p id="skipMeta">Mark selected lessons as no homework needed.</p>
+                            </div>
+                            <button class="x" type="button" id="closeSkip">&times;</button>
+                        </div>
+                        <div class="dialog-body">
+                            <label>Reason
+                                <select name="skip_reason">
+                                    <option>No homework needed</option>
+                                    <option>Trial / evaluation lesson</option>
+                                    <option>Makeup or admin lesson</option>
+                                    <option>Teacher handled offline</option>
+                                    <option>Other</option>
+                                </select>
+                            </label>
+                            <label>Owner note
+                                <textarea name="skip_note" placeholder="Optional internal note"></textarea>
+                            </label>
+                            <div class="dialog-actions">
+                                <button class="button light" type="button" id="cancelSkip">Cancel</button>
+                                <button class="button skip" type="submit">Confirm skip</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
         </div>
+        <script>
+            const checks = Array.from(document.querySelectorAll(".row-check"));
+            const checkAll = document.getElementById("checkAll");
+            const selectedCount = document.getElementById("selectedCount");
+            const skipSelected = document.getElementById("skipSelected");
+            const selectVisible = document.getElementById("selectVisible");
+            const skipModal = document.getElementById("skipModal");
+            const skipMeta = document.getElementById("skipMeta");
+            function updateSelection() {{
+                const count = checks.filter((check) => check.checked).length;
+                selectedCount.textContent = count + " selected";
+                skipSelected.disabled = count === 0;
+                if (checkAll) {{
+                    checkAll.checked = count > 0 && count === checks.length;
+                    checkAll.indeterminate = count > 0 && count < checks.length;
+                }}
+            }}
+            function openSkipModal() {{
+                const count = checks.filter((check) => check.checked).length;
+                if (!count) return;
+                skipMeta.textContent = "Skip " + count + " lesson(s). This removes them from Missing Homework only.";
+                skipModal.classList.add("show");
+                skipModal.setAttribute("aria-hidden", "false");
+            }}
+            function closeSkipModal() {{
+                skipModal.classList.remove("show");
+                skipModal.setAttribute("aria-hidden", "true");
+            }}
+            checks.forEach((check) => check.addEventListener("change", updateSelection));
+            if (checkAll) checkAll.addEventListener("change", () => {{
+                checks.forEach((check) => check.checked = checkAll.checked);
+                updateSelection();
+            }});
+            selectVisible.addEventListener("click", () => {{
+                const allSelected = checks.length > 0 && checks.every((check) => check.checked);
+                checks.forEach((check) => check.checked = !allSelected);
+                updateSelection();
+            }});
+            skipSelected.addEventListener("click", openSkipModal);
+            document.querySelectorAll(".js-skip-one").forEach((button) => {{
+                button.addEventListener("click", () => {{
+                    checks.forEach((check) => check.checked = check.value === button.dataset.id);
+                    updateSelection();
+                    openSkipModal();
+                }});
+            }});
+            document.getElementById("closeSkip").addEventListener("click", closeSkipModal);
+            document.getElementById("cancelSkip").addEventListener("click", closeSkipModal);
+            skipModal.addEventListener("click", (event) => {{
+                if (event.target === skipModal) closeSkipModal();
+            }});
+            updateSelection();
+        </script>
     </body>
     </html>
     """
@@ -13292,6 +13481,11 @@ def ensure_calendar_lesson_panel_schema():
         ("homework_assignment", "homework_assignment TEXT"),
         ("lesson_note", "lesson_note TEXT"),
         ("homework", "homework TEXT"),
+        ("homework_skipped", "homework_skipped INTEGER DEFAULT 0"),
+        ("homework_skip_reason", "homework_skip_reason TEXT"),
+        ("homework_skip_note", "homework_skip_note TEXT"),
+        ("homework_skipped_by", "homework_skipped_by TEXT"),
+        ("homework_skipped_at", "homework_skipped_at TEXT"),
         ("parent_lesson_reminder_enabled", "parent_lesson_reminder_enabled INTEGER DEFAULT 0"),
         ("practice_reminder_enabled", "practice_reminder_enabled INTEGER DEFAULT 0"),
         ("low_balance_alert_enabled", "low_balance_alert_enabled INTEGER DEFAULT 0"),
