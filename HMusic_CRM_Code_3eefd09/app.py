@@ -30063,11 +30063,14 @@ def inquiries():
             body {{ margin:0; font-family: Arial, Helvetica, sans-serif; background:#f7f7fb; color:#202428; }}
             .panel {{ max-width:1420px; margin:0 auto; background:white; border:1px solid #e3e3e3; border-radius:16px; overflow:hidden; }}
             .hero {{ padding:18px 28px 14px; border-bottom:1px solid #e3e3e3; }}
+            .hero-top {{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }}
             h1 {{ margin:0; font-size:30px; line-height:1.1; font-weight:600; letter-spacing:0; }}
             .subtitle {{ margin:8px 0 16px; color:#888; font-size:15px; line-height:1.35; }}
             .actions {{ display:flex; gap:8px; flex-wrap:wrap; }}
             .actions a {{ display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 14px; border-radius:9px; border:1px solid #d9d9d9; background:#f0f0f0; color:#202428; text-decoration:none; font-size:15px; font-weight:600; }}
             .actions a.primary {{ border-color:#3395ee; background:#3395ee; color:white; }}
+            .owner-home {{ display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:0 13px; border-radius:9px; border:1px solid #cfd7df; background:white; color:#202428; text-decoration:none; font-size:14px; font-weight:700; white-space:nowrap; }}
+            .owner-home:hover {{ border-color:#3395ee; color:#2478c7; }}
             .metrics {{ display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px; padding:14px 28px 8px; }}
             .metric {{ min-height:58px; display:flex; align-items:center; justify-content:space-between; padding:0 14px; background:#f3f3f3; border:1px solid #dedede; border-radius:10px; }}
             .metric span {{ min-width:0; color:#8b8b8b; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
@@ -30109,6 +30112,8 @@ def inquiries():
                 .hero, .metrics {{ padding-left:16px; padding-right:16px; }}
                 .list-card {{ margin-left:16px; margin-right:16px; }}
                 h1 {{ font-size:28px; }}
+                .hero-top {{ display:block; }}
+                .owner-home {{ margin-top:12px; }}
                 .subtitle, .actions a, .tab, .control input, .control select {{ font-size:14px; }}
                 .metrics {{ grid-template-columns:1fr; }}
             }}
@@ -30117,7 +30122,10 @@ def inquiries():
     <body>
         <div class="panel">
             <div class="hero">
-                <h1>New Students / Intake</h1>
+                <div class="hero-top">
+                    <h1>New Students / Intake</h1>
+                    <a class="owner-home" href="/owner_dashboard">Back to Owner Home</a>
+                </div>
                 <p class="subtitle">Dense list view for fast owner review. Expand a row only when detail is needed.</p>
                 <div class="actions">
                     <a href="/trial" target="_blank">Trial link</a>
