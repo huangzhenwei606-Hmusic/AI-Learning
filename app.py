@@ -19875,13 +19875,125 @@ def should_queue_sms_notification(title):
 
 
 def hmusic_is_real_email(email):
-    email = (email or "").strip()
-    if "@" not in email:
+    email = (email or "").strip().lower()
+    if not email or email.count("@") != 1 or any(ch.isspace() for ch in email):
         return False
-    return not email.lower().endswith("@hmusic.local")
+    local_part, domain = email.rsplit("@", 1)
+    if not local_part or not domain or "." not in domain:
+        return False
+    placeholder_domains = {"hmusic.local", "example.com", "example.org", "example.net", "test.com"}
+    if domain in placeholder_domains or domain.endswith(".local"):
+        return False
+    if not re.match(r"^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$", email):
+        return False
+    tld = domain.rsplit(".", 1)[-1]
+    return len(tld) >= 2 and tld.isalpha()
+
+
+def hmusic_normalize_email(email):
+    return (email or "").strip().lower()
+
+
+def hmusic_ensure_email_suppression_schema(cursor):
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS email_suppression (
+        email TEXT PRIMARY KEY COLLATE NOCASE,
+        reason TEXT,
+        source TEXT,
+        created_at TEXT
+    )
+    """)
+
+
+def hmusic_seed_known_bounced_emails(cursor):
+    known_bounced = {"mailiangli@gmail.com"}
+    env_bounced = os.environ.get("HMUSIC_SUPPRESSED_EMAILS", "")
+    known_bounced.update(email.strip().lower() for email in env_bounced.split(",") if email.strip())
+    if not known_bounced:
+        return
+    hmusic_ensure_email_suppression_schema(cursor)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.executemany("""
+    INSERT OR IGNORE INTO email_suppression (email, reason, source, created_at)
+    VALUES (?, ?, ?, ?)
+    """, [
+        (email, "Known Gmail hard bounce; owner must verify the correct parent email.", "known_bounce_seed", now)
+        for email in sorted(known_bounced)
+    ])
+
+
+def hmusic_is_email_suppressed(cursor, email):
+    normalized = hmusic_normalize_email(email)
+    if not normalized:
+        return True
+    hmusic_ensure_email_suppression_schema(cursor)
+    hmusic_seed_known_bounced_emails(cursor)
+    cursor.execute("SELECT 1 FROM email_suppression WHERE email = ? LIMIT 1", (normalized,))
+    return cursor.fetchone() is not None
+
+
+def hmusic_suppress_email(cursor, email, reason, source):
+    normalized = hmusic_normalize_email(email)
+    if not normalized:
+        return False
+    hmusic_ensure_email_suppression_schema(cursor)
+    cursor.execute("""
+    INSERT INTO email_suppression (email, reason, source, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(email) DO UPDATE SET
+        reason = excluded.reason,
+        source = excluded.source,
+        created_at = excluded.created_at
+    """, (
+        normalized,
+        reason or "Suppressed after delivery failure.",
+        source or "email_delivery",
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+    return True
+
+
+def hmusic_is_hard_bounce_response(provider_response):
+    text = (provider_response or "").lower()
+    hard_bounce_markers = [
+        "550 5.1.1",
+        "nosuchuser",
+        "address not found",
+        "does not exist",
+        "couldn't be found",
+        "domain name not found",
+        "badrcptdomain",
+        "recipient address rejected",
+    ]
+    return any(marker in text for marker in hard_bounce_markers)
+
+
+def hmusic_scan_failed_email_suppressions(cursor):
+    hmusic_ensure_email_suppression_schema(cursor)
+    hmusic_seed_known_bounced_emails(cursor)
+    cursor.execute("""
+    SELECT destination, provider_response
+    FROM notification_delivery_queue
+    WHERE channel = 'email'
+    AND status = 'failed'
+    AND COALESCE(destination, '') != ''
+    AND COALESCE(provider_response, '') != ''
+    """)
+    suppressed = 0
+    for destination, provider_response in cursor.fetchall():
+        if hmusic_is_hard_bounce_response(provider_response):
+            suppressed += int(hmusic_suppress_email(
+                cursor,
+                destination,
+                provider_response[:240],
+                "notification_delivery_queue"
+            ))
+    return suppressed
 
 
 def get_parent_lesson_reminder_email(cursor, parent_id, schedule_id):
+    hmusic_scan_failed_email_suppressions(cursor)
+    candidates = []
     if schedule_id:
         cursor.execute("""
         SELECT COALESCE(st.parent_email, '')
@@ -19891,13 +20003,22 @@ def get_parent_lesson_reminder_email(cursor, parent_id, schedule_id):
         LIMIT 1
         """, (schedule_id,))
         row = cursor.fetchone()
-        if row and hmusic_is_real_email(row[0]):
-            return row[0].strip()
+        if row:
+            candidates.append(row[0])
 
     cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (parent_id,))
     row = cursor.fetchone()
-    if row and hmusic_is_real_email(row[0]):
-        return row[0].strip()
+    if row:
+        candidates.append(row[0])
+
+    seen = set()
+    for candidate in candidates:
+        normalized = hmusic_normalize_email(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if hmusic_is_real_email(normalized) and not hmusic_is_email_suppressed(cursor, normalized):
+            return normalized
     return None
 
 
@@ -19911,15 +20032,15 @@ def get_notification_destination(cursor, user_role, user_key, channel, related_t
                 return get_parent_lesson_reminder_email(cursor, user_key, related_id)
             cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (user_key,))
             row = cursor.fetchone()
-            return row[0] if row and hmusic_is_real_email(row[0]) else None
+            return row[0] if row and hmusic_is_real_email(row[0]) and not hmusic_is_email_suppressed(cursor, row[0]) else None
         if user_role == "teacher":
             cursor.execute("SELECT email FROM teachers WHERE teacher_name = ?", (user_key,))
             row = cursor.fetchone()
-            return row[0] if row and row[0] else None
+            return row[0] if row and hmusic_is_real_email(row[0]) and not hmusic_is_email_suppressed(cursor, row[0]) else None
         if user_role == "owner":
             cursor.execute("SELECT value FROM settings WHERE key = 'owner_email'")
             row = cursor.fetchone()
-            return row[0] if row and row[0] else None
+            return row[0] if row and hmusic_is_real_email(row[0]) and not hmusic_is_email_suppressed(cursor, row[0]) else None
 
     if channel == "sms":
         if user_role == "parent":
@@ -19948,6 +20069,11 @@ def queue_notification_delivery(user_role, user_key, title, body, link_url, chan
     if not destination:
         conn.close()
         return None
+    if channel == "email":
+        destination = hmusic_normalize_email(destination)
+        if not hmusic_is_real_email(destination) or hmusic_is_email_suppressed(cursor, destination):
+            conn.close()
+            return None
 
     cursor.execute("""
     SELECT id
@@ -20026,6 +20152,11 @@ def queue_direct_delivery(channel, destination, title, body, link_url, related_t
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    if channel == "email":
+        destination = hmusic_normalize_email(destination)
+        if hmusic_is_email_suppressed(cursor, destination):
+            conn.close()
+            return None
     cursor.execute("""
     SELECT id
     FROM notification_delivery_queue
@@ -20078,6 +20209,12 @@ def queue_direct_delivery(channel, destination, title, body, link_url, related_t
 def send_email_delivery(destination, title, body, link_url):
     if not hmusic_is_real_email(destination):
         return False, "Email not sent: destination is missing or is an internal placeholder address."
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    suppressed = hmusic_is_email_suppressed(cursor, destination)
+    conn.close()
+    if suppressed:
+        return False, "Email not sent: address is suppressed after a previous delivery failure."
 
     smtp_host = os.environ.get("HMUSIC_SMTP_HOST")
     smtp_port = int(os.environ.get("HMUSIC_SMTP_PORT", "587"))
@@ -20118,6 +20255,8 @@ def mark_delivery_status(queue_id, status, provider_response=None):
     ensure_v33_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    cursor.execute("SELECT destination FROM notification_delivery_queue WHERE id = ?", (queue_id,))
+    row = cursor.fetchone()
     cursor.execute("""
     UPDATE notification_delivery_queue
     SET status = ?,
@@ -20131,6 +20270,8 @@ def mark_delivery_status(queue_id, status, provider_response=None):
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         queue_id
     ))
+    if row and status == "failed" and hmusic_is_hard_bounce_response(provider_response):
+        hmusic_suppress_email(cursor, row[0], provider_response[:240], f"queue:{queue_id}")
     conn.commit()
     conn.close()
 
