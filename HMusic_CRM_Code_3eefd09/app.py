@@ -7093,6 +7093,25 @@ def calendar():
 
             /* ---- top bar ---- */
             .cal-shell{{display:flex;flex-direction:column;min-height:100vh}}
+            .owner-calendar-sticky{{
+                position:-webkit-sticky;
+                position:sticky;
+                top:0;
+                z-index:80;
+                background:rgba(255,255,255,.97);
+                -webkit-backdrop-filter:blur(10px);
+                backdrop-filter:blur(10px);
+                border-bottom:1px solid var(--line);
+                box-shadow:0 8px 18px rgba(15,23,42,.05);
+            }}
+            .owner-calendar-sticky .cal-topbar,
+            .owner-calendar-sticky .filter-bar,
+            .owner-calendar-sticky .legend,
+            .owner-calendar-sticky .month-nav{{
+                background:rgba(255,255,255,.97);
+            }}
+            .owner-calendar-sticky .month-nav{{padding-top:8px;padding-bottom:8px}}
+            .owner-calendar-sticky .success-strip{{margin-bottom:8px}}
             .cal-topbar{{display:flex;align-items:center;justify-content:space-between;
                          padding:10px 18px;background:var(--surface);
                          border-bottom:1px solid var(--line);gap:12px;flex-wrap:wrap}}
@@ -7147,7 +7166,7 @@ def calendar():
                            border-bottom:1px solid var(--line)}}
             .cal-table th:last-child{{border-right:none}}
             .cal-table th.today-th{{color:var(--blue);font-weight:700}}
-            .cal-table td{{vertical-align:top;height:110px;padding:3px 2px;
+            .cal-table td{{vertical-align:top;height:96px;padding:2px 2px;
                            border-right:1px solid var(--line);
                            border-bottom:1px solid var(--line);
                            background:var(--surface)}}
@@ -7156,62 +7175,67 @@ def calendar():
             .cal-table td.today-cell{{background:#EEF5FD}}
 
             /* date number — clickable */
-            .day-num{{font-size:11px;color:var(--muted);display:inline-flex;
+            .day-num{{font-size:10px;color:var(--muted);display:inline-flex;
                       align-items:center;justify-content:center;
-                      min-width:20px;height:20px;border-radius:50%;
-                      cursor:pointer;margin:0 2px 2px;font-weight:400;
+                      min-width:17px;height:17px;border-radius:50%;
+                      cursor:pointer;margin:0 1px 1px;font-weight:400;
                       border:0;background:transparent;font-family:inherit}}
             .day-num:hover{{background:var(--blue-bg);color:var(--blue)}}
             .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
             /* event card */
-            .ev{{border-radius:3px;padding:3px 4px;font-size:10px;margin-bottom:2px;
-                 border-left:3px solid transparent;line-height:1.35;
-                 cursor:grab;user-select:none}}
+            .ev{{border-radius:4px;padding:2px 3px;font-size:9px;margin-bottom:2px;
+                 border-left:3px solid transparent;line-height:1.18;
+                 cursor:grab;user-select:none;overflow:hidden}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
-            .ev-name{{font-weight:600;display:block;color:inherit;text-decoration:none;border-radius:3px;
-                      width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis}}
+            .ev-name{{font-weight:800;display:block;color:inherit;text-decoration:none;border-radius:3px;
+                      width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis;
+                      font-size:9.5px;line-height:1.08;white-space:nowrap}}
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
-            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:2px}}
-            .ev-time{{font-size:9px;display:block}}
+            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:3px;margin-bottom:1px}}
+            .ev-time{{font-size:8.5px;line-height:1.05;opacity:.9;display:block;color:#475569;font-weight:500}}
             .calendar-time-chip{{display:inline-block;width:max-content;max-width:100%;
-                                 background:#fff;color:#111827!important;font-weight:900;
+                                 background:rgba(255,255,255,.86);color:#111827!important;font-weight:900;
+                                 border-radius:3px;padding:1px 2px;
                                  opacity:1!important;text-decoration:none!important}}
-            .ev-sub{{font-size:9px;opacity:.6;display:block}}
-            .ev-cancel-result{{font-size:9px;opacity:.78;display:block;margin-top:1px}}
-            .ev-status-badge{{display:inline-flex;align-items:center;gap:3px;
-                              border-radius:999px;padding:2px 6px;font-size:8px;
+            .ev-sub{{font-size:8.2px;line-height:1.05;opacity:.68;display:block;
+                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+            .ev-cancel-result{{font-size:8px;line-height:1.05;opacity:.78;display:block;margin-top:0}}
+            .ev .warn-pill,.ev .last-pill{{font-size:8px;padding:0 4px;line-height:1.1}}
+            .ev-status-badge{{display:inline-flex;align-items:center;gap:2px;
+                              border-radius:999px;padding:1px 5px;font-size:7.5px;
                               line-height:1;font-weight:800;color:#fff;
                               box-shadow:0 1px 2px rgba(0,0,0,.18)}}
-            .ev-status-badge:before{{content:"";width:6px;height:6px;border-radius:50%;
+            .ev-status-badge:before{{content:"";width:5px;height:5px;border-radius:50%;
                                      background:currentColor;filter:brightness(0) invert(1);
                                      opacity:.96}}
-            .ev-icon-stack{{display:inline-flex;align-items:center;justify-content:flex-end;gap:3px;
-                            flex-wrap:wrap;max-width:48%}}
-            .ev-icon{{width:18px;height:18px;border-radius:999px;display:inline-flex;
+            .ev-icon-stack{{display:inline-flex;align-items:center;justify-content:flex-end;gap:2px;
+                            flex-wrap:wrap;max-width:40%}}
+            .ev-icon{{width:14px;height:14px;border-radius:999px;display:inline-flex;
                       align-items:center;justify-content:center;border:1px solid currentColor;
                       background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12);
-                      font-size:12px;line-height:1}}
-            .ev-icon i{{font-size:12px;line-height:1}}
+                      font-size:10px;line-height:1}}
+            .ev-icon i{{font-size:10px;line-height:1}}
             .ev-icon-teacher{{color:#6941C6;background:#F4EBFF}}
             .ev-icon-noshow{{color:#B42318;background:#FEE4E2}}
             .ev-icon-lastmin{{color:#B54708;background:#FFEAD5}}
             .ev-icon-cancelled{{color:#475467;background:#EEF2F7}}
-            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 34px;
-                                gap:4px;margin-top:4px;align-items:center}}
-            .owner-status-form select,.owner-status-form button{{height:22px;border:1px solid rgba(0,0,0,.16);
-                                border-radius:6px;background:rgba(255,255,255,.92);
-                                font-family:inherit;font-size:9px;color:#1C1C1E;
-                                min-width:0;padding:1px 4px}}
+            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 30px;
+                                gap:2px;margin-top:2px;align-items:center}}
+            .owner-status-form select,.owner-status-form button{{height:18px;border:1px solid rgba(0,0,0,.16);
+                                border-radius:4px;background:rgba(255,255,255,.92);
+                                font-family:inherit;font-size:8.5px;color:#1C1C1E;
+                                min-width:0;padding:0 3px}}
             .owner-status-form button{{background:#185FA5;color:#fff;border-color:#185FA5;
-                                font-weight:800;cursor:pointer;padding:0 4px}}
+                                font-weight:800;cursor:pointer;padding:0 3px}}
             .ev.ev-early-cancel{{background:#F1F3F6 !important;border-left-color:#98A2B3 !important;
                                  color:#667085 !important;box-shadow:none}}
             .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:#667085;box-shadow:none;
                                                   text-decoration:line-through;text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .ev-name,
+            .ev.ev-early-cancel .ev-time,
             .ev.ev-early-cancel .ev-sub,
             .ev.ev-early-cancel .ev-cancel-result{{color:#667085 !important;text-decoration:line-through;
                                                    text-decoration-thickness:1.5px}}
@@ -7239,7 +7263,7 @@ def calendar():
             .drop-active{{outline:2px dashed var(--blue);outline-offset:-2px;
                           background:#EEF5FD !important}}
             /* open slot */
-            .open-slot{{border-radius:3px;padding:2px 4px;font-size:9px;
+            .open-slot{{border-radius:3px;padding:1px 3px;font-size:8px;
                         margin-bottom:2px;border:1px dashed var(--line);
                         color:var(--faint)}}
 
@@ -7425,6 +7449,7 @@ def calendar():
     </head>
     <body>
     <div class="cal-shell">
+      <div class="owner-calendar-sticky">
 
       <!-- Top bar -->
       <div class="cal-topbar">
@@ -7488,6 +7513,7 @@ def calendar():
         <i class="ti ti-check" style="font-size:14px"></i>
         <span id="successMsg"></span>
       </div>
+      </div><!-- /owner-calendar-sticky -->
 
       <!-- Calendar grid -->
       <div class="cal-grid-wrap">
