@@ -5725,8 +5725,11 @@ def student_detail(name):
             a.button, button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); background:white; text-decoration:none; font-weight:800; font-size:14px; box-sizing:border-box; width:100%; cursor:pointer; }}
             a.button.primary, button.primary {{ background:var(--blue); border-color:var(--blue); color:white; }}
             .tabs {{ display:flex; gap:8px; padding:14px 18px 0; flex-wrap:wrap; }}
-            .tab {{ border:1px solid var(--border); border-radius:999px; padding:7px 10px; color:var(--muted); font-size:13px; font-weight:800; }}
+            .tab {{ border:1px solid var(--border); border-radius:999px; padding:7px 10px; color:var(--muted); font-size:13px; font-weight:800; background:white; cursor:pointer; }}
+            .tabs .tab {{ width:auto; min-height:auto; display:inline-flex; align-items:center; justify-content:center; }}
             .tab.active {{ background:var(--blue-soft); border-color:#bfdbfe; color:var(--blue); }}
+            .tab-panel {{ display:none; }}
+            .tab-panel.active {{ display:block; }}
             .setup-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
             .setup-card {{ border:1px solid var(--border); border-radius:12px; padding:14px; background:#fbfdff; }}
             .timeline {{ display:grid; gap:10px; }}
@@ -5826,43 +5829,74 @@ def student_detail(name):
 
                 <div class="card">
                     <div class="tabs">
-                        <span class="tab active">Overview</span>
-                        <span class="tab">Lessons</span>
-                        <span class="tab">Billing</span>
-                        <span class="tab">Messages</span>
+                        <button class="tab active" type="button" data-student-tab="overview">Overview</button>
+                        <button class="tab" type="button" data-student-tab="lessons">Lessons</button>
+                        <button class="tab" type="button" data-student-tab="billing">Billing</button>
+                        <button class="tab" type="button" data-student-tab="messages">Messages</button>
                     </div>
 
-                    <div class="section">
-                        <div class="setup-grid">
-                            <div class="setup-card">
-                                <h2>Next Lesson</h2>
-                                <p><b>{escape(next_lesson_label)}</b></p>
-                                <p class="muted">{escape(next_lesson_meta)}</p>
+                    <div class="tab-panel active" data-student-panel="overview">
+                        <div class="section">
+                            <div class="setup-grid">
+                                <div class="setup-card">
+                                    <h2>Next Lesson</h2>
+                                    <p><b>{escape(next_lesson_label)}</b></p>
+                                    <p class="muted">{escape(next_lesson_meta)}</p>
+                                </div>
+                                <div class="setup-card">
+                                    <h2>Setup Checklist</h2>
+                                    <p class="muted">Confirm schedule, package, invoice, parent app access, and policy before family starts using the app.</p>
+                                </div>
                             </div>
-                            <div class="setup-card">
-                                <h2>Setup Checklist</h2>
-                                <p class="muted">Confirm schedule, package, invoice, parent app access, and policy before family starts using the app.</p>
-                            </div>
+                        </div>
+
+                        <div class="section">
+                            <h2>Quick Actions</h2>
+                            {owner_actions}
                         </div>
                     </div>
 
-                    <div class="section">
-                        <h2>Quick Actions</h2>
-                        {owner_actions}
+                    <div class="tab-panel" data-student-panel="lessons">
+                        <div class="section">
+                            <h2>Lesson History</h2>
+                            <div class="timeline">{lesson_html}</div>
+                        </div>
                     </div>
 
-                    <div class="section">
-                        <h2>Lesson History</h2>
-                        <div class="timeline">{lesson_html}</div>
+                    <div class="tab-panel" data-student-panel="billing" id="payments">
+                        <div class="section">
+                            <h2>Payment History</h2>
+                            <div class="timeline">{payment_html}</div>
+                        </div>
                     </div>
 
-                    <div class="section" id="payments">
-                        <h2>Payment History</h2>
-                        <div class="timeline">{payment_html}</div>
+                    <div class="tab-panel" data-student-panel="messages">
+                        <div class="section">
+                            <h2>Messages</h2>
+                            <div class="button-grid">
+                                <a class="button primary" href="/generate_parent_email/{student_url_name}">Generate lesson email</a>
+                                <a class="button" href="/send_parent_email/{student_url_name}">Send lesson email</a>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
+        <script>
+            (function() {{
+                const tabs = Array.from(document.querySelectorAll('[data-student-tab]'));
+                const panels = Array.from(document.querySelectorAll('[data-student-panel]'));
+                function showStudentTab(name) {{
+                    tabs.forEach(tab => tab.classList.toggle('active', tab.dataset.studentTab === name));
+                    panels.forEach(panel => panel.classList.toggle('active', panel.dataset.studentPanel === name));
+                    if (history.replaceState) history.replaceState(null, '', '#' + name);
+                }}
+                tabs.forEach(tab => tab.addEventListener('click', () => showStudentTab(tab.dataset.studentTab)));
+                const initial = (window.location.hash || '').replace('#', '');
+                if (initial === 'payments') showStudentTab('billing');
+                else if (['overview', 'lessons', 'billing', 'messages'].includes(initial)) showStudentTab(initial);
+            }})();
+        </script>
     </body>
     </html>
     """
