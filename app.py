@@ -1514,6 +1514,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
                 --td-radius:12px;
             }}
             * {{ box-sizing:border-box; }}
+            html, body {{ height:100%; }}
             body {{ margin:0; background:var(--td-bg); color:var(--td-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; font-weight:400; }}
             a {{ color:inherit; text-decoration:none; }}
             .td-shell {{ display:grid; grid-template-columns:240px 1fr; grid-template-rows:56px 1fr; height:100vh; min-height:100vh; overflow:hidden; background:var(--td-bg); }}
