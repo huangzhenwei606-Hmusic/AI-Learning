@@ -11385,7 +11385,7 @@ def teacher_dashboard():
     teacher_perms = get_teacher_permissions(teacher_name)
     unread_messages = get_unread_message_count("teacher", teacher_name)
     missing_homework_count = get_missing_homework_count(teacher_name)
-    today_obj = date.today()
+    today_obj = hmusic_today()
     today = today_obj.strftime("%Y-%m-%d")
     selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
     view = request.args.get("view", "home")
@@ -11445,6 +11445,22 @@ def teacher_dashboard():
 
     cursor.execute("""
     SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
+        COALESCE(l.location_name, s.location, ''), COALESCE(s.trial_hold, 0),
+        COALESCE(s.trial_form_status, '')
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON s.location_id = l.id
+    WHERE s.teacher = ?
+    AND s.lesson_date = ?
+    ORDER BY s.lesson_time
+    """, (teacher_name, today))
+    today_lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
         COALESCE(SUM(payroll_amount), 0),
         COALESCE(SUM(teacher_pay_amount), 0),
         COUNT(*)
@@ -11479,7 +11495,6 @@ def teacher_dashboard():
     conn.close()
 
     completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
-    today_lessons = [lesson for lesson in lessons if lesson[1] == today]
     actual_payroll = round(payroll_summary[0] or 0, 2)
     projected_payroll = round(payroll_summary[1] or 0, 2)
     pending_count = unread_messages + missing_homework_count

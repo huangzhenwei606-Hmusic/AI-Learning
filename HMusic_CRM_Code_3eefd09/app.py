@@ -21,6 +21,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import HTTPException
 
 try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
+
+try:
     import stripe
 except ImportError:
     stripe = None
@@ -52,6 +57,8 @@ HMUSIC_BACKUP_DIR = os.environ.get(
     "HMUSIC_BACKUP_DIR",
     os.path.join(os.path.dirname(HMUSIC_DB_PATH) or ".", "backups")
 )
+HMUSIC_TIMEZONE_NAME = os.environ.get("HMUSIC_TIMEZONE", "America/Los_Angeles")
+HMUSIC_TIMEZONE = ZoneInfo(HMUSIC_TIMEZONE_NAME) if ZoneInfo else None
 DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
@@ -103,6 +110,16 @@ def hmusic_clean_student_picker_value(value):
         if separator in text:
             return text.split(separator, 1)[0].strip()
     return text
+
+
+def hmusic_now():
+    if HMUSIC_TIMEZONE:
+        return datetime.now(HMUSIC_TIMEZONE)
+    return datetime.now()
+
+
+def hmusic_today():
+    return hmusic_now().date()
 
 
 def hmusic_teacher_student_rows(cursor, teacher_name=None, include_all=False):
@@ -10130,7 +10147,7 @@ def teacher_dashboard():
     teacher_perms = get_teacher_permissions(teacher_name)
     unread_messages = get_unread_message_count("teacher", teacher_name)
     missing_homework_count = get_missing_homework_count(teacher_name)
-    today_obj = date.today()
+    today_obj = hmusic_today()
     today = today_obj.strftime("%Y-%m-%d")
     selected_month = request.args.get("month", today_obj.strftime("%Y-%m"))
     view = request.args.get("view", "home")
@@ -10180,6 +10197,19 @@ def teacher_dashboard():
 
     cursor.execute("""
     SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, '')
+    FROM schedule s
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE s.teacher = ?
+    AND s.lesson_date = ?
+    ORDER BY s.lesson_time
+    """, (teacher_name, today))
+    today_lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT
         COALESCE(SUM(payroll_amount), 0),
         COALESCE(SUM(teacher_pay_amount), 0),
         COUNT(*)
@@ -10196,7 +10226,6 @@ def teacher_dashboard():
     conn.close()
 
     completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
-    today_lessons = [lesson for lesson in lessons if lesson[1] == today]
     actual_payroll = round(payroll_summary[0] or 0, 2)
     projected_payroll = round(payroll_summary[1] or 0, 2)
     pending_count = unread_messages + missing_homework_count
