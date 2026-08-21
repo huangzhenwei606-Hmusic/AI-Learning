@@ -6889,11 +6889,15 @@ H-Music
 
 @app.route("/calendar")
 def calendar():
-    ensure_v321_schema()
-    ensure_calendar_lesson_panel_schema()
-    ensure_location_room_schema()
     if not require_owner():
         return redirect("/owner_login")
+    try:
+        ensure_v321_schema()
+        ensure_calendar_lesson_panel_schema()
+        ensure_location_room_schema()
+    except Exception as exc:
+        print(f"[calendar] schema preparation failed: {exc}")
+        traceback.print_exc()
 
     selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
     selected_teacher = (request.args.get("teacher") or "").strip()
@@ -41727,8 +41731,16 @@ def prepare_database_for_request():
     # production uploads are large. Keep manual /owner_backup available and only
     # run automatic backups when explicitly enabled in Render env vars.
     if os.environ.get("HMUSIC_ENABLE_AUTO_BACKUP") == "1":
-        maybe_run_daily_backup()
-    maybe_run_daily_lesson_reminders()
+        try:
+            maybe_run_daily_backup()
+        except Exception as exc:
+            print(f"[backup] before-request backup skipped after error: {exc}")
+            traceback.print_exc()
+    try:
+        maybe_run_daily_lesson_reminders()
+    except Exception as exc:
+        print(f"[reminders] before-request reminders skipped after error: {exc}")
+        traceback.print_exc()
     public_paths = (
         "/static/",
         "/favicon.ico",
