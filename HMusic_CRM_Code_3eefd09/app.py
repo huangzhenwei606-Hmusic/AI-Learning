@@ -7358,6 +7358,25 @@ def calendar():
                              border-radius:12px;padding:10px;margin-bottom:10px}}
             .pop-inline-box.show{{display:block}}
             .pop-help{{font-size:11px;color:var(--muted);line-height:1.45;margin:-3px 0 10px}}
+            .group-student-table{{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);
+                                  border-radius:10px;overflow:hidden;background:#fff;margin-bottom:8px}}
+            .group-student-table th{{background:#F4F6F9;color:var(--faint);font-size:9px;
+                                     text-transform:uppercase;letter-spacing:.04em;text-align:left;
+                                     padding:6px 7px;border-bottom:1px solid var(--line)}}
+            .group-student-table td{{padding:6px 7px;border-bottom:1px solid #EDF0F5;vertical-align:top}}
+            .group-student-table tr:last-child td{{border-bottom:0}}
+            .group-student-table .pop-inp,.group-student-table .pop-sel{{font-size:11px;padding:7px 8px;
+                                                                         min-height:31px;margin:0;border-radius:7px}}
+            .group-student-name{{min-width:145px}}
+            .group-credit{{width:58px}}
+            .group-rate{{width:78px}}
+            .group-rule{{min-width:118px}}
+            .group-attendance{{min-width:118px}}
+            .group-remove{{border:0;background:transparent;color:#DC2626;font-weight:900;font-size:15px;cursor:pointer;padding:6px}}
+            .group-compact-add{{border:1px dashed #93C5FD;background:#fff;color:var(--blue);border-radius:9px;
+                                width:100%;min-height:34px;font-weight:900;font-size:12px;cursor:pointer}}
+            .group-billing-note{{font-size:10px;color:var(--muted);font-weight:700;line-height:1.35;margin:6px 0 10px}}
+            .group-policy-box{{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:12px}}
             .pop-footer{{position:sticky;bottom:0;background:rgba(255,255,255,.96);
                          backdrop-filter:blur(8px);border-top:1px solid var(--line);
                          display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 18px}}
@@ -7656,46 +7675,27 @@ def calendar():
               </div>
             </div>
             <div id="popGroupFields" style="display:none">
-              <label class="pop-label">Students and billing rule</label>
+              <label class="pop-label">Students</label>
               <table class="group-student-table">
                 <thead>
                   <tr>
                     <th>Student</th>
+                    <th>Attendance starts as</th>
                     <th>Credit</th>
-                    <th>Rate</th>
-                    <th>Billing</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody id="popGroupStudentRows">
                   <tr>
                     <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+                    <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
                     <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
-                    <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                    <td>
-                      <select class="pop-sel group-rule" name="group_billing_rule">
-                        <option value="existing_credits">Use credits</option>
-                        <option value="invoice_later">Invoice later</option>
-                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
-                        <option value="makeup_credit">Makeup</option>
-                        <option value="no_charge">No charge</option>
-                      </select>
-                    </td>
                     <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
                   </tr>
                   <tr>
                     <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+                    <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
                     <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
-                    <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                    <td>
-                      <select class="pop-sel group-rule" name="group_billing_rule">
-                        <option value="existing_credits">Use credits</option>
-                        <option value="invoice_later">Invoice later</option>
-                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
-                        <option value="makeup_credit">Makeup</option>
-                        <option value="no_charge">No charge</option>
-                      </select>
-                    </td>
                     <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
                   </tr>
                 </tbody>
@@ -7703,7 +7703,54 @@ def calendar():
               <button class="group-compact-add" type="button" onclick="addGroupStudentRow()">+ Add student</button>
               <input type="hidden" name="group_size" id="popGroupSize">
               <input type="hidden" name="group_student_names" id="popGroupStudentNames">
-              <div class="group-billing-note">Each student is listed separately, so attendance, credits, and billing can be reviewed per child.</div>
+              <div class="group-billing-note">Students are only the roster and credit usage. Billing is set below.</div>
+
+              <div class="group-policy-box">
+                <label class="pop-label">Billing policy</label>
+                <div class="pop-row">
+                  <div>
+                    <label class="pop-label">Policy</label>
+                    <select class="pop-sel" id="popGroupBillingMode" onchange="syncGroupBillingRows()">
+                      <option value="per_student">Per-student billing</option>
+                      <option value="same_for_all">Same rule for all</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="pop-label">Default billing rule</label>
+                    <select class="pop-sel" id="popGroupDefaultBilling" onchange="syncGroupBillingRows()">
+                      <option value="existing_credits">Use existing credits</option>
+                      <option value="new_package">Create new package</option>
+                      <option value="invoice_later">Invoice later</option>
+                      <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+                      <option value="makeup_credit">Use makeup credit</option>
+                      <option value="no_charge">No charge</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="pop-row">
+                  <div>
+                    <label class="pop-label">Package / count</label>
+                    <select class="pop-sel" id="popGroupDefaultPackage" onchange="syncGroupBillingRows()">
+                      <option value="10">10 lessons</option>
+                      <option value="12">12 lessons</option>
+                      <option value="24">24 lessons</option>
+                      <option value="custom">Custom count</option>
+                      <option value="unlimited">Ongoing weekly</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="pop-label">Default student rate</label>
+                    <input class="pop-inp" type="number" id="popGroupDefaultRate" min="0" step="0.01" value="45" onchange="syncGroupBillingRows()">
+                  </div>
+                </div>
+                <div id="popGroupPerStudentBilling">
+                  <table class="group-student-table">
+                    <thead><tr><th>Student</th><th>Billing rule</th><th>Rate</th></tr></thead>
+                    <tbody id="popGroupBillingRows"></tbody>
+                  </table>
+                </div>
+                <div class="group-billing-note">Default values fill new students. Per-student rows are the only billing override for group classes.</div>
+              </div>
             </div>
             <div class="pop-summary" id="popPriceSummary"></div>
           </div>
@@ -7718,6 +7765,7 @@ def calendar():
               <option value="makeup_credit">Use makeup credit</option>
               <option value="no_charge">No charge</option>
               <option value="invoice_later">Invoice later</option>
+              <option value="auto_invoice_per_lesson">Auto invoice per lesson - generate 12h before class</option>
               <option value="custom_price">Custom price</option>
             </select>
             <div class="pop-row">
@@ -8228,6 +8276,7 @@ def calendar():
         makeup_credit: 'Use makeup credit',
         no_charge: 'No charge',
         invoice_later: 'Invoice later',
+        auto_invoice_per_lesson: 'Auto invoice per lesson',
         custom_price: 'Custom price'
       }}[value] || value || 'Use existing credits';
     }}
@@ -8317,17 +8366,8 @@ def calendar():
       return `
         <tr>
           <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+          <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
           <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
-          <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-          <td>
-            <select class="pop-sel group-rule" name="group_billing_rule">
-              <option value="existing_credits">Use credits</option>
-              <option value="invoice_later">Invoice later</option>
-              <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
-              <option value="makeup_credit">Makeup</option>
-              <option value="no_charge">No charge</option>
-            </select>
-          </td>
           <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
         </tr>`;
     }}
@@ -8353,7 +8393,54 @@ def calendar():
       if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : '';
       if (namesInput) namesInput.value = uniqueNames.join(', ');
       if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+      syncGroupBillingRows();
       return uniqueNames;
+    }}
+    function groupBillingRuleOptions(selectedValue) {{
+      const options = [
+        ['existing_credits', 'Use existing credits'],
+        ['new_package', 'Create new package'],
+        ['invoice_later', 'Invoice later'],
+        ['auto_invoice_per_lesson', 'Auto invoice per lesson'],
+        ['makeup_credit', 'Use makeup credit'],
+        ['no_charge', 'No charge']
+      ];
+      return options.map(([value, label]) => `<option value="${{value}}" ${{value === selectedValue ? 'selected' : ''}}>${{label}}</option>`).join('');
+    }}
+    function syncGroupBillingRows() {{
+      const billingRows = document.getElementById('popGroupBillingRows');
+      if (!billingRows) return;
+      const names = Array.from(document.querySelectorAll('#popGroupStudentRows input[name="group_student_name"]'))
+        .map(input => input.value.trim())
+        .filter(Boolean);
+      const uniqueNames = Array.from(new Set(names));
+      const mode = (document.getElementById('popGroupBillingMode') || {{value:'per_student'}}).value;
+      const defaultRule = (document.getElementById('popGroupDefaultBilling') || {{value:'existing_credits'}}).value;
+      const defaultPackage = (document.getElementById('popGroupDefaultPackage') || {{value:'10'}}).value;
+      const defaultRate = (document.getElementById('popGroupDefaultRate') || {{value:'0'}}).value || '0';
+      const existing = {{}};
+      billingRows.querySelectorAll('tr[data-student-key]').forEach(row => {{
+        existing[row.dataset.studentKey] = {{
+          rule: (row.querySelector('[name="group_billing_rule"]') || {{value: defaultRule}}).value,
+          rate: (row.querySelector('[name="group_student_rate"]') || {{value: defaultRate}}).value
+        }};
+      }});
+      document.getElementById('popBillingDecision').value = defaultRule;
+      document.getElementById('popPackageType').value = defaultPackage;
+      document.getElementById('popParentChargeRate').value = defaultRate;
+      const perStudentBox = document.getElementById('popGroupPerStudentBilling');
+      if (perStudentBox) perStudentBox.style.display = mode === 'per_student' ? 'block' : 'none';
+      billingRows.innerHTML = uniqueNames.map(name => {{
+        const key = name.toLowerCase();
+        const row = existing[key] || {{}};
+        const rule = mode === 'same_for_all' ? defaultRule : (row.rule || defaultRule);
+        const rate = mode === 'same_for_all' ? defaultRate : (row.rate || defaultRate);
+        return `<tr data-student-key="${{key}}">
+          <td>${{name}}</td>
+          <td><select class="pop-sel group-rule" name="group_billing_rule" onchange="syncGroupBillingRows()">${{groupBillingRuleOptions(rule)}}</select></td>
+          <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" value="${{rate}}" placeholder="0.00"></td>
+        </tr>`;
+      }}).join('');
     }}
     function updateLessonKind() {{
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
@@ -8378,8 +8465,10 @@ def calendar():
       }}
       const course = selectedQuickCourse();
       const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+      const billingSection = document.getElementById('popBillingSection');
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
       if (isGroup) syncGroupFieldsForSubmit();
+      if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
       if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
       updateBillingControls();
       updateQuickCourseBilling();
@@ -8601,6 +8690,12 @@ def calendar():
       if (!form.reportValidity()) return;
       form.submit();
     }}
+    document.addEventListener('input', function(e) {{
+      if (e.target && ['group_student_name','group_credit_units','group_student_rate'].includes(e.target.name)) {{
+        syncGroupFieldsForSubmit();
+      }}
+      if (e.target && e.target.id === 'popGroupDefaultRate') syncGroupBillingRows();
+    }});
     function addOpenSlot() {{
       if (!activePopDate) return;
       const teacher = document.getElementById('popTeacher').value;
@@ -8696,6 +8791,27 @@ def add_schedule():
         """, 403
 
     ensure_v18_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS group_schedule_students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER,
+        student_name TEXT,
+        parent_name TEXT,
+        credit_units REAL DEFAULT 1,
+        student_rate REAL DEFAULT 0,
+        billing_rule TEXT DEFAULT 'existing_credits',
+        billing_status TEXT DEFAULT 'planned',
+        attendance_status TEXT DEFAULT 'scheduled',
+        lesson_note TEXT,
+        homework TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
 
     def safe_schedule_return(value, fallback="/calendar"):
         value = (value or "").strip()
@@ -8888,9 +9004,12 @@ def add_schedule():
         group_size = request.form.get("group_size")
         group_student_names = (request.form.get("group_student_names") or "").strip()
         raw_group_names = request.form.getlist("group_student_name")
+        raw_group_credits = request.form.getlist("group_credit_units")
+        raw_group_rates = request.form.getlist("group_student_rate")
+        raw_group_rules = request.form.getlist("group_billing_rule")
         group_participants = []
         seen_group_students = set()
-        for raw_name in raw_group_names:
+        for idx, raw_name in enumerate(raw_group_names):
             participant_name = hmusic_clean_student_picker_value(raw_name)
             if not participant_name:
                 continue
@@ -8898,7 +9017,25 @@ def add_schedule():
             if participant_key in seen_group_students:
                 continue
             seen_group_students.add(participant_key)
-            group_participants.append(participant_name)
+            try:
+                credit_units = max(0, float(raw_group_credits[idx] if idx < len(raw_group_credits) else 1))
+            except Exception:
+                credit_units = 1
+            try:
+                student_rate_value = max(0, float(raw_group_rates[idx] if idx < len(raw_group_rates) else 0))
+            except Exception:
+                student_rate_value = 0
+            billing_rule = (raw_group_rules[idx] if idx < len(raw_group_rules) else billing_decision) or billing_decision
+            if billing_rule == "new_package":
+                billing_rule = "existing_credits"
+            if billing_rule not in ("existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge"):
+                billing_rule = "existing_credits"
+            group_participants.append({
+                "student_name": participant_name,
+                "credit_units": credit_units,
+                "student_rate": round(student_rate_value, 2),
+                "billing_rule": billing_rule,
+            })
         schedule_note = ""
         if allow_unassigned_teacher_schedule:
             schedule_note = (
@@ -8943,13 +9080,22 @@ def add_schedule():
         elif lesson_format == "group":
             is_group = 1
         if is_group and group_participants:
-            student_name = group_participants[0]
+            student_name = group_participants[0]["student_name"]
             group_size = str(len(group_participants))
-            group_student_names = ", ".join(group_participants)
+            group_student_names = ", ".join([p["student_name"] for p in group_participants])
         elif is_group and group_student_names:
             parsed_names = [hmusic_clean_student_picker_value(name) for name in group_student_names.split(",")]
             parsed_names = [name for name in parsed_names if name]
             parsed_names = list(dict.fromkeys(parsed_names))
+            group_participants = [
+                {
+                    "student_name": name,
+                    "credit_units": 1,
+                    "student_rate": 0,
+                    "billing_rule": billing_decision if billing_decision in ("existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge") else "existing_credits",
+                }
+                for name in parsed_names
+            ]
             if parsed_names:
                 student_name = parsed_names[0]
                 group_size = str(len(parsed_names))
@@ -9016,6 +9162,7 @@ def add_schedule():
             "makeup_credit": "Use makeup credit",
             "no_charge": "No charge",
             "invoice_later": "Invoice later",
+            "auto_invoice_per_lesson": "Auto invoice per lesson",
             "custom_price": "Custom price",
         }
         if schedule_type == "one_time":
@@ -9107,6 +9254,49 @@ def add_schedule():
                 int(float(custom_lesson_count or 0)) if package_type == "custom" else None,
                 "scheduled"
             ))
+            schedule_id = cursor.lastrowid
+            if is_group and group_participants:
+                for participant in group_participants:
+                    participant_rate = participant["student_rate"]
+                    if participant_rate <= 0 and participant["billing_rule"] not in ("makeup_credit", "no_charge"):
+                        participant_rate = round(float(student_charge_amount or 0), 2)
+                    if participant["billing_rule"] in ("makeup_credit", "no_charge"):
+                        participant_rate = 0
+                    billing_status = {
+                        "existing_credits": "deduct_from_package",
+                        "invoice_later": "needs_invoice",
+                        "auto_invoice_per_lesson": "needs_invoice",
+                        "makeup_credit": "use_makeup_credit",
+                        "no_charge": "no_charge",
+                    }.get(participant["billing_rule"], "planned")
+                    cursor.execute("SELECT COALESCE(parent_name, '') FROM students WHERE name = ?", (participant["student_name"],))
+                    parent_row = cursor.fetchone()
+                    parent_name = parent_row[0] if parent_row else ""
+                    cursor.execute("""
+                    INSERT INTO group_schedule_students (
+                        schedule_id,
+                        student_name,
+                        parent_name,
+                        credit_units,
+                        student_rate,
+                        billing_rule,
+                        billing_status,
+                        attendance_status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+                    """, (
+                        schedule_id,
+                        participant["student_name"],
+                        parent_name,
+                        participant["credit_units"],
+                        participant_rate,
+                        participant["billing_rule"],
+                        billing_status,
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    ))
 
             generated_count += 1
 

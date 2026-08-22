@@ -7637,10 +7637,12 @@ def calendar():
             .group-credit{{width:58px}}
             .group-rate{{width:78px}}
             .group-rule{{min-width:118px}}
+            .group-attendance{{min-width:118px}}
             .group-remove{{border:0;background:transparent;color:#DC2626;font-weight:900;font-size:15px;cursor:pointer;padding:6px}}
             .group-compact-add{{border:1px dashed #93C5FD;background:#fff;color:var(--blue);border-radius:9px;
                                 width:100%;min-height:34px;font-weight:900;font-size:12px;cursor:pointer}}
             .group-billing-note{{font-size:10px;color:var(--muted);font-weight:700;line-height:1.35;margin:6px 0 10px}}
+            .group-policy-box{{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:12px}}
             .pop-footer{{position:sticky;bottom:0;background:rgba(255,255,255,.96);
                          backdrop-filter:blur(8px);border-top:1px solid var(--line);
                          display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 18px}}
@@ -8000,46 +8002,27 @@ def calendar():
               </div>
             </div>
             <div id="popGroupFields" style="display:none">
-              <label class="pop-label">Students and billing rule</label>
+              <label class="pop-label">Students</label>
               <table class="group-student-table">
                 <thead>
                   <tr>
                     <th>Student</th>
+                    <th>Attendance starts as</th>
                     <th>Credit</th>
-                    <th>Rate</th>
-                    <th>Billing</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody id="popGroupStudentRows">
                   <tr>
                     <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+                    <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
                     <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
-                    <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                    <td>
-                      <select class="pop-sel group-rule" name="group_billing_rule">
-                        <option value="existing_credits">Use credits</option>
-                        <option value="invoice_later">Invoice later</option>
-                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
-                        <option value="makeup_credit">Makeup</option>
-                        <option value="no_charge">No charge</option>
-                      </select>
-                    </td>
                     <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">×</button></td>
                   </tr>
                   <tr>
                     <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+                    <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
                     <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
-                    <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                    <td>
-                      <select class="pop-sel group-rule" name="group_billing_rule">
-                        <option value="existing_credits">Use credits</option>
-                        <option value="invoice_later">Invoice later</option>
-                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
-                        <option value="makeup_credit">Makeup</option>
-                        <option value="no_charge">No charge</option>
-                      </select>
-                    </td>
                     <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">×</button></td>
                   </tr>
                 </tbody>
@@ -8047,7 +8030,54 @@ def calendar():
               <button class="group-compact-add" type="button" onclick="addGroupStudentRow()">+ Add student</button>
               <input type="hidden" name="group_size" id="popGroupSize">
               <input type="hidden" name="group_student_names" id="popGroupStudentNames">
-              <div class="group-billing-note">Saving this schedule will not create invoices immediately. Invoice later and Auto invoice per lesson items can be managed from Student or Family Billing.</div>
+              <div class="group-billing-note">Students are only the roster and credit usage. Billing is set below.</div>
+
+              <div class="group-policy-box">
+                <label class="pop-label">Billing policy</label>
+                <div class="pop-row">
+                  <div>
+                    <label class="pop-label">Policy</label>
+                    <select class="pop-sel" id="popGroupBillingMode" onchange="syncGroupBillingRows()">
+                      <option value="per_student">Per-student billing</option>
+                      <option value="same_for_all">Same rule for all</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="pop-label">Default billing rule</label>
+                    <select class="pop-sel" id="popGroupDefaultBilling" onchange="syncGroupBillingRows()">
+                      <option value="existing_credits">Use existing credits</option>
+                      <option value="new_package">Create new package</option>
+                      <option value="invoice_later">Invoice later</option>
+                      <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+                      <option value="makeup_credit">Use makeup credit</option>
+                      <option value="no_charge">No charge</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="pop-row">
+                  <div>
+                    <label class="pop-label">Package / count</label>
+                    <select class="pop-sel" id="popGroupDefaultPackage" onchange="syncGroupBillingRows()">
+                      <option value="10">10 lessons</option>
+                      <option value="12">12 lessons</option>
+                      <option value="24">24 lessons</option>
+                      <option value="custom">Custom count</option>
+                      <option value="unlimited">Ongoing weekly</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="pop-label">Default student rate</label>
+                    <input class="pop-inp" type="number" id="popGroupDefaultRate" min="0" step="0.01" value="45" onchange="syncGroupBillingRows()">
+                  </div>
+                </div>
+                <div id="popGroupPerStudentBilling">
+                  <table class="group-student-table">
+                    <thead><tr><th>Student</th><th>Billing rule</th><th>Rate</th></tr></thead>
+                    <tbody id="popGroupBillingRows"></tbody>
+                  </table>
+                </div>
+                <div class="group-billing-note">Default values fill new students. Per-student rows are the only billing override for group classes.</div>
+              </div>
             </div>
             <div class="pop-summary" id="popPriceSummary"></div>
           </div>
@@ -8804,17 +8834,8 @@ def calendar():
       return `
         <tr>
           <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+          <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
           <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
-          <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-          <td>
-            <select class="pop-sel group-rule" name="group_billing_rule">
-              <option value="existing_credits">Use credits</option>
-              <option value="invoice_later">Invoice later</option>
-              <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
-              <option value="makeup_credit">Makeup</option>
-              <option value="no_charge">No charge</option>
-            </select>
-          </td>
           <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">×</button></td>
         </tr>`;
     }}
@@ -8852,12 +8873,60 @@ def calendar():
         studentInput.required = !isGroup;
         if (isGroup && uniqueNames.length) studentInput.value = uniqueNames[0];
       }}
+      syncGroupBillingRows();
       return uniqueNames;
+    }}
+    function groupBillingRuleOptions(selectedValue) {{
+      const options = [
+        ['existing_credits', 'Use existing credits'],
+        ['new_package', 'Create new package'],
+        ['invoice_later', 'Invoice later'],
+        ['auto_invoice_per_lesson', 'Auto invoice per lesson'],
+        ['makeup_credit', 'Use makeup credit'],
+        ['no_charge', 'No charge']
+      ];
+      return options.map(([value, label]) => `<option value="${{value}}" ${{value === selectedValue ? 'selected' : ''}}>${{label}}</option>`).join('');
+    }}
+    function syncGroupBillingRows() {{
+      const billingRows = document.getElementById('popGroupBillingRows');
+      if (!billingRows) return;
+      const names = Array.from(document.querySelectorAll('#popGroupStudentRows input[name="group_student_name"]'))
+        .map(input => input.value.trim())
+        .filter(Boolean);
+      const uniqueNames = Array.from(new Set(names));
+      const mode = (document.getElementById('popGroupBillingMode') || {{value:'per_student'}}).value;
+      const defaultRule = (document.getElementById('popGroupDefaultBilling') || {{value:'existing_credits'}}).value;
+      const defaultPackage = (document.getElementById('popGroupDefaultPackage') || {{value:'10'}}).value;
+      const defaultRate = (document.getElementById('popGroupDefaultRate') || {{value:'0'}}).value || '0';
+      const existing = {{}};
+      billingRows.querySelectorAll('tr[data-student-key]').forEach(row => {{
+        existing[row.dataset.studentKey] = {{
+          rule: (row.querySelector('[name="group_billing_rule"]') || {{value: defaultRule}}).value,
+          rate: (row.querySelector('[name="group_student_rate"]') || {{value: defaultRate}}).value
+        }};
+      }});
+      document.getElementById('popBillingDecision').value = defaultRule;
+      document.getElementById('popPackageType').value = defaultPackage;
+      document.getElementById('popParentChargeRate').value = defaultRate;
+      const perStudentBox = document.getElementById('popGroupPerStudentBilling');
+      if (perStudentBox) perStudentBox.style.display = mode === 'per_student' ? 'block' : 'none';
+      billingRows.innerHTML = uniqueNames.map(name => {{
+        const key = name.toLowerCase();
+        const row = existing[key] || {{}};
+        const rule = mode === 'same_for_all' ? defaultRule : (row.rule || defaultRule);
+        const rate = mode === 'same_for_all' ? defaultRate : (row.rate || defaultRate);
+        return `<tr data-student-key="${{key}}">
+          <td>${{name}}</td>
+          <td><select class="pop-sel group-rule" name="group_billing_rule" onchange="syncGroupBillingRows()">${{groupBillingRuleOptions(rule)}}</select></td>
+          <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" value="${{rate}}" placeholder="0.00"></td>
+        </tr>`;
+      }}).join('');
     }}
     document.addEventListener('input', function(e) {{
       if (e.target && ['group_student_name','group_credit_units','group_student_rate'].includes(e.target.name)) {{
-        updateQuickCourseSummary();
+        syncGroupFieldsForSubmit();
       }}
+      if (e.target && e.target.id === 'popGroupDefaultRate') syncGroupBillingRows();
     }});
     document.addEventListener('change', function(e) {{
       if (e.target && e.target.name === 'group_billing_rule') updateQuickCourseSummary();
@@ -8917,7 +8986,9 @@ def calendar():
       const course = selectedQuickCourse();
       const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
       const isTrial = kind === 'trial' || (course && String(course.name || '').toLowerCase().includes('trial'));
+      const billingSection = document.getElementById('popBillingSection');
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
+      if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
       if (trialFields) trialFields.classList.toggle('show', isTrial);
       const studentSectionInput = document.getElementById('popStudent');
       if (studentSectionInput) studentSectionInput.required = !isGroup;
