@@ -1646,11 +1646,11 @@ TEACHER_PERMISSION_DEFAULTS = {
     "view_room_availability": 1,
     "add_own_schedule": 1,
     "direct_reschedule": 1,
-    "direct_cancel": 0,
+    "direct_cancel": 1,
     "sub_request": 1,
     "view_payroll": 1,
     "view_billing": 0,
-    "delete_lessons": 0,
+    "delete_lessons": 1,
     "edit_student_profile": 0,
     "view_other_teachers": 0,
 }
@@ -1671,7 +1671,7 @@ TEACHER_PERMISSION_LABELS = [
     ("sub_request", "Sub request", "Request substitute coverage."),
     ("view_payroll", "View payroll", "See teacher payroll summary."),
     ("view_billing", "Billing visibility", "See student billing details. Recommended off."),
-    ("delete_lessons", "Delete lessons", "Delete lessons. Recommended off."),
+    ("delete_lessons", "Delete lessons", "Delete the teacher's own lessons."),
     ("edit_student_profile", "Edit student profile", "Edit full student profile. Recommended off."),
     ("view_other_teachers", "Other teachers calendars", "See schedules owned by other teachers. Recommended off."),
 ]
@@ -1710,6 +1710,21 @@ def ensure_teacher_permission_schema():
     add_column_if_missing(cursor, "teacher_permissions", "lesson_reminder_minutes", "lesson_reminder_minutes INTEGER DEFAULT 60")
     add_column_if_missing(cursor, "teacher_permissions", "created_at", "created_at TEXT")
     add_column_if_missing(cursor, "teacher_permissions", "updated_at", "updated_at TEXT")
+    cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    cursor.execute("SELECT value FROM settings WHERE key = 'teacher_schedule_permissions_opened_v1'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        UPDATE teacher_permissions
+        SET add_own_schedule = 1,
+            direct_reschedule = 1,
+            direct_cancel = 1,
+            delete_lessons = 1,
+            updated_at = ?
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
+        cursor.execute("""
+        INSERT OR REPLACE INTO settings (key, value)
+        VALUES ('teacher_schedule_permissions_opened_v1', '1')
+        """)
     conn.commit()
     conn.close()
 
@@ -1864,8 +1879,8 @@ def teacher_permissions_admin():
     )
     rows = ""
     direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders", "view_room_availability"}
-    approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule"}
-    hidden_keys = {"view_billing", "delete_lessons", "edit_student_profile", "view_other_teachers"}
+    approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule", "delete_lessons"}
+    hidden_keys = {"view_billing", "edit_student_profile", "view_other_teachers"}
     for key, label, hint in TEACHER_PERMISSION_LABELS:
         checked = "checked" if perms.get(key) else ""
         group = "Direct" if key in direct_keys else "Needs policy" if key in approval_keys else "Restricted" if key in hidden_keys else "Other"
@@ -6999,13 +7014,24 @@ def calendar():
         COALESCE(s.course_type_name, ''),
         COALESCE(s.duration, 30),
         COALESCE(st.lessons_left, 0),
-        COALESCE(s.is_group, 0),
-        COALESCE(s.group_student_names, ''),
+        CASE
+            WHEN COALESCE(s.is_group, 0) = 1 THEN 1
+            WHEN COALESCE(c.is_group, 0) = 1 THEN 1
+            WHEN lower(COALESCE(s.course_type_name, c.name, '')) LIKE '%group%' THEN 1
+            WHEN COALESCE(gs.group_count, 0) >= 2 THEN 1
+            ELSE 0
+        END,
+        COALESCE(NULLIF(s.group_student_names, ''), gs.group_student_names, ''),
         COALESCE(s.trial_hold, 0),
         COALESCE(s.trial_form_status, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN students st    ON s.student_name    = st.name
+    LEFT JOIN (
+        SELECT schedule_id, COUNT(*) AS group_count, GROUP_CONCAT(student_name, ', ') AS group_student_names
+        FROM group_schedule_students
+        GROUP BY schedule_id
+    ) gs ON gs.schedule_id = s.id
     WHERE """ + where_sql + """
     ORDER BY s.lesson_date, s.lesson_time
     """, params)
@@ -7235,6 +7261,10 @@ def calendar():
                 is_trial_hold = bool(event[16])
                 trial_form_status = event[17] or ""
                 group_size = len([name for name in group_names.split(",") if name.strip()]) if group_names else 0
+                if is_group_event:
+                    dot_class = "sd-scheduled"
+                    status_label = "Roster"
+                    status_icons = ""
                 display_name = "Trial hold" if is_trial_hold else ("Group Class" if is_group_event else str(event[3] or ""))
                 display_sub = group_names if is_group_event and group_names else str(event[4] or "")
                 if is_trial_hold:
@@ -7252,12 +7282,21 @@ def calendar():
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
                 name_html = (
                     f'<span class="ev-name">{escape(display_name)}</span>'
-                    if is_trial_hold
+                    if (is_trial_hold or is_group_event)
                     else f'<a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(display_name)}</a>'
                 )
                 early_cancel = event_status in ("excused_24h", "excused")
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
+                group_attendance_hint = '<span class="group-attendance-chip">Per-student attendance</span>' if is_group_event else ""
+                owner_status_form_html = "" if is_group_event else f"""
+                    <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
+                        <input type="hidden" name="schedule_id" value="{event[0]}">
+                        <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
+                        <select name="status" aria-label="Attendance status">{owner_status_options(event_status)}</select>
+                        <button type="submit">Save</button>
+                    </form>
+                """
                 event_cards += f"""
                 <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
@@ -7268,14 +7307,10 @@ def calendar():
                     {name_html}
                     <span class="ev-time">{time_range}</span>
                     <span class="ev-sub">{escape(str(course_name or "Lesson"))}{group_count} · {escape(display_sub)}</span>
+                    {group_attendance_hint}
                     {cancel_result}
                     {warning}
-                    <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
-                        <input type="hidden" name="schedule_id" value="{event[0]}">
-                        <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
-                        <select name="status" aria-label="Attendance status">{owner_status_options(event_status)}</select>
-                        <button type="submit">Save</button>
-                    </form>
+                    {owner_status_form_html}
                 </div>
                 """
             for slot in slots_by_date.get(date_key, []):
@@ -7477,6 +7512,8 @@ def calendar():
             .ev-time{{font-size:8.5px;line-height:1.05;opacity:.9;display:block;color:#475569;font-weight:500}}
             .ev-sub{{font-size:8.2px;line-height:1.05;opacity:.68;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+            .group-attendance-chip{{display:inline-flex;margin-top:3px;border-radius:999px;background:#EFF6FF;color:#185FA5;
+                                    padding:2px 7px;font-size:9px;font-weight:900;line-height:1.1}}
             .ev-cancel-result{{font-size:8px;line-height:1.05;opacity:.78;display:block;margin-top:0}}
             .ev .warn-pill,.ev .last-pill{{font-size:8px;padding:0 4px;line-height:1.1}}
             .ev-status-badge{{display:inline-flex;align-items:center;gap:2px;
@@ -8019,13 +8056,13 @@ def calendar():
             <h3>Billing</h3>
             <label class="pop-label">Billing decision</label>
             <select class="pop-sel" name="billing_decision" id="popBillingDecision" onchange="updateBillingControls()">
-              <option value="existing_credits">Use credits</option>
-              <option value="invoice_later">Invoice later</option>
-              <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+              <option value="existing_credits">Use existing credits</option>
               <option value="new_package">Create new package</option>
               <option value="trial_free">Free trial</option>
               <option value="makeup_credit">Use makeup credit</option>
               <option value="no_charge">No charge</option>
+              <option value="invoice_later">Invoice later</option>
+              <option value="auto_invoice_per_lesson">Auto invoice per lesson - generate 12h before class</option>
               <option value="custom_price">Custom price</option>
             </select>
             <div class="pop-row">
@@ -8178,7 +8215,7 @@ def calendar():
             <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
             <label class="full panel-private-billing-field"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
             <label class="panel-private-billing-field"><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
-            <label class="panel-private-billing-field"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="custom_price">Custom price</option></select></label>
+            <label class="panel-private-billing-field"><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson - generate 12h before class</option><option value="custom_price">Custom price</option></select></label>
             <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following">This and all following lessons</option></select></label>
             <div class="detail-sync" id="panelBillingPreview">Student app + invoice will use the saved schedule price.</div>
           </div>
@@ -8362,7 +8399,7 @@ def calendar():
           <div class="group-roster-row" data-index="${{index}}">
             <div class="group-roster-head">
               <div>
-                <div class="group-roster-name">${{name || 'Student'}}</div>
+                <a class="group-roster-name" href="/student/${{encodeURIComponent(student.student_name || '')}}">${{name || 'Student'}}</a>
                 <div class="group-roster-meta">${{parentParts.join(' · ') || 'No parent contact'}}</div>
               </div>
               <div class="group-roster-balance">${{Number.isFinite(left) ? left : 0}} left</div>
@@ -8513,8 +8550,16 @@ def calendar():
       }}).catch(e => alert(e.message));
     }}
     function ownerMessageParent() {{ if (activePanelLesson) window.location.href = '/messages?student=' + encodeURIComponent(activePanelLesson.student || ''); }}
-    function ownerViewStudent() {{ if (activePanelLesson) window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || ''); }}
-    function ownerRenewPackage() {{ if (activePanelLesson) window.location.href = '/payment/' + encodeURIComponent(activePanelLesson.student || ''); }}
+    function ownerViewStudent() {{
+      if (!activePanelLesson) return;
+      if (Number(activePanelLesson.is_group || 0)) {{ showPanelToast('Choose a student from the group roster.'); return; }}
+      window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || '');
+    }}
+    function ownerRenewPackage() {{
+      if (!activePanelLesson) return;
+      if (Number(activePanelLesson.is_group || 0)) {{ showPanelToast('Choose a student from the group roster.'); return; }}
+      window.location.href = '/payment/' + encodeURIComponent(activePanelLesson.student || '');
+    }}
 
     // ---- drag-and-drop ----
     let dragId = null, dragStudent = null, dragTeacher = null;
@@ -8798,15 +8843,16 @@ def calendar():
       const names = rows
         .map(row => (row.querySelector('input[name="group_student_name"]') || {{value:''}}).value.trim())
         .filter(Boolean);
+      const uniqueNames = Array.from(new Set(names));
       const sizeInput = document.getElementById('popGroupSize');
       const namesInput = document.getElementById('popGroupStudentNames');
-      if (sizeInput) sizeInput.value = isGroup ? String(names.length) : '';
-      if (namesInput) namesInput.value = isGroup ? names.join(', ') : '';
+      if (sizeInput) sizeInput.value = isGroup ? String(uniqueNames.length) : '';
+      if (namesInput) namesInput.value = isGroup ? uniqueNames.join(', ') : '';
       if (studentInput) {{
         studentInput.required = !isGroup;
-        if (isGroup && names.length) studentInput.value = names[0];
+        if (isGroup && uniqueNames.length) studentInput.value = uniqueNames[0];
       }}
-      return names;
+      return uniqueNames;
     }}
     document.addEventListener('input', function(e) {{
       if (e.target && ['group_student_name','group_credit_units','group_student_rate'].includes(e.target.name)) {{
@@ -9121,9 +9167,12 @@ def calendar():
       if (!activePopDate) return;
       syncPopDateFromInput();
       const groupNames = syncGroupFieldsForSubmit();
-      if (isQuickGroupMode() && groupNames.length < 2) {{
-        alert('Add at least two students for a group class.');
-        return;
+      if (isQuickGroupMode()) {{
+        const uniqueGroupNames = Array.from(new Set(groupNames));
+        if (uniqueGroupNames.length < 2) {{
+          alert('Add at least two different students for a group class.');
+          return;
+        }}
       }}
       if (isQuickTrialMode()) {{
         syncTrialHoldFields();
@@ -9818,10 +9867,15 @@ def add_schedule():
         raw_group_rates = request.form.getlist("group_student_rate")
         raw_group_rules = request.form.getlist("group_billing_rule")
         group_participants = []
+        seen_group_students = set()
         for idx, raw_name in enumerate(raw_group_names):
             participant_name = hmusic_clean_student_picker_value(raw_name)
             if not participant_name:
                 continue
+            participant_key = participant_name.strip().lower()
+            if participant_key in seen_group_students:
+                continue
+            seen_group_students.add(participant_key)
             try:
                 credit_units = max(0, float(raw_group_credits[idx] if idx < len(raw_group_credits) else 1))
             except Exception:
@@ -9891,6 +9945,8 @@ def add_schedule():
             duration = int(float(custom_duration))
         if is_custom_program:
             is_group = 1 if lesson_format == "group" else 0
+        elif lesson_format == "group":
+            is_group = 1
 
         if is_group and group_participants:
             student_name = group_participants[0]["student_name"]
@@ -9899,6 +9955,7 @@ def add_schedule():
         elif is_group and group_student_names:
             parsed_names = [hmusic_clean_student_picker_value(name) for name in group_student_names.split(",")]
             parsed_names = [name for name in parsed_names if name]
+            parsed_names = list(dict.fromkeys(parsed_names))
             group_participants = [
                 {
                     "student_name": name,
@@ -10065,6 +10122,9 @@ def add_schedule():
                 group_student_names,
                 billing_decision,
                 custom_lesson_count,
+                auto_invoice_enabled,
+                auto_invoice_hours_before,
+                auto_invoice_payment_methods,
                 trial_hold,
                 trial_form_status,
                 trial_student_name,
@@ -10075,7 +10135,7 @@ def add_schedule():
                 trial_visibility,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
@@ -10104,6 +10164,9 @@ def add_schedule():
                 group_student_names if is_group else None,
                 billing_decision,
                 int(float(custom_lesson_count or 0)) if package_type == "custom" else None,
+                1 if billing_decision == "auto_invoice_per_lesson" else 0,
+                12,
+                "ach,zelle,paypal",
                 trial_hold,
                 trial_form_status if trial_hold else None,
                 trial_student_name if trial_hold else None,
@@ -10629,6 +10692,46 @@ def add_schedule():
                 padding: 14px;
                 margin: 6px 0 18px;
             }}
+            .group-roster-table {{
+                width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                overflow: hidden;
+                background: #fff;
+                margin: 8px 0;
+            }}
+            .group-roster-table th {{
+                background: #f3f4f6;
+                color: #6b7280;
+                font-size: 11px;
+                text-align: left;
+                padding: 8px;
+                text-transform: uppercase;
+            }}
+            .group-roster-table td {{
+                padding: 8px;
+                border-top: 1px solid #eef2f7;
+                vertical-align: top;
+            }}
+            .group-roster-table input, .group-roster-table select {{
+                margin: 0;
+                min-height: 36px;
+            }}
+            .link-button {{
+                border: 1px dashed #93c5fd;
+                background: #fff;
+                color: #1d65ad;
+                width: 100%;
+                margin: 6px 0 14px;
+            }}
+            .danger-mini {{
+                border: 0;
+                background: transparent;
+                color: #dc2626;
+                padding: 8px;
+            }}
 
             button {{
                 background: #635bff;
@@ -10700,11 +10803,30 @@ def add_schedule():
                     </select>
 
                     <div id="group-fields">
-                        Group Size:<br>
-                        <input type="number" name="group_size" min="2" step="1" placeholder="Example: 3">
-
-                        Group Student Names:<br>
-                        <textarea name="group_student_names" placeholder="Write all students in this group, separated by commas."></textarea>
+                        <b>Group roster</b>
+                        <p style="margin:6px 0 10px;color:#6b7280;">Add each student separately so attendance, credits, and billing can be managed per child.</p>
+                        <table class="group-roster-table">
+                            <thead><tr><th>Student</th><th>Credit</th><th>Rate</th><th>Billing</th><th></th></tr></thead>
+                            <tbody id="fullGroupStudentRows">
+                                <tr>
+                                    <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
+                                    <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                                    <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                                    <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
+                                </tr>
+                                <tr>
+                                    <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
+                                    <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                                    <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                                    <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <button class="link-button" type="button" onclick="addFullGroupStudentRow()">+ Add student</button>
+                        <input type="hidden" name="group_size" id="fullGroupSize">
+                        <input type="hidden" name="group_student_names" id="fullGroupStudentNames">
                     </div>
                 </div>
 
@@ -10791,14 +10913,59 @@ def add_schedule():
             }}
             function toggleCustomProgram() {{
                 const box = document.getElementById("custom-program-box");
-                const isCustom = selectedCourseText().includes("custom");
-                box.style.display = isCustom ? "block" : "none";
+                const courseText = selectedCourseText();
+                const isCustom = courseText.includes("custom");
+                const isGroupCourse = courseText.includes("group");
+                const format = document.getElementById("lesson_format");
+                if (format && isGroupCourse) format.value = "group";
+                box.style.display = (isCustom || isGroupCourse) ? "block" : "none";
                 toggleGroupFields();
             }}
             function toggleGroupFields() {{
                 const groupFields = document.getElementById("group-fields");
                 const format = document.getElementById("lesson_format");
-                groupFields.style.display = format && format.value === "group" ? "block" : "none";
+                const isGroup = format && format.value === "group";
+                groupFields.style.display = isGroup ? "block" : "none";
+                const studentInput = document.querySelector("#existing-student-box [name='student_name']");
+                if (studentInput) studentInput.required = !isGroup;
+                syncFullGroupFieldsForSubmit();
+            }}
+            function fullGroupRowTemplate() {{
+                return `
+                    <tr>
+                        <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
+                        <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                        <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                        <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                        <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
+                    </tr>`;
+            }}
+            function addFullGroupStudentRow() {{
+                const rows = document.getElementById("fullGroupStudentRows");
+                if (rows) rows.insertAdjacentHTML("beforeend", fullGroupRowTemplate());
+            }}
+            function removeFullGroupStudentRow(button) {{
+                const rows = document.getElementById("fullGroupStudentRows");
+                if (!rows || rows.querySelectorAll("tr").length <= 1) return;
+                const row = button.closest("tr");
+                if (row) row.remove();
+                syncFullGroupFieldsForSubmit();
+            }}
+            function fullGroupNames() {{
+                return Array.from(document.querySelectorAll("#fullGroupStudentRows input[name='group_student_name']"))
+                    .map(input => input.value.trim())
+                    .filter(Boolean);
+            }}
+            function syncFullGroupFieldsForSubmit() {{
+                const names = fullGroupNames();
+                const uniqueNames = Array.from(new Set(names));
+                const sizeInput = document.getElementById("fullGroupSize");
+                const namesInput = document.getElementById("fullGroupStudentNames");
+                const studentInput = document.querySelector("#existing-student-box [name='student_name']");
+                if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : "";
+                if (namesInput) namesInput.value = uniqueNames.join(", ");
+                if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+                return uniqueNames;
             }}
             function toggleStudentMode() {{
                 const selected = document.querySelector("input[name='student_mode']:checked");
@@ -10835,6 +11002,20 @@ def add_schedule():
             updateRoomOptions();
             toggleCustomProgram();
             toggleStudentMode();
+            document.addEventListener("input", function(e) {{
+                if (e.target && e.target.name === "group_student_name") syncFullGroupFieldsForSubmit();
+            }});
+            const scheduleForm = document.querySelector("form");
+            if (scheduleForm) scheduleForm.addEventListener("submit", function(e) {{
+                const format = document.getElementById("lesson_format");
+                const isGroup = format && format.value === "group" && document.getElementById("group-fields").style.display !== "none";
+                if (!isGroup) return;
+                const uniqueNames = syncFullGroupFieldsForSubmit();
+                if (uniqueNames.length < 2) {{
+                    e.preventDefault();
+                    alert("Group class needs at least two different students.");
+                }}
+            }});
         </script>
     </body>
     </html>
@@ -11455,7 +11636,7 @@ def teacher_dashboard():
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
         COALESCE(l.location_name, s.location, ''), COALESCE(s.trial_hold, 0),
-        COALESCE(s.trial_form_status, '')
+        COALESCE(s.trial_form_status, ''), COALESCE(s.group_student_names, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON s.location_id = l.id
@@ -11471,7 +11652,7 @@ def teacher_dashboard():
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
         COALESCE(l.location_name, s.location, ''), COALESCE(s.trial_hold, 0),
-        COALESCE(s.trial_form_status, '')
+        COALESCE(s.trial_form_status, ''), COALESCE(s.group_student_names, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON s.location_id = l.id
@@ -11488,7 +11669,7 @@ def teacher_dashboard():
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
         COALESCE(l.location_name, s.location, ''), COALESCE(s.trial_hold, 0),
-        COALESCE(s.trial_form_status, '')
+        COALESCE(s.trial_form_status, ''), COALESCE(s.group_student_names, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON s.location_id = l.id
@@ -11575,17 +11756,28 @@ def teacher_dashboard():
 
     def lesson_row(lesson):
         key = hstudio_status_key(lesson[5])
+        is_group = bool(lesson[8])
         is_trial_hold = bool(lesson[13]) if len(lesson) > 13 else False
         trial_status = lesson[14] if len(lesson) > 14 else ""
+        group_names = lesson[15] if len(lesson) > 15 else ""
+        group_list = [name.strip() for name in str(group_names or "").split(",") if name.strip()]
         trial_label = {
             "form_missing": "Form missing",
             "form_sent": "Form sent",
             "form_complete": "Form complete",
             "converted": "Converted",
         }.get(trial_status, "Trial hold")
-        display_student = "Trial hold" if is_trial_hold else (lesson[3] or "-")
-        meta_suffix = f" · {trial_label}" if is_trial_hold else ""
-        href = "#" if is_trial_hold else f"/add_lesson/{quote(str(lesson[3] or ''))}"
+        display_student = "Trial hold" if is_trial_hold else ("Group Class" if is_group else (lesson[3] or "-"))
+        if is_trial_hold:
+            meta_suffix = f" · {trial_label}"
+        elif is_group:
+            roster_preview = ", ".join(group_list[:3])
+            if len(group_list) > 3:
+                roster_preview += f" +{len(group_list) - 3}"
+            meta_suffix = f" · {roster_preview or 'Open roster'}"
+        else:
+            meta_suffix = ""
+        href = "#" if (is_trial_hold or is_group) else f"/add_lesson/{quote(str(lesson[3] or ''))}"
         return f"""
         <a class="td-lesson-row {key}" href="{href}">
             <div class="td-date">{hstudio_date_short(lesson[1])}</div>
@@ -11728,6 +11920,17 @@ def teacher_dashboard():
     .teacher-multi-apply,.teacher-multi-clear{height:38px;border-radius:9px;font-weight:900;cursor:pointer}
     .teacher-multi-apply{border:0;background:var(--blue);color:#fff;padding:0 14px}
     .teacher-multi-clear{border:1px solid #D9DEE8;background:#fff;color:#172033;padding:0 12px}
+    .teacher-group-roster{display:none;border-top:1px solid #E5E7EB;background:#FBFCFF;padding:18px 28px}
+    .teacher-group-roster.show{display:block}
+    .teacher-group-roster h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 10px;font-weight:900;letter-spacing:0}
+    .teacher-group-roster-list{display:grid;gap:10px}
+    .teacher-group-roster-row{border:1px solid #D9DEE8;border-radius:8px;background:#fff;padding:10px;display:grid;grid-template-columns:1fr minmax(150px,190px);gap:10px;align-items:center}
+    .teacher-group-roster-name{font-size:15px;font-weight:900;color:#172033;line-height:1.2}
+    .teacher-group-roster-meta{font-size:12px;color:#667085;font-weight:700;margin-top:3px}
+    .teacher-group-roster-row select{height:38px;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:0 10px;font:inherit;font-weight:800}
+    .teacher-group-card-roster{display:block;margin-top:2px;font-size:11px;color:#667085;font-weight:800;line-height:1.3}
+    .teacher-group-card-status{display:inline-flex;margin-top:3px;border-radius:999px;background:#EFF6FF;color:#185FA5;padding:2px 7px;font-size:10px;font-weight:900}
+    @media(max-width:620px){.teacher-group-roster-row{grid-template-columns:1fr}}
     @media(max-width:900px){.teacher-multi-bar{grid-template-columns:1fr;align-items:stretch}.teacher-multi-extra.room{grid-template-columns:1fr}}
     .calendar-event.dragging{opacity:.35}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
@@ -11782,8 +11985,31 @@ def teacher_dashboard():
             "form_complete": "Form complete",
             "converted": "Converted",
         }.get(trial_status, "Trial hold")
-        display_student = "Trial hold" if is_trial_hold else (lesson[3] or "-")
-        display_line = f"{place_label} · {trial_label}" if is_trial_hold else f"{place_label} · {course_label}"
+        is_group_lesson = bool(lesson[8])
+        group_names = lesson[15] if len(lesson) > 15 else ""
+        group_list = [name.strip() for name in str(group_names or "").split(",") if name.strip()]
+        display_student = "Trial hold" if is_trial_hold else ("Group Class" if is_group_lesson else (lesson[3] or "-"))
+        if is_trial_hold:
+            display_line = f"{place_label} · {trial_label}"
+        elif is_group_lesson:
+            display_line = f"{place_label} · {course_label} · {len(group_list) or int(lesson[9] or 0) or 0} students"
+        else:
+            display_line = f"{place_label} · {course_label}"
+        roster_preview = ""
+        if is_group_lesson:
+            roster_text = ", ".join(group_list[:3])
+            if len(group_list) > 3:
+                roster_text += f" +{len(group_list) - 3}"
+            roster_preview = f'<span class="teacher-group-card-roster">{escape(roster_text or "Open roster for student attendance")}</span>'
+        card_status = "" if not is_group_lesson else '<span class="teacher-group-card-status">Per-student attendance</span>'
+        status_form_html = "" if is_group_lesson else f"""
+            <form method="POST" action="/update_lesson_status" class="event-status-form">
+                <input type="hidden" name="schedule_id" value="{lesson[0]}">
+                <input type="hidden" name="return_to" value="{schedule_return_url}">
+                <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
+                <button type="submit">Save</button>
+            </form>
+        """
         return f"""
         <div class="calendar-event{event_class}"
              draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
@@ -11802,13 +12028,10 @@ def teacher_dashboard():
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(display_student)}</button>
             <div class="event-line">{escape(display_line)}</div>
+            {roster_preview}
+            {card_status}
             {cancel_result}
-            <form method="POST" action="/update_lesson_status" class="event-status-form">
-                <input type="hidden" name="schedule_id" value="{lesson[0]}">
-                <input type="hidden" name="return_to" value="{schedule_return_url}">
-                <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
-                <button type="submit">Save</button>
-            </form>
+            {status_form_html}
         </div>
         """
 
@@ -11933,14 +12156,16 @@ def teacher_dashboard():
 
         week_active = "active" if schedule_mode == "week" else ""
         month_active = "active" if schedule_mode == "month" else ""
-        direct_reschedule = True
-        direct_cancel = True
+        direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
+        direct_cancel = bool(teacher_perms.get("direct_cancel"))
+        delete_allowed = bool(teacher_perms.get("delete_lessons"))
         sub_allowed = bool(teacher_perms.get("sub_request"))
         reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
-        reschedule_label = "Reschedule"
-        cancel_label = "Cancel lesson"
-        owner_policy_copy = "Teachers can reschedule, cancel, or delete their own lessons directly. Billing and student profile changes stay owner-managed."
+        reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
+        cancel_label = "Cancel lesson" if direct_cancel else "Request cancel"
+        owner_policy_copy = "Teachers can reschedule, cancel, delete, and add lessons when those permissions are enabled. Billing and student profile changes stay owner-managed."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
+        delete_button_html = '<button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button>' if delete_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
         room_availability_control = '<a href="/room_availability">Room Availability</a>' if teacher_perms.get("view_room_availability") else ''
         created_notice = f'<div class="td-success">{escape(request.args.get("created"))} lesson(s) created.</div>' if request.args.get("created") else ''
@@ -12008,11 +12233,12 @@ def teacher_dashboard():
           <div class="lesson-panel-scroll">
             <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
             <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
-        <div class="panel-section"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
+        <div class="panel-section" id="tPanelAttendanceSection"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
+            <div class="teacher-group-roster" id="tPanelGroupRosterSection"><h3>Group attendance</h3><div class="teacher-group-roster-list" id="tPanelGroupRoster"></div></div>
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
-            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button><button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><div class="panel-scope-row"><label class="panel-scope-option active" id="tPanelScopeOnce" onclick="setTeacherRescheduleScope('once')"><input type="radio" name="tPanelRescheduleScope" value="once" checked><span><b>Only this lesson</b><small>Move just this class.</small></span></label><label class="panel-scope-option" id="tPanelScopeFollowing" onclick="setTeacherRescheduleScope('following')"><input type="radio" name="tPanelRescheduleScope" value="following"><span><b>This and following lessons</b><small>Move this recurring series forward.</small></span></label></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note"></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button>{delete_button_html}</div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><div class="panel-scope-row"><label class="panel-scope-option active" id="tPanelScopeOnce" onclick="setTeacherRescheduleScope('once')"><input type="radio" name="tPanelRescheduleScope" value="once" checked><span><b>Only this lesson</b><small>Move just this class.</small></span></label><label class="panel-scope-option" id="tPanelScopeFollowing" onclick="setTeacherRescheduleScope('following')"><input type="radio" name="tPanelRescheduleScope" value="following"><span><b>This and following lessons</b><small>Move this recurring series forward.</small></span></label></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note"></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel(false, true)">Save changes</button></div>
         </aside>
@@ -12053,13 +12279,48 @@ def teacher_dashboard():
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
+        function teacherEscapeText(value) {{ return String(value || '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch])); }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
         function setTeacherRescheduleScope(scope) {{ teacherRescheduleScope = scope === 'following' ? 'following' : 'once'; const once = document.getElementById('tPanelScopeOnce'); const following = document.getElementById('tPanelScopeFollowing'); if (once) once.classList.toggle('active', teacherRescheduleScope === 'once'); if (following) following.classList.toggle('active', teacherRescheduleScope === 'following'); document.querySelectorAll('[name="tPanelRescheduleScope"]').forEach(input => input.checked = input.value === teacherRescheduleScope); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
-        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function renderTeacherGroupRoster(lesson) {{
+            const isGroup = Number(lesson.is_group || 0) === 1;
+            const section = document.getElementById('tPanelGroupRosterSection');
+            const list = document.getElementById('tPanelGroupRoster');
+            const attendance = document.getElementById('tPanelAttendanceSection');
+            if (attendance) attendance.style.display = isGroup ? 'none' : '';
+            if (!section || !list) return;
+            section.classList.toggle('show', isGroup);
+            if (!isGroup) {{ list.innerHTML = ''; return; }}
+            const roster = Array.isArray(lesson.group_students) ? lesson.group_students : [];
+            if (!roster.length) {{
+                list.innerHTML = '<div class="teacher-group-roster-row"><div><div class="teacher-group-roster-name">No students attached</div><div class="teacher-group-roster-meta">Ask owner to add the group roster.</div></div></div>';
+                return;
+            }}
+            const statuses = ['scheduled','present','no_show','last_min_cancel','excused_24h','teacher_cancelled'];
+            list.innerHTML = roster.map(student => {{
+                const current = student.attendance_status || lesson.status || 'scheduled';
+                const options = statuses.map(status => `<option value="${{status}}" ${{status === current ? 'selected' : ''}}>${{teacherStatusLabel(status)}}</option>`).join('');
+                return `<div class="teacher-group-roster-row">
+                    <div>
+                        <div class="teacher-group-roster-name">${{teacherEscapeText(student.student_name || 'Student')}}</div>
+                        <div class="teacher-group-roster-meta">${{teacherEscapeText(student.parent_name || 'No parent contact')}}</div>
+                    </div>
+                    <select class="teacher-group-attendance" data-id="${{Number(student.id || 0)}}" data-name="${{teacherEscapeText(student.student_name || '')}}">${{options}}</select>
+                </div>`;
+            }}).join('');
+        }}
+        function collectTeacherGroupRoster() {{
+            return Array.from(document.querySelectorAll('#tPanelGroupRoster .teacher-group-attendance')).map(select => ({{
+                id: select.dataset.id || '',
+                student_name: select.dataset.name || '',
+                attendance_status: select.value || 'scheduled'
+            }}));
+        }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; const isGroup = Number(d.lesson.is_group || 0) === 1; document.getElementById('tPanelStudent').textContent = isGroup ? 'Group Class' : (d.lesson.student || 'Student'); document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = isGroup ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); renderTeacherGroupRoster(d.lesson); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
-        function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
+        function teacherPayload() {{ const isGroup = activeTeacherLesson && Number(activeTeacherLesson.is_group || 0) === 1; return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked, group_students:isGroup ? collectTeacherGroupRoster() : []}}; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
         function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
@@ -12308,6 +12569,7 @@ def teacher_dashboard():
                     <h2>Quick Actions</h2>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i>This Week</a>
                     <a class="td-action" href="/teacher_dashboard?view=schedule&mode=month"><i class="ti ti-calendar-month"></i>This Month</a>
+                    <a class="td-action" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-select"></i>Multi-Select Calendar</a>
                     {'<a class="td-action" href="/room_availability"><i class="ti ti-door"></i>Room Availability</a>' if teacher_perms.get("view_room_availability") else ''}
                     <a class="td-action" href="/teacher_missing_homework"><i class="ti ti-alert-circle"></i>Missing Homework {homework_badge}</a>
                     <a class="td-action" href="/teacher_dashboard?view=records"><i class="ti ti-notes"></i>Write Lesson Notes</a>
@@ -13772,18 +14034,31 @@ def calendar_lesson_row(cursor, schedule_id):
         COALESCE(s.package_type, ''), COALESCE(s.duration, 30), COALESCE(st.lessons_left, 0),
         COALESCE(s.notes, ''), COALESCE(s.private_note, ''), COALESCE(s.homework_assignment, ''),
         COALESCE(s.parent_lesson_reminder_enabled, 0), COALESCE(s.practice_reminder_enabled, 0),
-        COALESCE(s.low_balance_alert_enabled, 0), COALESCE(s.is_group, 0),
+        COALESCE(s.low_balance_alert_enabled, 0),
+        CASE
+            WHEN COALESCE(s.is_group, 0) = 1 THEN 1
+            WHEN COALESCE(c.is_group, 0) = 1 THEN 1
+            WHEN lower(COALESCE(s.course_type_name, c.name, '')) LIKE '%group%' THEN 1
+            WHEN COALESCE(gs.group_count, 0) >= 2 THEN 1
+            ELSE 0
+        END,
         COALESCE(s.course_type_id, 0), COALESCE(s.location_id, 0), COALESCE(s.room_id, 0),
         COALESCE(s.student_billing_method, ''), COALESCE(s.student_price, 0),
         COALESCE(s.student_charge_amount, 0), COALESCE(s.billing_decision, ''),
         COALESCE(s.custom_lesson_count, 0), COALESCE(s.location, ''),
-        COALESCE(s.group_student_names, ''), COALESCE(s.trial_hold, 0),
+        COALESCE(NULLIF(s.group_student_names, ''), gs.group_student_names, ''), COALESCE(s.trial_hold, 0),
         COALESCE(s.trial_form_status, ''), COALESCE(s.trial_student_name, ''),
         COALESCE(s.trial_student_age, ''), COALESCE(s.trial_instrument, ''),
         COALESCE(s.trial_parent_contact, ''), COALESCE(s.trial_private_note, ''),
         COALESCE(s.trial_visibility, 'owner_only')
     FROM schedule s
     LEFT JOIN students st ON s.student_name = st.name
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN (
+        SELECT schedule_id, COUNT(*) AS group_count, GROUP_CONCAT(student_name, ', ') AS group_student_names
+        FROM group_schedule_students
+        GROUP BY schedule_id
+    ) gs ON gs.schedule_id = s.id
     WHERE s.id = ?
     """, (schedule_id,))
     return cursor.fetchone()
@@ -13960,6 +14235,7 @@ def calendar_lesson_action():
         practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
         low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
         detail_update = {}
+        group_attendance_update_count = 0
 
         if not is_owner:
             if status != row[6] and not teacher_permissions.get("attendance"):
@@ -14342,6 +14618,39 @@ def calendar_lesson_action():
                     WHERE id = ?
                     """, (len(cleaned_roster), ", ".join(cleaned_roster), cleaned_roster[0], now, schedule_id))
         else:
+            roster_payload = data.get("group_students") if isinstance(data.get("group_students"), list) else []
+            if int(row[18] or 0) and roster_payload:
+                if not teacher_permissions.get("attendance"):
+                    conn.close()
+                    return {"ok": False, "error": "Attendance permission is not enabled."}, 403
+                allowed_roster_statuses = {"scheduled", "present", "no_show", "last_min_cancel", "excused_24h", "teacher_cancelled"}
+                updated_group_attendance = 0
+                for roster_item in roster_payload[:40]:
+                    if not isinstance(roster_item, dict):
+                        continue
+                    try:
+                        roster_id = int(float(roster_item.get("id") or 0))
+                    except (TypeError, ValueError):
+                        roster_id = 0
+                    roster_name = hmusic_clean_student_picker_value(roster_item.get("student_name") or "")
+                    roster_status = (roster_item.get("attendance_status") or "scheduled").strip()
+                    if roster_status not in allowed_roster_statuses:
+                        roster_status = "scheduled"
+                    if roster_id:
+                        cursor.execute("""
+                        UPDATE group_schedule_students
+                        SET attendance_status = ?, updated_at = ?
+                        WHERE id = ? AND schedule_id = ?
+                        """, (roster_status, now, roster_id, schedule_id))
+                    elif roster_name:
+                        cursor.execute("""
+                        UPDATE group_schedule_students
+                        SET attendance_status = ?, updated_at = ?
+                        WHERE schedule_id = ? AND student_name = ?
+                        """, (roster_status, now, schedule_id, roster_name))
+                    updated_group_attendance += cursor.rowcount
+                if updated_group_attendance:
+                    group_attendance_update_count = updated_group_attendance
             cursor.execute("""
             UPDATE schedule
             SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
@@ -14355,6 +14664,16 @@ def calendar_lesson_action():
         upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, actor)
         conn.commit()
         conn.close()
+        if group_attendance_update_count:
+            create_notification(
+                "owner",
+                "owner",
+                "Group attendance updated",
+                f"{teacher_name} updated attendance for {group_attendance_update_count} group student(s).",
+                "/calendar",
+                related_type="group_attendance",
+                related_id=int(schedule_id)
+            )
         queued = 0
         if homework and (practice_reminder or data.get("send_homework_now")):
             queued += calendar_queue_parent_notice(
@@ -14379,7 +14698,7 @@ def calendar_lesson_action():
         return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
 
     if action == "reschedule":
-        if is_owner or is_teacher:
+        if is_owner or (is_teacher and teacher_permissions.get("direct_reschedule")):
             new_date = (data.get("new_date") or "").strip()
             new_time = (data.get("new_time") or row[4] or "").strip()
             classroom = (data.get("classroom") or row[5] or "").strip()
@@ -14491,7 +14810,7 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Sub request sent to owner."}
 
     if action == "cancel_request":
-        if is_owner or is_teacher:
+        if is_owner or (is_teacher and teacher_permissions.get("direct_cancel")):
             status = (data.get("status") or "teacher_cancelled").strip()
             conn.close()
             result = apply_lesson_status(schedule_id, status, actor=actor, reason=data.get("reason"))
@@ -14525,6 +14844,9 @@ def calendar_lesson_action():
             conn.close()
             return {"ok": False, "error": "Only owner or assigned teacher can delete lessons."}, 403
         if is_teacher:
+            if not teacher_permissions.get("delete_lessons"):
+                conn.close()
+                return {"ok": False, "error": "Delete lesson permission is not enabled."}, 403
             delete_scope_raw = (data.get("delete_scope") or data.get("scope") or "once").strip()
             if delete_scope_raw != "once":
                 conn.close()
@@ -14764,6 +15086,255 @@ def teacher_multi_select_action():
 
     conn.close()
     return {"ok": False, "error": "Unknown action."}, 400
+
+
+_auto_lesson_invoice_last_run = None
+
+
+def _lesson_invoice_start_datetime(lesson_date, lesson_time):
+    try:
+        lesson_day = datetime.strptime(str(lesson_date or ""), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    parsed_time = parse_lesson_time_value(str(lesson_time or ""))
+    if not parsed_time:
+        return None
+    lesson_start = datetime.combine(lesson_day, parsed_time.time())
+    if HMUSIC_TIMEZONE:
+        lesson_start = lesson_start.replace(tzinfo=HMUSIC_TIMEZONE)
+    return lesson_start
+
+
+def _create_single_lesson_invoice(cursor, student_name, schedule_id, amount, lesson_date, lesson_time, payment_methods, notes):
+    student_name = (student_name or "").strip()
+    if not student_name or amount is None or float(amount or 0) <= 0:
+        return None
+
+    cursor.execute("""
+    SELECT id
+    FROM invoices
+    WHERE student_name = ?
+    AND schedule_id = ?
+    AND COALESCE(invoice_type, '') = 'lesson_invoice'
+    AND COALESCE(status, '') NOT IN ('void', 'deleted', 'cancelled')
+    ORDER BY id DESC
+    LIMIT 1
+    """, (student_name, schedule_id))
+    existing = cursor.fetchone()
+    if existing:
+        return None
+
+    cursor.execute("""
+    SELECT COALESCE(parent_name, ''), COALESCE(parent_email, '')
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+    student = cursor.fetchone() or ("", "")
+    now_text = hmusic_now().strftime("%Y-%m-%d %H:%M")
+    due_date = lesson_date or hmusic_today().strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    INSERT INTO invoices (
+        student_name,
+        parent_name,
+        parent_email,
+        schedule_id,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        due_date,
+        notes,
+        subtotal_amount,
+        discount_code,
+        discount_amount,
+        payment_methods,
+        package_options,
+        coverage_title,
+        coverage_class,
+        coverage_start,
+        coverage_note,
+        manual_payment_status
+    )
+    VALUES (?, ?, ?, ?, 1, ?, 'unpaid', 'lesson_invoice', ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, NULL)
+    """, (
+        student_name,
+        student[0],
+        student[1],
+        schedule_id,
+        round(float(amount or 0), 2),
+        now_text,
+        due_date,
+        notes,
+        round(float(amount or 0), 2),
+        payment_methods or "ach,zelle,paypal",
+        json.dumps([{"lessons": 1, "amount": round(float(amount or 0), 2)}]),
+        "Single lesson invoice",
+        "",
+        lesson_date or "",
+        f"Lesson {lesson_date or ''} {lesson_time or ''}".strip(),
+    ))
+    return cursor.lastrowid
+
+
+def run_auto_lesson_invoice_scan():
+    ensure_v321_schema()
+    ensure_calendar_lesson_panel_schema()
+    now_dt = hmusic_now()
+    today_text = now_dt.date().strftime("%Y-%m-%d")
+    latest_date = (now_dt.date() + timedelta(days=2)).strftime("%Y-%m-%d")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, lesson_date, lesson_time, COALESCE(duration, 30),
+           COALESCE(student_charge_amount, 0), COALESCE(billing_decision, ''),
+           COALESCE(auto_invoice_enabled, 0), COALESCE(auto_invoice_hours_before, 12),
+           COALESCE(auto_invoice_payment_methods, ''), COALESCE(course_type_name, '')
+    FROM schedule
+    WHERE lesson_date >= ?
+    AND lesson_date <= ?
+    AND COALESCE(status, 'scheduled') IN ('scheduled', 'present', 'late')
+    AND COALESCE(is_group, 0) = 0
+    AND (
+        COALESCE(billing_decision, '') = 'auto_invoice_per_lesson'
+        OR COALESCE(auto_invoice_enabled, 0) = 1
+    )
+    ORDER BY lesson_date, lesson_time
+    """, (today_text, latest_date))
+    rows = cursor.fetchall()
+
+    created = []
+    for row in rows:
+        lesson_start = _lesson_invoice_start_datetime(row[2], row[3])
+        if not lesson_start:
+            continue
+        try:
+            hours_before = max(1, int(float(row[8] or 12)))
+        except (TypeError, ValueError):
+            hours_before = 12
+        if lesson_start - now_dt > timedelta(hours=hours_before):
+            continue
+        if lesson_start + timedelta(hours=3) < now_dt:
+            continue
+        notes = (
+            f"Auto-generated single lesson invoice {hours_before}h before class. "
+            f"Course: {row[10] or 'Lesson'}. Lesson: {row[2]} {row[3]}."
+        )
+        invoice_id = _create_single_lesson_invoice(
+            cursor,
+            row[1],
+            row[0],
+            row[5],
+            row[2],
+            row[3],
+            row[9],
+            notes,
+        )
+        if invoice_id:
+            created.append((invoice_id, row[1], round(float(row[5] or 0), 2)))
+
+    cursor.execute("""
+    SELECT g.schedule_id, g.student_name, s.lesson_date, s.lesson_time,
+           COALESCE(g.student_rate, s.student_charge_amount, 0),
+           COALESCE(g.billing_rule, ''), COALESCE(s.auto_invoice_hours_before, 12),
+           COALESCE(s.auto_invoice_payment_methods, ''), COALESCE(s.course_type_name, '')
+    FROM group_schedule_students g
+    JOIN schedule s ON s.id = g.schedule_id
+    WHERE s.lesson_date >= ?
+    AND s.lesson_date <= ?
+    AND COALESCE(s.status, 'scheduled') IN ('scheduled', 'present', 'late')
+    AND COALESCE(g.billing_rule, '') = 'auto_invoice_per_lesson'
+    ORDER BY s.lesson_date, s.lesson_time
+    """, (today_text, latest_date))
+    group_rows = cursor.fetchall()
+    for row in group_rows:
+        lesson_start = _lesson_invoice_start_datetime(row[2], row[3])
+        if not lesson_start:
+            continue
+        try:
+            hours_before = max(1, int(float(row[6] or 12)))
+        except (TypeError, ValueError):
+            hours_before = 12
+        if lesson_start - now_dt > timedelta(hours=hours_before):
+            continue
+        if lesson_start + timedelta(hours=3) < now_dt:
+            continue
+        notes = (
+            f"Auto-generated group lesson invoice {hours_before}h before class. "
+            f"Course: {row[8] or 'Group lesson'}. Lesson: {row[2]} {row[3]}."
+        )
+        invoice_id = _create_single_lesson_invoice(
+            cursor,
+            row[1],
+            row[0],
+            row[4],
+            row[2],
+            row[3],
+            row[7],
+            notes,
+        )
+        if invoice_id:
+            created.append((invoice_id, row[1], round(float(row[4] or 0), 2)))
+
+    conn.commit()
+    conn.close()
+
+    for invoice_id, student_name, amount in created:
+        parent_id = None
+        try:
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            parent_id = get_primary_parent_for_student(cursor, student_name)
+            conn.close()
+            if parent_id:
+                notify_parent_tuition_due(
+                    student_name,
+                    parent_id,
+                    invoice_id,
+                    hmusic_money(amount),
+                    "New lesson invoice"
+                )
+                create_invoice_message_event(
+                    invoice_id,
+                    "created",
+                    f"Hi, {student_name}'s lesson invoice is ready. Amount due: ${hmusic_money(amount)}.",
+                    parent_id=parent_id,
+                    student_name=student_name,
+                    amount=amount
+                )
+        except Exception as exc:
+            app.logger.exception("Auto lesson invoice notification failed for invoice %s: %s", invoice_id, exc)
+
+    return {"created": len(created), "invoice_ids": [item[0] for item in created]}
+
+
+@app.before_request
+def auto_lesson_invoice_before_request():
+    global _auto_lesson_invoice_last_run
+    if request.endpoint == "static" or request.path.startswith("/stripe/"):
+        return
+    now_dt = hmusic_now()
+    if _auto_lesson_invoice_last_run and now_dt - _auto_lesson_invoice_last_run < timedelta(minutes=15):
+        return
+    _auto_lesson_invoice_last_run = now_dt
+    try:
+        run_auto_lesson_invoice_scan()
+    except Exception as exc:
+        app.logger.exception("Auto lesson invoice scan failed: %s", exc)
+
+
+@app.route("/run_auto_lesson_invoices", methods=["GET", "POST"])
+def run_auto_lesson_invoices_route():
+    if not require_owner():
+        return redirect("/owner_login")
+    result = run_auto_lesson_invoice_scan()
+    return {
+        "ok": True,
+        "created": result["created"],
+        "invoice_ids": result["invoice_ids"],
+        "message": f"Created {result['created']} auto lesson invoice(s)."
+    }
 
 
 @app.route("/create_package_invoice/<name>", methods=["GET", "POST"])
@@ -41812,6 +42383,9 @@ def reschedule_schedule():
         if lesson[2] != session.get("teacher_name"):
             conn.close()
             return {"ok": False, "error": "Permission denied"}, 403
+        if not teacher_has_permission(session.get("teacher_name"), "direct_reschedule"):
+            conn.close()
+            return {"ok": False, "error": "Direct reschedule permission is not enabled"}, 403
 
     old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
     day_delta    = (new_date_obj - old_date_obj).days

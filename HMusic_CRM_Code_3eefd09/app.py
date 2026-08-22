@@ -1439,11 +1439,11 @@ TEACHER_PERMISSION_DEFAULTS = {
     "view_room_availability": 1,
     "add_own_schedule": 1,
     "direct_reschedule": 1,
-    "direct_cancel": 0,
+    "direct_cancel": 1,
     "sub_request": 1,
     "view_payroll": 1,
     "view_billing": 0,
-    "delete_lessons": 0,
+    "delete_lessons": 1,
     "edit_student_profile": 0,
     "view_other_teachers": 0,
 }
@@ -1464,7 +1464,7 @@ TEACHER_PERMISSION_LABELS = [
     ("sub_request", "Sub request", "Request substitute coverage."),
     ("view_payroll", "View payroll", "See teacher payroll summary."),
     ("view_billing", "Billing visibility", "See student billing details. Recommended off."),
-    ("delete_lessons", "Delete lessons", "Delete lessons. Recommended off."),
+    ("delete_lessons", "Delete lessons", "Delete the teacher's own lessons."),
     ("edit_student_profile", "Edit student profile", "Edit full student profile. Recommended off."),
     ("view_other_teachers", "Other teachers calendars", "See schedules owned by other teachers. Recommended off."),
 ]
@@ -1503,6 +1503,21 @@ def ensure_teacher_permission_schema():
     add_column_if_missing(cursor, "teacher_permissions", "lesson_reminder_minutes", "lesson_reminder_minutes INTEGER DEFAULT 60")
     add_column_if_missing(cursor, "teacher_permissions", "created_at", "created_at TEXT")
     add_column_if_missing(cursor, "teacher_permissions", "updated_at", "updated_at TEXT")
+    cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    cursor.execute("SELECT value FROM settings WHERE key = 'teacher_schedule_permissions_opened_v1'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        UPDATE teacher_permissions
+        SET add_own_schedule = 1,
+            direct_reschedule = 1,
+            direct_cancel = 1,
+            delete_lessons = 1,
+            updated_at = ?
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
+        cursor.execute("""
+        INSERT OR REPLACE INTO settings (key, value)
+        VALUES ('teacher_schedule_permissions_opened_v1', '1')
+        """)
     conn.commit()
     conn.close()
 
@@ -1657,8 +1672,8 @@ def teacher_permissions_admin():
     )
     rows = ""
     direct_keys = {"attendance", "lesson_notes", "private_notes", "homework", "message_parents", "lesson_history", "schedule_reminders", "view_room_availability"}
-    approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule"}
-    hidden_keys = {"view_billing", "delete_lessons", "edit_student_profile", "view_other_teachers"}
+    approval_keys = {"direct_reschedule", "direct_cancel", "sub_request", "add_own_schedule", "delete_lessons"}
+    hidden_keys = {"view_billing", "edit_student_profile", "view_other_teachers"}
     for key, label, hint in TEACHER_PERMISSION_LABELS:
         checked = "checked" if perms.get(key) else ""
         group = "Direct" if key in direct_keys else "Needs policy" if key in approval_keys else "Restricted" if key in hidden_keys else "Other"
@@ -7641,16 +7656,54 @@ def calendar():
               </div>
             </div>
             <div id="popGroupFields" style="display:none">
-              <div class="pop-row">
-                <div>
-                  <label class="pop-label">Group size</label>
-                  <input class="pop-inp" type="number" name="group_size" min="2" step="1" placeholder="2">
-                </div>
-                <div>
-                  <label class="pop-label">Students</label>
-                  <input class="pop-inp" name="group_student_names" placeholder="Names, comma separated">
-                </div>
-              </div>
+              <label class="pop-label">Students and billing rule</label>
+              <table class="group-student-table">
+                <thead>
+                  <tr>
+                    <th>Student</th>
+                    <th>Credit</th>
+                    <th>Rate</th>
+                    <th>Billing</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="popGroupStudentRows">
+                  <tr>
+                    <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+                    <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                    <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                    <td>
+                      <select class="pop-sel group-rule" name="group_billing_rule">
+                        <option value="existing_credits">Use credits</option>
+                        <option value="invoice_later">Invoice later</option>
+                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+                        <option value="makeup_credit">Makeup</option>
+                        <option value="no_charge">No charge</option>
+                      </select>
+                    </td>
+                    <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
+                  </tr>
+                  <tr>
+                    <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+                    <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                    <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                    <td>
+                      <select class="pop-sel group-rule" name="group_billing_rule">
+                        <option value="existing_credits">Use credits</option>
+                        <option value="invoice_later">Invoice later</option>
+                        <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+                        <option value="makeup_credit">Makeup</option>
+                        <option value="no_charge">No charge</option>
+                      </select>
+                    </td>
+                    <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <button class="group-compact-add" type="button" onclick="addGroupStudentRow()">+ Add student</button>
+              <input type="hidden" name="group_size" id="popGroupSize">
+              <input type="hidden" name="group_student_names" id="popGroupStudentNames">
+              <div class="group-billing-note">Each student is listed separately, so attendance, credits, and billing can be reviewed per child.</div>
             </div>
             <div class="pop-summary" id="popPriceSummary"></div>
           </div>
@@ -8260,6 +8313,48 @@ def calendar():
       }})
       .catch(() => alert('Network error while adding duration.'));
     }}
+    function groupStudentRowTemplate() {{
+      return `
+        <tr>
+          <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
+          <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+          <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+          <td>
+            <select class="pop-sel group-rule" name="group_billing_rule">
+              <option value="existing_credits">Use credits</option>
+              <option value="invoice_later">Invoice later</option>
+              <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+              <option value="makeup_credit">Makeup</option>
+              <option value="no_charge">No charge</option>
+            </select>
+          </td>
+          <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
+        </tr>`;
+    }}
+    function addGroupStudentRow() {{
+      const rows = document.getElementById('popGroupStudentRows');
+      if (rows) rows.insertAdjacentHTML('beforeend', groupStudentRowTemplate());
+    }}
+    function removeGroupStudentRow(button) {{
+      const rows = document.getElementById('popGroupStudentRows');
+      if (!rows || rows.querySelectorAll('tr').length <= 1) return;
+      const row = button.closest('tr');
+      if (row) row.remove();
+      syncGroupFieldsForSubmit();
+    }}
+    function syncGroupFieldsForSubmit() {{
+      const names = Array.from(document.querySelectorAll('#popGroupStudentRows input[name="group_student_name"]'))
+        .map(input => input.value.trim())
+        .filter(Boolean);
+      const uniqueNames = Array.from(new Set(names));
+      const sizeInput = document.getElementById('popGroupSize');
+      const namesInput = document.getElementById('popGroupStudentNames');
+      const studentInput = document.getElementById('popStudent');
+      if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : '';
+      if (namesInput) namesInput.value = uniqueNames.join(', ');
+      if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+      return uniqueNames;
+    }}
     function updateLessonKind() {{
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
       const courseSelect = document.getElementById('popCourse');
@@ -8284,6 +8379,7 @@ def calendar():
       const course = selectedQuickCourse();
       const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
+      if (isGroup) syncGroupFieldsForSubmit();
       if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
       updateBillingControls();
       updateQuickCourseBilling();
@@ -8491,6 +8587,13 @@ def calendar():
     function addSchedule() {{
       if (!activePopDate) return;
       syncPopDateFromInput();
+      const groupNames = syncGroupFieldsForSubmit();
+      if (document.getElementById('popGroupFields') && document.getElementById('popGroupFields').style.display !== 'none') {{
+        if (groupNames.length < 2) {{
+          alert('Add at least two different students for a group class.');
+          return;
+        }}
+      }}
       updateQuickRooms();
       updateQuickRoomId();
       updateBillingControls();
@@ -8784,6 +8887,18 @@ def add_schedule():
         lesson_format = request.form.get("lesson_format") or "private"
         group_size = request.form.get("group_size")
         group_student_names = (request.form.get("group_student_names") or "").strip()
+        raw_group_names = request.form.getlist("group_student_name")
+        group_participants = []
+        seen_group_students = set()
+        for raw_name in raw_group_names:
+            participant_name = hmusic_clean_student_picker_value(raw_name)
+            if not participant_name:
+                continue
+            participant_key = participant_name.strip().lower()
+            if participant_key in seen_group_students:
+                continue
+            seen_group_students.add(participant_key)
+            group_participants.append(participant_name)
         schedule_note = ""
         if allow_unassigned_teacher_schedule:
             schedule_note = (
@@ -8825,6 +8940,20 @@ def add_schedule():
             duration = int(float(custom_duration))
         if is_custom_program:
             is_group = 1 if lesson_format == "group" else 0
+        elif lesson_format == "group":
+            is_group = 1
+        if is_group and group_participants:
+            student_name = group_participants[0]
+            group_size = str(len(group_participants))
+            group_student_names = ", ".join(group_participants)
+        elif is_group and group_student_names:
+            parsed_names = [hmusic_clean_student_picker_value(name) for name in group_student_names.split(",")]
+            parsed_names = [name for name in parsed_names if name]
+            parsed_names = list(dict.fromkeys(parsed_names))
+            if parsed_names:
+                student_name = parsed_names[0]
+                group_size = str(len(parsed_names))
+                group_student_names = ", ".join(parsed_names)
 
         effective_pricing = get_final_pricing(
             student_name,
@@ -9417,6 +9546,47 @@ def add_schedule():
                 padding: 14px;
                 margin: 6px 0 18px;
             }}
+            .group-roster-table {{
+                width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                overflow: hidden;
+                background: #fff;
+                margin: 8px 0 10px;
+            }}
+            .group-roster-table th {{
+                text-align: left;
+                background: #f3f4f6;
+                color: #6b7280;
+                font-size: 11px;
+                text-transform: uppercase;
+                padding: 8px;
+            }}
+            .group-roster-table td {{
+                padding: 8px;
+                border-top: 1px solid #eef2f7;
+                vertical-align: top;
+            }}
+            .group-roster-table input,
+            .group-roster-table select {{
+                margin: 0;
+                font-size: 13px;
+            }}
+            .link-button {{
+                background: #fff;
+                color: #2563eb;
+                border: 1px dashed #93c5fd;
+                width: 100%;
+                cursor: pointer;
+            }}
+            .danger-mini {{
+                background: transparent;
+                color: #dc2626;
+                padding: 7px;
+                cursor: pointer;
+            }}
 
             button {{
                 background: #635bff;
@@ -9488,11 +9658,30 @@ def add_schedule():
                     </select>
 
                     <div id="group-fields">
-                        Group Size:<br>
-                        <input type="number" name="group_size" min="2" step="1" placeholder="Example: 3">
-
-                        Group Student Names:<br>
-                        <textarea name="group_student_names" placeholder="Write all students in this group, separated by commas."></textarea>
+                        <b>Group roster</b>
+                        <p style="margin:6px 0 10px;color:#6b7280;">Add each student separately so the group lesson is not tied to only one child.</p>
+                        <table class="group-roster-table">
+                            <thead><tr><th>Student</th><th>Credit</th><th>Rate</th><th>Billing</th><th></th></tr></thead>
+                            <tbody id="fullGroupStudentRows">
+                                <tr>
+                                    <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
+                                    <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                                    <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                                    <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
+                                </tr>
+                                <tr>
+                                    <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
+                                    <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                                    <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                                    <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <button class="link-button" type="button" onclick="addFullGroupStudentRow()">+ Add student</button>
+                        <input type="hidden" name="group_size" id="fullGroupSize">
+                        <input type="hidden" name="group_student_names" id="fullGroupStudentNames">
                     </div>
                 </div>
 
@@ -9579,14 +9768,56 @@ def add_schedule():
             }}
             function toggleCustomProgram() {{
                 const box = document.getElementById("custom-program-box");
-                const isCustom = selectedCourseText().includes("custom");
-                box.style.display = isCustom ? "block" : "none";
+                const courseText = selectedCourseText();
+                const isCustom = courseText.includes("custom");
+                const isGroupCourse = courseText.includes("group");
+                const format = document.getElementById("lesson_format");
+                if (format && isGroupCourse) format.value = "group";
+                box.style.display = (isCustom || isGroupCourse) ? "block" : "none";
                 toggleGroupFields();
             }}
             function toggleGroupFields() {{
                 const groupFields = document.getElementById("group-fields");
                 const format = document.getElementById("lesson_format");
-                groupFields.style.display = format && format.value === "group" ? "block" : "none";
+                const isGroup = format && format.value === "group";
+                groupFields.style.display = isGroup ? "block" : "none";
+                const studentInput = document.querySelector("#existing-student-box [name='student_name']");
+                if (studentInput) studentInput.required = !isGroup;
+                syncFullGroupFieldsForSubmit();
+            }}
+            function fullGroupRowTemplate() {{
+                return `
+                    <tr>
+                        <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
+                        <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
+                        <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
+                        <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                        <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
+                    </tr>`;
+            }}
+            function addFullGroupStudentRow() {{
+                const rows = document.getElementById("fullGroupStudentRows");
+                if (rows) rows.insertAdjacentHTML("beforeend", fullGroupRowTemplate());
+            }}
+            function removeFullGroupStudentRow(button) {{
+                const rows = document.getElementById("fullGroupStudentRows");
+                if (!rows || rows.querySelectorAll("tr").length <= 1) return;
+                const row = button.closest("tr");
+                if (row) row.remove();
+                syncFullGroupFieldsForSubmit();
+            }}
+            function syncFullGroupFieldsForSubmit() {{
+                const names = Array.from(document.querySelectorAll("#fullGroupStudentRows input[name='group_student_name']"))
+                    .map(input => input.value.trim())
+                    .filter(Boolean);
+                const uniqueNames = Array.from(new Set(names));
+                const sizeInput = document.getElementById("fullGroupSize");
+                const namesInput = document.getElementById("fullGroupStudentNames");
+                const studentInput = document.querySelector("#existing-student-box [name='student_name']");
+                if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : "";
+                if (namesInput) namesInput.value = uniqueNames.join(", ");
+                if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+                return uniqueNames;
             }}
             function toggleStudentMode() {{
                 const selected = document.querySelector("input[name='student_mode']:checked");
@@ -9623,6 +9854,20 @@ def add_schedule():
             updateRoomOptions();
             toggleCustomProgram();
             toggleStudentMode();
+            document.addEventListener("input", function(e) {{
+                if (e.target && e.target.name === "group_student_name") syncFullGroupFieldsForSubmit();
+            }});
+            const scheduleForm = document.querySelector("form");
+            if (scheduleForm) scheduleForm.addEventListener("submit", function(e) {{
+                const format = document.getElementById("lesson_format");
+                const isGroup = format && format.value === "group" && document.getElementById("group-fields").style.display !== "none";
+                if (!isGroup) return;
+                const uniqueNames = syncFullGroupFieldsForSubmit();
+                if (uniqueNames.length < 2) {{
+                    e.preventDefault();
+                    alert("Group class needs at least two different students.");
+                }}
+            }});
         </script>
     </body>
     </html>
@@ -10613,11 +10858,13 @@ def teacher_dashboard():
         month_active = "active" if schedule_mode == "month" else ""
         direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
         direct_cancel = bool(teacher_perms.get("direct_cancel"))
+        delete_allowed = bool(teacher_perms.get("delete_lessons"))
         sub_allowed = bool(teacher_perms.get("sub_request"))
         reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
         reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
         cancel_label = "Cancel lesson" if direct_cancel else "Cancel request"
-        owner_policy_copy = "Direct reschedule is enabled for your own lessons. Delete, billing, and student profile changes still require owner approval." if direct_reschedule else "Owner approval required for final reschedule, delete, billing, sub assignment, and cancellation. Parents are notified only after owner confirmation."
+        delete_button_html = '<button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button>' if delete_allowed else ''
+        owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
         content = f"""
@@ -10646,7 +10893,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
-            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button></div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button>{delete_button_html}</div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel()">Save changes</button></div>
         </aside>
@@ -10672,6 +10919,7 @@ def teacher_dashboard():
 
         const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
+        const TEACHER_CAN_DELETE = {str(delete_allowed).lower()};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherPanelSaving = false;
@@ -10690,6 +10938,7 @@ def teacher_dashboard():
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? 'Cancel this lesson now?' : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+        function teacherDeleteLesson() {{ if (!activeTeacherLesson || !TEACHER_CAN_DELETE) return; if (!confirm('Delete this lesson?')) return; teacherLessonAction({{action:'delete', schedule_id:activeTeacherLesson.id, delete_scope:'once'}}).then(d => {{ teacherPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
 
         let teacherDrag = null;
@@ -12592,9 +12841,17 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Duplicated to next week.", "new_id": new_id}
 
     if action == "delete":
-        if not is_owner:
+        if not (is_owner or is_teacher):
             conn.close()
-            return {"ok": False, "error": "Only owner can delete lessons."}, 403
+            return {"ok": False, "error": "Only owner or assigned teacher can delete lessons."}, 403
+        if is_teacher:
+            if not teacher_permissions.get("delete_lessons"):
+                conn.close()
+                return {"ok": False, "error": "Delete lesson permission is not enabled."}, 403
+            delete_scope_raw = (data.get("delete_scope") or data.get("scope") or "once").strip()
+            if delete_scope_raw != "once":
+                conn.close()
+                return {"ok": False, "error": "Teachers can delete one lesson at a time."}, 403
         delete_scope = (data.get("delete_scope") or data.get("scope") or "once").strip()
         delete_scope = delete_scope if delete_scope in {"once", "following", "range"} else "once"
         delete_params = [
