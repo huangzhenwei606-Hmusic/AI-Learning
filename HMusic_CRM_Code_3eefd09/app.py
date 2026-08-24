@@ -3085,6 +3085,14 @@ def hmusic_handle_exception(exc):
     if request.path == "/owner_import_students_csv":
         app.logger.exception("Student CSV import request failed")
         return owner_import_students_error_page(exc), 500
+    if request.is_json or request.path in {
+        "/calendar_lesson_action",
+        "/reschedule_schedule",
+        "/add_course_duration_quick",
+        "/add_open_slot_quick",
+    }:
+        app.logger.exception("Unhandled JSON request error")
+        return {"ok": False, "error": "Server error while saving. Please refresh and try again."}, 500
     app.logger.exception("Unhandled request error")
     return "Internal Server Error", 500
 
@@ -12437,11 +12445,17 @@ def ensure_calendar_lesson_panel_schema():
         add_column_if_missing(cursor, "lessons", column_name, column_sql)
     try:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_schedule_id ON lessons(schedule_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule(date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_lesson_date ON schedule(lesson_date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_teacher ON schedule(teacher)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_lesson_date_time ON schedule(lesson_date, lesson_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_teacher_lesson_date_time ON schedule(teacher, lesson_date, lesson_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_student_lesson_date ON schedule(student_name, lesson_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_status_lesson_date ON schedule(status, lesson_date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_course_type_id ON schedule(course_type_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_location_id ON schedule(location_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_schedule_room_id ON schedule(room_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_teacher_open_slots_date_time ON teacher_open_slots(slot_date, slot_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_teacher_open_slots_teacher_date_time ON teacher_open_slots(teacher, slot_date, slot_time)")
     except sqlite3.Error:
         pass
     conn.commit()
@@ -12921,27 +12935,32 @@ def calendar_lesson_action():
         conn.commit()
         conn.close()
         queued = 0
-        if homework and (practice_reminder or data.get("send_homework_now")):
-            queued += calendar_queue_parent_notice(
-                effective_student_name,
-                hmusic_practice_reminder_title(effective_student_name),
-                hmusic_practice_reminder_body(effective_student_name, homework),
-                "homework_assignment",
-                int(schedule_id)
-            )
-        if parent_reminder and effective_lesson_date:
-            reminder_dates = {
-                date.today().strftime("%Y-%m-%d"),
-                (date.today() + timedelta(days=1)).strftime("%Y-%m-%d"),
-            }
-            if effective_lesson_date in reminder_dates:
-                queued += create_lesson_reminders_for_date(effective_lesson_date)
-        if is_owner and low_balance_alert:
-            queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
+        notice_warning = ""
+        try:
+            if homework and (practice_reminder or data.get("send_homework_now")):
+                queued += calendar_queue_parent_notice(
+                    effective_student_name,
+                    hmusic_practice_reminder_title(effective_student_name),
+                    hmusic_practice_reminder_body(effective_student_name, homework),
+                    "homework_assignment",
+                    int(schedule_id)
+                )
+            if parent_reminder and effective_lesson_date:
+                reminder_dates = {
+                    date.today().strftime("%Y-%m-%d"),
+                    (date.today() + timedelta(days=1)).strftime("%Y-%m-%d"),
+                }
+                if effective_lesson_date in reminder_dates:
+                    queued += create_lesson_reminders_for_date(effective_lesson_date)
+            if is_owner and low_balance_alert:
+                queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
+        except Exception:
+            app.logger.exception("Calendar lesson saved, but parent notice queueing failed")
+            notice_warning = " Parent notice queueing failed; the lesson changes were saved."
         scope_count = len(following_ids) if is_owner and detail_update else 0
         if scope_count:
-            return {"ok": True, "message": f"Saved this lesson and {scope_count} following lesson(s)."}
-        return {"ok": True, "message": f"Saved. {queued} parent notice(s) queued." if queued else "Saved."}
+            return {"ok": True, "message": f"Saved this lesson and {scope_count} following lesson(s).{notice_warning}"}
+        return {"ok": True, "message": (f"Saved. {queued} parent notice(s) queued." if queued else "Saved.") + notice_warning}
 
     if action == "reschedule":
         if is_owner or teacher_permissions.get("direct_reschedule"):
@@ -30665,16 +30684,6 @@ def inquiries():
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM inquiries ORDER BY datetime(updated_at) DESC, id DESC")
     rows = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead', 'Inquiry', 'Registration Submitted')")
-    new_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE ai_recommendation IS NOT NULL AND COALESCE(owner_verified, 0) = 0")
-    ai_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status='Trial Scheduled' OR trial_status='Scheduled'")
-    scheduled_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Trial Completed', 'Follow Up') OR follow_up_status='Follow Up'")
-    follow_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM inquiries WHERE status IN ('Active', 'Active Student', 'Converted')")
-    converted_count = cursor.fetchone()[0]
     conn.close()
     public_trial_url = request.host_url.rstrip("/") + "/trial"
     public_registration_url = request.host_url.rstrip("/") + "/registration"
@@ -30686,16 +30695,32 @@ def inquiries():
 
     active_count = len(rows)
     missing_info_count = 0
+    review_count = 0
+    scheduled_count = 0
+    follow_count = 0
+    converted_count = 0
     for r in rows:
         has_parent = bool(field(r, "parent_name"))
         has_contact = bool(field(r, "parent_email") or field(r, "phone"))
         has_student = bool(field(r, "student_name"))
         if not (has_parent and has_contact and has_student):
             missing_info_count += 1
+        status = field(r, "status")
+        trial_status = field(r, "trial_status")
+        follow_status = field(r, "follow_up_status")
+        owner_verified = field(r, "owner_verified")
+        if status in ("New Lead", "Inquiry", "Registration Submitted") or trial_status == "Needs Review" or owner_verified in ("", "0", "False", "false"):
+            review_count += 1
+        if status == "Trial Scheduled" or trial_status == "Scheduled":
+            scheduled_count += 1
+        if status in ("Trial Completed", "Follow Up") or follow_status == "Follow Up":
+            follow_count += 1
+        if status in ("Active", "Active Student", "Converted"):
+            converted_count += 1
 
     cards = "".join([
         f"<div class='metric'><span>Active</span><b>{active_count}</b></div>",
-        f"<div class='metric'><span>Needs review</span><b>{ai_count}</b></div>",
+        f"<div class='metric'><span>Needs review</span><b>{review_count}</b></div>",
         f"<div class='metric'><span>Trial scheduled</span><b>{scheduled_count}</b></div>",
         f"<div class='metric'><span>Missing info</span><b>{missing_info_count}</b></div>",
         f"<div class='metric'><span>Converted</span><b>{converted_count}</b></div>",
@@ -30714,79 +30739,89 @@ def inquiries():
 
     body = ""
     for index, r in enumerate(rows):
-        status = field(r, "status", "New Lead")
-        follow_status = field(r, "follow_up_status", "New")
-        converted = status in ("Active", "Active Student", "Converted", "Enrolled") or follow_status == "Converted"
-        owner_verified = bool(r["owner_verified"]) if "owner_verified" in r.keys() else False
-        if not owner_verified:
-            stage_label = "Review"
-            stage_class = "review"
-        elif status in ("Trial Scheduled", "Trial Proposed") or field(r, "trial_status") == "Scheduled":
-            stage_label = "Trial"
-            stage_class = "trial"
-        elif status in ("Trial Completed", "Follow Up") or follow_status == "Follow Up":
-            stage_label = "Follow up"
-            stage_class = "follow"
-        elif converted:
-            stage_label = "Verified"
-            stage_class = "verified"
-        else:
-            stage_label = "Verified"
-            stage_class = "verified"
+        try:
+            status = field(r, "status", "New Lead")
+            follow_status = field(r, "follow_up_status", "New")
+            converted = status in ("Active", "Active Student", "Converted", "Enrolled") or follow_status == "Converted"
+            owner_verified = bool(r["owner_verified"]) if "owner_verified" in r.keys() else False
+            if not owner_verified:
+                stage_label = "Review"
+                stage_class = "review"
+            elif status in ("Trial Scheduled", "Trial Proposed") or field(r, "trial_status") == "Scheduled":
+                stage_label = "Trial"
+                stage_class = "trial"
+            elif status in ("Trial Completed", "Follow Up") or follow_status == "Follow Up":
+                stage_label = "Follow up"
+                stage_class = "follow"
+            elif converted:
+                stage_label = "Verified"
+                stage_class = "verified"
+            else:
+                stage_label = "Verified"
+                stage_class = "verified"
 
-        parent_contact = field(r, "phone") or field(r, "parent_email") or "Contact pending"
-        program = field(r, "program_interest") or field(r, "instrument") or "-"
-        fee_bits = [
-            field(r, "trial_duration"),
-            field(r, "trial_fee"),
-            field(r, "payment_method"),
-        ]
-        program_meta = " / ".join([x for x in fee_bits if x]) or field(r, "instrument") or "Program details pending"
-        preferred_primary = " ".join([x for x in [field(r, "preferred_days"), field(r, "preferred_times")] if x]).strip()
-        if not preferred_primary:
-            preferred_primary = " ".join([x for x in [field(r, "trial_date"), field(r, "trial_time")] if x]).strip()
-        if not preferred_primary:
-            preferred_primary = "-"
-        preferred_meta = field(r, "trial_status") or field(r, "source") or "Availability"
-        student_meta_bits = [f"#{r['id']} {field(r, 'lead_temperature', 'Warm')}"]
-        age = field(r, "age")
-        if age:
-            student_meta_bits.append(f"age {age}")
-        if "existing_family" in r.keys() and r["existing_family"]:
-            student_meta_bits.append("existing family")
-        selected = " selected" if index == 0 else ""
-        search_blob = " ".join([
-            field(r, "student_name"),
-            field(r, "parent_name"),
-            field(r, "parent_email"),
-            field(r, "phone"),
-            program,
-            preferred_primary,
-            stage_label,
-            field(r, "notes"),
-        ]).lower()
-        stage_key = stage_label.lower().replace(" ", "-")
-        body += f"""
-        <tr class="{selected}" data-search="{escape(search_blob, quote=True)}" data-program="{escape(program.lower(), quote=True)}" data-stage="{stage_key}" data-temp="{escape(field(r, 'lead_temperature').lower(), quote=True)}" data-status="{escape(status.lower(), quote=True)}" data-converted="{'true' if converted else 'false'}" data-updated="{escape(field(r, 'updated_at'), quote=True)}" data-name="{escape(field(r, 'student_name').lower(), quote=True)}">
-            <td>
-                <a class="row-link" href="/inquiry/{r['id']}">{v35_safe(field(r, 'student_name'), 'Unnamed')}</a>
-                <span class="sub">{v35_safe(' · '.join(student_meta_bits))}</span>
-            </td>
-            <td>
-                <span class="main">{v35_safe(field(r, 'parent_name'), '-')}</span>
-                <span class="sub">{v35_safe(parent_contact)}</span>
-            </td>
-            <td>
-                <span class="main">{v35_safe(program)}</span>
-                <span class="sub">{v35_safe(program_meta)}</span>
-            </td>
-            <td>
-                <span class="main">{v35_safe(preferred_primary)}</span>
-                <span class="sub">{v35_safe(preferred_meta)}</span>
-            </td>
-            <td><span class="pill {stage_class}">{stage_label}</span></td>
-        </tr>
-        """
+            parent_contact = field(r, "phone") or field(r, "parent_email") or "Contact pending"
+            program = field(r, "program_interest") or field(r, "instrument") or "-"
+            fee_bits = [
+                field(r, "trial_duration"),
+                field(r, "trial_fee"),
+                field(r, "payment_method"),
+            ]
+            program_meta = " / ".join([x for x in fee_bits if x]) or field(r, "instrument") or "Program details pending"
+            preferred_primary = " ".join([x for x in [field(r, "preferred_days"), field(r, "preferred_times")] if x]).strip()
+            if not preferred_primary:
+                preferred_primary = " ".join([x for x in [field(r, "trial_date"), field(r, "trial_time")] if x]).strip()
+            if not preferred_primary:
+                preferred_primary = "-"
+            preferred_meta = field(r, "trial_status") or field(r, "source") or "Availability"
+            student_meta_bits = [f"#{r['id']} {field(r, 'lead_temperature', 'Warm')}"]
+            age = field(r, "age")
+            if age:
+                student_meta_bits.append(f"age {age}")
+            if "existing_family" in r.keys() and r["existing_family"]:
+                student_meta_bits.append("existing family")
+            selected = " selected" if index == 0 else ""
+            search_blob = " ".join([
+                field(r, "student_name"),
+                field(r, "parent_name"),
+                field(r, "parent_email"),
+                field(r, "phone"),
+                program,
+                preferred_primary,
+                stage_label,
+                field(r, "notes"),
+            ]).lower()
+            stage_key = stage_label.lower().replace(" ", "-")
+            body += f"""
+            <tr class="{selected}" data-search="{escape(search_blob, quote=True)}" data-program="{escape(program.lower(), quote=True)}" data-stage="{stage_key}" data-temp="{escape(field(r, 'lead_temperature').lower(), quote=True)}" data-status="{escape(status.lower(), quote=True)}" data-converted="{'true' if converted else 'false'}" data-updated="{escape(field(r, 'updated_at'), quote=True)}" data-name="{escape(field(r, 'student_name').lower(), quote=True)}">
+                <td>
+                    <a class="row-link" href="/inquiry/{r['id']}">{v35_safe(field(r, 'student_name'), 'Unnamed')}</a>
+                    <span class="sub">{v35_safe(' · '.join(student_meta_bits))}</span>
+                </td>
+                <td>
+                    <span class="main">{v35_safe(field(r, 'parent_name'), '-')}</span>
+                    <span class="sub">{v35_safe(parent_contact)}</span>
+                </td>
+                <td>
+                    <span class="main">{v35_safe(program)}</span>
+                    <span class="sub">{v35_safe(program_meta)}</span>
+                </td>
+                <td>
+                    <span class="main">{v35_safe(preferred_primary)}</span>
+                    <span class="sub">{v35_safe(preferred_meta)}</span>
+                </td>
+                <td><span class="pill {stage_class}">{stage_label}</span></td>
+            </tr>
+            """
+        except Exception as exc:
+            record_id = field(r, "id", "unknown")
+            body += f"""
+            <tr data-search="row error {escape(str(record_id), quote=True)}" data-program="" data-stage="review" data-temp="" data-status="" data-converted="false" data-updated="" data-name="">
+                <td><a class="row-link" href="/inquiry/{escape(str(record_id), quote=True)}">Intake #{v35_safe(record_id)}</a><span class="sub">This record needs cleanup</span></td>
+                <td colspan="3"><span class="main">Unable to render this intake row</span><span class="sub">{v35_safe(exc)}</span></td>
+                <td><span class="pill review">Review</span></td>
+            </tr>
+            """
 
     if not body:
         body = "<tr><td colspan='5' class='empty'>No intake records yet.</td></tr>"
@@ -30876,8 +30911,9 @@ def inquiries():
                     <span class="control-label">Queue</span>
                     <div class="segmented" role="tablist" aria-label="Lead queue">
                         <button class="tab active" type="button" data-queue="all" role="tab" aria-selected="true">All active <span class="count-badge">{active_count}</span></button>
+                        <button class="tab" type="button" data-queue="review" role="tab" aria-selected="false">Needs review <span class="count-badge">{review_count}</span></button>
                         <button class="tab" type="button" data-queue="hot" role="tab" aria-selected="false">Hot <span class="count-badge">{hot_count}</span></button>
-                        <button class="tab" type="button" data-queue="trial" role="tab" aria-selected="false">Trial <span class="count-badge">{scheduled_count}</span></button>
+                        <button class="tab" type="button" data-queue="trial" role="tab" aria-selected="false">Scheduled trial <span class="count-badge">{scheduled_count}</span></button>
                         <button class="tab" type="button" data-queue="registration" role="tab" aria-selected="false">Registration <span class="count-badge">{registration_count}</span></button>
                         <button class="tab" type="button" data-queue="converted" role="tab" aria-selected="false">Converted <span class="count-badge">{converted_count}</span></button>
                     </div>
@@ -30923,6 +30959,7 @@ def inquiries():
 
             function rowMatchesQueue(row) {{
                 if (activeQueue === "all") return true;
+                if (activeQueue === "review") return row.dataset.stage === "review";
                 if (activeQueue === "hot") return row.dataset.temp === "hot";
                 if (activeQueue === "trial") return row.dataset.stage === "trial";
                 if (activeQueue === "registration") return row.dataset.status === "registration submitted";
@@ -38204,21 +38241,6 @@ def owner_backup_download(filename):
 
 @app.before_request
 def prepare_database_for_request():
-    ensure_production_schema()
-    # Automatic backup on every first daily request can block Render workers when
-    # production uploads are large. Keep manual /owner_backup available and only
-    # run automatic backups when explicitly enabled in Render env vars.
-    if os.environ.get("HMUSIC_ENABLE_AUTO_BACKUP") == "1":
-        try:
-            maybe_run_daily_backup()
-        except Exception as exc:
-            print(f"[backup] before-request backup skipped after error: {exc}")
-            traceback.print_exc()
-    try:
-        maybe_run_daily_lesson_reminders()
-    except Exception as exc:
-        print(f"[reminders] before-request reminders skipped after error: {exc}")
-        traceback.print_exc()
     public_paths = (
         "/static/",
         "/favicon.ico",
@@ -38238,6 +38260,23 @@ def prepare_database_for_request():
     )
     if request.path.startswith(public_paths):
         return
+
+    ensure_production_schema()
+    # Automatic backup on every first daily request can block Render workers when
+    # production uploads are large. Keep manual /owner_backup available and only
+    # run automatic backups when explicitly enabled in Render env vars.
+    if os.environ.get("HMUSIC_ENABLE_AUTO_BACKUP") == "1":
+        try:
+            maybe_run_daily_backup()
+        except Exception as exc:
+            print(f"[backup] before-request backup skipped after error: {exc}")
+            traceback.print_exc()
+    if os.environ.get("HMUSIC_ENABLE_AUTO_REMINDERS") == "1":
+        try:
+            maybe_run_daily_lesson_reminders()
+        except Exception as exc:
+            print(f"[reminders] before-request reminders skipped after error: {exc}")
+            traceback.print_exc()
     if session.get("must_change_password"):
         if session.get("user_role") == "owner":
             return redirect("/change_owner_password")
