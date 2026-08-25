@@ -12689,22 +12689,25 @@ def teacher_dashboard():
             const scope = document.querySelector('[name="teacher_scope"]:checked').value;
             fetch("/reschedule_schedule", {{
                 method: "POST",
-                headers: {{"Content-Type": "application/json", "X-CSRFToken": window.HMUSIC_CSRF_TOKEN || ""}},
+                headers: {{"Content-Type": "application/json", "Accept": "application/json", "X-CSRFToken": window.HMUSIC_CSRF_TOKEN || ""}},
                 body: JSON.stringify({{
                     schedule_id: teacherDrag.id,
                     new_date: teacherDrag.to,
                     scope
                 }})
             }})
-            .then(r => r.json())
-            .then(data => {{
-                if (!data.ok) {{
-                    alert(data.error || "Could not move lesson.");
-                    return;
+            .then(async r => {{
+                const text = await r.text();
+                let data = null;
+                try {{ data = text ? JSON.parse(text) : {{ok:false,error:"Empty response from server."}}; }}
+                catch (_) {{
+                    const looksLoggedOut = text.includes("teacher_login") || text.includes("<html");
+                    data = {{ok:false,error: looksLoggedOut ? "Session expired. Please refresh and log in again." : "Server returned an unreadable response. Please refresh and try again."}};
                 }}
+                if (!r.ok || !data.ok) throw new Error(data.error || data.message || "Could not move lesson.");
                 location.reload();
             }})
-            .catch(() => alert("Network error"));
+            .catch(e => alert(e.message));
         }}
         </script>
         """

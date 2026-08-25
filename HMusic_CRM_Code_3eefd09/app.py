@@ -3119,6 +3119,7 @@ def hmusic_handle_exception(exc):
         "/reschedule_schedule",
         "/add_course_duration_quick",
         "/add_open_slot_quick",
+        "/teacher_multi_select_action",
     }
     if isinstance(exc, HTTPException):
         if request.is_json or request.path in json_paths:
@@ -11009,6 +11010,20 @@ def teacher_dashboard():
     .calendar-event.early-cancel .event-status-form button{text-decoration:none}
     .calendar-event{cursor:grab;user-select:none}
     .calendar-event.dragging{opacity:.35}
+    .calendar-grid.multi-select-on .calendar-event{cursor:pointer}
+    .calendar-event.multi-selected{outline:2px solid var(--blue);box-shadow:0 0 0 3px rgba(24,95,165,.14)}
+    .teacher-select-box{display:none;position:absolute;right:5px;top:5px;z-index:2;background:rgba(255,255,255,.94);border:1px solid #D9DEE8;border-radius:6px;padding:2px}
+    .teacher-select-input{width:15px;height:15px;margin:0;accent-color:var(--blue)}
+    .calendar-grid.multi-select-on .teacher-select-box{display:flex}
+    .calendar-grid.multi-select-on .event-status-form{display:none}
+    .teacher-multi-toggle{border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:8px 10px;font:inherit;font-weight:900;cursor:pointer}
+    .teacher-multi-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
+    .teacher-multi-bar{display:none;position:sticky;top:0;z-index:10;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:10px;border:1px solid #D9DEE8;border-radius:10px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08)}
+    .teacher-multi-bar.show{display:flex}
+    .teacher-multi-count{font-weight:900;color:#172033;margin-right:auto}
+    .teacher-multi-bar select,.teacher-multi-bar button{height:36px;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:0 10px;font:inherit;font-weight:800}
+    .teacher-multi-apply{background:var(--blue)!important;border-color:var(--blue)!important;color:#fff!important}
+    .teacher-multi-clear{color:#667085!important}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
     .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:1px 6px}
     .calendar-day-head strong:hover{background:rgba(24,95,165,.14)}
@@ -11049,6 +11064,9 @@ def teacher_dashboard():
              data-time="{escape(str(lesson[2] or ''))}"
             data-student="{escape(str(lesson[3] or ''))}"
             data-teacher="{escape(str(teacher_name or ''))}">
+            <label class="teacher-select-box" onclick="event.stopPropagation();">
+                <input type="checkbox" class="teacher-select-input" value="{lesson[0]}" onchange="teacherMultiUpdate()">
+            </label>
             <div class="event-top">
                 <span class="event-time">
                   <span class="t-status-badge {dot}">{status_text}</span>
@@ -11206,11 +11224,29 @@ def teacher_dashboard():
                         <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
                         <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
                     </div>
+                    <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" onclick="teacherMultiToggle()">Multi-Select</button>
                     {controls}
                 </div>
             </div>
             {TEACHER_CAL_CSS}
-        <div class="calendar-grid">{day_columns}</div>
+        <div class="teacher-multi-bar" id="teacherMultiBar">
+            <div class="teacher-multi-count"><span id="teacherMultiCount">0</span> selected</div>
+            <select id="teacherMultiAction">
+                <option value="set_status">Set status</option>
+                <option value="cancel_lessons">Cancel lessons</option>
+            </select>
+            <select id="teacherMultiStatus">
+                <option value="scheduled">Scheduled</option>
+                <option value="present">Present</option>
+                <option value="no_show">No Show</option>
+                <option value="last_min_cancel">Last Min Cancel</option>
+                <option value="excused_24h">Cancel &gt; 24h</option>
+                <option value="teacher_cancelled">Teacher Cancel</option>
+            </select>
+            <button class="teacher-multi-apply" type="button" onclick="teacherMultiApply()">Apply</button>
+            <button class="teacher-multi-clear" type="button" onclick="teacherMultiClear()">Clear</button>
+        </div>
+        <div class="calendar-grid" id="teacherCalendarGrid">{day_columns}</div>
 
         <div class="lesson-scrim" id="teacherLessonScrim" onclick="closeTeacherLessonPanel()"></div>
         <aside class="lesson-panel" id="teacherLessonPanel" aria-hidden="true">
@@ -11251,13 +11287,14 @@ def teacher_dashboard():
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherPanelSaving = false;
+        let teacherMultiOn = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const text = await r.text(); let d = null; try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }} catch (_) {{ const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html'); d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh this page, then log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}}; }} if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
-        function openTeacherLessonPanel(scheduleId) {{ fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
         function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
@@ -11270,11 +11307,76 @@ def teacher_dashboard():
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
 
         let teacherDrag = null;
+        function teacherMultiSelectedIds() {{
+            return Array.from(document.querySelectorAll('.teacher-select-input:checked')).map(cb => cb.value);
+        }}
+        function teacherMultiUpdate() {{
+            const ids = teacherMultiSelectedIds();
+            const count = document.getElementById('teacherMultiCount');
+            const bar = document.getElementById('teacherMultiBar');
+            if (count) count.textContent = ids.length;
+            if (bar) bar.classList.toggle('show', teacherMultiOn && ids.length > 0);
+            document.querySelectorAll('.calendar-event[data-id]').forEach(card => {{
+                const cb = card.querySelector('.teacher-select-input');
+                card.classList.toggle('multi-selected', !!cb && cb.checked);
+            }});
+        }}
+        function teacherMultiToggle() {{
+            teacherMultiOn = !teacherMultiOn;
+            const grid = document.getElementById('teacherCalendarGrid');
+            const toggle = document.getElementById('teacherMultiToggle');
+            if (grid) grid.classList.toggle('multi-select-on', teacherMultiOn);
+            if (toggle) toggle.classList.toggle('active', teacherMultiOn);
+            if (!teacherMultiOn) teacherMultiClear();
+            teacherMultiUpdate();
+        }}
+        function teacherMultiClear() {{
+            document.querySelectorAll('.teacher-select-input').forEach(cb => cb.checked = false);
+            teacherMultiUpdate();
+        }}
+        function teacherMultiApply() {{
+            const ids = teacherMultiSelectedIds();
+            if (!ids.length) return;
+            const action = document.getElementById('teacherMultiAction').value;
+            const payload = {{action, schedule_ids: ids}};
+            if (action === 'set_status') payload.status = document.getElementById('teacherMultiStatus').value;
+            if (action === 'cancel_lessons' && !confirm('Cancel selected lessons?')) return;
+            fetch('/teacher_multi_select_action', {{
+                method:'POST',
+                headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
+                body:JSON.stringify(payload)
+            }}).then(async r => {{
+                const text = await r.text();
+                let d = null;
+                try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }}
+                catch (_) {{
+                    const looksLoggedOut = text.includes('teacher_login') || text.includes('<html');
+                    d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh and log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}};
+                }}
+                if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed');
+                location.reload();
+            }}).catch(e => alert(e.message));
+        }}
         function teacherAddOnDate(dateStr) {{
             window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
         }}
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
+            card.addEventListener("click", e => {{
+                if (!teacherMultiOn) return;
+                if (e.target.closest('select,button,form,input,label')) return;
+                const cb = card.querySelector('.teacher-select-input');
+                if (cb) {{
+                    cb.checked = !cb.checked;
+                    teacherMultiUpdate();
+                }}
+                e.preventDefault();
+                e.stopPropagation();
+            }});
             card.addEventListener("dragstart", e => {{
+                if (teacherMultiOn) {{
+                    e.preventDefault();
+                    return;
+                }}
                 teacherDrag = {{
                     id: card.dataset.id,
                     from: card.dataset.date,
@@ -11320,22 +11422,25 @@ def teacher_dashboard():
             const scope = document.querySelector('[name="teacher_scope"]:checked').value;
             fetch("/reschedule_schedule", {{
                 method: "POST",
-                headers: {{"Content-Type": "application/json", "X-CSRFToken": window.HMUSIC_CSRF_TOKEN || ""}},
+                headers: {{"Content-Type": "application/json", "Accept": "application/json", "X-CSRFToken": window.HMUSIC_CSRF_TOKEN || ""}},
                 body: JSON.stringify({{
                     schedule_id: teacherDrag.id,
                     new_date: teacherDrag.to,
                     scope
                 }})
             }})
-            .then(r => r.json())
-            .then(data => {{
-                if (!data.ok) {{
-                    alert(data.error || "Could not move lesson.");
-                    return;
+            .then(async r => {{
+                const text = await r.text();
+                let data = null;
+                try {{ data = text ? JSON.parse(text) : {{ok:false,error:"Empty response from server."}}; }}
+                catch (_) {{
+                    const looksLoggedOut = text.includes("teacher_login") || text.includes("<html");
+                    data = {{ok:false,error: looksLoggedOut ? "Session expired. Please refresh and log in again." : "Server returned an unreadable response. Please refresh and try again."}};
                 }}
+                if (!r.ok || !data.ok) throw new Error(data.error || data.message || "Could not move lesson.");
                 location.reload();
             }})
-            .catch(() => alert("Network error"));
+            .catch(e => alert(e.message));
         }}
         </script>
         """
@@ -12454,6 +12559,90 @@ def lesson_change_request_detail(request_id):
     </body>
     </html>
     """
+
+@app.route("/teacher_multi_select_action", methods=["POST"])
+def teacher_multi_select_action():
+    ensure_calendar_lesson_panel_schema()
+    if not require_teacher() or require_owner():
+        return {"ok": False, "error": "Teacher login required"}, 401
+
+    teacher_name = session.get("teacher_name") or ""
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip()
+    raw_ids = data.get("schedule_ids") or data.get("ids") or []
+    schedule_ids = []
+    for raw_id in raw_ids:
+        try:
+            schedule_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    schedule_ids = list(dict.fromkeys(schedule_ids))[:100]
+    if not schedule_ids:
+        return {"ok": False, "error": "Choose at least one lesson."}, 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(schedule_ids))
+    cursor.execute(f"""
+        SELECT id
+        FROM schedule
+        WHERE id IN ({placeholders})
+        AND teacher = ?
+    """, (*schedule_ids, teacher_name))
+    owned_ids = [int(row[0]) for row in cursor.fetchall()]
+    conn.close()
+    if not owned_ids:
+        return {"ok": False, "error": "No selected lessons belong to this teacher."}, 403
+
+    teacher_permissions = get_teacher_permissions(teacher_name)
+    if not teacher_permissions.get("attendance"):
+        return {"ok": False, "error": "Attendance permission is not enabled."}, 403
+
+    if action == "set_status":
+        status = (data.get("status") or "").strip()
+        allowed_statuses = {
+            "scheduled", "present", "no_show", "last_min_cancel",
+            "excused_24h", "teacher_cancelled"
+        }
+        if status not in allowed_statuses:
+            return {"ok": False, "error": "Invalid status."}, 400
+        target_status = status
+        notification_title = "Teacher batch attendance update"
+        notification_body = f"{teacher_name} updated {len(owned_ids)} selected lesson(s) to {calendar_status_label(status)}."
+    elif action == "cancel_lessons":
+        target_status = "teacher_cancelled"
+        notification_title = "Teacher cancelled multiple lessons"
+        notification_body = f"{teacher_name} cancelled {len(owned_ids)} selected lesson(s)."
+    else:
+        return {"ok": False, "error": "Invalid action."}, 400
+
+    updated = 0
+    errors = []
+    actor = f"teacher:{teacher_name}"
+    for schedule_id in owned_ids:
+        result = apply_lesson_status(
+            schedule_id,
+            target_status,
+            actor=actor,
+            reason="Teacher bulk update" if action == "set_status" else "Teacher bulk cancel"
+        )
+        if result.get("ok"):
+            updated += 1
+        else:
+            errors.append(result.get("error") or f"Lesson {schedule_id} failed")
+
+    if updated:
+        create_notification(
+            "owner", "owner", notification_title, notification_body,
+            "/calendar", related_type="teacher_multi_select", related_id=0
+        )
+
+    return {
+        "ok": updated > 0,
+        "message": f"Updated {updated} lesson(s).",
+        "error": "; ".join(errors[:3]) if errors and not updated else "",
+    }
+
 
 @app.route("/update_lesson_status", methods=["POST"])
 def update_lesson_status():
