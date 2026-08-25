@@ -7657,7 +7657,7 @@ def calendar():
           <input type="hidden" name="location" id="popLocationName">
           <input type="hidden" name="room_id" id="popRoomId">
 
-          <div class="pop-section">
+          <div class="pop-section" id="popStudentSection">
             <h3>Student</h3>
             <label class="pop-label">Student</label>
             <input class="pop-sel student-picker-compact" id="popStudent" name="student_name" list="popStudentList" placeholder="Search existing or type new student" required>
@@ -7669,7 +7669,7 @@ def calendar():
           <div class="pop-section">
             <h3>Lesson Type</h3>
             <div class="pop-choice-grid">
-              <label class="pop-choice"><input type="radio" name="lesson_kind" value="regular" checked onchange="updateLessonKind()"> Regular</label>
+              <label class="pop-choice"><input type="radio" name="lesson_kind" value="regular" checked onchange="updateLessonKind()"> Private</label>
               <label class="pop-choice"><input type="radio" name="lesson_kind" value="trial" onchange="updateLessonKind()"> Trial</label>
               <label class="pop-choice"><input type="radio" name="lesson_kind" value="makeup" onchange="updateLessonKind()"> Makeup</label>
               <label class="pop-choice"><input type="radio" name="lesson_kind" value="group" onchange="updateLessonKind()"> Group</label>
@@ -7703,7 +7703,7 @@ def calendar():
                 Add to course catalog
               </button>
             </div>
-            <div class="pop-row">
+            <div class="pop-row" id="popCustomCourseFields" style="display:none">
               <div>
                 <label class="pop-label">Custom duration</label>
                 <input class="pop-inp" type="number" name="custom_duration" id="popCustomDuration" value="60" min="15" step="5" onchange="updateQuickCourseSummary()">
@@ -7797,7 +7797,7 @@ def calendar():
             <div class="pop-summary" id="popPriceSummary"></div>
           </div>
 
-          <div class="pop-section">
+          <div class="pop-section" id="popBillingSection">
             <h3>Billing</h3>
             <label class="pop-label">Billing decision</label>
             <select class="pop-sel" name="billing_decision" id="popBillingDecision" onchange="updateBillingControls()">
@@ -8432,6 +8432,29 @@ def calendar():
       const isCustom = course && String(course.name || '').toLowerCase().includes('custom');
       return kind === 'group' || (course && Number(course.is_group || 0) === 1) || (isCustom && format === 'group');
     }}
+    function updateQuickModeSections() {{
+      const course = selectedQuickCourse();
+      const isGroup = isQuickGroupMode();
+      const isCustom = course && String(course.name || '').toLowerCase().includes('custom');
+      const groupFields = document.getElementById('popGroupFields');
+      const billingSection = document.getElementById('popBillingSection');
+      const studentSection = document.getElementById('popStudentSection');
+      const customFields = document.getElementById('popCustomCourseFields');
+      const studentInput = document.getElementById('popStudent');
+      if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
+      if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
+      if (studentSection) studentSection.style.display = isGroup ? 'none' : 'block';
+      if (customFields) customFields.style.display = isCustom ? 'grid' : 'none';
+      if (studentInput) studentInput.required = !isGroup;
+      if (!isGroup) {{
+        const sizeInput = document.getElementById('popGroupSize');
+        const namesInput = document.getElementById('popGroupStudentNames');
+        const billingRows = document.getElementById('popGroupBillingRows');
+        if (sizeInput) sizeInput.value = '';
+        if (namesInput) namesInput.value = '';
+        if (billingRows) billingRows.innerHTML = '';
+      }}
+    }}
     function syncGroupFieldsForSubmit() {{
       const isGroup = isQuickGroupMode();
       const names = Array.from(document.querySelectorAll('#popGroupStudentRows input[name="group_student_name"]'))
@@ -8447,7 +8470,7 @@ def calendar():
         studentInput.required = !isGroup;
         if (isGroup && uniqueNames.length) studentInput.value = uniqueNames[0];
       }}
-      syncGroupBillingRows();
+      if (isGroup) syncGroupBillingRows();
       return uniqueNames;
     }}
     function groupBillingRuleOptions(selectedValue) {{
@@ -8464,6 +8487,10 @@ def calendar():
     function syncGroupBillingRows() {{
       const billingRows = document.getElementById('popGroupBillingRows');
       if (!billingRows) return;
+      if (!isQuickGroupMode()) {{
+        billingRows.innerHTML = '';
+        return;
+      }}
       const names = Array.from(document.querySelectorAll('#popGroupStudentRows input[name="group_student_name"]'))
         .map(input => input.value.trim())
         .filter(Boolean);
@@ -8500,7 +8527,6 @@ def calendar():
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
       const courseSelect = document.getElementById('popCourse');
       const formatSelect = document.getElementById('popLessonFormat');
-      const groupFields = document.getElementById('popGroupFields');
       if (kind === 'trial') {{
         const trial = QUICK_COURSE_DATA.find(c => String(c.name || '').toLowerCase().includes('trial'));
         if (trial) courseSelect.value = trial.id;
@@ -8521,10 +8547,7 @@ def calendar():
       if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0) && !String(course.name || '').toLowerCase().includes('custom')) {{
         formatSelect.value = 'private';
       }}
-      const isGroup = isQuickGroupMode();
-      const billingSection = document.getElementById('popBillingSection');
-      if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
-      if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
+      updateQuickModeSections();
       updateBillingControls();
       updateQuickCourseBilling();
       syncGroupFieldsForSubmit();
@@ -8583,6 +8606,12 @@ def calendar():
     function updateQuickCourseBilling() {{
       const course = selectedQuickCourse();
       if (!course) return;
+      const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
+      const formatSelect = document.getElementById('popLessonFormat');
+      if (formatSelect && kind !== 'group' && !Number(course.is_group || 0) && !String(course.name || '').toLowerCase().includes('custom')) {{
+        formatSelect.value = 'private';
+      }}
+      updateQuickModeSections();
       const basis = document.getElementById('popParentBillingBasis');
       const rate = document.getElementById('popParentChargeRate');
       if (basis) basis.value = methodToQuickBillingBasis(course.student_billing_method);
