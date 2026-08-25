@@ -3114,17 +3114,20 @@ def owner_import_students_error_page(exc):
 
 @app.errorhandler(Exception)
 def hmusic_handle_exception(exc):
-    if isinstance(exc, HTTPException):
-        return exc
-    if request.path == "/owner_import_students_csv":
-        app.logger.exception("Student CSV import request failed")
-        return owner_import_students_error_page(exc), 500
-    if request.is_json or request.path in {
+    json_paths = {
         "/calendar_lesson_action",
         "/reschedule_schedule",
         "/add_course_duration_quick",
         "/add_open_slot_quick",
-    }:
+    }
+    if isinstance(exc, HTTPException):
+        if request.is_json or request.path in json_paths:
+            return {"ok": False, "error": exc.description or exc.name or "Request failed"}, exc.code or 500
+        return exc
+    if request.path == "/owner_import_students_csv":
+        app.logger.exception("Student CSV import request failed")
+        return owner_import_students_error_page(exc), 500
+    if request.is_json or request.path in json_paths:
         app.logger.exception("Unhandled JSON request error")
         return {"ok": False, "error": "Server error while saving. Please refresh and try again."}, 500
     app.logger.exception("Unhandled request error")
@@ -8087,8 +8090,18 @@ def calendar():
     function setPanelStatus(st) {{ paintPanelStatus(st); saveLessonPanel(true); }}
     function showPanelToast(msg) {{ const t = document.getElementById('panelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
     function lessonAction(payload) {{
-      return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}})
-        .then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed'); return d; }});
+      return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}})
+        .then(async r => {{
+          const text = await r.text();
+          let d = null;
+          try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }}
+          catch (_) {{
+            const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html');
+            d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh and log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}};
+          }}
+          if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed');
+          return d;
+        }});
     }}
     function openLessonPanel(scheduleId) {{
       fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{
@@ -11243,7 +11256,7 @@ def teacher_dashboard():
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
-        function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Bad response'}})); if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
+        function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const text = await r.text(); let d = null; try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }} catch (_) {{ const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html'); d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh this page, then log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}}; }} if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
         function openTeacherLessonPanel(scheduleId) {{ fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
         function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
