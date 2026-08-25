@@ -8657,6 +8657,24 @@ def calendar():
       const id = Number(courseSelect ? courseSelect.value : 0);
       return QUICK_COURSE_DATA.find(c => Number(c.id) === id) || null;
     }}
+    function resolvePanelCourseId(lesson) {{
+      const directId = Number(lesson.course_type_id || 0);
+      if (QUICK_COURSE_DATA.some(c => Number(c.id) === directId)) return String(directId);
+      const name = String(lesson.course_name || '').trim().toLowerCase();
+      const duration = Number(lesson.duration || 0);
+      const isGroup = Number(lesson.is_group || 0);
+      const exact = QUICK_COURSE_DATA.find(c =>
+        String(c.name || '').trim().toLowerCase() === name &&
+        Number(c.duration || 0) === duration &&
+        Number(c.is_group || 0) === isGroup
+      );
+      if (exact) return String(exact.id);
+      const byDuration = QUICK_COURSE_DATA.find(c =>
+        Number(c.duration || 0) === duration &&
+        Number(c.is_group || 0) === isGroup
+      );
+      return byDuration ? String(byDuration.id) : '';
+    }}
     function updatePanelCourseBilling() {{
       const course = selectedPanelCourse();
       if (!course) return;
@@ -8703,7 +8721,7 @@ def calendar():
       const setValue = (id, value) => {{ const el = document.getElementById(id); if (el) el.value = value == null ? '' : value; }};
       setValue('panelDetailStudent', lesson.student || '');
       setValue('panelDetailTeacher', lesson.teacher || '');
-      setValue('panelDetailCourse', lesson.course_type_id || '');
+      setValue('panelDetailCourse', resolvePanelCourseId(lesson));
       setValue('panelDetailDuration', lesson.duration || 30);
       setValue('panelDetailFormat', Number(lesson.is_group || 0) ? 'group' : 'private');
       setValue('panelDetailDate', lesson.date || '');
@@ -12667,6 +12685,56 @@ def calendar_lesson_row(cursor, schedule_id):
     return cursor.fetchone()
 
 
+def resolve_calendar_course_type(cursor, course_type_id, course_name="", duration=None, is_group=0):
+    try:
+        course_type_id = int(float(course_type_id or 0))
+    except (TypeError, ValueError):
+        course_type_id = 0
+    if course_type_id:
+        cursor.execute("""
+        SELECT id, name, duration, COALESCE(is_group, 0)
+        FROM course_types
+        WHERE id = ?
+        """, (course_type_id,))
+        row = cursor.fetchone()
+        if row:
+            return row
+    clean_name = (course_name or "").strip()
+    try:
+        duration_value = int(float(duration or 0))
+    except (TypeError, ValueError):
+        duration_value = 0
+    group_value = 1 if int(is_group or 0) else 0
+    if clean_name and duration_value:
+        cursor.execute("""
+        SELECT id, name, duration, COALESCE(is_group, 0)
+        FROM course_types
+        WHERE lower(name) = lower(?)
+          AND COALESCE(duration, 0) = ?
+          AND COALESCE(is_group, 0) = ?
+        ORDER BY COALESCE(active, 1) DESC, id
+        LIMIT 1
+        """, (clean_name, duration_value, group_value))
+        row = cursor.fetchone()
+        if row:
+            return row
+    if duration_value:
+        cursor.execute("""
+        SELECT id, name, duration, COALESCE(is_group, 0)
+        FROM course_types
+        WHERE COALESCE(duration, 0) = ?
+          AND COALESCE(is_group, 0) = ?
+        ORDER BY
+          CASE WHEN lower(name) LIKE ? THEN 0 ELSE 1 END,
+          COALESCE(active, 1) DESC,
+          name,
+          id
+        LIMIT 1
+        """, (duration_value, group_value, f"%{clean_name.lower()}%" if clean_name else "%"))
+        return cursor.fetchone()
+    return None
+
+
 @app.route("/calendar_lesson_detail/<int:schedule_id>")
 def calendar_lesson_detail(schedule_id):
     ensure_calendar_lesson_panel_schema()
@@ -12675,6 +12743,7 @@ def calendar_lesson_detail(schedule_id):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     row = calendar_lesson_row(cursor, schedule_id)
+    resolved_course = resolve_calendar_course_type(cursor, row[19] if row else 0, row[7] if row else "", row[10] if row else 0, row[18] if row else 0) if row else None
     conn.close()
     if not row:
         return {"ok": False, "error": "Lesson not found"}, 404
@@ -12693,7 +12762,7 @@ def calendar_lesson_detail(schedule_id):
             "homework": row[14] or "", "parent_lesson_reminder_enabled": int(row[15] or 0),
             "practice_reminder_enabled": int(row[16] or 0), "low_balance_alert_enabled": int(row[17] or 0),
             "is_group": int(row[18] or 0), "role": "owner" if require_owner() else "teacher",
-            "course_type_id": int(row[19] or 0), "location_id": int(row[20] or 0), "room_id": int(row[21] or 0),
+            "course_type_id": int((resolved_course[0] if resolved_course else row[19]) or 0), "location_id": int(row[20] or 0), "room_id": int(row[21] or 0),
             "custom_lesson_count": int(row[26] or 0), "location": row[27] or "",
             "permissions": teacher_permissions,
         }
@@ -12801,20 +12870,17 @@ def calendar_lesson_action():
                     conn.close()
                     return {"ok": False, "error": "Invalid lesson time"}, 400
 
-                try:
-                    course_type_id_detail = int(float(data.get("course_type_id") or row[19] or 0))
-                except:
-                    course_type_id_detail = int(row[19] or 0)
-
-                cursor.execute("""
-                SELECT id, name, duration, COALESCE(is_group, 0)
-                FROM course_types
-                WHERE id = ?
-                """, (course_type_id_detail,))
-                course_detail = cursor.fetchone()
+                course_detail = resolve_calendar_course_type(
+                    cursor,
+                    data.get("course_type_id") or row[19] or 0,
+                    row[7] or "",
+                    data.get("duration") or row[10] or 30,
+                    is_group_detail,
+                )
                 if not course_detail:
                     conn.close()
-                    return {"ok": False, "error": "Course Type not found"}, 400
+                    return {"ok": False, "error": "Course Type not found. Please choose a course before saving."}, 400
+                course_type_id_detail = int(course_detail[0] or 0)
 
                 try:
                     duration_detail = int(float(data.get("duration") or course_detail[2] or row[10] or 30))
