@@ -1921,10 +1921,11 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option></select></label>
                 <label>Custom Count<input type="number" name="custom_lesson_count" min="1" max="260" placeholder="Only if package is custom"></label>
                 <label>Start Date<input type="date" name="start_date" value="{date.today().strftime('%Y-%m-%d')}" required></label>
-                <label>Course<select name="course_type_id" required>{course_options}</select></label>
+                <label>Course<select name="course_type_id" id="teacherCourseSelect" onchange="syncTeacherLessonFormat()" required>{course_options}</select></label>
+                <label>Format<select name="lesson_format" id="teacherLessonFormat" onchange="syncTeacherLessonFormat()"><option value="private">Private</option><option value="group">Group</option></select></label>
                 <input type="hidden" name="billing_decision" value="existing_credits">
                 <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
-                <label class="full">Group Students<textarea name="group_student_names" placeholder="For group classes, list names here."></textarea></label>
+                <label class="full" id="teacherGroupStudentsField">Group Students<textarea id="teacherGroupStudentNames" name="group_student_names" placeholder="For group classes, list at least two names here."></textarea></label>
                 <div class="full"><button type="submit">Create Schedule</button></div>
             </form>
         </section>
@@ -1949,6 +1950,39 @@ def teacher_dashboard_add_schedule_content(teacher_name):
             .duration-request-card h2 {{ margin:0 0 6px; font-size:18px; }}
             .td-note {{ color:var(--td-muted); margin:0 0 14px; line-height:1.45; }}
         </style>
+        <script>
+            function teacherCourseIsGroup() {{
+                const select = document.getElementById('teacherCourseSelect');
+                if (!select || !select.options[select.selectedIndex]) return false;
+                return select.options[select.selectedIndex].text.toLowerCase().includes('group');
+            }}
+            function teacherIsGroupLesson() {{
+                const format = document.getElementById('teacherLessonFormat');
+                return teacherCourseIsGroup() || (format && format.value === 'group');
+            }}
+            function syncTeacherLessonFormat() {{
+                const format = document.getElementById('teacherLessonFormat');
+                const field = document.getElementById('teacherGroupStudentsField');
+                const names = document.getElementById('teacherGroupStudentNames');
+                const student = document.getElementById('student_name');
+                if (format && teacherCourseIsGroup()) format.value = 'group';
+                const isGroup = teacherIsGroupLesson();
+                if (field) field.style.display = isGroup ? 'block' : 'none';
+                if (names && !isGroup) names.value = '';
+                if (student) student.required = !isGroup;
+            }}
+            const teacherScheduleForm = document.querySelector('form[action="/add_schedule"]');
+            if (teacherScheduleForm) teacherScheduleForm.addEventListener('submit', function(e) {{
+                if (!teacherIsGroupLesson()) return;
+                const namesInput = document.getElementById('teacherGroupStudentNames');
+                const names = (namesInput ? namesInput.value : '').split(',').map(name => name.trim()).filter(Boolean);
+                if (Array.from(new Set(names)).length < 2) {{
+                    e.preventDefault();
+                    alert('Group class needs at least two different students.');
+                }}
+            }});
+            syncTeacherLessonFormat();
+        </script>
     """
 
 
@@ -8390,7 +8424,16 @@ def calendar():
       if (row) row.remove();
       syncGroupFieldsForSubmit();
     }}
+    function isQuickGroupMode() {{
+      const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
+      const course = selectedQuickCourse();
+      const formatSelect = document.getElementById('popLessonFormat');
+      const format = formatSelect ? formatSelect.value : 'private';
+      const isCustom = course && String(course.name || '').toLowerCase().includes('custom');
+      return kind === 'group' || (course && Number(course.is_group || 0) === 1) || (isCustom && format === 'group');
+    }}
     function syncGroupFieldsForSubmit() {{
+      const isGroup = isQuickGroupMode();
       const names = Array.from(document.querySelectorAll('#popGroupStudentRows input[name="group_student_name"]'))
         .map(input => input.value.trim())
         .filter(Boolean);
@@ -8398,9 +8441,12 @@ def calendar():
       const sizeInput = document.getElementById('popGroupSize');
       const namesInput = document.getElementById('popGroupStudentNames');
       const studentInput = document.getElementById('popStudent');
-      if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : '';
-      if (namesInput) namesInput.value = uniqueNames.join(', ');
-      if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+      if (sizeInput) sizeInput.value = isGroup ? String(uniqueNames.length) : '';
+      if (namesInput) namesInput.value = isGroup ? uniqueNames.join(', ') : '';
+      if (studentInput) {{
+        studentInput.required = !isGroup;
+        if (isGroup && uniqueNames.length) studentInput.value = uniqueNames[0];
+      }}
       syncGroupBillingRows();
       return uniqueNames;
     }}
@@ -8472,14 +8518,16 @@ def calendar():
         if (formatSelect) formatSelect.value = 'group';
       }}
       const course = selectedQuickCourse();
-      const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+      if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0) && !String(course.name || '').toLowerCase().includes('custom')) {{
+        formatSelect.value = 'private';
+      }}
+      const isGroup = isQuickGroupMode();
       const billingSection = document.getElementById('popBillingSection');
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
-      if (isGroup) syncGroupFieldsForSubmit();
       if (billingSection) billingSection.style.display = isGroup ? 'none' : 'block';
-      if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
       updateBillingControls();
       updateQuickCourseBilling();
+      syncGroupFieldsForSubmit();
     }}
     function updateQuickRooms() {{
       const locationSelect = document.getElementById('popLocation');
@@ -8685,7 +8733,7 @@ def calendar():
       if (!activePopDate) return;
       syncPopDateFromInput();
       const groupNames = syncGroupFieldsForSubmit();
-      if (document.getElementById('popGroupFields') && document.getElementById('popGroupFields').style.display !== 'none') {{
+      if (isQuickGroupMode()) {{
         if (groupNames.length < 2) {{
           alert('Add at least two different students for a group class.');
           return;
@@ -9087,6 +9135,12 @@ def add_schedule():
             is_group = 1 if lesson_format == "group" else 0
         elif lesson_format == "group":
             is_group = 1
+
+        if not is_group:
+            group_participants = []
+            group_size = None
+            group_student_names = ""
+
         if is_group and group_participants:
             student_name = group_participants[0]["student_name"]
             group_size = str(len(group_participants))
@@ -9108,6 +9162,10 @@ def add_schedule():
                 student_name = parsed_names[0]
                 group_size = str(len(parsed_names))
                 group_student_names = ", ".join(parsed_names)
+
+        if is_group and len(group_participants) < 2:
+            conn.close()
+            return f"<h1>Please add at least two students for a group class.</h1><p><a href='{escape(add_schedule_href, quote=True)}'>Back</a></p>", 400
 
         effective_pricing = get_final_pricing(
             student_name,
@@ -9981,6 +10039,13 @@ def add_schedule():
                 groupFields.style.display = isGroup ? "block" : "none";
                 const studentInput = document.querySelector("#existing-student-box [name='student_name']");
                 if (studentInput) studentInput.required = !isGroup;
+                if (!isGroup) {{
+                    const sizeInput = document.getElementById("fullGroupSize");
+                    const namesInput = document.getElementById("fullGroupStudentNames");
+                    if (sizeInput) sizeInput.value = "";
+                    if (namesInput) namesInput.value = "";
+                    return;
+                }}
                 syncFullGroupFieldsForSubmit();
             }}
             function fullGroupRowTemplate() {{
@@ -10005,6 +10070,8 @@ def add_schedule():
                 syncFullGroupFieldsForSubmit();
             }}
             function syncFullGroupFieldsForSubmit() {{
+                const format = document.getElementById("lesson_format");
+                const isGroup = format && format.value === "group";
                 const names = Array.from(document.querySelectorAll("#fullGroupStudentRows input[name='group_student_name']"))
                     .map(input => input.value.trim())
                     .filter(Boolean);
@@ -10012,9 +10079,12 @@ def add_schedule():
                 const sizeInput = document.getElementById("fullGroupSize");
                 const namesInput = document.getElementById("fullGroupStudentNames");
                 const studentInput = document.querySelector("#existing-student-box [name='student_name']");
-                if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : "";
-                if (namesInput) namesInput.value = uniqueNames.join(", ");
-                if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+                if (sizeInput) sizeInput.value = isGroup ? String(uniqueNames.length) : "";
+                if (namesInput) namesInput.value = isGroup ? uniqueNames.join(", ") : "";
+                if (studentInput) {{
+                    studentInput.required = !isGroup;
+                    if (isGroup && uniqueNames.length) studentInput.value = uniqueNames[0];
+                }}
                 return uniqueNames;
             }}
             function toggleStudentMode() {{

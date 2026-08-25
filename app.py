@@ -2183,9 +2183,10 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 <div class="teacher-inline-note" id="teacherOngoingNote">Ongoing keeps this weekly pattern active. The system creates up to 260 future lessons; owner can stop or edit it later.</div>
                 <label id="teacherIntervalField">Every N weeks<input type="number" name="repeat_interval_weeks" min="1" max="8" value="1"></label>
                 <label>Start Date<input type="date" name="start_date" value="{escape(prefill_date)}" required></label>
-                <label>Course<select name="course_type_id" required>{course_options}</select></label>
+                <label>Course<select name="course_type_id" id="teacherCourseSelect" onchange="syncTeacherLessonFormat()" required>{course_options}</select></label>
+                <label>Format<select name="lesson_format" id="teacherLessonFormat" onchange="syncTeacherLessonFormat()"><option value="private">Private</option><option value="group">Group</option></select></label>
                 <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
-                <label class="full">Group Students<textarea name="group_student_names" placeholder="For group classes, list names here."></textarea></label>
+                <label class="full" id="teacherGroupStudentsField">Group Students<textarea id="teacherGroupStudentNames" name="group_student_names" placeholder="For group classes, list at least two names here."></textarea></label>
                 <div class="full teacher-billing-note">No tuition or invoice is created here. Owner can invoice later from Student / Family Billing.</div>
                 <div class="full"><button type="submit">Create Lesson Schedule</button></div>
             </form>
@@ -2241,6 +2242,10 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 const roomSelect = document.getElementById('teacherScheduleRoom');
                 const locationNameInput = document.getElementById('teacherScheduleLocationName');
                 const roomIdInput = document.getElementById('teacherScheduleRoomId');
+                const courseSelect = document.getElementById('teacherCourseSelect');
+                const lessonFormat = document.getElementById('teacherLessonFormat');
+                const groupStudentsField = document.getElementById('teacherGroupStudentsField');
+                const groupStudentNames = document.getElementById('teacherGroupStudentNames');
                 window.updateTeacherScheduleRoomId = function() {{
                     if (!roomSelect || !roomIdInput) return;
                     const selected = roomSelect.options[roomSelect.selectedIndex];
@@ -2276,10 +2281,25 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 function syncStudentMode() {{
                     const checked = document.querySelector('input[name="student_mode"]:checked');
                     const isNew = checked && checked.value === 'new';
+                    const isGroup = teacherIsGroupLesson();
                     newBox.classList.toggle('show', isNew);
                     existingField.style.display = isNew ? 'none' : 'block';
-                    if (existingStudentInput) existingStudentInput.required = !isNew;
+                    if (existingStudentInput) existingStudentInput.required = !isNew && !isGroup;
                     if (newName) newName.required = isNew;
+                }}
+                function teacherCourseIsGroup() {{
+                    if (!courseSelect || !courseSelect.options[courseSelect.selectedIndex]) return false;
+                    return courseSelect.options[courseSelect.selectedIndex].text.toLowerCase().includes('group');
+                }}
+                function teacherIsGroupLesson() {{
+                    return teacherCourseIsGroup() || (lessonFormat && lessonFormat.value === 'group');
+                }}
+                window.syncTeacherLessonFormat = function() {{
+                    if (lessonFormat && teacherCourseIsGroup()) lessonFormat.value = 'group';
+                    const isGroup = teacherIsGroupLesson();
+                    if (groupStudentsField) groupStudentsField.style.display = isGroup ? 'block' : 'none';
+                    if (groupStudentNames && !isGroup) groupStudentNames.value = '';
+                    syncStudentMode();
                 }}
                 function syncFrequency() {{
                     const value = scheduleType.value;
@@ -2301,7 +2321,20 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 modeInputs.forEach(input => input.addEventListener('change', syncStudentMode));
                 scheduleType.addEventListener('change', syncFrequency);
                 if (repeatMode) repeatMode.addEventListener('change', syncFrequency);
+                const teacherScheduleForm = document.querySelector('form[action="/teacher_add_schedule"]');
+                if (teacherScheduleForm) teacherScheduleForm.addEventListener('submit', function(e) {{
+                    if (!teacherIsGroupLesson()) return;
+                    const names = (groupStudentNames ? groupStudentNames.value : '')
+                        .split(',')
+                        .map(name => name.trim())
+                        .filter(Boolean);
+                    if (Array.from(new Set(names)).length < 2) {{
+                        e.preventDefault();
+                        alert('Group class needs at least two different students.');
+                    }}
+                }});
                 window.updateTeacherScheduleRooms();
+                window.syncTeacherLessonFormat();
                 syncStudentMode();
                 syncFrequency();
             }})();
@@ -8803,7 +8836,9 @@ def calendar():
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
       const course = selectedQuickCourse();
       const formatSelect = document.getElementById('popLessonFormat');
-      return kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+      const format = formatSelect ? formatSelect.value : 'private';
+      const isCustom = course && String(course.name || '').toLowerCase().includes('custom');
+      return kind === 'group' || (course && Number(course.is_group || 0) === 1) || (isCustom && format === 'group');
     }}
     function isQuickTrialMode() {{
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
@@ -8993,7 +9028,10 @@ def calendar():
         if (formatSelect) formatSelect.value = 'group';
       }}
       const course = selectedQuickCourse();
-      const isGroup = kind === 'group' || (course && Number(course.is_group || 0) === 1) || (formatSelect && formatSelect.value === 'group');
+      if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0) && !String(course.name || '').toLowerCase().includes('custom')) {{
+        formatSelect.value = 'private';
+      }}
+      const isGroup = isQuickGroupMode();
       const isTrial = kind === 'trial' || (course && String(course.name || '').toLowerCase().includes('trial'));
       const billingSection = document.getElementById('popBillingSection');
       if (groupFields) groupFields.style.display = isGroup ? 'block' : 'none';
@@ -9001,7 +9039,6 @@ def calendar():
       if (trialFields) trialFields.classList.toggle('show', isTrial);
       const studentSectionInput = document.getElementById('popStudent');
       if (studentSectionInput) studentSectionInput.required = !isGroup;
-      if (formatSelect && kind !== 'group' && course && !Number(course.is_group || 0)) formatSelect.value = 'private';
       syncTrialHoldFields();
       updateBillingControls();
       updateQuickCourseBilling();
@@ -10028,6 +10065,11 @@ def add_schedule():
         elif lesson_format == "group":
             is_group = 1
 
+        if not is_group:
+            group_participants = []
+            group_size = None
+            group_student_names = ""
+
         if is_group and group_participants:
             student_name = group_participants[0]["student_name"]
             group_size = str(len(group_participants))
@@ -11008,6 +11050,13 @@ def add_schedule():
                 groupFields.style.display = isGroup ? "block" : "none";
                 const studentInput = document.querySelector("#existing-student-box [name='student_name']");
                 if (studentInput) studentInput.required = !isGroup;
+                if (!isGroup) {{
+                    const sizeInput = document.getElementById("fullGroupSize");
+                    const namesInput = document.getElementById("fullGroupStudentNames");
+                    if (sizeInput) sizeInput.value = "";
+                    if (namesInput) namesInput.value = "";
+                    return;
+                }}
                 syncFullGroupFieldsForSubmit();
             }}
             function fullGroupRowTemplate() {{
@@ -11037,14 +11086,19 @@ def add_schedule():
                     .filter(Boolean);
             }}
             function syncFullGroupFieldsForSubmit() {{
+                const format = document.getElementById("lesson_format");
+                const isGroup = format && format.value === "group";
                 const names = fullGroupNames();
                 const uniqueNames = Array.from(new Set(names));
                 const sizeInput = document.getElementById("fullGroupSize");
                 const namesInput = document.getElementById("fullGroupStudentNames");
                 const studentInput = document.querySelector("#existing-student-box [name='student_name']");
-                if (sizeInput) sizeInput.value = uniqueNames.length ? String(uniqueNames.length) : "";
-                if (namesInput) namesInput.value = uniqueNames.join(", ");
-                if (studentInput && uniqueNames.length) studentInput.value = uniqueNames[0];
+                if (sizeInput) sizeInput.value = isGroup ? String(uniqueNames.length) : "";
+                if (namesInput) namesInput.value = isGroup ? uniqueNames.join(", ") : "";
+                if (studentInput) {{
+                    studentInput.required = !isGroup;
+                    if (isGroup && uniqueNames.length) studentInput.value = uniqueNames[0];
+                }}
                 return uniqueNames;
             }}
             function toggleStudentMode() {{
