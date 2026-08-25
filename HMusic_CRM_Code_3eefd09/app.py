@@ -12726,8 +12726,9 @@ def calendar_lesson_action():
         conn.close()
         return {"ok": False, "error": "Lesson not found"}, 404
     is_owner = require_owner()
+    is_teacher = require_teacher() and not is_owner
     teacher_name = session.get("teacher_name")
-    if require_teacher() and not is_owner and row[2] != teacher_name:
+    if is_teacher and row[2] != teacher_name:
         conn.close()
         return {"ok": False, "error": "Permission denied"}, 403
 
