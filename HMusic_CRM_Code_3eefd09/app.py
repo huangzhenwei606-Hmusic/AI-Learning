@@ -5094,6 +5094,8 @@ def ensure_student_detail_schema():
         ("status", "status TEXT"),
         ("invoice_type", "invoice_type TEXT"),
         ("created_at", "created_at TEXT"),
+        ("payment_reminder_sent_at", "payment_reminder_sent_at TEXT"),
+        ("payment_reminder_count", "payment_reminder_count INTEGER DEFAULT 0"),
     ]:
         add_column_if_missing(cursor, "invoices", column_name, column_sql)
 
@@ -5245,7 +5247,8 @@ def student_detail(name):
     payments = cursor.fetchall()
 
     cursor.execute("""
-    SELECT id, charge_lessons, amount, status, invoice_type, created_at
+    SELECT id, charge_lessons, amount, status, invoice_type, created_at,
+           COALESCE(payment_reminder_sent_at, ''), COALESCE(payment_reminder_count, 0)
     FROM invoices
     WHERE student_name = ?
     ORDER BY id DESC
@@ -5410,7 +5413,7 @@ def student_detail(name):
 
     payment_html = pending_fee_html
     for invoice in invoices:
-        invoice_id, charge_lessons, amount, status, invoice_type, created_at = invoice
+        invoice_id, charge_lessons, amount, status, invoice_type, created_at, reminder_sent_at, reminder_count = invoice
         status_text = status or "unpaid"
         action_html = ""
         if require_owner() and status_text != "paid":
@@ -5421,6 +5424,17 @@ def student_detail(name):
                 <button type="submit">Mark paid</button>
             </form>
             """
+        reminder_html = ""
+        reminder_meta = ""
+        if require_owner() and status_text in ("unpaid", "payment_failed"):
+            reminder_html = f"""
+            <form class="inline-pay-form" method="POST" action="/send_invoice_payment_reminder/{invoice_id}" onsubmit="return confirm('Send payment reminder for invoice #{invoice_id}?');">
+                <input type="hidden" name="return_to" value="/student/{student_url_name}#payments">
+                <button type="submit">Send reminder</button>
+            </form>
+            """
+            if reminder_sent_at or reminder_count:
+                reminder_meta = f"<p class='muted reminder-meta'>Reminder: {escape(str(reminder_count or 0))} sent{(' · last ' + escape(str(reminder_sent_at))) if reminder_sent_at else ''}</p>"
         delete_html = ""
         if require_owner() and status_text in ("unpaid", "payment_failed"):
             delete_html = f"""
@@ -5434,9 +5448,11 @@ def student_detail(name):
                 <div>
                     <b>Invoice #{invoice_id} · ${escape(str(amount or '0'))}</b>
                     <p>{escape(str(charge_lessons or 0))} lesson(s) · {escape(str(invoice_type or 'invoice'))}</p>
+                    {reminder_meta}
                 </div>
                 <div class="payment-actions">
                     <span class="pill {'ok' if status_text == 'paid' else 'amber'}">{escape(str(status_text).title())}</span>
+                    {reminder_html}
                     {action_html}
                     {delete_html}
                 </div>
@@ -5852,6 +5868,147 @@ def delete_invoice(invoice_id):
     conn.commit()
     conn.close()
     return redirect(f"/student/{quote(student_name)}#payments")
+
+
+@app.route("/send_invoice_payment_reminder/<int:invoice_id>", methods=["POST"])
+def send_invoice_payment_reminder(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    ensure_v33_schema()
+    ensure_student_detail_schema()
+    return_to = (request.form.get("return_to") or "/invoices").strip()
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = "/invoices"
+
+    def reminder_redirect(state, message=""):
+        if return_to == "/invoices":
+            query = {"reminder": state}
+            if message:
+                query["message"] = message
+            return redirect(f"/invoices?{urlencode(query)}")
+        return redirect(return_to)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        COALESCE(charge_lessons, 0),
+        COALESCE(amount, 0),
+        COALESCE(status, 'unpaid'),
+        COALESCE(invoice_type, 'invoice'),
+        COALESCE(payment_reminder_count, 0)
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return reminder_redirect("missing")
+
+    _, student_name, charge_lessons, amount, status, invoice_type, reminder_count = invoice
+    if str(status or "unpaid").lower() == "paid":
+        conn.close()
+        return reminder_redirect("paid")
+
+    cursor.execute("""
+    SELECT p.id, COALESCE(p.email, '')
+    FROM parent_profiles p
+    JOIN parent_students ps ON ps.parent_id = p.id
+    WHERE ps.student_name = ?
+    AND ps.active = 1
+    AND p.active = 1
+    ORDER BY p.id
+    LIMIT 1
+    """, (student_name,))
+    parent = cursor.fetchone()
+
+    if not parent:
+        cursor.execute("""
+        SELECT p.id, COALESCE(p.email, '')
+        FROM parent_profiles p
+        JOIN students s ON LOWER(COALESCE(s.parent_email, '')) = LOWER(COALESCE(p.email, ''))
+        WHERE s.name = ?
+        AND p.active = 1
+        ORDER BY p.id
+        LIMIT 1
+        """, (student_name,))
+        parent = cursor.fetchone()
+
+    if not parent or not hmusic_is_real_email(parent[1]):
+        conn.close()
+        return reminder_redirect("no_email")
+
+    parent_id, parent_email = parent
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    invoice_link = public_url_for(f"/parent_invoice/{invoice_id}")
+    title = f"H-Music Payment Reminder: {student_name}"
+    body = (
+        f"Hi, this is a friendly reminder that {student_name}'s "
+        f"{invoice_type or 'tuition'} invoice #{invoice_id} for ${hmusic_money(amount)} is still open.\n\n"
+        f"Package: {charge_lessons:g} lesson(s)\n"
+        f"Please open the H-Music parent app to review and pay when convenient:\n{invoice_link}\n\n"
+        "Thank you,\nH-Music"
+    )
+    cursor.execute("""
+    INSERT INTO notification_delivery_queue (
+        user_role,
+        user_key,
+        channel,
+        destination,
+        title,
+        body,
+        link_url,
+        related_type,
+        related_id,
+        status,
+        created_at
+    )
+    VALUES (?, ?, 'email', ?, ?, ?, ?, 'invoice_payment_reminder', ?, 'pending', ?)
+    """, (
+        "parent",
+        str(parent_id),
+        parent_email,
+        title,
+        body,
+        invoice_link,
+        invoice_id,
+        now
+    ))
+    queue_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    sent, response = send_queued_email_now(queue_id)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoices
+    SET payment_reminder_count = ?,
+        payment_reminder_sent_at = CASE WHEN ? THEN ? ELSE payment_reminder_sent_at END
+    WHERE id = ?
+    """, (int(reminder_count or 0) + 1, 1 if sent else 0, now, invoice_id))
+    conn.commit()
+    conn.close()
+
+    create_notification(
+        "parent",
+        str(parent_id),
+        "H-Music payment reminder",
+        f"{student_name} has a tuition invoice ready for payment.",
+        f"/parent_invoice/{invoice_id}",
+        related_type="invoice_payment_reminder",
+        related_id=invoice_id,
+        queue_delivery=False
+    )
+
+    if sent:
+        return reminder_redirect("sent")
+    return reminder_redirect("failed", str(response or "Unknown error"))
 
 
 @app.route("/teacher_lesson_notes", methods=["GET", "POST"])
@@ -7944,7 +8101,7 @@ def calendar():
             <label><span class="detail-label">Course</span><select class="panel-field" id="panelDetailCourse" onchange="updatePanelCourseBilling()">{quick_course_options}</select></label>
             <label><span class="detail-label">Duration</span><input class="panel-field" type="number" id="panelDetailDuration" min="15" max="240" step="5" onchange="updatePanelChargePreview()"></label>
             <label><span class="detail-label">Location</span><select class="panel-field" id="panelDetailLocation" onchange="updatePanelRooms()">{quick_location_options}</select></label>
-            <label><span class="detail-label">Room</span><select class="panel-field" id="panelDetailRoom" onchange="updatePanelRoomId()"></select></label>
+            <label><span class="detail-label">Room</span><select class="panel-field" id="panelDetailRoom" onchange="updatePanelRoomId(); syncPanelRescheduleRoom()"></select></label>
             <label><span class="detail-label">Start</span><input class="panel-field" type="time" id="panelDetailTime" onchange="updatePanelChargePreview()"></label>
             <label><span class="detail-label">Repeat</span><select class="panel-field" id="panelDetailScheduleType"><option value="one_time">One time</option><option value="weekly">Weekly</option></select></label>
             <label><span class="detail-label">Price type</span><select class="panel-field" id="panelBillingBasis" onchange="updatePanelChargePreview()"><option value="hourly">Hourly</option><option value="per_class">Per class</option></select></label>
@@ -8658,6 +8815,7 @@ def calendar():
         roomSelect.appendChild(opt);
       }}
       updatePanelRoomId();
+      syncPanelRescheduleRoom();
     }}
     function updatePanelRoomId() {{
       const roomSelect = document.getElementById('panelDetailRoom');
@@ -8665,6 +8823,12 @@ def calendar():
       const selected = roomSelect.options[roomSelect.selectedIndex];
       roomSelect.dataset.roomId = selected ? (selected.dataset.roomId || '') : '';
       roomSelect.dataset.locationName = selected ? (selected.dataset.locationName || '') : '';
+    }}
+    function syncPanelRescheduleRoom() {{
+      const roomSelect = document.getElementById('panelDetailRoom');
+      const quickRoom = document.getElementById('panelNewRoom');
+      if (!roomSelect || !quickRoom) return;
+      quickRoom.value = roomSelect.value || '';
     }}
     function selectedPanelCourse() {{
       const courseSelect = document.getElementById('panelDetailCourse');
