@@ -19954,6 +19954,37 @@ def mark_message_thread_read(thread_id):
     conn.close()
 
 
+def mark_message_inbox_read(viewer_role, viewer_key):
+    ensure_v29_schema()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE message_participants
+    SET last_read_at = ?
+    WHERE participant_role = ?
+    AND participant_key = ?
+    AND active = 1
+    """, (now, viewer_role, str(viewer_key)))
+    cursor.execute("""
+    UPDATE messages
+    SET read_at = ?
+    WHERE recipient_role = ?
+    AND read_at IS NULL
+    """, (now, viewer_role))
+    cursor.execute("""
+    UPDATE notifications
+    SET read_at = ?
+    WHERE user_role = ?
+    AND user_key = ?
+    AND link_url LIKE '/message_thread/%'
+    AND read_at IS NULL
+    """, (now, viewer_role, str(viewer_key)))
+    conn.commit()
+    conn.close()
+
+
 def get_message_inbox_threads(viewer_role, viewer_key=None):
     ensure_v29_schema()
 
@@ -20047,7 +20078,7 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
     return rows
 
 
-def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None):
+def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None, mark_all_read_href=None):
     rows = ""
     for t in rows_data:
         unread_badge = f"<span class='status-badge unread'>{t[10]} unread</span>" if t[10] else "<span class='status-badge read'>Read</span>"
@@ -20078,6 +20109,14 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
         action_buttons += f' <a class="button" href="{new_href}">{new_label}</a>'
     if notifications_href:
         action_buttons += f' <a class="button" href="{notifications_href}">Notifications</a>'
+    if mark_all_read_href:
+        unread_total = sum(int(t[10] or 0) for t in rows_data)
+        disabled = "disabled" if unread_total <= 0 else ""
+        action_buttons += f"""
+        <form class="inline-action" method="POST" action="{mark_all_read_href}" onsubmit="return confirm('Mark all messages as read?');">
+            <button class="button secondary" type="submit" {disabled}>Mark all read</button>
+        </form>
+        """
 
     is_parent_app = back_href.startswith("/parent") or new_href == "/new_parent_message"
     bottom_nav_html = parent_bottom_nav("messages") if is_parent_app else ""
@@ -20093,7 +20132,10 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
             .container {{ background:white; min-height:100vh; padding:max(22px, env(safe-area-inset-top)) 18px {page_padding}; }}
             h1 {{ font-size:30px; line-height:1.08; margin:0 0 18px; }}
             .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }}
-            a.button {{ display:inline-block; background:#4f46e5; color:white; padding:12px 14px; border-radius:8px; text-decoration:none; font-weight:bold; margin:0; }}
+            a.button, button.button {{ display:inline-flex; align-items:center; justify-content:center; background:#4f46e5; color:white; padding:12px 14px; border:0; border-radius:8px; text-decoration:none; font-weight:bold; margin:0; min-height:42px; cursor:pointer; }}
+            button.button.secondary {{ background:#111827; }}
+            button.button:disabled {{ opacity:.45; cursor:not-allowed; }}
+            .inline-action {{ margin:0; }}
             table {{ width:100%; border-collapse:collapse; margin-top:18px; }}
             th, td {{ padding:10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }}
             th {{ background:#eeeeff; }}
@@ -20379,8 +20421,18 @@ def messages():
         rows,
         new_href="/new_owner_message",
         new_label="New Message",
-        notifications_href="/notifications"
+        notifications_href="/notifications",
+        mark_all_read_href="/messages/mark_all_read"
     )
+
+
+@app.route("/messages/mark_all_read", methods=["POST"])
+def messages_mark_all_read():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    mark_message_inbox_read("owner", "owner")
+    return redirect("/messages")
 
 
 @app.route("/new_owner_message", methods=["GET", "POST"])
