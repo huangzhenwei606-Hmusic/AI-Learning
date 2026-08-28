@@ -14148,18 +14148,20 @@ def invoices():
     params = []
 
     if status_filter != "all":
-        where_clauses.append("COALESCE(status, 'unpaid') = ?")
+        where_clauses.append("COALESCE(i.status, 'unpaid') = ?")
         params.append(status_filter)
 
     if search:
         like = f"%{search.lower()}%"
         where_clauses.append("""
         (
-            LOWER(COALESCE(student_name, '')) LIKE ?
-            OR CAST(id AS TEXT) LIKE ?
+            LOWER(COALESCE(i.student_name, '')) LIKE ?
+            OR LOWER(COALESCE(pp.parent_name, '')) LIKE ?
+            OR LOWER(COALESCE(pp.email, '')) LIKE ?
+            OR CAST(i.id AS TEXT) LIKE ?
         )
         """)
-        params.extend([like, f"%{search}%"])
+        params.extend([like, like, like, f"%{search}%"])
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -14168,16 +14170,31 @@ def invoices():
 
     cursor.execute(f"""
     SELECT
-        id,
-        COALESCE(student_name, ''),
-        COALESCE(charge_lessons, 0),
-        COALESCE(amount, 0),
-        COALESCE(status, 'unpaid'),
-        COALESCE(invoice_type, 'invoice'),
-        COALESCE(created_at, '')
-    FROM invoices
+        i.id,
+        COALESCE(i.student_name, ''),
+        COALESCE(i.charge_lessons, 0),
+        COALESCE(i.amount, 0),
+        COALESCE(i.status, 'unpaid'),
+        COALESCE(i.invoice_type, 'invoice'),
+        COALESCE(i.created_at, ''),
+        pp.id,
+        COALESCE(pp.parent_name, ''),
+        COALESCE(pp.email, '')
+    FROM invoices i
+    LEFT JOIN parent_students ps
+        ON ps.student_name = i.student_name
+        AND ps.active = 1
+        AND ps.id = (
+            SELECT ps2.id
+            FROM parent_students ps2
+            WHERE ps2.student_name = i.student_name
+            AND ps2.active = 1
+            ORDER BY ps2.id DESC
+            LIMIT 1
+        )
+    LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
     {where_sql}
-    ORDER BY id DESC
+    ORDER BY i.id DESC
     LIMIT 300
     """, params)
 
@@ -14239,9 +14256,14 @@ def invoices():
 
     rows = ""
 
-    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at in invoice_rows:
+    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, parent_id, parent_name, parent_email in invoice_rows:
         student_safe = escape(str(student_name or "-"))
         student_href = quote(str(student_name or ""), safe="")
+        parent_label = str(parent_name or parent_email or "No parent linked")
+        parent_html = (
+            f'<a class="student-link" href="/parent_admin/{parent_id}">{escape(parent_label)}</a>'
+            if parent_id else f'<span class="muted">{escape(parent_label)}</span>'
+        )
         status_safe = escape(status_label(status))
         type_safe = escape(type_label(invoice_type))
         if status == "paid":
@@ -14259,6 +14281,10 @@ def invoices():
                 <a class="student-link" href="/student/{student_href}">{student_safe}</a>
                 <div class="muted">{type_safe}</div>
             </td>
+            <td>
+                {parent_html}
+                <div class="muted">{escape(str(parent_email or ''))}</div>
+            </td>
             <td class="number">{charge_lessons:g}</td>
             <td class="amount">${hmusic_money(amount)}</td>
             <td><span class="status {status_class(status)}">{status_safe}</span></td>
@@ -14268,7 +14294,7 @@ def invoices():
         """
 
     if not rows:
-        rows = "<tr><td colspan='7' class='empty'>No invoices match these filters.</td></tr>"
+        rows = "<tr><td colspan='8' class='empty'>No invoices match these filters.</td></tr>"
 
     def active_tab(value):
         return " active" if value == status_filter else ""
@@ -14354,7 +14380,7 @@ def invoices():
                 </div>
                 <div class="filters">
                     <form method="GET" action="/invoices">
-                        <input name="q" value="{escape(search, quote=True)}" placeholder="Search student or invoice #">
+                        <input name="q" value="{escape(search, quote=True)}" placeholder="Search student, parent, email, or invoice #">
                         <select name="status">
                             <option value="all" {"selected" if status_filter == "all" else ""}>All statuses</option>
                             <option value="unpaid" {"selected" if status_filter == "unpaid" else ""}>Unpaid</option>
@@ -14377,6 +14403,7 @@ def invoices():
                         <tr>
                             <th>Invoice</th>
                             <th>Student</th>
+                            <th>Parent</th>
                             <th class="number">Lessons</th>
                             <th class="amount">Amount</th>
                             <th>Status</th>
@@ -14832,11 +14859,14 @@ def student_ledger(name):
         if not parent_can_access_student(session.get("parent_id"), name):
             return "<h1>Permission denied</h1>"
 
+    ensure_v321_schema()
+    ensure_student_detail_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     cursor.execute("""
     SELECT
+        id,
         entry_type,
         amount,
         description,
@@ -14850,25 +14880,74 @@ def student_ledger(name):
 
     cursor.execute("""
     SELECT COALESCE(SUM(amount), 0)
-    FROM student_ledger
+    FROM invoices
     WHERE student_name = ?
+    AND COALESCE(status, 'unpaid') != 'paid'
     """, (name,))
 
-    balance = cursor.fetchone()[0]
+    balance = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT id, COALESCE(charge_lessons, 0), COALESCE(amount, 0),
+           COALESCE(status, 'unpaid'), COALESCE(invoice_type, 'invoice'),
+           COALESCE(created_at, '')
+    FROM invoices
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+    invoices = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, COALESCE(payment_date, ''), COALESCE(amount, 0),
+           COALESCE(lessons_added, 0), COALESCE(payment_method, 'Payment')
+    FROM payments
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+    payments = cursor.fetchall()
 
     conn.close()
 
     rows = ""
 
-    for entry in entries:
+    combined_rows = []
+    for entry_id, entry_type, amount, description, created_at in entries:
+        combined_rows.append((created_at or "", f"Ledger #{entry_id}", entry_type, amount, description, ""))
+    for invoice_id, lessons, amount, status, invoice_type, created_at in invoices:
+        action = f'<a href="/parent_invoice/{invoice_id}">Open invoice</a>'
+        combined_rows.append((
+            created_at or "",
+            f"Invoice #{invoice_id}",
+            invoice_type,
+            amount,
+            f"{status.replace('_', ' ')} · {lessons:g} lesson(s)",
+            action
+        ))
+    for payment_id, payment_date, amount, lessons_added, payment_method in payments:
+        combined_rows.append((
+            payment_date or "",
+            f"Payment #{payment_id}",
+            "payment",
+            -float(amount or 0),
+            f"{payment_method} · +{lessons_added:g} lesson(s)",
+            ""
+        ))
+
+    combined_rows.sort(key=lambda row: str(row[0] or ""), reverse=True)
+
+    for entry in combined_rows:
         rows += f"""
         <tr>
-            <td>{entry[3]}</td>
-            <td>{entry[0]}</td>
-            <td>${entry[1]}</td>
-            <td>{entry[2]}</td>
+            <td>{escape(str(entry[0] or ''))}</td>
+            <td>{escape(str(entry[1] or ''))}</td>
+            <td>{escape(str(entry[2] or ''))}</td>
+            <td>${hmusic_money(entry[3])}</td>
+            <td>{escape(str(entry[4] or ''))}</td>
+            <td>{entry[5]}</td>
         </tr>
         """
+    if not rows:
+        rows = "<tr><td colspan='6'>No ledger activity yet.</td></tr>"
 
     return f"""
     <html>
@@ -14929,15 +15008,17 @@ def student_ledger(name):
             <h1>{name} Ledger</h1>
 
             <div class="balance">
-                Balance: ${balance}
+                Unpaid balance: ${hmusic_money(balance)}
             </div>
 
             <table>
                 <tr>
                     <th>Date</th>
+                    <th>Record</th>
                     <th>Type</th>
                     <th>Amount</th>
                     <th>Description</th>
+                    <th>Link</th>
                 </tr>
 
                 {rows}
@@ -15712,6 +15793,32 @@ def parent_admin(parent_id):
     """, (parent_id,))
     activities = cursor.fetchall()
 
+    active_student_names = [row[1] for row in linked_students if row[3] == 1]
+    family_invoice_records = []
+    family_payment_records = []
+    if active_student_names:
+        placeholders = ",".join(["?"] * len(active_student_names))
+        cursor.execute(f"""
+        SELECT id, student_name, COALESCE(charge_lessons, 0), COALESCE(amount, 0),
+               COALESCE(status, 'unpaid'), COALESCE(invoice_type, 'invoice'),
+               COALESCE(created_at, '')
+        FROM invoices
+        WHERE student_name IN ({placeholders})
+        ORDER BY COALESCE(created_at, '') DESC, id DESC
+        LIMIT 12
+        """, active_student_names)
+        family_invoice_records = cursor.fetchall()
+
+        cursor.execute(f"""
+        SELECT id, student_name, COALESCE(amount, 0), COALESCE(lessons_added, 0),
+               COALESCE(payment_method, 'Payment'), COALESCE(payment_date, '')
+        FROM payments
+        WHERE student_name IN ({placeholders})
+        ORDER BY COALESCE(payment_date, '') DESC, id DESC
+        LIMIT 12
+        """, active_student_names)
+        family_payment_records = cursor.fetchall()
+
     conn.close()
 
     linked_rows = ""
@@ -15771,6 +15878,37 @@ def parent_admin(parent_id):
 
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No activity yet.</td></tr>"
+
+    family_invoice_rows = ""
+    for inv in family_invoice_records:
+        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at = inv
+        family_invoice_rows += f"""
+        <tr>
+            <td><a class="invoice-link" href="/parent_invoice/{invoice_id}">#{invoice_id}</a><span>{escape(str(created_at or ''))}</span></td>
+            <td><a href="/student/{quote(str(student_name or ''), safe='')}">{escape(str(student_name or ''))}</a></td>
+            <td>{escape(str(invoice_type or 'invoice')).replace('_', ' ')}</td>
+            <td>{lessons:g}</td>
+            <td>${hmusic_money(amount)}</td>
+            <td><span class="pill {'good' if str(invoice_status).lower() == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span></td>
+        </tr>
+        """
+    if not family_invoice_rows:
+        family_invoice_rows = "<tr><td colspan='6' class='empty'>No invoices for this parent yet.</td></tr>"
+
+    family_payment_rows = ""
+    for payment in family_payment_records:
+        payment_id, student_name, amount, lessons_added, payment_method, payment_date = payment
+        family_payment_rows += f"""
+        <tr>
+            <td>#{payment_id}<span>{escape(str(payment_date or ''))}</span></td>
+            <td><a href="/student/{quote(str(student_name or ''), safe='')}">{escape(str(student_name or ''))}</a></td>
+            <td>${hmusic_money(amount)}</td>
+            <td>{lessons_added:g}</td>
+            <td>{escape(str(payment_method or 'Payment'))}</td>
+        </tr>
+        """
+    if not family_payment_rows:
+        family_payment_rows = "<tr><td colspan='5' class='empty'>No payments for this parent yet.</td></tr>"
 
     status = "Active" if parent[5] == 1 else "Inactive"
     status_class = "good" if parent[5] == 1 else "neutral"
@@ -15869,6 +16007,8 @@ def parent_admin(parent_id):
             .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
             .activity-table {{ min-width:760px; }}
+            .invoice-link {{ color:var(--blue-dark); font-weight:900; display:block; }}
+            .invoice-link + span, td > span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
             @media (max-width:900px) {{
                 .topbar, .head, .layout, .add-grid {{ grid-template-columns:1fr; }}
                 .tabs, .top-actions {{ justify-content:flex-start; }}
@@ -15981,6 +16121,35 @@ def parent_admin(parent_id):
                                     <th>Action</th>
                                 </tr>
                                 {linked_rows}
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Family billing</h2><span>Invoices and payments for linked children</span></div>
+                        <div class="table-wrap">
+                            <table>
+                                <tr>
+                                    <th>Invoice</th>
+                                    <th>Student</th>
+                                    <th>Type</th>
+                                    <th>Lessons</th>
+                                    <th>Amount</th>
+                                    <th>Status</th>
+                                </tr>
+                                {family_invoice_rows}
+                            </table>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="activity-table">
+                                <tr>
+                                    <th>Payment</th>
+                                    <th>Student</th>
+                                    <th>Amount</th>
+                                    <th>Lessons</th>
+                                    <th>Method</th>
+                                </tr>
+                                {family_payment_rows}
                             </table>
                         </div>
                     </section>

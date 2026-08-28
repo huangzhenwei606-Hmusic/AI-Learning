@@ -17600,11 +17600,15 @@ def student_ledger(name):
         if not parent_can_access_student(session.get("parent_id"), name):
             return "<h1>Permission denied</h1>"
 
+    ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    ensure_student_detail_schema(cursor)
+    conn.commit()
 
     cursor.execute("""
     SELECT
+        id,
         entry_type,
         amount,
         description,
@@ -17618,25 +17622,74 @@ def student_ledger(name):
 
     cursor.execute("""
     SELECT COALESCE(SUM(amount), 0)
-    FROM student_ledger
+    FROM invoices
     WHERE student_name = ?
+    AND COALESCE(status, 'unpaid') != 'paid'
     """, (name,))
 
-    balance = cursor.fetchone()[0]
+    balance = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT id, COALESCE(charge_lessons, 0), COALESCE(amount, 0),
+           COALESCE(status, 'unpaid'), COALESCE(invoice_type, 'invoice'),
+           COALESCE(created_at, '')
+    FROM invoices
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+    invoices = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, COALESCE(payment_date, ''), COALESCE(amount, 0),
+           COALESCE(lessons_added, 0), COALESCE(payment_method, 'Payment')
+    FROM payments
+    WHERE student_name = ?
+    ORDER BY id DESC
+    """, (name,))
+    payments = cursor.fetchall()
 
     conn.close()
 
     rows = ""
 
-    for entry in entries:
+    combined_rows = []
+    for entry_id, entry_type, amount, description, created_at in entries:
+        combined_rows.append((created_at or "", f"Ledger #{entry_id}", entry_type, amount, description, ""))
+    for invoice_id, lessons, amount, status, invoice_type, created_at in invoices:
+        action = f'<a href="/parent_invoice/{invoice_id}">Open invoice</a>'
+        combined_rows.append((
+            created_at or "",
+            f"Invoice #{invoice_id}",
+            invoice_type,
+            amount,
+            f"{status.replace('_', ' ')} · {lessons:g} lesson(s)",
+            action
+        ))
+    for payment_id, payment_date, amount, lessons_added, payment_method in payments:
+        combined_rows.append((
+            payment_date or "",
+            f"Payment #{payment_id}",
+            "payment",
+            -float(amount or 0),
+            f"{payment_method} · +{lessons_added:g} lesson(s)",
+            ""
+        ))
+
+    combined_rows.sort(key=lambda row: str(row[0] or ""), reverse=True)
+
+    for entry in combined_rows:
         rows += f"""
         <tr>
-            <td>{entry[3]}</td>
-            <td>{entry[0]}</td>
-            <td>${entry[1]}</td>
-            <td>{entry[2]}</td>
+            <td>{escape(str(entry[0] or ''))}</td>
+            <td>{escape(str(entry[1] or ''))}</td>
+            <td>{escape(str(entry[2] or ''))}</td>
+            <td>${hmusic_money(entry[3])}</td>
+            <td>{escape(str(entry[4] or ''))}</td>
+            <td>{entry[5]}</td>
         </tr>
         """
+    if not rows:
+        rows = "<tr><td colspan='6'>No ledger activity yet.</td></tr>"
 
     return f"""
     <html>
@@ -17697,15 +17750,17 @@ def student_ledger(name):
             <h1>{name} Ledger</h1>
 
             <div class="balance">
-                Balance: ${balance}
+                Unpaid balance: ${hmusic_money(balance)}
             </div>
 
             <table>
                 <tr>
                     <th>Date</th>
+                    <th>Record</th>
                     <th>Type</th>
                     <th>Amount</th>
                     <th>Description</th>
+                    <th>Link</th>
                 </tr>
 
                 {rows}
