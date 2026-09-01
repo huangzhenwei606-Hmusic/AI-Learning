@@ -16194,6 +16194,20 @@ def parent_admin(parent_id):
     status = "Active" if parent[5] == 1 else "Inactive"
     status_class = "good" if parent[5] == 1 else "neutral"
     active_link_count = sum(1 for row in linked_students if row[3] == 1)
+    if len(active_student_names) == 1:
+        family_billing_actions = f"""
+        <a class="button primary compact" href="/create_package_invoice/{quote(str(active_student_names[0] or ''), safe='')}">Add billing</a>
+        """
+    elif len(active_student_names) > 1:
+        billing_links = ""
+        for student_name in active_student_names:
+            safe_name = escape(str(student_name or 'Student'))
+            billing_links += f"""
+            <a class="button compact" href="/create_package_invoice/{quote(str(student_name or ''), safe='')}">Add {safe_name}</a>
+            """
+        family_billing_actions = billing_links
+    else:
+        family_billing_actions = ""
     try:
         unread_count = get_unread_notification_count("parent", str(parent[0]))
     except Exception:
@@ -16271,6 +16285,8 @@ def parent_admin(parent_id):
             .button, button {{ min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); padding:0 11px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }}
             .button.primary, button.primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
             .button.danger, button.danger {{ color:var(--red); border-color:#fecaca; background:#fff; }}
+            .button.compact {{ min-height:28px; padding:0 9px; font-size:11px; }}
+            .panel-head-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }}
             .inline-form {{ display:inline; margin:0; }}
             .hint-line {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }}
             .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
@@ -16407,7 +16423,13 @@ def parent_admin(parent_id):
                     </section>
 
                     <section class="panel">
-                        <div class="panel-head"><h2>Family billing</h2><span>Invoices and payments for linked children</span></div>
+                        <div class="panel-head">
+                            <h2>Family billing</h2>
+                            <div class="panel-head-actions">
+                                <span>Invoices and payments for linked children</span>
+                                {family_billing_actions}
+                            </div>
+                        </div>
                         <div class="table-wrap">
                             <table>
                                 <tr>
