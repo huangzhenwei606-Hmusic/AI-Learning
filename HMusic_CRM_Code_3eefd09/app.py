@@ -5870,6 +5870,286 @@ def delete_invoice(invoice_id):
     return redirect(f"/student/{quote(student_name)}#payments")
 
 
+@app.route("/edit_invoice/<int:invoice_id>", methods=["GET", "POST"])
+def edit_invoice(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    editable_statuses = ("unpaid", "payment_failed")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        i.id,
+        i.student_name,
+        COALESCE(i.charge_lessons, 0),
+        COALESCE(i.amount, 0),
+        COALESCE(i.status, 'unpaid'),
+        COALESCE(i.invoice_type, 'invoice'),
+        COALESCE(i.created_at, ''),
+        COALESCE(i.due_date, ''),
+        COALESCE(i.payment_methods, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, ''),
+        pp.id,
+        COALESCE(pp.parent_name, ''),
+        COALESCE(pp.email, '')
+    FROM invoices i
+    LEFT JOIN parent_students ps
+        ON ps.student_name = i.student_name
+        AND ps.active = 1
+        AND ps.id = (
+            SELECT ps2.id
+            FROM parent_students ps2
+            WHERE ps2.student_name = i.student_name
+            AND ps2.active = 1
+            ORDER BY ps2.id DESC
+            LIMIT 1
+        )
+    LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
+    WHERE i.id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+
+    if not invoice:
+        conn.close()
+        return redirect("/invoices")
+
+    (
+        invoice_id,
+        student_name,
+        charge_lessons,
+        amount,
+        status,
+        invoice_type,
+        created_at,
+        due_date,
+        payment_methods,
+        coverage_title,
+        coverage_class,
+        coverage_start,
+        coverage_note,
+        parent_id,
+        parent_name,
+        parent_email,
+    ) = invoice
+
+    status = (status or "unpaid").lower()
+    if status not in editable_statuses:
+        conn.close()
+        return f"""
+        <html>
+        <head>
+            <title>Invoice Locked</title>
+            <style>
+                body {{ margin:0; font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; }}
+                .page {{ max-width:720px; margin:80px auto; padding:0 20px; }}
+                .card {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:28px; box-shadow:0 14px 35px rgba(17,24,39,.06); }}
+                h1 {{ margin:0 0 10px; }}
+                p {{ color:#667085; font-weight:700; line-height:1.5; }}
+                a {{ display:inline-flex; margin-top:14px; padding:10px 14px; border-radius:9px; background:#1d65ad; color:#fff; text-decoration:none; font-weight:900; }}
+            </style>
+        </head>
+        <body>
+            <div class="page">
+                <div class="card">
+                    <h1>Invoice cannot be edited</h1>
+                    <p>Invoice #{invoice_id} is currently <b>{escape(status.replace("_", " "))}</b>. Only unpaid or failed invoices can be edited directly.</p>
+                    <a href="/invoices">Back to Invoices</a>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+    error = ""
+
+    def parse_money(raw, default=0):
+        try:
+            return round(float(str(raw or default).replace("$", "").replace(",", "").strip()), 2)
+        except Exception:
+            return round(float(default or 0), 2)
+
+    def parse_lessons(raw, default=0):
+        try:
+            return round(float(str(raw or default).strip()), 2)
+        except Exception:
+            return round(float(default or 0), 2)
+
+    if request.method == "POST":
+        new_amount = parse_money(request.form.get("amount"), amount)
+        new_lessons = parse_lessons(request.form.get("charge_lessons"), charge_lessons)
+        new_due_date = (request.form.get("due_date") or "").strip()
+        new_coverage_title = (request.form.get("coverage_title") or "").strip()
+        new_coverage_class = (request.form.get("coverage_class") or "").strip()
+        new_coverage_start = (request.form.get("coverage_start") or "").strip()
+        new_coverage_note = (request.form.get("coverage_note") or "").strip()
+        method_order = ["ach", "zelle", "paypal"]
+        selected_methods = [method for method in method_order if method in request.form.getlist("payment_methods")]
+        new_payment_methods = ",".join(selected_methods) or "ach,zelle,paypal"
+
+        if new_amount < 0:
+            error = "Amount cannot be negative."
+        elif new_lessons < 0:
+            error = "Lessons cannot be negative."
+        else:
+            cursor.execute("""
+            UPDATE invoices
+            SET charge_lessons = ?,
+                amount = ?,
+                due_date = ?,
+                payment_methods = ?,
+                coverage_title = ?,
+                coverage_class = ?,
+                coverage_start = ?,
+                coverage_note = ?
+            WHERE id = ?
+            """, (
+                new_lessons,
+                new_amount,
+                new_due_date,
+                new_payment_methods,
+                new_coverage_title,
+                new_coverage_class,
+                new_coverage_start,
+                new_coverage_note,
+                invoice_id,
+            ))
+            conn.commit()
+            conn.close()
+            return redirect("/invoices?edited=1")
+
+        amount = new_amount
+        charge_lessons = new_lessons
+        due_date = new_due_date
+        coverage_title = new_coverage_title
+        coverage_class = new_coverage_class
+        coverage_start = new_coverage_start
+        coverage_note = new_coverage_note
+        payment_methods = new_payment_methods
+
+    conn.close()
+
+    methods = {item.strip().lower() for item in (payment_methods or "ach,zelle,paypal").split(",") if item.strip()}
+
+    def checked(method):
+        return "checked" if method in methods else ""
+
+    family_name = parent_name or parent_email or "No parent linked"
+    parent_link = f"/parent_admin/{parent_id}" if parent_id else "/invoices"
+    error_html = f"<div class='notice warn'>{escape(error)}</div>" if error else ""
+
+    return f"""
+    <html>
+    <head>
+        <title>Edit Invoice #{invoice_id}</title>
+        <style>
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; }}
+            a {{ color:#1d65ad; font-weight:900; text-decoration:none; }}
+            .page {{ max-width:940px; margin:0 auto; padding:42px 24px; }}
+            .shell {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; box-shadow:0 14px 35px rgba(17,24,39,.06); overflow:hidden; }}
+            .head {{ padding:26px 28px 16px; border-bottom:1px solid #edf0f5; }}
+            h1 {{ margin:0; font-size:32px; letter-spacing:0; }}
+            .sub {{ color:#667085; margin-top:6px; font-weight:800; }}
+            .summary {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:16px 28px; background:#fbfcff; border-bottom:1px solid #edf0f5; }}
+            .summary div {{ border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; background:#fff; }}
+            .summary span {{ display:block; color:#667085; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+            .summary b {{ display:block; margin-top:4px; font-size:18px; }}
+            form {{ padding:22px 28px 28px; }}
+            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+            label {{ display:block; color:#667085; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; margin-bottom:7px; }}
+            input, textarea {{ width:100%; border:1px solid #d9e1ee; border-radius:10px; min-height:44px; padding:10px 12px; font:inherit; font-weight:800; background:#fff; color:#111827; }}
+            textarea {{ min-height:84px; resize:vertical; }}
+            .full {{ grid-column:1 / -1; }}
+            .methods {{ display:flex; gap:10px; flex-wrap:wrap; }}
+            .method {{ display:inline-flex; align-items:center; gap:8px; border:1px solid #d9e1ee; border-radius:999px; padding:8px 12px; font-weight:900; color:#475467; background:#fff; }}
+            .method input {{ width:auto; min-height:auto; }}
+            .notice {{ margin:0 28px 0; padding:12px 14px; border-radius:10px; font-weight:900; }}
+            .notice.warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; }}
+            .hint {{ grid-column:1 / -1; color:#667085; font-weight:800; background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:11px 12px; }}
+            .actions {{ display:flex; gap:10px; align-items:center; margin-top:18px; flex-wrap:wrap; }}
+            button, .button {{ min-height:42px; border:1px solid #d9e1ee; border-radius:9px; padding:10px 14px; font-weight:900; background:#fff; color:#111827; cursor:pointer; }}
+            button.primary {{ background:#1d65ad; border-color:#1d65ad; color:#fff; }}
+            .button.ghost {{ background:#f8fafc; }}
+            @media (max-width: 760px) {{
+                .page {{ padding:18px 10px; }}
+                .summary,.grid {{ grid-template-columns:1fr; }}
+                .summary,.head,form {{ padding-left:16px; padding-right:16px; }}
+                .full {{ grid-column:auto; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <div class="shell">
+                <div class="head">
+                    <h1>Edit Invoice</h1>
+                    <div class="sub">Only unpaid or failed invoices can be edited. Parents will see the updated amount when they open the invoice.</div>
+                </div>
+                <div class="summary">
+                    <div><span>Invoice</span><b>#{invoice_id}</b></div>
+                    <div><span>Student</span><b>{escape(str(student_name or ''))}</b></div>
+                    <div><span>Family</span><b><a href="{parent_link}">{escape(str(family_name))}</a></b></div>
+                </div>
+                {error_html}
+                <form method="POST" action="/edit_invoice/{invoice_id}">
+                    <div class="grid">
+                        <div>
+                            <label>Amount due</label>
+                            <input name="amount" type="number" min="0" step="0.01" value="{hmusic_money(amount)}" required>
+                        </div>
+                        <div>
+                            <label>Package / lesson count</label>
+                            <input name="charge_lessons" type="number" min="0" step="0.5" value="{float(charge_lessons or 0):g}" required>
+                        </div>
+                        <div>
+                            <label>Due date</label>
+                            <input name="due_date" type="date" value="{escape(str(due_date or '')[:10], quote=True)}">
+                        </div>
+                        <div>
+                            <label>Payment methods</label>
+                            <div class="methods">
+                                <label class="method"><input type="checkbox" name="payment_methods" value="ach" {checked("ach")}> ACH</label>
+                                <label class="method"><input type="checkbox" name="payment_methods" value="zelle" {checked("zelle")}> Zelle</label>
+                                <label class="method"><input type="checkbox" name="payment_methods" value="paypal" {checked("paypal")}> PayPal</label>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Coverage title</label>
+                            <input name="coverage_title" value="{escape(str(coverage_title or ''), quote=True)}" placeholder="Fall 2026 Piano Package">
+                        </div>
+                        <div>
+                            <label>Class / package note</label>
+                            <input name="coverage_class" value="{escape(str(coverage_class or ''), quote=True)}" placeholder="Private piano">
+                        </div>
+                        <div>
+                            <label>Coverage starts</label>
+                            <input name="coverage_start" type="date" value="{escape(str(coverage_start or '')[:10], quote=True)}">
+                        </div>
+                        <div class="hint">Changing the amount updates the parent invoice page and future reminder emails. It does not mark payment as received.</div>
+                        <div class="full">
+                            <label>Parent-facing coverage note</label>
+                            <textarea name="coverage_note" placeholder="Optional note shown to parent">{escape(str(coverage_note or ''))}</textarea>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button class="primary" type="submit">Save changes</button>
+                        <a class="button ghost" href="/parent_invoice/{invoice_id}">Review parent view</a>
+                        <a class="button" href="/invoices">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.route("/send_invoice_payment_reminder/<int:invoice_id>", methods=["POST"])
 def send_invoice_payment_reminder(invoice_id):
     if not require_owner():
@@ -14269,7 +14549,7 @@ def invoices():
         if status == "paid":
             action_html = '<span class="paid-text">Paid</span>'
         else:
-            action_html = f'<a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
+            action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a><a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
 
         rows += f"""
         <tr>
@@ -15890,10 +16170,11 @@ def parent_admin(parent_id):
             <td>{lessons:g}</td>
             <td>${hmusic_money(amount)}</td>
             <td><span class="pill {'good' if str(invoice_status).lower() == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span></td>
+            <td><a class="button" href="/edit_invoice/{invoice_id}">Edit</a></td>
         </tr>
         """
     if not family_invoice_rows:
-        family_invoice_rows = "<tr><td colspan='6' class='empty'>No invoices for this parent yet.</td></tr>"
+        family_invoice_rows = "<tr><td colspan='7' class='empty'>No invoices for this parent yet.</td></tr>"
 
     family_payment_rows = ""
     for payment in family_payment_records:
@@ -16136,6 +16417,7 @@ def parent_admin(parent_id):
                                     <th>Lessons</th>
                                     <th>Amount</th>
                                     <th>Status</th>
+                                    <th>Action</th>
                                 </tr>
                                 {family_invoice_rows}
                             </table>
