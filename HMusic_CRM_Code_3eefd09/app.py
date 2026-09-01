@@ -5896,8 +5896,6 @@ def edit_invoice(invoice_id):
         return redirect("/owner_login")
 
     ensure_v321_schema()
-    editable_statuses = ("unpaid", "payment_failed")
-
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -5959,32 +5957,9 @@ def edit_invoice(invoice_id):
     ) = invoice
 
     status = (status or "unpaid").lower()
-    if status not in editable_statuses:
-        conn.close()
-        return f"""
-        <html>
-        <head>
-            <title>Invoice Locked</title>
-            <style>
-                body {{ margin:0; font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; }}
-                .page {{ max-width:720px; margin:80px auto; padding:0 20px; }}
-                .card {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:28px; box-shadow:0 14px 35px rgba(17,24,39,.06); }}
-                h1 {{ margin:0 0 10px; }}
-                p {{ color:#667085; font-weight:700; line-height:1.5; }}
-                a {{ display:inline-flex; margin-top:14px; padding:10px 14px; border-radius:9px; background:#1d65ad; color:#fff; text-decoration:none; font-weight:900; }}
-            </style>
-        </head>
-        <body>
-            <div class="page">
-                <div class="card">
-                    <h1>Invoice cannot be edited</h1>
-                    <p>Invoice #{invoice_id} is currently <b>{escape(status.replace("_", " "))}</b>. Only unpaid or failed invoices can be edited directly.</p>
-                    <a href="/invoices">Back to Invoices</a>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
+    return_to = request.values.get("return_to") or "/invoices?edited=1"
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = "/invoices?edited=1"
 
     error = ""
 
@@ -6039,9 +6014,15 @@ def edit_invoice(invoice_id):
                 new_coverage_note,
                 invoice_id,
             ))
+            cursor.execute("""
+            UPDATE student_ledger
+            SET amount = ?
+            WHERE related_invoice_id = ?
+            AND related_payment_id IS NULL
+            """, (new_amount, invoice_id))
             conn.commit()
             conn.close()
-            return redirect("/invoices?edited=1")
+            return redirect(return_to)
 
         amount = new_amount
         charge_lessons = new_lessons
@@ -6109,7 +6090,7 @@ def edit_invoice(invoice_id):
             <div class="shell">
                 <div class="head">
                     <h1>Edit Invoice</h1>
-                    <div class="sub">Only unpaid or failed invoices can be edited. Parents will see the updated amount when they open the invoice.</div>
+                    <div class="sub">Owner can edit billing details from any billing view. Parents will see the updated amount when they open the invoice.</div>
                 </div>
                 <div class="summary">
                     <div><span>Invoice</span><b>#{invoice_id}</b></div>
@@ -6118,6 +6099,7 @@ def edit_invoice(invoice_id):
                 </div>
                 {error_html}
                 <form method="POST" action="/edit_invoice/{invoice_id}">
+                    <input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">
                     <div class="grid">
                         <div>
                             <label>Amount due</label>
@@ -6713,7 +6695,7 @@ def payment(name):
     """
 
 
-@app.route("/edit_payment/<int:payment_id>", methods=["POST"])
+@app.route("/edit_payment/<int:payment_id>", methods=["GET", "POST"])
 def edit_payment(payment_id):
     if not require_owner():
         return redirect("/owner_login")
@@ -6732,6 +6714,49 @@ def edit_payment(payment_id):
         return redirect("/students")
 
     student_name, old_amount, old_lessons_added, old_method, old_date = payment_row
+    student_url_name = quote(str(student_name or ""), safe="")
+
+    if request.method == "GET":
+        conn.close()
+        return f"""
+        <html>
+        <head>
+            <title>Edit Payment #{payment_id}</title>
+            <style>
+                body {{ font-family:Arial,sans-serif; background:#f7f7fb; padding:40px; color:#111827; }}
+                .container {{ max-width:680px; background:#fff; padding:28px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+                label {{ display:block; font-weight:800; margin:14px 0 6px; color:#374151; }}
+                input {{ width:100%; min-height:42px; border:1px solid #d1d5db; border-radius:8px; padding:0 10px; font-size:16px; box-sizing:border-box; }}
+                .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }}
+                button, a.button {{ min-height:42px; display:inline-flex; align-items:center; justify-content:center; border:1px solid #d1d5db; border-radius:8px; padding:0 14px; background:#fff; color:#111827; text-decoration:none; font-weight:800; cursor:pointer; }}
+                button.primary {{ background:#1f6fb8; color:#fff; border-color:#1f6fb8; }}
+                .muted {{ color:#667085; font-weight:700; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Edit Payment #{payment_id}</h1>
+                <p class="muted">{escape(str(student_name or ''))}</p>
+                <form method="POST">
+                    <input type="hidden" name="return_to" value="/student_ledger/{student_url_name}">
+                    <label>Date</label>
+                    <input type="date" name="payment_date" value="{escape(str(old_date or ''), quote=True)}">
+                    <label>Amount</label>
+                    <input type="number" step="0.01" name="amount" value="{escape(str(old_amount or 0), quote=True)}">
+                    <label>Lessons added</label>
+                    <input type="number" step="1" name="lessons_added" value="{escape(str(old_lessons_added or 0), quote=True)}">
+                    <label>Method</label>
+                    <input name="payment_method" value="{escape(str(old_method or 'Payment'), quote=True)}">
+                    <div class="actions">
+                        <button class="primary" type="submit">Save payment</button>
+                        <a class="button" href="/student_ledger/{student_url_name}">Back to ledger</a>
+                        <a class="button" href="/student/{student_url_name}#billing">Student billing</a>
+                    </div>
+                </form>
+            </div>
+        </body>
+        </html>
+        """
 
     def numeric_value(raw, default=0):
         try:
@@ -6777,7 +6802,104 @@ def edit_payment(payment_id):
 
     conn.commit()
     conn.close()
+    return_to = request.form.get("return_to")
+    if return_to and return_to.startswith("/") and not return_to.startswith("//"):
+        return redirect(return_to)
     return redirect(f"/student/{quote(student_name)}#payments")
+
+
+@app.route("/edit_ledger_entry/<int:ledger_id>", methods=["GET", "POST"])
+def edit_ledger_entry(ledger_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, entry_type, COALESCE(amount, 0),
+           COALESCE(description, ''), COALESCE(created_at, ''),
+           related_invoice_id, related_payment_id
+    FROM student_ledger
+    WHERE id = ?
+    """, (ledger_id,))
+    entry = cursor.fetchone()
+
+    if not entry:
+        conn.close()
+        return redirect("/students")
+
+    _, student_name, entry_type, amount, description, created_at, related_invoice_id, related_payment_id = entry
+    student_url_name = quote(str(student_name or ""), safe="")
+
+    if request.method == "POST":
+        new_entry_type = (request.form.get("entry_type") or entry_type or "ledger").strip()
+        new_description = (request.form.get("description") or "").strip()
+        new_created_at = (request.form.get("created_at") or created_at or datetime.now().strftime("%Y-%m-%d %H:%M")).strip()
+        try:
+            new_amount = round(float(request.form.get("amount") or 0), 2)
+        except (TypeError, ValueError):
+            new_amount = 0
+
+        cursor.execute("""
+        UPDATE student_ledger
+        SET entry_type = ?,
+            amount = ?,
+            description = ?,
+            created_at = ?
+        WHERE id = ?
+        """, (new_entry_type, new_amount, new_description, new_created_at, ledger_id))
+        conn.commit()
+        conn.close()
+        return redirect(f"/student_ledger/{student_url_name}")
+
+    linked_actions = ""
+    if related_invoice_id:
+        linked_actions += f'<a class="button" href="/edit_invoice/{related_invoice_id}">Edit linked invoice</a>'
+    if related_payment_id:
+        linked_actions += f'<a class="button" href="/edit_payment/{related_payment_id}">Edit linked payment</a>'
+
+    conn.close()
+    return f"""
+    <html>
+    <head>
+        <title>Edit Ledger #{ledger_id}</title>
+        <style>
+            body {{ font-family:Arial,sans-serif; background:#f7f7fb; padding:40px; color:#111827; }}
+            .container {{ max-width:760px; background:#fff; padding:28px; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
+            label {{ display:block; font-weight:800; margin:14px 0 6px; color:#374151; }}
+            input, textarea {{ width:100%; border:1px solid #d1d5db; border-radius:8px; padding:10px; font-size:16px; box-sizing:border-box; }}
+            input {{ min-height:42px; }}
+            textarea {{ min-height:110px; resize:vertical; }}
+            .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }}
+            button, a.button {{ min-height:42px; display:inline-flex; align-items:center; justify-content:center; border:1px solid #d1d5db; border-radius:8px; padding:0 14px; background:#fff; color:#111827; text-decoration:none; font-weight:800; cursor:pointer; }}
+            button.primary {{ background:#1f6fb8; color:#fff; border-color:#1f6fb8; }}
+            .muted {{ color:#667085; font-weight:700; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Edit Ledger #{ledger_id}</h1>
+            <p class="muted">{escape(str(student_name or ''))}</p>
+            <form method="POST">
+                <label>Date / time</label>
+                <input name="created_at" value="{escape(str(created_at or ''), quote=True)}">
+                <label>Type</label>
+                <input name="entry_type" value="{escape(str(entry_type or ''), quote=True)}">
+                <label>Amount</label>
+                <input type="number" step="0.01" name="amount" value="{escape(str(amount or 0), quote=True)}">
+                <label>Description</label>
+                <textarea name="description">{escape(str(description or ''))}</textarea>
+                <div class="actions">
+                    <button class="primary" type="submit">Save ledger entry</button>
+                    {linked_actions}
+                    <a class="button" href="/student_ledger/{student_url_name}">Back to ledger</a>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @app.route("/delete_payment/<int:payment_id>", methods=["POST"])
@@ -14566,10 +14688,11 @@ def invoices():
         )
         status_safe = escape(status_label(status))
         type_safe = escape(type_label(invoice_type))
+        action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
         if status == "paid":
-            action_html = '<span class="paid-text">Paid</span>'
+            action_html += '<span class="paid-text">Paid</span>'
         else:
-            action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a><a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
+            action_html += f'<a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
 
         rows += f"""
         <tr>
@@ -15170,7 +15293,9 @@ def student_ledger(name):
         entry_type,
         amount,
         description,
-        created_at
+        created_at,
+        related_invoice_id,
+        related_payment_id
     FROM student_ledger
     WHERE student_name = ?
     ORDER BY id DESC
@@ -15211,26 +15336,51 @@ def student_ledger(name):
     rows = ""
 
     combined_rows = []
-    for entry_id, entry_type, amount, description, created_at in entries:
-        combined_rows.append((created_at or "", f"Ledger #{entry_id}", entry_type, amount, description, ""))
+    owner_can_edit_billing = require_owner()
+    ledger_return_to = f"/student_ledger/{quote(str(name or ''), safe='')}"
+    for entry_id, entry_type, amount, description, created_at, related_invoice_id, related_payment_id in entries:
+        action_parts = []
+        if owner_can_edit_billing:
+            action_parts.append(f'<a class="link-action" href="/edit_ledger_entry/{entry_id}">Edit ledger</a>')
+            if related_invoice_id:
+                action_parts.append(f'<a class="link-action" href="/edit_invoice/{related_invoice_id}?{urlencode({"return_to": ledger_return_to})}">Edit invoice</a>')
+            if related_payment_id:
+                action_parts.append(f'<a class="link-action" href="/edit_payment/{related_payment_id}">Edit payment</a>')
+        combined_rows.append((
+            created_at or "",
+            f"Ledger #{entry_id}",
+            entry_type,
+            amount,
+            description,
+            "",
+            "".join(action_parts)
+        ))
     for invoice_id, lessons, amount, status, invoice_type, created_at in invoices:
-        action = f'<a href="/parent_invoice/{invoice_id}">Open invoice</a>'
+        link = f'<a href="/parent_invoice/{invoice_id}">Open invoice</a>'
+        action_parts = []
+        if owner_can_edit_billing:
+            action_parts.append(f'<a class="link-action" href="/edit_invoice/{invoice_id}?{urlencode({"return_to": ledger_return_to})}">Edit invoice</a>')
+            if str(status or "").lower() != "paid":
+                action_parts.append(f'<a class="link-action" href="/pay_invoice/{invoice_id}">Mark paid</a>')
         combined_rows.append((
             created_at or "",
             f"Invoice #{invoice_id}",
             invoice_type,
             amount,
             f"{status.replace('_', ' ')} · {lessons:g} lesson(s)",
-            action
+            link,
+            "".join(action_parts)
         ))
     for payment_id, payment_date, amount, lessons_added, payment_method in payments:
+        action = f'<a class="link-action" href="/edit_payment/{payment_id}">Edit payment</a>' if owner_can_edit_billing else ""
         combined_rows.append((
             payment_date or "",
             f"Payment #{payment_id}",
             "payment",
             -float(amount or 0),
             f"{payment_method} · +{lessons_added:g} lesson(s)",
-            ""
+            "",
+            action
         ))
 
     combined_rows.sort(key=lambda row: str(row[0] or ""), reverse=True)
@@ -15244,10 +15394,11 @@ def student_ledger(name):
             <td>${hmusic_money(entry[3])}</td>
             <td>{escape(str(entry[4] or ''))}</td>
             <td>{entry[5]}</td>
+            <td>{entry[6]}</td>
         </tr>
         """
     if not rows:
-        rows = "<tr><td colspan='6'>No ledger activity yet.</td></tr>"
+        rows = "<tr><td colspan='7'>No ledger activity yet.</td></tr>"
 
     return f"""
     <html>
@@ -15300,6 +15451,20 @@ def student_ledger(name):
                 text-decoration: none;
                 font-weight: bold;
             }}
+            .link-action {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 30px;
+                padding: 6px 10px;
+                margin: 2px 4px 2px 0;
+                border-radius: 6px;
+                background: #eef2ff;
+                color: #3730a3;
+                text-decoration: none;
+                font-weight: bold;
+                white-space: nowrap;
+            }}
         </style>
     </head>
 
@@ -15319,6 +15484,7 @@ def student_ledger(name):
                     <th>Amount</th>
                     <th>Description</th>
                     <th>Link</th>
+                    <th>Action</th>
                 </tr>
 
                 {rows}
@@ -16213,10 +16379,11 @@ def parent_admin(parent_id):
             <td>${hmusic_money(amount)}</td>
             <td>{lessons_added:g}</td>
             <td>{escape(str(payment_method or 'Payment'))}</td>
+            <td><a class="button compact" href="/edit_payment/{payment_id}">Edit</a></td>
         </tr>
         """
     if not family_payment_rows:
-        family_payment_rows = "<tr><td colspan='5' class='empty'>No payments for this parent yet.</td></tr>"
+        family_payment_rows = "<tr><td colspan='6' class='empty'>No payments for this parent yet.</td></tr>"
 
     status = "Active" if parent[5] == 1 else "Inactive"
     status_class = "good" if parent[5] == 1 else "neutral"
@@ -16482,6 +16649,7 @@ def parent_admin(parent_id):
                                     <th>Amount</th>
                                     <th>Lessons</th>
                                     <th>Method</th>
+                                    <th>Action</th>
                                 </tr>
                                 {family_payment_rows}
                             </table>
