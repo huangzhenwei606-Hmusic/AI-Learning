@@ -2,7 +2,7 @@ services:
   - type: web
     name: hmusic-crm
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: python regression_checks.py && pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
       - key: HMUSIC_DB_PATH

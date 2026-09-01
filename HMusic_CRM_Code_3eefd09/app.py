@@ -14599,6 +14599,8 @@ def invoices():
         COALESCE(i.status, 'unpaid'),
         COALESCE(i.invoice_type, 'invoice'),
         COALESCE(i.created_at, ''),
+        COALESCE(i.payment_reminder_sent_at, ''),
+        COALESCE(i.payment_reminder_count, 0),
         pp.id,
         COALESCE(pp.parent_name, ''),
         COALESCE(pp.email, '')
@@ -14678,7 +14680,21 @@ def invoices():
 
     rows = ""
 
-    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, parent_id, parent_name, parent_email in invoice_rows:
+    reminder_state = (request.args.get("reminder") or "").strip()
+    reminder_message = (request.args.get("message") or "").strip()
+    reminder_notice = ""
+    if reminder_state:
+        reminder_labels = {
+            "sent": "Payment reminder email sent.",
+            "failed": f"Payment reminder could not be sent. {reminder_message}",
+            "paid": "Paid invoices do not need reminders.",
+            "missing": "Invoice not found.",
+            "no_email": "No active parent email is available for this invoice.",
+        }
+        notice_class = "notice ok" if reminder_state == "sent" else "notice warn"
+        reminder_notice = f'<div class="{notice_class}">{escape(reminder_labels.get(reminder_state, "Reminder request finished."))}</div>'
+
+    for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, reminder_sent_at, reminder_count, parent_id, parent_name, parent_email in invoice_rows:
         student_safe = escape(str(student_name or "-"))
         student_href = quote(str(student_name or ""), safe="")
         parent_label = str(parent_name or parent_email or "No parent linked")
@@ -14692,7 +14708,18 @@ def invoices():
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
         else:
+            action_html += f"""
+            <form class="inline-action-form" method="POST" action="/send_invoice_payment_reminder/{invoice_id}" onsubmit="return confirm('Send payment reminder for invoice #{invoice_id}?');">
+                <input type="hidden" name="return_to" value="/invoices">
+                <button class="row-action reminder" type="submit">Email reminder</button>
+            </form>
+            """
             action_html += f'<a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
+        reminder_note = ""
+        if reminder_sent_at:
+            reminder_note = f'<div class="muted">Reminder sent {escape(str(reminder_sent_at))}</div>'
+        elif reminder_count:
+            reminder_note = f'<div class="muted">Reminder count {int(reminder_count or 0)}</div>'
 
         rows += f"""
         <tr>
@@ -14703,6 +14730,7 @@ def invoices():
             <td>
                 <a class="student-link" href="/student/{student_href}">{student_safe}</a>
                 <div class="muted">{type_safe}</div>
+                {reminder_note}
             </td>
             <td>
                 {parent_html}
@@ -14767,10 +14795,16 @@ def invoices():
             .status.review {{ background:#f5f3ff; color:#5b21b6; }}
             .status.paid {{ background:#dcfce7; color:#166534; }}
             .actions {{ display:flex; justify-content:flex-end; gap:8px; }}
+            .inline-action-form {{ margin:0; display:inline-flex; }}
             .row-action {{ display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:7px 10px; border-radius:8px; border:1px solid #c7d2fe; background:#eef2ff; color:#3730a3; font-size:13px; font-weight:900; }}
             .row-action.primary {{ background:#1d65ad; color:#fff; border-color:#1d65ad; }}
+            button.row-action {{ cursor:pointer; font-family:inherit; }}
+            .row-action.reminder {{ background:#fff7ed; border-color:#fed7aa; color:#9a3412; }}
             .paid-text {{ color:#166534; font-weight:900; }}
             .empty {{ text-align:center; color:#667085; padding:34px; font-weight:800; }}
+            .notice {{ margin:14px 18px 0; padding:11px 13px; border-radius:10px; font-size:13px; font-weight:900; }}
+            .notice.ok {{ background:#dcfce7; border:1px solid #bbf7d0; color:#166534; }}
+            .notice.warn {{ background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }}
             @media (max-width:900px) {{
                 .page {{ padding:12px; }}
                 .topbar,.filters,.filters form {{ flex-direction:column; align-items:stretch; }}
@@ -14821,6 +14855,7 @@ def invoices():
                         <a class="tab{active_tab('paid')}" href="/invoices?status=paid">Paid</a>
                     </div>
                 </div>
+                {reminder_notice}
                 <div class="table-wrap">
                     <table>
                         <tr>
