@@ -4503,6 +4503,20 @@ def edit_student(name):
 
     cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE student_name = ?", (student[0],))
     payment_total = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+    SELECT p.id
+    FROM parent_profiles p
+    LEFT JOIN parent_students ps
+        ON ps.parent_id = p.id
+        AND ps.student_name = ?
+        AND ps.active = 1
+    WHERE p.email = ?
+       OR ps.id IS NOT NULL
+    ORDER BY ps.id DESC, p.active DESC, p.id DESC
+    LIMIT 1
+    """, (student[0], student[3] or ""))
+    family_workspace = cursor.fetchone()
     conn.close()
 
     def money(value):
@@ -4540,6 +4554,11 @@ def edit_student(name):
     delete_confirm_message = json.dumps(
         f"Delete {student_name} and all linked lessons, payments, schedule, teacher links, and parent links? "
         "Use this only for duplicate/test students."
+    )
+    family_workspace_button = (
+        f'<a class="button" href="/parent_admin/{family_workspace[0]}">Family workspace</a>'
+        if family_workspace else
+        f'<a class="button" href="/parent_login_info/{student_url_name}">Parent login</a>'
     )
 
     def options(values, current):
@@ -4763,9 +4782,10 @@ def edit_student(name):
                         </div>
                     </div>
                     <div class="quick">
+                        <a class="button" href="/student/{student_url_name}">Student profile</a>
                         <a class="button" href="/calendar?{urlencode({'student': student_name})}">Schedule</a>
-                        <a class="button" href="/parent_login_info/{student_url_name}">Parent login</a>
-                        <a class="button" href="/create_package_invoice/{student_url_name}">Invoice</a>
+                        {family_workspace_button}
+                        <a class="button" href="/create_package_invoice/{student_url_name}">Add billing</a>
                     </div>
                 </section>
 
@@ -5551,7 +5571,7 @@ def student_detail(name):
                     <button type="submit">Reset password</button>
                 </form>
                 <a class="button" href="/parent_login_info/{student_url_name}">Copy login info</a>
-                <a class="button" href="/parent_admin/{parent_account[0]}">Edit family account</a>
+                <a class="button" href="/parent_admin/{parent_account[0]}">Family workspace</a>
             </div>
         </div>
         """
@@ -16117,7 +16137,7 @@ def parent_admin(parent_id):
         <tr>
             <td>
                 <div class="child-cell">
-                    <a href="/student/{quote(str(s[1] or ''))}">{escape(str(s[1] or '-'))}</a>
+                    <a href="/student/{quote(str(s[1] or ''), safe='')}">{escape(str(s[1] or '-'))}</a>
                     <span>{escape(str(s[6] or 'Student record'))}</span>
                 </div>
             </td>
@@ -16129,7 +16149,14 @@ def parent_admin(parent_id):
                 </div>
             </td>
             <td><span class="pill {status_class}">{status}</span></td>
-            <td>{unlink_action}</td>
+            <td>
+                <div class="row-actions">
+                    <a class="button compact" href="/student/{quote(str(s[1] or ''), safe='')}">Profile</a>
+                    <a class="button compact" href="/edit_student/{quote(str(s[1] or ''), safe='')}">Edit</a>
+                    <a class="button compact" href="/create_package_invoice/{quote(str(s[1] or ''), safe='')}">Billing</a>
+                    {unlink_action}
+                </div>
+            </td>
         </tr>
         """
 
@@ -16242,7 +16269,7 @@ def parent_admin(parent_id):
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Parent Child Access</title>
+        <title>Family Workspace</title>
         <style>
             :root {{ --bg:#f5f7fb; --card:#fff; --text:#111827; --muted:#667085; --line:#e4e8f0; --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff; --green:#166534; --green-soft:#dcfce7; --red:#b42318; --red-soft:#fee2e2; }}
             * {{ box-sizing:border-box; }}
@@ -16287,6 +16314,8 @@ def parent_admin(parent_id):
             .button.danger, button.danger {{ color:var(--red); border-color:#fecaca; background:#fff; }}
             .button.compact {{ min-height:28px; padding:0 9px; font-size:11px; }}
             .panel-head-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }}
+            .row-actions {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }}
+            .row-actions .inline-form button {{ min-height:28px; padding:0 9px; font-size:11px; }}
             .inline-form {{ display:inline; margin:0; }}
             .hint-line {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }}
             .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
@@ -16324,30 +16353,31 @@ def parent_admin(parent_id):
             </nav>
             <div class="top-actions">
                 <a class="button" href="/parents">Back</a>
-                <a class="button primary" href="/edit_parent_admin/{parent[0]}">Edit parent</a>
+                <a class="button primary" href="/edit_parent_admin/{parent[0]}">Edit parent profile</a>
             </div>
         </div>
         <main class="page">
             <section class="head">
                 <div>
-                    <div class="crumbs">Parents / {escape(str(parent[1] or parent[2] or 'Parent'))} / Child access</div>
-                    <h1>{escape(str(parent[1] or 'Parent Account'))}</h1>
+                    <div class="crumbs">Parents / {escape(str(parent[1] or parent[2] or 'Parent'))} / Family workspace</div>
+                    <h1>Family Workspace</h1>
                     <div class="subline">
+                        <span>{escape(str(parent[1] or 'Parent Account'))}</span>
                         <span class="pill {status_class}">Parent login {status}</span>
                         <span>{escape(str(parent[2] or 'No email'))}</span>
                         <span>{active_link_count} linked child(ren)</span>
                     </div>
                 </div>
                 <div class="tabs">
-                    <a class="tab" href="/edit_parent_admin/{parent[0]}">Profile</a>
-                    <span class="tab active">Child access</span>
-                    <a class="tab" href="/parent_login">Parent app</a>
+                    <span class="tab active">Workspace</span>
+                    <a class="tab" href="/edit_parent_admin/{parent[0]}">Parent profile</a>
+                    <a class="tab" href="/parent_login">Parent app preview</a>
                 </div>
             </section>
 
             <section class="layout">
                 <aside class="panel">
-                    <div class="panel-head"><h2>Parent account</h2><span>What this login controls</span></div>
+                    <div class="panel-head"><h2>Parent account</h2><span>Login and family summary</span></div>
                     <div class="panel-body">
                         <div class="parent-card">
                             <div class="avatar">{escape(str((parent[1] or parent[2] or 'P')[:2]).upper())}</div>
@@ -16406,7 +16436,7 @@ def parent_admin(parent_id):
                     </section>
 
                     <section class="panel">
-                        <div class="panel-head"><h2>Children visible in this parent app</h2><span>Current access</span></div>
+                        <div class="panel-head"><h2>Students in this family</h2><span>Profiles, billing, and parent app access</span></div>
                         <div class="table-wrap">
                             <table>
                                 <tr>
