@@ -15,7 +15,10 @@ CHECKS = {
     "parent billing add entry": "Add billing",
     "messages mark all read": "/messages/mark_all_read",
     "course credit display": "Credits by course",
+    "family enrollment credits": "Credits & Enrollments",
+    "course credit actions": "Edit credit",
     "invoice enrollment binding": "name=\"enrollment_id\"",
+    "payment enrollment preselect": "selected_enrollment_id = request.args.get(\"enrollment_id\")",
     "schedule enrollment binding": "resolved_enrollment_id",
 }
 

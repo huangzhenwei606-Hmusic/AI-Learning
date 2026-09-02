@@ -5690,6 +5690,10 @@ def student_detail(name):
         owner_actions = '<div class="button-grid"><a class="button primary" href="/parent_dashboard">Back to Parent App</a></div>'
 
     teacher_list_html = f"<ul class='teacher-list'>{teacher_link_html}</ul>"
+    family_workspace_top_link = (
+        f'<a class="button" href="/parent_admin/{parent_account[0]}">Family Workspace</a>'
+        if require_owner() and parent_account else ""
+    )
 
     return f"""
     <html>
@@ -5794,6 +5798,7 @@ def student_detail(name):
                 <div class="top-actions">
                     <a class="button" href="/calendar">Back to Schedule</a>
                     <a class="button" href="/students">Back to Students</a>
+                    {family_workspace_top_link}
                     <a class="button primary" href="/edit_student/{student_url_name}">Edit Student</a>
                 </div>
             </div>
@@ -5806,7 +5811,7 @@ def student_detail(name):
                             <div>
                                 <div class="name-row">
                                     <h2>{escape(student[0])}</h2>
-                                    <span class="pill {balance_class}">{escape(str(lessons_left))} left</span>
+                                    <span class="pill {balance_class}">{float(total_course_credits or 0):g} total left</span>
                                     <span class="pill {parent_status_class}">{parent_status}</span>
                                 </div>
                                 <p class="muted">Primary teacher: {escape(student[1] or 'Unassigned')}</p>
@@ -6837,9 +6842,11 @@ def payment(name):
         """
 
     today = date.today().strftime("%Y-%m-%d")
+    selected_enrollment_id = request.args.get("enrollment_id") or (str(course_credits[0][0]) if course_credits else "")
     enrollment_options = ""
     for row in course_credits:
-        enrollment_options += f'<option value="{row[0]}">{escape(hmusic_course_credit_label(row))}</option>'
+        selected = "selected" if str(row[0]) == str(selected_enrollment_id) else ""
+        enrollment_options += f'<option value="{row[0]}" {selected}>{escape(hmusic_course_credit_label(row))}</option>'
     if not enrollment_options:
         enrollment_options = '<option value="">Legacy total lessons</option>'
     else:
@@ -16613,6 +16620,7 @@ def parent_admin(parent_id):
         return redirect("/owner_login")
 
     ensure_v27_schema()
+    ensure_v321_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -16663,22 +16671,43 @@ def parent_admin(parent_id):
     active_student_names = [row[1] for row in linked_students if row[3] == 1]
     family_invoice_records = []
     family_payment_records = []
+    family_credit_records = []
     if active_student_names:
         placeholders = ",".join(["?"] * len(active_student_names))
         cursor.execute(f"""
-        SELECT id, student_name, COALESCE(charge_lessons, 0), COALESCE(amount, 0),
-               COALESCE(status, 'unpaid'), COALESCE(invoice_type, 'invoice'),
-               COALESCE(created_at, '')
-        FROM invoices
-        WHERE student_name IN ({placeholders})
-        ORDER BY COALESCE(created_at, '') DESC, id DESC
+        SELECT
+            e.id,
+            e.student_name,
+            COALESCE(e.course_type_name, 'Course'),
+            COALESCE(e.teacher_name, 'Unassigned'),
+            COALESCE(e.lessons_left, 0),
+            COALESCE(e.final_price, 0),
+            COALESCE(e.package_lessons, 0),
+            COALESCE(e.package_amount, 0),
+            COALESCE(e.status, 'active')
+        FROM enrollments e
+        WHERE e.student_name IN ({placeholders})
+        AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+        ORDER BY e.student_name, e.course_type_name, e.teacher_name, e.id DESC
+        """, active_student_names)
+        family_credit_records = cursor.fetchall()
+
+        cursor.execute(f"""
+        SELECT i.id, i.student_name, COALESCE(i.charge_lessons, 0), COALESCE(i.amount, 0),
+               COALESCE(i.status, 'unpaid'), COALESCE(i.invoice_type, 'invoice'),
+               COALESCE(i.created_at, ''), COALESCE(e.course_type_name, ''), COALESCE(e.teacher_name, '')
+        FROM invoices i
+        LEFT JOIN enrollments e ON e.id = i.enrollment_id
+        WHERE i.student_name IN ({placeholders})
+        ORDER BY COALESCE(i.created_at, '') DESC, i.id DESC
         LIMIT 12
         """, active_student_names)
         family_invoice_records = cursor.fetchall()
 
         cursor.execute(f"""
         SELECT id, student_name, COALESCE(amount, 0), COALESCE(lessons_added, 0),
-               COALESCE(payment_method, 'Payment'), COALESCE(payment_date, '')
+               COALESCE(payment_method, 'Payment'), COALESCE(payment_date, ''),
+               COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
         FROM payments
         WHERE student_name IN ({placeholders})
         ORDER BY COALESCE(payment_date, '') DESC, id DESC
@@ -16753,14 +16782,75 @@ def parent_admin(parent_id):
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No activity yet.</td></tr>"
 
+    credit_student_names = {row[1] for row in family_credit_records}
+    legacy_credit_records = []
+    for linked_student in linked_students:
+        student_name = linked_student[1]
+        if linked_student[3] == 1 and student_name not in credit_student_names:
+            legacy_credit_records.append(linked_student)
+
+    family_credit_rows = ""
+    for credit in family_credit_records:
+        enrollment_id, student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status = credit
+        credit_status_class = "good" if float(lessons_left or 0) > 2 else "neutral"
+        student_url = quote(str(student_name or ''), safe='')
+        family_credit_rows += f"""
+        <tr>
+            <td><a href="/student/{student_url}">{escape(str(student_name or ''))}</a></td>
+            <td>
+                <strong>{escape(str(course_name or 'Course'))}</strong>
+                <span>{escape(str(enrollment_status or 'active')).title()}</span>
+            </td>
+            <td>{escape(str(teacher_name or 'Unassigned'))}</td>
+            <td><span class="pill {credit_status_class}">{float(lessons_left or 0):g} left</span></td>
+            <td>${hmusic_money(unit_price)} / lesson<span>{float(package_lessons or 0):g} lesson package · ${hmusic_money(package_amount)}</span></td>
+            <td>
+                <div class="row-actions">
+                    <a class="button compact" href="/create_package_invoice/{student_url}?enrollment_id={enrollment_id}">Add billing</a>
+                    <a class="button compact" href="/payment/{student_url}?enrollment_id={enrollment_id}">Receive payment</a>
+                    <a class="button compact" href="/edit_enrollment/{enrollment_id}">Edit credit</a>
+                    <a class="button compact" href="/student_ledger/{student_url}">Ledger</a>
+                </div>
+            </td>
+        </tr>
+        """
+
+    for linked_student in legacy_credit_records:
+        student_name = linked_student[1]
+        student_url = quote(str(student_name or ''), safe='')
+        family_credit_rows += f"""
+        <tr>
+            <td><a href="/student/{student_url}">{escape(str(student_name or ''))}</a></td>
+            <td>
+                <strong>Legacy total credit</strong>
+                <span>No course-specific enrollment yet.</span>
+            </td>
+            <td>{escape(str(linked_student[5] or 'Unassigned'))}</td>
+            <td><span class="pill neutral">Needs setup</span></td>
+            <td>Use enrollment credit<span>Split this student into course buckets.</span></td>
+            <td>
+                <div class="row-actions">
+                    <a class="button compact" href="/add_enrollment?student_name={student_url}">Add course credit</a>
+                    <a class="button compact" href="/edit_student/{student_url}">Student setup</a>
+                </div>
+            </td>
+        </tr>
+        """
+
+    if not family_credit_rows:
+        family_credit_rows = "<tr><td colspan='6' class='empty'>No active children or course credits for this family yet.</td></tr>"
+
     family_invoice_rows = ""
     for inv in family_invoice_records:
-        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at = inv
+        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at, invoice_course, invoice_teacher = inv
+        invoice_bucket = ""
+        if invoice_course or invoice_teacher:
+            invoice_bucket = f"<span>{escape(str(invoice_course or 'Course'))} · {escape(str(invoice_teacher or 'Unassigned'))}</span>"
         family_invoice_rows += f"""
         <tr>
             <td><a class="invoice-link" href="/parent_invoice/{invoice_id}">#{invoice_id}</a><span>{escape(str(created_at or ''))}</span></td>
             <td><a href="/student/{quote(str(student_name or ''), safe='')}">{escape(str(student_name or ''))}</a></td>
-            <td>{escape(str(invoice_type or 'invoice')).replace('_', ' ')}</td>
+            <td>{escape(str(invoice_type or 'invoice')).replace('_', ' ')}{invoice_bucket}</td>
             <td>{lessons:g}</td>
             <td>${hmusic_money(amount)}</td>
             <td><span class="pill {'good' if str(invoice_status).lower() == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span></td>
@@ -16772,14 +16862,17 @@ def parent_admin(parent_id):
 
     family_payment_rows = ""
     for payment in family_payment_records:
-        payment_id, student_name, amount, lessons_added, payment_method, payment_date = payment
+        payment_id, student_name, amount, lessons_added, payment_method, payment_date, payment_course, payment_teacher = payment
+        payment_bucket = ""
+        if payment_course or payment_teacher:
+            payment_bucket = f"<span>{escape(str(payment_course or 'Course'))} · {escape(str(payment_teacher or 'Unassigned'))}</span>"
         family_payment_rows += f"""
         <tr>
             <td>#{payment_id}<span>{escape(str(payment_date or ''))}</span></td>
             <td><a href="/student/{quote(str(student_name or ''), safe='')}">{escape(str(student_name or ''))}</a></td>
             <td>${hmusic_money(amount)}</td>
             <td>{lessons_added:g}</td>
-            <td>{escape(str(payment_method or 'Payment'))}</td>
+            <td>{escape(str(payment_method or 'Payment'))}{payment_bucket}</td>
             <td><a class="button compact" href="/edit_payment/{payment_id}">Edit</a></td>
         </tr>
         """
@@ -17016,6 +17109,23 @@ def parent_admin(parent_id):
                                     <th>Action</th>
                                 </tr>
                                 {linked_rows}
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Credits & Enrollments</h2><span>Course-level remaining lessons</span></div>
+                        <div class="table-wrap">
+                            <table>
+                                <tr>
+                                    <th>Student</th>
+                                    <th>Course</th>
+                                    <th>Teacher</th>
+                                    <th>Credits</th>
+                                    <th>Tuition</th>
+                                    <th>Action</th>
+                                </tr>
+                                {family_credit_rows}
                             </table>
                         </div>
                     </section>
