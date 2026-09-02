@@ -17058,6 +17058,11 @@ def parent_admin(parent_id):
             .tab {{ min-height:32px; padding:0 11px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:#fff; font-size:12px; font-weight:850; }}
             .tab.active {{ background:var(--blue-soft); border-color:#bfdbfe; color:var(--blue-dark); }}
             .layout {{ display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; align-items:start; }}
+            .crumbs {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--muted); font-size:12px; font-weight:850; }}
+            .crumbs a {{ color:var(--muted); text-decoration:none; }}
+            .crumbs a:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
+            .crumbs span {{ color:var(--muted); }}
+            .crumbs .current {{ color:var(--muted); }}
             .panel {{ background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.05); overflow:hidden; }}
             .panel-head {{ min-height:40px; padding:0 13px; border-bottom:1px solid var(--line); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; font-weight:700; }}
             .panel-head h2 {{ color:var(--text); }}
@@ -17132,7 +17137,13 @@ def parent_admin(parent_id):
         <main class="page">
             <section class="head">
                 <div>
-                    <div class="crumbs">Parents / {escape(str(parent[1] or parent[2] or 'Parent'))} / Family workspace</div>
+                    <div class="crumbs" aria-label="Breadcrumb">
+                        <a href="/parents">Parents</a>
+                        <span>/</span>
+                        <a href="/parent_admin/{parent[0]}">{escape(str(parent[1] or parent[2] or 'Parent'))}</a>
+                        <span>/</span>
+                        <span class="current">Family workspace</span>
+                    </div>
                     <h1>Family Workspace</h1>
                     <div class="subline">
                         <span>{escape(str(parent[1] or 'Parent Account'))}</span>

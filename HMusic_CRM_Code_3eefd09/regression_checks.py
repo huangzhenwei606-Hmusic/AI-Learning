@@ -12,6 +12,8 @@ CHECKS = {
     "ledger edit route": '"/edit_ledger_entry/<int:ledger_id>"',
     "ledger action column": "<th>Action</th>",
     "family workspace label": "Family Workspace",
+    "family workspace clickable breadcrumb": 'aria-label="Breadcrumb"',
+    "family workspace parents crumb link": '<a href="/parents">Parents</a>',
     "parent billing add entry": "Add billing",
     "messages mark all read": "/messages/mark_all_read",
     "course credit display": "Credits by course",
