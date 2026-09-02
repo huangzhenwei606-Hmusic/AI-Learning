@@ -18,6 +18,7 @@ CHECKS = {
     "family enrollment credits": "Credits & Enrollments",
     "course credit actions": "Edit credit",
     "course credit setup gate": "Set up course credits first",
+    "add enrollment student preselect": "selected_student_name = (request.args.get(\"student_name\") or \"\").strip()",
     "invoice enrollment binding": "name=\"enrollment_id\"",
     "payment enrollment preselect": "selected_enrollment_id = request.args.get(\"enrollment_id\")",
     "schedule enrollment binding": "resolved_enrollment_id",

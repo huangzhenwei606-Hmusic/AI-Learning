@@ -36170,6 +36170,7 @@ def add_enrollment():
         return redirect(f"/enrollment/{enrollment_id}")
 
     today = date.today().strftime("%Y-%m-%d")
+    selected_student_name = (request.args.get("student_name") or "").strip()
 
     cursor.execute("SELECT name FROM students ORDER BY name")
     students = cursor.fetchall()
