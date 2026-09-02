@@ -4654,6 +4654,64 @@ def edit_student(name):
             </div>
         </div>
         """
+    credit_notice_html = ""
+    if request.args.get("credit_saved") == "1":
+        credit_notice_html = '<div class="credit-notice ok">Course credit updated.</div>'
+    elif request.args.get("credit_error") == "1":
+        credit_notice_html = '<div class="credit-notice danger">Choose a valid course and credit number.</div>'
+
+    if course_credit_rows:
+        first_credit = course_credit_rows[0]
+        course_credit_select_options = ""
+        for enrollment in course_credit_rows:
+            enrollment_id, course_name, teacher_name, remaining_lessons, final_price, _package_amount, _package_lessons, status = enrollment
+            label = f"{course_name or 'Course'} · {teacher_name or 'Unassigned'}"
+            selected = "selected" if enrollment_id == first_credit[0] else ""
+            course_credit_select_options += (
+                f'<option value="{enrollment_id}" {selected} '
+                f'data-lessons="{float(remaining_lessons or 0):g}" '
+                f'data-teacher="{escape(str(teacher_name or "Unassigned"), quote=True)}" '
+                f'data-rate="${hmusic_money(final_price or 0)}/lesson" '
+                f'data-status="{escape(str(status or "active"), quote=True)}" '
+                f'data-edit-url="/edit_enrollment/{enrollment_id}">'
+                f'{escape(label)}</option>'
+            )
+        course_credit_editor_html = f"""
+            <div class="course-credit-editor" id="course-credit-editor">
+                {credit_notice_html}
+                <label>Course credit to edit</label>
+                <select name="enrollment_id" id="courseCreditSelect" form="courseCreditForm">
+                    {course_credit_select_options}
+                </select>
+                <div class="editor-grid">
+                    <div>
+                        <label>Credits left</label>
+                        <input type="number" step="0.5" name="lessons_left" id="courseCreditLessons" value="{float(first_credit[3] or 0):g}" form="courseCreditForm">
+                    </div>
+                    <div>
+                        <label>Teacher</label>
+                        <div class="readonly-mini" id="courseCreditTeacher">{escape(str(first_credit[2] or 'Unassigned'))}</div>
+                    </div>
+                    <div>
+                        <label>Tuition</label>
+                        <div class="readonly-mini" id="courseCreditRate">${hmusic_money(first_credit[4] or 0)}/lesson</div>
+                    </div>
+                </div>
+                <div class="credit-actions wide">
+                    <button class="primary" type="submit" form="courseCreditForm">Save selected credit</button>
+                    <a class="teacher-link" id="courseCreditFullEdit" href="/edit_enrollment/{first_credit[0]}">Full course setup</a>
+                </div>
+            </div>
+        """
+    else:
+        course_credit_editor_html = f"""
+            <div class="course-credit-editor" id="course-credit-editor">
+                {credit_notice_html}
+                <strong>No course selected</strong>
+                <span>Create one course credit bucket before editing remaining lessons.</span>
+                <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+            </div>
+        """
 
     page_html = f"""
     <html>
@@ -4765,11 +4823,21 @@ def edit_student(name):
             .mini-row {{ gap:8px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; }}
             .mini-row strong {{ color:var(--text); font-size:13px; font-weight:850; }}
             .mini-row span {{ color:var(--muted); font-size:12px; margin-top:3px; }}
+            .course-credit-editor {{ display:grid; gap:8px; padding:10px; border:1px solid #bfdbfe; background:#eff6ff; border-radius:9px; margin-bottom:10px; }}
+            .course-credit-editor strong {{ font-size:13px; }}
+            .course-credit-editor > span {{ color:var(--muted); font-size:12px; line-height:1.35; }}
+            .editor-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }}
+            .readonly-mini {{ min-height:34px; display:flex; align-items:center; border:1px solid var(--border); border-radius:7px; background:#fff; color:var(--text); padding:0 9px; font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .credit-notice {{ border-radius:7px; padding:7px 9px; font-size:12px; font-weight:850; }}
+            .credit-notice.ok {{ background:var(--green-soft); color:var(--green); }}
+            .credit-notice.danger {{ background:var(--red-soft); color:var(--red); }}
             .credit-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border); }}
             .credit-row:last-child {{ border-bottom:0; }}
             .credit-row strong {{ display:block; font-size:13px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
             .credit-row span {{ display:block; color:var(--muted); font-size:12px; margin-top:3px; line-height:1.35; }}
             .credit-actions {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
+            .credit-actions.wide {{ justify-content:stretch; }}
+            .credit-actions.wide > * {{ flex:1 1 0; }}
             .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
@@ -4792,6 +4860,7 @@ def edit_student(name):
                 .topbar {{ height:auto; padding-top:10px; padding-bottom:10px; }}
                 .quick, .savebar {{ justify-content:flex-start; }}
                 .form-grid > div, .form-grid > div:nth-child(4), .form-grid > div.teacher-span, .form-grid > div:nth-child(9), .form-grid > div.span, #notes {{ grid-column:auto; }}
+                .editor-grid {{ grid-template-columns:1fr; }}
             }}
         </style>
     </head>
@@ -4868,7 +4937,7 @@ def edit_student(name):
                                         </select>
                                     </div>
                                     <div>
-                                        <label>Program</label>
+                                        <label>Default profile program</label>
                                         <select name="program">
                                             {options(['Piano private lesson', 'Voice private lesson', 'Guitar private lesson', 'Group class', 'Custom program'], program_value)}
                                         </select>
@@ -4887,10 +4956,7 @@ def edit_student(name):
                                             {options(['30 minutes', '45 minutes', '60 minutes', '90 minutes'], lesson_length_value)}
                                         </select>
                                     </div>
-                                    <div>
-                                        <label>Historical total lessons</label>
-                                        <input type="number" name="lessons_left" value="{lessons_left}">
-                                    </div>
+                                    <input type="hidden" name="lessons_left" value="{lessons_left}">
                                     <div id="parent-contact">
                                         <label>Parent name</label>
                                         <input name="parent_name" value="{escape(str(student[2] or ''), quote=True)}">
@@ -4950,12 +5016,7 @@ def edit_student(name):
                                     <span><a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a></span>
                                 </div>
                                 <div class="panel-body">
-                                    <div class="mini-row">
-                                        <div>
-                                            <strong>{len(course_credit_rows)} course credit bucket{'s' if len(course_credit_rows) != 1 else ''}</strong>
-                                            <span>Each course has its own remaining lessons, teacher, and tuition.</span>
-                                        </div>
-                                    </div>
+                                    {course_credit_editor_html}
                                     {course_credit_html}
                                 </div>
                             </div>
@@ -4994,9 +5055,27 @@ def edit_student(name):
                         </aside>
                     </section>
                 </form>
+                <form id="courseCreditForm" method="POST" action="/update_student_course_credit/{student_url_name}"></form>
             </main>
         </div>
         <script>
+            const courseCreditSelect = document.getElementById('courseCreditSelect');
+            if (courseCreditSelect) {{
+                const creditLessons = document.getElementById('courseCreditLessons');
+                const creditTeacher = document.getElementById('courseCreditTeacher');
+                const creditRate = document.getElementById('courseCreditRate');
+                const creditFullEdit = document.getElementById('courseCreditFullEdit');
+                const syncCourseCreditEditor = () => {{
+                    const option = courseCreditSelect.selectedOptions[0];
+                    if (!option) return;
+                    if (creditLessons) creditLessons.value = option.dataset.lessons || '0';
+                    if (creditTeacher) creditTeacher.textContent = option.dataset.teacher || 'Unassigned';
+                    if (creditRate) creditRate.textContent = option.dataset.rate || '$0.00/lesson';
+                    if (creditFullEdit) creditFullEdit.href = option.dataset.editUrl || '#';
+                }};
+                courseCreditSelect.addEventListener('change', syncCourseCreditEditor);
+                syncCourseCreditEditor();
+            }}
             document.querySelectorAll('.side a[href^="#"]').forEach((link) => {{
                 link.addEventListener('click', (event) => {{
                     const target = document.querySelector(link.getAttribute('href'));
@@ -5019,6 +5098,48 @@ def edit_student(name):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response
+
+
+@app.route("/update_student_course_credit/<name>", methods=["POST"])
+def update_student_course_credit(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    enrollment_id = request.form.get("enrollment_id")
+    lessons_left = request.form.get("lessons_left")
+    try:
+        enrollment_id_int = int(enrollment_id or 0)
+        lessons_left_value = float(lessons_left or 0)
+    except (TypeError, ValueError):
+        return redirect(f"/edit_student/{quote(name)}?credit_error=1#course-credit-editor")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id
+    FROM enrollments
+    WHERE id = ?
+    AND student_name = ?
+    """, (enrollment_id_int, name))
+    if not cursor.fetchone():
+        conn.close()
+        return redirect(f"/edit_student/{quote(name)}?credit_error=1#course-credit-editor")
+
+    cursor.execute("""
+    UPDATE enrollments
+    SET lessons_left = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        lessons_left_value,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        enrollment_id_int
+    ))
+    conn.commit()
+    conn.close()
+    return redirect(f"/edit_student/{quote(name)}?credit_saved=1#course-credit-editor")
 
 
 @app.route("/delete_student/<name>", methods=["POST"])
