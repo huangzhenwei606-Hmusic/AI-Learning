@@ -4626,92 +4626,55 @@ def edit_student(name):
         </div>
         """
 
-    course_credit_html = ""
-    for enrollment in course_credit_rows:
-        enrollment_id = enrollment[0]
-        course_credit_html += f"""
-        <div class="credit-row">
-            <div>
-                <strong>{escape(str(enrollment[1] or 'Course'))}</strong>
-                <span>{escape(str(enrollment[2] or 'Unassigned'))} · {float(enrollment[3] or 0):g} left · ${hmusic_money(enrollment[4] or 0)}/lesson</span>
-            </div>
-            <div class="credit-actions">
-                <a class="teacher-link" href="/edit_enrollment/{enrollment_id}">Edit</a>
-                <a class="teacher-link" href="/enrollment_payment/{enrollment_id}">Payment</a>
-                <a class="teacher-link" href="/create_enrollment_invoice/{enrollment_id}">Invoice</a>
-            </div>
-        </div>
-        """
-    if not course_credit_html:
-        course_credit_html = f"""
-        <div class="credit-row">
-            <div>
-                <strong>No course credits set up yet</strong>
-                <span>Create separate credit buckets for piano, voice, group, or another teacher.</span>
-            </div>
-            <div class="credit-actions">
-                <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
-            </div>
-        </div>
-        """
-    credit_notice_html = ""
+    course_credit_html = credit_notice_html = course_credit_forms_html = ""
     if request.args.get("credit_saved") == "1":
         credit_notice_html = '<div class="credit-notice ok">Course credit updated.</div>'
     elif request.args.get("credit_error") == "1":
         credit_notice_html = '<div class="credit-notice danger">Choose a valid course and credit number.</div>'
 
-    if course_credit_rows:
-        first_credit = course_credit_rows[0]
-        course_credit_select_options = ""
-        for enrollment in course_credit_rows:
-            enrollment_id, course_name, teacher_name, remaining_lessons, final_price, _package_amount, _package_lessons, status = enrollment
-            label = f"{course_name or 'Course'} · {teacher_name or 'Unassigned'}"
-            selected = "selected" if enrollment_id == first_credit[0] else ""
-            course_credit_select_options += (
-                f'<option value="{enrollment_id}" {selected} '
-                f'data-lessons="{float(remaining_lessons or 0):g}" '
-                f'data-teacher="{escape(str(teacher_name or "Unassigned"), quote=True)}" '
-                f'data-rate="${hmusic_money(final_price or 0)}/lesson" '
-                f'data-status="{escape(str(status or "active"), quote=True)}" '
-                f'data-edit-url="/edit_enrollment/{enrollment_id}">'
-                f'{escape(label)}</option>'
-            )
-        course_credit_editor_html = f"""
-            <div class="course-credit-editor" id="course-credit-editor">
-                {credit_notice_html}
-                <label>Course credit to edit</label>
-                <select name="enrollment_id" id="courseCreditSelect" form="courseCreditForm">
-                    {course_credit_select_options}
-                </select>
-                <div class="editor-grid">
-                    <div>
-                        <label>Credits left</label>
-                        <input type="number" step="0.5" name="lessons_left" id="courseCreditLessons" value="{float(first_credit[3] or 0):g}" form="courseCreditForm">
-                    </div>
-                    <div>
-                        <label>Teacher</label>
-                        <div class="readonly-mini" id="courseCreditTeacher">{escape(str(first_credit[2] or 'Unassigned'))}</div>
-                    </div>
-                    <div>
-                        <label>Tuition</label>
-                        <div class="readonly-mini" id="courseCreditRate">${hmusic_money(first_credit[4] or 0)}/lesson</div>
-                    </div>
-                </div>
-                <div class="credit-actions wide">
-                    <button class="primary" type="submit" form="courseCreditForm">Save selected credit</button>
-                    <a class="teacher-link" id="courseCreditFullEdit" href="/edit_enrollment/{first_credit[0]}">Full course setup</a>
-                </div>
-            </div>
+    for enrollment in course_credit_rows:
+        enrollment_id = enrollment[0]
+        course_name = escape(str(enrollment[1] or 'Course'))
+        teacher_name = escape(str(enrollment[2] or 'Unassigned'))
+        lessons_value = f"{float(enrollment[3] or 0):g}"
+        lesson_rate = hmusic_money(enrollment[4] or 0)
+        credit_form_id = f"courseCreditForm{enrollment_id}"
+        course_credit_forms_html += f"""
+                <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url_name}">
+                    <input type="hidden" name="enrollment_id" value="{enrollment_id}">
+                </form>
         """
-    else:
-        course_credit_editor_html = f"""
-            <div class="course-credit-editor" id="course-credit-editor">
-                {credit_notice_html}
-                <strong>No course selected</strong>
-                <span>Create one course credit bucket before editing remaining lessons.</span>
-                <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+        course_credit_html += f"""
+        <div class="credit-inline-row">
+            <div class="credit-main">
+                <strong>{course_name}</strong>
+                <span>{teacher_name} · ${lesson_rate}/lesson</span>
+                <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
             </div>
+            <div class="credit-stepper">
+                <button type="button" data-credit-step="-0.5" aria-label="Decrease credit">-</button>
+                <input type="number" step="0.5" min="0" name="lessons_left" value="{lessons_value}" form="{credit_form_id}" aria-label="{course_name} credits left">
+                <button type="button" data-credit-step="0.5" aria-label="Increase credit">+</button>
+            </div>
+            <button class="primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+        </div>
         """
+    if not course_credit_html:
+        course_credit_html = f"""
+        <div class="course-credit-empty">
+            <div>
+                <strong>No course credits yet.</strong>
+                <span>Create separate credit buckets for piano, voice, group, or another teacher.</span>
+            </div>
+            <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+        </div>
+        """
+    course_credit_html = f"""
+        <div class="course-credit-list" id="course-credit-editor">
+            {credit_notice_html}
+            {course_credit_html}
+        </div>
+    """
 
     page_html = f"""
     <html>
@@ -4823,21 +4786,23 @@ def edit_student(name):
             .mini-row {{ gap:8px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; }}
             .mini-row strong {{ color:var(--text); font-size:13px; font-weight:850; }}
             .mini-row span {{ color:var(--muted); font-size:12px; margin-top:3px; }}
-            .course-credit-editor {{ display:grid; gap:8px; padding:10px; border:1px solid #bfdbfe; background:#eff6ff; border-radius:9px; margin-bottom:10px; }}
-            .course-credit-editor strong {{ font-size:13px; }}
-            .course-credit-editor > span {{ color:var(--muted); font-size:12px; line-height:1.35; }}
-            .editor-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }}
-            .readonly-mini {{ min-height:34px; display:flex; align-items:center; border:1px solid var(--border); border-radius:7px; background:#fff; color:var(--text); padding:0 9px; font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .course-credit-list {{ display:grid; gap:0; }}
             .credit-notice {{ border-radius:7px; padding:7px 9px; font-size:12px; font-weight:850; }}
             .credit-notice.ok {{ background:var(--green-soft); color:var(--green); }}
             .credit-notice.danger {{ background:var(--red-soft); color:var(--red); }}
-            .credit-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border); }}
-            .credit-row:last-child {{ border-bottom:0; }}
-            .credit-row strong {{ display:block; font-size:13px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-            .credit-row span {{ display:block; color:var(--muted); font-size:12px; margin-top:3px; line-height:1.35; }}
-            .credit-actions {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
-            .credit-actions.wide {{ justify-content:stretch; }}
-            .credit-actions.wide > * {{ flex:1 1 0; }}
+            .credit-inline-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border); }}
+            .credit-inline-row:last-child {{ border-bottom:0; }}
+            .credit-main strong {{ display:block; font-size:13px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .credit-main span {{ display:block; color:var(--muted); font-size:12px; margin-top:3px; line-height:1.35; }}
+            .setup-link {{ display:inline-flex; margin-top:5px; color:var(--blue-dark); font-size:12px; font-weight:850; text-decoration:none; }}
+            .setup-link:hover {{ text-decoration:underline; }}
+            .credit-stepper {{ display:grid; grid-template-columns:34px 76px 34px; gap:6px; align-items:center; }}
+            .credit-stepper button {{ width:34px; min-height:34px; padding:0; border-radius:7px; }}
+            .credit-stepper input {{ width:76px; min-height:34px; padding:0 6px; text-align:center; }}
+            .save-credit {{ min-height:34px; padding:0 12px; }}
+            .course-credit-empty {{ display:grid; gap:9px; padding:12px; border:1px solid #bfdbfe; background:#eff6ff; border-radius:9px; }}
+            .course-credit-empty strong {{ font-size:13px; }}
+            .course-credit-empty span {{ display:block; color:var(--muted); font-size:12px; line-height:1.35; margin-top:3px; }}
             .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
@@ -4860,7 +4825,9 @@ def edit_student(name):
                 .topbar {{ height:auto; padding-top:10px; padding-bottom:10px; }}
                 .quick, .savebar {{ justify-content:flex-start; }}
                 .form-grid > div, .form-grid > div:nth-child(4), .form-grid > div.teacher-span, .form-grid > div:nth-child(9), .form-grid > div.span, #notes {{ grid-column:auto; }}
-                .editor-grid {{ grid-template-columns:1fr; }}
+                .credit-inline-row {{ grid-template-columns:1fr; }}
+                .credit-stepper {{ grid-template-columns:34px minmax(0,1fr) 34px; }}
+                .credit-stepper input {{ width:100%; }}
             }}
         </style>
     </head>
@@ -5016,7 +4983,6 @@ def edit_student(name):
                                     <span><a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a></span>
                                 </div>
                                 <div class="panel-body">
-                                    {course_credit_editor_html}
                                     {course_credit_html}
                                 </div>
                             </div>
@@ -5055,27 +5021,21 @@ def edit_student(name):
                         </aside>
                     </section>
                 </form>
-                <form id="courseCreditForm" method="POST" action="/update_student_course_credit/{student_url_name}"></form>
+                {course_credit_forms_html}
             </main>
         </div>
         <script>
-            const courseCreditSelect = document.getElementById('courseCreditSelect');
-            if (courseCreditSelect) {{
-                const creditLessons = document.getElementById('courseCreditLessons');
-                const creditTeacher = document.getElementById('courseCreditTeacher');
-                const creditRate = document.getElementById('courseCreditRate');
-                const creditFullEdit = document.getElementById('courseCreditFullEdit');
-                const syncCourseCreditEditor = () => {{
-                    const option = courseCreditSelect.selectedOptions[0];
-                    if (!option) return;
-                    if (creditLessons) creditLessons.value = option.dataset.lessons || '0';
-                    if (creditTeacher) creditTeacher.textContent = option.dataset.teacher || 'Unassigned';
-                    if (creditRate) creditRate.textContent = option.dataset.rate || '$0.00/lesson';
-                    if (creditFullEdit) creditFullEdit.href = option.dataset.editUrl || '#';
-                }};
-                courseCreditSelect.addEventListener('change', syncCourseCreditEditor);
-                syncCourseCreditEditor();
-            }}
+            document.querySelectorAll('[data-credit-step]').forEach((button) => {{
+                button.addEventListener('click', () => {{
+                    const stepper = button.closest('.credit-stepper');
+                    const input = stepper ? stepper.querySelector('input[name="lessons_left"]') : null;
+                    if (!input) return;
+                    const current = parseFloat(input.value || '0') || 0;
+                    const delta = parseFloat(button.dataset.creditStep || '0') || 0;
+                    const next = Math.max(0, current + delta);
+                    input.value = Number.isInteger(next) ? String(next) : next.toFixed(1);
+                }});
+            }});
             document.querySelectorAll('.side a[href^="#"]').forEach((link) => {{
                 link.addEventListener('click', (event) => {{
                     const target = document.querySelector(link.getAttribute('href'));
