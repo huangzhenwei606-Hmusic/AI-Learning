@@ -4602,8 +4602,6 @@ def edit_student(name):
             f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
             f'{escape(str(teacher_name))}</option>'
         )
-    quick_teacher_options = teacher_options
-
     teacher_history = []
     if student[1]:
         teacher_history.append((student[1], "Current primary teacher", "Now"))
@@ -4635,10 +4633,39 @@ def edit_student(name):
         </div>
         """
 
-    quick_credit_course_options = "".join([
-        f'<option value="{course[0]}">{escape(str(course[1] or "Course"))} - {escape(str(course[2] or ""))} mins</option>'
-        for course in quick_credit_courses
-    ])
+    def course_type_options(current_course_type_id=None):
+        html = ""
+        for course in quick_credit_courses:
+            selected = "selected" if str(course[0]) == str(current_course_type_id or "") else ""
+            html += (
+                f'<option value="{course[0]}" {selected}>'
+                f'{escape(str(course[1] or "Course"))} - {escape(str(course[2] or ""))} mins</option>'
+            )
+        return html
+
+    def credit_teacher_options(current_teacher_name=None):
+        html = '<option value="">Unassigned</option>'
+        seen_names = set()
+        current_teacher_name = current_teacher_name or ""
+        if current_teacher_name and current_teacher_name not in seen_names:
+            selected = "selected"
+            html += (
+                f'<option value="{escape(str(current_teacher_name), quote=True)}" {selected}>'
+                f'{escape(str(current_teacher_name))}</option>'
+            )
+            seen_names.add(current_teacher_name)
+        for _teacher_id, teacher_name in teachers:
+            if not teacher_name or teacher_name in seen_names:
+                continue
+            seen_names.add(teacher_name)
+            selected = "selected" if teacher_name == current_teacher_name else ""
+            html += (
+                f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
+                f'{escape(str(teacher_name))}</option>'
+            )
+        return html
+
+    quick_credit_course_options = course_type_options()
     if not quick_credit_course_options:
         quick_credit_course_options = '<option value="">No active courses</option>'
 
@@ -4653,7 +4680,7 @@ def edit_student(name):
                 {quick_credit_course_options}
             </select>
             <select name="teacher_name" form="{quick_credit_form_id}" aria-label="Teacher">
-                {quick_teacher_options}
+                {credit_teacher_options(student[1])}
             </select>
             <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_credit_form_id}" aria-label="Credits left">
             <button class="primary save-credit" type="submit" form="{quick_credit_form_id}">Add</button>
@@ -4678,10 +4705,17 @@ def edit_student(name):
         teacher_name = escape(str(enrollment[2] or 'Unassigned'))
         lessons_value = f"{float(enrollment[3] or 0):g}"
         lesson_rate = hmusic_money(enrollment[4] or 0)
+        current_course_type_id = enrollment[8] if len(enrollment) > 8 else ""
         credit_form_id = f"courseCreditForm{enrollment_id}"
+        quick_edit_form_id = f"courseQuickEditForm{enrollment_id}"
+        quick_edit_target_id = f"courseQuickEdit{enrollment_id}"
         course_credit_forms_html += f"""
                 <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url_name}">
                     <input type="hidden" name="enrollment_id" value="{enrollment_id}">
+                </form>
+                <form id="{quick_edit_form_id}" method="POST" action="/quick_edit_course_credit/{enrollment_id}">
+                    <input type="hidden" name="return_to" value="/edit_student/{student_url_name}">
+                    <input type="hidden" name="return_anchor" value="course-credit-editor">
                 </form>
         """
         course_credit_html += f"""
@@ -4689,14 +4723,35 @@ def edit_student(name):
             <div class="credit-main">
                 <strong>{course_name}</strong>
                 <span>{teacher_name} · ${lesson_rate}/lesson</span>
-                <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
             </div>
             <div class="credit-stepper">
                 <button type="button" data-credit-step="-0.5" aria-label="Decrease credit">-</button>
                 <input type="number" step="0.5" min="0" name="lessons_left" value="{lessons_value}" form="{credit_form_id}" aria-label="{course_name} credits left">
                 <button type="button" data-credit-step="0.5" aria-label="Increase credit">+</button>
             </div>
-            <button class="primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+            <div class="credit-row-actions">
+                <button class="primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+                <button type="button" class="quick-edit-btn" data-credit-edit-target="{quick_edit_target_id}">Edit</button>
+                <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full setup</a>
+            </div>
+        </div>
+        <div class="credit-edit-row" id="{quick_edit_target_id}" hidden>
+            <div>
+                <label>Course type</label>
+                <select name="course_type_id" form="{quick_edit_form_id}">
+                    {course_type_options(current_course_type_id)}
+                </select>
+            </div>
+            <div>
+                <label>Teacher</label>
+                <select name="teacher_name" form="{quick_edit_form_id}">
+                    {credit_teacher_options(enrollment[2])}
+                </select>
+            </div>
+            <div class="credit-edit-actions">
+                <button class="primary save-credit" type="submit" form="{quick_edit_form_id}">Save changes</button>
+                <button type="button" data-credit-edit-target="{quick_edit_target_id}">Cancel</button>
+            </div>
         </div>
         """
     if not course_credit_html:
@@ -4843,6 +4898,11 @@ def edit_student(name):
             .credit-stepper button {{ width:34px; min-height:34px; padding:0; border-radius:7px; }}
             .credit-stepper input {{ width:76px; min-height:34px; padding:0 6px; text-align:center; }}
             .save-credit {{ min-height:34px; padding:0 12px; }}
+            .credit-row-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
+            .quick-edit-btn {{ color:var(--blue-dark); }}
+            .credit-edit-row {{ display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto; gap:10px; align-items:end; padding:0 14px 12px; border-bottom:1px solid var(--border); background:#fbfcff; }}
+            .credit-edit-row[hidden] {{ display:none; }}
+            .credit-edit-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
             .course-credit-empty {{ display:grid; gap:9px; padding:14px; border-bottom:1px solid var(--border); background:#fff; }}
             .course-credit-empty strong {{ font-size:13px; }}
             .course-credit-empty span {{ display:block; color:var(--muted); font-size:12px; line-height:1.35; margin-top:3px; }}
@@ -4876,6 +4936,9 @@ def edit_student(name):
                 .quick, .savebar {{ justify-content:flex-start; }}
                 .form-grid > div, .form-grid > div:nth-child(4), .form-grid > div.teacher-span, .form-grid > div:nth-child(9), .form-grid > div.span, #notes {{ grid-column:auto; }}
                 .credit-inline-row {{ grid-template-columns:1fr; }}
+                .credit-row-actions {{ justify-content:flex-start; }}
+                .credit-edit-row {{ grid-template-columns:1fr; padding-top:12px; }}
+                .credit-edit-actions {{ justify-content:flex-start; }}
                 .credit-stepper {{ grid-template-columns:34px minmax(0,1fr) 34px; }}
                 .credit-stepper input {{ width:100%; }}
                 .quick-credit-add {{ grid-template-columns:1fr; }}
@@ -5092,6 +5155,13 @@ def edit_student(name):
                     input.value = Number.isInteger(next) ? String(next) : next.toFixed(1);
                 }});
             }});
+            document.querySelectorAll('[data-credit-edit-target]').forEach((button) => {{
+                button.addEventListener('click', () => {{
+                    const target = document.getElementById(button.dataset.creditEditTarget || '');
+                    if (!target) return;
+                    target.hidden = !target.hidden;
+                }});
+            }});
             document.querySelectorAll('.side a[href^="#"]').forEach((link) => {{
                 link.addEventListener('click', (event) => {{
                     const target = document.querySelector(link.getAttribute('href'));
@@ -5301,6 +5371,96 @@ def quick_add_course_credit(name):
     conn.commit()
     conn.close()
     return credit_redirect("credit_saved")
+
+
+@app.route("/quick_edit_course_credit/<int:enrollment_id>", methods=["POST"])
+def quick_edit_course_credit(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    return_to = (request.form.get("return_to") or "").strip()
+    return_anchor = (request.form.get("return_anchor") or "").strip()
+
+    def credit_redirect(student_name, flag):
+        if return_to.startswith("/") and not return_to.startswith("//"):
+            separator = "&" if "?" in return_to else "?"
+            anchor = ""
+            if return_anchor.replace("-", "").replace("_", "").isalnum():
+                anchor = f"#{return_anchor}"
+            return redirect(f"{return_to}{separator}{flag}=1{anchor}")
+        return redirect(f"/edit_student/{quote(student_name)}?{flag}=1#course-credit-editor")
+
+    course_type_id = request.form.get("course_type_id")
+    teacher_name = (request.form.get("teacher_name") or "").strip()
+    try:
+        course_type_id_int = int(course_type_id or 0)
+    except (TypeError, ValueError):
+        course_type_id_int = 0
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, student_name, COALESCE(lessons_left, 0), COALESCE(package_lessons, 0)
+    FROM enrollments
+    WHERE id = ?
+    LIMIT 1
+    """, (enrollment_id,))
+    enrollment = cursor.fetchone()
+    if not enrollment:
+        conn.close()
+        return redirect("/students")
+
+    student_name = enrollment[1]
+    if not course_type_id_int:
+        conn.close()
+        return credit_redirect(student_name, "credit_error")
+
+    pricing = get_final_pricing(student_name, teacher_name, course_type_id_int)
+    if not pricing:
+        conn.close()
+        return credit_redirect(student_name, "credit_error")
+
+    lessons_left_value = float(enrollment[2] or 0)
+    package_lessons = float(enrollment[3] or lessons_left_value or 0)
+    final_price = float(pricing["student_charge_amount"] or 0)
+    teacher_pay_amount = float(pricing["teacher_pay_amount"] or 0)
+    package_amount = round(final_price * package_lessons, 2)
+
+    cursor.execute("""
+    UPDATE enrollments
+    SET course_type_id = ?,
+        course_type_name = ?,
+        teacher_name = ?,
+        duration = ?,
+        student_billing_method = ?,
+        base_price = ?,
+        final_price = ?,
+        teacher_billing_method = ?,
+        teacher_rate = ?,
+        teacher_pay_amount = ?,
+        package_amount = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        pricing["course_id"],
+        pricing["course_name"],
+        teacher_name,
+        pricing["duration"],
+        pricing["student_billing_method"],
+        pricing["student_charge_amount"],
+        final_price,
+        pricing["teacher_billing_method"],
+        pricing["teacher_pay"],
+        teacher_pay_amount,
+        package_amount,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        enrollment_id
+    ))
+    conn.commit()
+    conn.close()
+    return credit_redirect(student_name, "credit_saved")
 
 
 @app.route("/delete_student/<name>", methods=["POST"])
@@ -13074,7 +13234,9 @@ def hmusic_student_course_credits(cursor, student_name):
         COALESCE(final_price, 0),
         COALESCE(package_amount, 0),
         COALESCE(package_lessons, 0),
-        COALESCE(status, 'active')
+        COALESCE(status, 'active'),
+        COALESCE(course_type_id, 0),
+        COALESCE(duration, 0)
     FROM enrollments
     WHERE student_name = ?
     AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
@@ -16978,7 +17140,9 @@ def parent_admin(parent_id):
             COALESCE(e.final_price, 0),
             COALESCE(e.package_lessons, 0),
             COALESCE(e.package_amount, 0),
-            COALESCE(e.status, 'active')
+            COALESCE(e.status, 'active'),
+            COALESCE(e.course_type_id, 0),
+            COALESCE(e.duration, 0)
         FROM enrollments e
         WHERE e.student_name IN ({placeholders})
         AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
@@ -17103,6 +17267,16 @@ def parent_admin(parent_id):
     if not quick_credit_course_options:
         quick_credit_course_options = '<option value="">No active courses</option>'
 
+    def family_course_type_options(current_course_type_id=None):
+        html = ""
+        for course in quick_credit_courses:
+            selected = "selected" if str(course[0]) == str(current_course_type_id or "") else ""
+            html += (
+                f'<option value="{course[0]}" {selected}>'
+                f'{escape(str(course[1] or "Course"))} - {escape(str(course[2] or ""))} mins</option>'
+            )
+        return html or '<option value="">No active courses</option>'
+
     family_credit_sections = ""
     family_credit_forms_html = ""
     family_credit_notice_html = ""
@@ -17130,6 +17304,16 @@ def parent_admin(parent_id):
                 f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
                 f'{escape(str(teacher_name))}</option>'
             )
+        def family_teacher_options(current_teacher_name=None):
+            current_teacher_name = current_teacher_name or ""
+            html = '<option value="">Unassigned</option>'
+            for teacher_name in teacher_names:
+                selected = "selected" if teacher_name == current_teacher_name else ""
+                html += (
+                    f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
+                    f'{escape(str(teacher_name))}</option>'
+                )
+            return html
         quick_form_id = f"familyQuickCourseCreditForm{linked_student[0]}"
         family_credit_forms_html += f"""
             <form id="{quick_form_id}" method="POST" action="/quick_add_course_credit/{student_url}">
@@ -17158,11 +17342,17 @@ def parent_admin(parent_id):
             </tr>
         """
         for credit in student_credits:
-            enrollment_id, _student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status = credit
+            enrollment_id, _student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status, course_type_id, _duration = credit
             credit_form_id = f"familyCreditForm{enrollment_id}"
+            quick_edit_form_id = f"familyCourseQuickEditForm{enrollment_id}"
+            quick_edit_target_id = f"familyCourseQuickEdit{enrollment_id}"
             family_credit_forms_html += f"""
             <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url}">
                 <input type="hidden" name="enrollment_id" value="{enrollment_id}">
+                <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
+                <input type="hidden" name="return_anchor" value="family-credits">
+            </form>
+            <form id="{quick_edit_form_id}" method="POST" action="/quick_edit_course_credit/{enrollment_id}">
                 <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
                 <input type="hidden" name="return_anchor" value="family-credits">
             </form>
@@ -17185,7 +17375,26 @@ def parent_admin(parent_id):
                 <td>
                     <div class="row-actions">
                         <button class="button compact primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+                        <button class="button compact" type="button" data-credit-edit-target="{quick_edit_target_id}">Edit</button>
                         <a class="button compact" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
+                    </div>
+                </td>
+            </tr>
+            <tr class="family-credit-edit-row" id="{quick_edit_target_id}" hidden>
+                <td colspan="5">
+                    <div class="quick-credit-add family-quick-credit-add">
+                        <div>
+                            <strong>Edit course</strong>
+                            <span>Quickly change course type or teacher.</span>
+                        </div>
+                        <select name="course_type_id" form="{quick_edit_form_id}" aria-label="{escape(str(course_name or 'Course'), quote=True)} course type">
+                            {family_course_type_options(course_type_id)}
+                        </select>
+                        <select name="teacher_name" form="{quick_edit_form_id}" aria-label="{escape(str(course_name or 'Course'), quote=True)} teacher">
+                            {family_teacher_options(teacher_name)}
+                        </select>
+                        <button class="button compact primary save-credit" type="submit" form="{quick_edit_form_id}">Save changes</button>
+                        <button class="button compact" type="button" data-credit-edit-target="{quick_edit_target_id}">Cancel</button>
                     </div>
                 </td>
             </tr>
@@ -17599,6 +17808,13 @@ def parent_admin(parent_id):
                     const delta = parseFloat(button.dataset.creditStep || '0') || 0;
                     const next = Math.max(0, current + delta);
                     input.value = Number.isInteger(next) ? String(next) : next.toFixed(1);
+                }});
+            }});
+            document.querySelectorAll('[data-credit-edit-target]').forEach((button) => {{
+                button.addEventListener('click', () => {{
+                    const target = document.getElementById(button.dataset.creditEditTarget || '');
+                    if (!target) return;
+                    target.hidden = !target.hidden;
                 }});
             }});
         </script>
