@@ -17,9 +17,15 @@ CHECKS = {
     "course credit display": "Credits by course",
     "family enrollment credits": "Credits & Enrollments",
     "course credit actions": "Edit credit",
+    "course credit setup gate": "Set up course credits first",
     "invoice enrollment binding": "name=\"enrollment_id\"",
     "payment enrollment preselect": "selected_enrollment_id = request.args.get(\"enrollment_id\")",
     "schedule enrollment binding": "resolved_enrollment_id",
+}
+
+
+FORBIDDEN = {
+    "student-level credit write": "UPDATE students\n        SET lessons_left",
 }
 
 
@@ -30,6 +36,12 @@ def main():
         print("Regression check failed. Missing:")
         for name in missing:
             print(f"- {name}: {CHECKS[name]}")
+        raise SystemExit(1)
+    present = [name for name, needle in FORBIDDEN.items() if needle in source]
+    if present:
+        print("Regression check failed. Forbidden legacy patterns found:")
+        for name in present:
+            print(f"- {name}: {FORBIDDEN[name]}")
         raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 

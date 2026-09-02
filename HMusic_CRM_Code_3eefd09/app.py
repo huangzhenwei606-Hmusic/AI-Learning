@@ -4546,8 +4546,17 @@ def edit_student(name):
 
     lesson_badge_class = "danger" if lessons_left <= 0 else "amber" if lessons_left <= 2 else "ok"
     lesson_badge_text = "No lessons" if lessons_left <= 0 else "Low lessons" if lessons_left <= 2 else "Lessons available"
-    course_lesson_badge_class = "danger" if total_course_credits <= 0 else "amber" if total_course_credits <= 2 else "ok"
-    course_lesson_badge_text = "No course credits" if total_course_credits <= 0 else "Low course credits" if total_course_credits <= 2 else "Course credits available"
+    course_credit_count = len(course_credit_rows)
+    has_empty_course_credit = any(float(row[3] or 0) <= 0 for row in course_credit_rows)
+    has_low_course_credit = any(0 < float(row[3] or 0) <= 2 for row in course_credit_rows)
+    course_lesson_badge_class = "danger" if course_credit_count == 0 or has_empty_course_credit else "amber" if has_low_course_credit else "ok"
+    course_lesson_badge_text = (
+        "No course credits"
+        if course_credit_count == 0 else
+        "Course renewal needed"
+        if has_empty_course_credit or has_low_course_credit else
+        f"{course_credit_count} course credit bucket{'s' if course_credit_count != 1 else ''}"
+    )
     name_parts = str(student_name).split()
     first_name = name_parts[0] if name_parts else ""
     last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
@@ -4637,11 +4646,11 @@ def edit_student(name):
         course_credit_html = f"""
         <div class="credit-row">
             <div>
-                <strong>Legacy total credit</strong>
-                <span>{lessons_left:g} left · Create separate course credits for piano, voice, group, or another teacher.</span>
+                <strong>No course credits set up yet</strong>
+                <span>Create separate credit buckets for piano, voice, group, or another teacher.</span>
             </div>
             <div class="credit-actions">
-                <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a>
+                <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
             </div>
         </div>
         """
@@ -4879,7 +4888,7 @@ def edit_student(name):
                                         </select>
                                     </div>
                                     <div>
-                                        <label>Legacy total lessons</label>
+                                        <label>Historical total lessons</label>
                                         <input type="number" name="lessons_left" value="{lessons_left}">
                                     </div>
                                     <div id="parent-contact">
@@ -4943,8 +4952,8 @@ def edit_student(name):
                                 <div class="panel-body">
                                     <div class="mini-row">
                                         <div>
-                                            <strong>{float(total_course_credits or 0):g} total active credits</strong>
-                                            <span>Use course rows for piano, voice, group, different teachers, and different tuition.</span>
+                                            <strong>{len(course_credit_rows)} course credit bucket{'s' if len(course_credit_rows) != 1 else ''}</strong>
+                                            <span>Each course has its own remaining lessons, teacher, and tuition.</span>
                                         </div>
                                     </div>
                                     {course_credit_html}
@@ -4970,8 +4979,8 @@ def edit_student(name):
                                     </div>
                                     <div class="mini-row">
                                         <div>
-                                            <strong>Legacy total</strong>
-                                            <span>{lessons_left:g} lessons left</span>
+                                            <strong>Historical total</strong>
+                                            <span>Old student-level field: {lessons_left:g}. Use course credits above for billing.</span>
                                         </div>
                                     </div>
                                     <div class="mini-row">
@@ -5596,8 +5605,17 @@ def student_detail(name):
             return 0
 
     lessons_left = lesson_count(student[4])
-    balance_class = "danger" if total_course_credits <= 2 else "ok"
-    balance_text = "Renewal needed" if total_course_credits <= 2 else "Good standing"
+    course_credit_count = len(course_credit_rows)
+    has_empty_course_credit = any(float(row[3] or 0) <= 0 for row in course_credit_rows)
+    has_low_course_credit = any(0 < float(row[3] or 0) <= 2 for row in course_credit_rows)
+    balance_class = "danger" if course_credit_count == 0 or has_empty_course_credit else "amber" if has_low_course_credit else "ok"
+    balance_text = (
+        "Setup needed"
+        if course_credit_count == 0 else
+        "Course renewal needed"
+        if has_empty_course_credit or has_low_course_credit else
+        "Good standing"
+    )
     course_credit_html = ""
     for enrollment in course_credit_rows:
         enrollment_id = enrollment[0]
@@ -5615,10 +5633,9 @@ def student_detail(name):
         course_credit_html = f"""
             <div class="credit-card">
                 <div>
-                    <b>Legacy total credit</b>
-                    <p>No course-specific enrollment yet.</p>
+                    <b>No course credits set up yet</b>
+                    <p>Create separate credit buckets for piano, voice, group, or another teacher.</p>
                 </div>
-                <span class="pill {balance_class}">{lessons_left:g} left</span>
                 <a class="button" href="/add_enrollment?student_name={student_url_name}">Add course credit</a>
             </div>
         """
@@ -5811,14 +5828,14 @@ def student_detail(name):
                             <div>
                                 <div class="name-row">
                                     <h2>{escape(student[0])}</h2>
-                                    <span class="pill {balance_class}">{float(total_course_credits or 0):g} total left</span>
+                                    <span class="pill {balance_class}">{course_credit_count} course credit{'s' if course_credit_count != 1 else ''}</span>
                                     <span class="pill {parent_status_class}">{parent_status}</span>
                                 </div>
                                 <p class="muted">Primary teacher: {escape(student[1] or 'Unassigned')}</p>
                             </div>
                         </div>
                         <div class="kpis">
-                            <div class="kpi"><span>Credits</span><b>{float(total_course_credits or 0):g}</b></div>
+                            <div class="kpi"><span>Course credits</span><b>{course_credit_count} course{'s' if course_credit_count != 1 else ''}</b></div>
                             <div class="kpi"><span>Balance</span><b>{balance_text}</b></div>
                             <div class="kpi"><span>Next</span><b>{'Set' if next_lesson else 'None'}</b></div>
                         </div>
@@ -6405,6 +6422,7 @@ def teacher_lesson_notes():
         return redirect("/teacher_login")
 
     ensure_calendar_lesson_panel_schema()
+    ensure_v321_schema()
     teacher_name = session.get("teacher_name")
     selected_date = request.values.get("lesson_date") or date.today().strftime("%Y-%m-%d")
 
@@ -6432,7 +6450,7 @@ def teacher_lesson_notes():
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         cursor.execute("""
-        SELECT id
+        SELECT id, enrollment_id, course_type_id, course_type_name
         FROM schedule
         WHERE teacher = ?
         AND student_name = ?
@@ -6442,6 +6460,15 @@ def teacher_lesson_notes():
         """, (teacher_name, selected_student, selected_date))
         schedule_row = cursor.fetchone()
         schedule_id = schedule_row[0] if schedule_row else None
+        schedule_enrollment_id = schedule_row[1] if schedule_row else None
+        if schedule_row and not schedule_enrollment_id:
+            schedule_enrollment_id = hmusic_resolve_enrollment_id(
+                cursor,
+                selected_student,
+                course_type_id=schedule_row[2],
+                teacher_name=teacher_name,
+                course_type_name=schedule_row[3]
+            )
 
         cursor.execute("""
         INSERT INTO lessons
@@ -6474,15 +6501,18 @@ def teacher_lesson_notes():
             UPDATE schedule
             SET notes = ?,
                 homework_assignment = ?,
+                enrollment_id = COALESCE(enrollment_id, ?),
                 owner_calendar_updated_at = ?
             WHERE id = ?
-            """, (lesson_content, homework, now, schedule_id))
+            """, (lesson_content, homework, schedule_enrollment_id, now, schedule_id))
 
-        cursor.execute("""
-        UPDATE students
-        SET lessons_left = lessons_left - 1
-        WHERE name = ?
-        """, (selected_student,))
+        if schedule_enrollment_id:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = lessons_left - 1,
+                updated_at = ?
+            WHERE id = ?
+            """, (now, schedule_enrollment_id))
 
         conn.commit()
         conn.close()
@@ -6653,12 +6683,6 @@ def add_lesson(name):
                 updated_at = ?
             WHERE id = ?
             """, (now, schedule_enrollment_id))
-        else:
-            cursor.execute("""
-            UPDATE students
-            SET lessons_left = lessons_left - 1
-            WHERE name = ?
-            """, (name,))
 
         conn.commit()
         conn.close()
@@ -6725,6 +6749,19 @@ def payment(name):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     course_credits = hmusic_student_course_credits(cursor, name)
+    student_url_name = quote(name)
+
+    if not course_credits:
+        conn.close()
+        return f"""
+        <h1>Set up course credits first</h1>
+        <p>{escape(name)} does not have course-specific credit buckets yet.</p>
+        <p>Create one bucket for each course, teacher, and tuition before recording payment.</p>
+        <p>
+            <a href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+            · <a href="/student/{student_url_name}">Back to Student</a>
+        </p>
+        """
 
     if request.method == "POST":
         amount = float(request.form["amount"])
@@ -6742,14 +6779,13 @@ def payment(name):
             AND student_name = ?
             """, (enrollment_id_int, name))
             selected_enrollment = cursor.fetchone()
+        if not selected_enrollment:
+            conn.close()
+            return redirect(f"/payment/{student_url_name}?error=1")
 
-        course_type_name = selected_enrollment[1] if selected_enrollment else ""
-        teacher_name = selected_enrollment[2] if selected_enrollment else ""
-        credit_bucket_label = (
-            f"{course_type_name} / {teacher_name}"
-            if selected_enrollment else
-            "Legacy total lessons"
-        )
+        course_type_name = selected_enrollment[1]
+        teacher_name = selected_enrollment[2]
+        credit_bucket_label = f"{course_type_name} / {teacher_name}"
 
         cursor.execute("""
         INSERT INTO payments
@@ -6803,27 +6839,16 @@ def payment(name):
             datetime.now().strftime("%Y-%m-%d %H:%M")
         ))
 
-        if enrollment_id_int:
-            cursor.execute("""
-            UPDATE enrollments
-            SET lessons_left = COALESCE(lessons_left, 0) + ?,
-                updated_at = ?
-            WHERE id = ?
-            """, (
-                lessons_added,
-                datetime.now().strftime("%Y-%m-%d %H:%M"),
-                enrollment_id_int
-            ))
-        else:
-            cursor.execute("""
-            UPDATE students
-            SET lessons_left = lessons_left + ?
-            WHERE name = ?
-            """,
-            (
-                lessons_added,
-                name
-            ))
+        cursor.execute("""
+        UPDATE enrollments
+        SET lessons_left = COALESCE(lessons_left, 0) + ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            lessons_added,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            enrollment_id_int
+        ))
 
         conn.commit()
         conn.close()
@@ -6843,18 +6868,18 @@ def payment(name):
 
     today = date.today().strftime("%Y-%m-%d")
     selected_enrollment_id = request.args.get("enrollment_id") or (str(course_credits[0][0]) if course_credits else "")
+    error_html = ""
+    if request.args.get("error") == "1":
+        error_html = "<p style='color:#b42318;font-weight:800;'>Choose a valid course credit before recording payment.</p>"
     enrollment_options = ""
     for row in course_credits:
         selected = "selected" if str(row[0]) == str(selected_enrollment_id) else ""
         enrollment_options += f'<option value="{row[0]}" {selected}>{escape(hmusic_course_credit_label(row))}</option>'
-    if not enrollment_options:
-        enrollment_options = '<option value="">Legacy total lessons</option>'
-    else:
-        enrollment_options += '<option value="">Legacy total lessons</option>'
     conn.close()
 
     return f"""
     <h1>Receive Payment - {name}</h1>
+    {error_html}
 
     <form method="POST">
         Credit course / teacher:<br>
@@ -6978,12 +7003,6 @@ def edit_payment(payment_id):
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             enrollment_id
         ))
-    elif lesson_delta:
-        cursor.execute("""
-        UPDATE students
-        SET lessons_left = MAX(COALESCE(lessons_left, 0) + ?, 0)
-        WHERE name = ?
-        """, (lesson_delta, student_name))
 
     cursor.execute("""
     UPDATE student_ledger
@@ -7140,12 +7159,6 @@ def delete_payment(payment_id):
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             enrollment_id
         ))
-    else:
-        cursor.execute("""
-        UPDATE students
-        SET lessons_left = MAX(COALESCE(lessons_left, 0) - ?, 0)
-        WHERE name = ?
-        """, (int(float(lessons_added or 0)), student_name))
 
     cursor.execute("DELETE FROM student_ledger WHERE related_payment_id = ?", (payment_id,))
     cursor.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
@@ -13005,15 +13018,6 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
                 enrollment_id
             ))
             renewal_events = maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name)
-        else:
-            cursor.execute("""
-            UPDATE students
-            SET lessons_left = lessons_left - ?
-            WHERE name = ?
-            """, (
-                lesson_delta,
-                student_name
-            ))
 
     try:
         cursor.execute("""
@@ -14414,12 +14418,25 @@ def create_package_invoice(name):
     default_due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
     pending_fee_total = hmusic_pending_fee_total(cursor, student[0])
     course_credits = hmusic_student_course_credits(cursor, student[0])
+    student_url_name = quote(student[0])
 
     def money_value(raw, default=0):
         try:
             return round(float(raw or default), 2)
         except Exception:
             return round(float(default or 0), 2)
+
+    if not course_credits:
+        conn.close()
+        return f"""
+        <h1>Set up course credits first</h1>
+        <p>{escape(student[0])} does not have course-specific credit buckets yet.</p>
+        <p>Create one bucket for each course, teacher, and tuition before creating package invoices.</p>
+        <p>
+            <a href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+            · <a href="/student/{student_url_name}">Back to Student</a>
+        </p>
+        """
 
     if request.method == "POST":
         enrollment_id = request.form.get("enrollment_id")
@@ -14436,6 +14453,9 @@ def create_package_invoice(name):
             if not selected_enrollment:
                 conn.close()
                 return redirect(f"/create_package_invoice/{quote(student[0])}?error=1")
+        if not selected_enrollment:
+            conn.close()
+            return redirect(f"/create_package_invoice/{student_url_name}?error=1")
         package_type = (request.form.get("package_type") or "10").strip()
         custom_lessons = money_value(request.form.get("custom_lessons"), 10)
         charge_lessons = 10 if package_type == "10" else custom_lessons
@@ -14552,7 +14572,7 @@ def create_package_invoice(name):
                 amount=amount_due
             )
 
-        return redirect(f"/parent_invoice/{invoice_id}" if request.form.get("preview_parent") == "1" else f"/student/{quote(student[0])}")
+        return redirect(f"/parent_invoice/{invoice_id}" if request.form.get("preview_parent") == "1" else f"/student/{student_url_name}")
 
     error_html = ""
     if request.args.get("error") == "1":
@@ -14566,8 +14586,6 @@ def create_package_invoice(name):
     for row in course_credits:
         selected = "selected" if str(row[0]) == str(selected_enrollment_id) else ""
         enrollment_options += f'<option value="{row[0]}" {selected}>{escape(hmusic_course_credit_label(row))}</option>'
-    if not enrollment_options:
-        enrollment_options = '<option value="">Legacy total lessons</option>'
     cursor.execute("""
     SELECT COALESCE(package_amount, 0), COALESCE(package_lessons, 0), COALESCE(final_price, 0)
     FROM enrollments
@@ -15470,12 +15488,6 @@ def pay_invoice(invoice_id):
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 enrollment_id
             ))
-        elif lessons_added:
-            cursor.execute("""
-            UPDATE students
-            SET lessons_left = COALESCE(lessons_left, 0) + ?
-            WHERE name = ?
-            """, (lessons_added, student_name))
 
         cursor.execute("""
         UPDATE invoices
@@ -16749,7 +16761,7 @@ def parent_admin(parent_id):
                 <div class="row-actions">
                     <a class="button compact" href="/student/{quote(str(s[1] or ''), safe='')}">Profile</a>
                     <a class="button compact" href="/edit_student/{quote(str(s[1] or ''), safe='')}">Edit</a>
-                    <a class="button compact" href="/create_package_invoice/{quote(str(s[1] or ''), safe='')}">Billing</a>
+                    <a class="button compact" href="#family-credits">Credits</a>
                     {unlink_action}
                 </div>
             </td>
@@ -16782,63 +16794,75 @@ def parent_admin(parent_id):
     if not activity_rows:
         activity_rows = "<tr><td colspan='4'>No activity yet.</td></tr>"
 
-    credit_student_names = {row[1] for row in family_credit_records}
-    legacy_credit_records = []
-    for linked_student in linked_students:
-        student_name = linked_student[1]
-        if linked_student[3] == 1 and student_name not in credit_student_names:
-            legacy_credit_records.append(linked_student)
-
-    family_credit_rows = ""
+    credits_by_student = {}
     for credit in family_credit_records:
-        enrollment_id, student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status = credit
-        credit_status_class = "good" if float(lessons_left or 0) > 2 else "neutral"
-        student_url = quote(str(student_name or ''), safe='')
-        family_credit_rows += f"""
-        <tr>
-            <td><a href="/student/{student_url}">{escape(str(student_name or ''))}</a></td>
-            <td>
-                <strong>{escape(str(course_name or 'Course'))}</strong>
-                <span>{escape(str(enrollment_status or 'active')).title()}</span>
-            </td>
-            <td>{escape(str(teacher_name or 'Unassigned'))}</td>
-            <td><span class="pill {credit_status_class}">{float(lessons_left or 0):g} left</span></td>
-            <td>${hmusic_money(unit_price)} / lesson<span>{float(package_lessons or 0):g} lesson package · ${hmusic_money(package_amount)}</span></td>
-            <td>
-                <div class="row-actions">
-                    <a class="button compact" href="/create_package_invoice/{student_url}?enrollment_id={enrollment_id}">Add billing</a>
-                    <a class="button compact" href="/payment/{student_url}?enrollment_id={enrollment_id}">Receive payment</a>
-                    <a class="button compact" href="/edit_enrollment/{enrollment_id}">Edit credit</a>
-                    <a class="button compact" href="/student_ledger/{student_url}">Ledger</a>
-                </div>
-            </td>
-        </tr>
-        """
+        credits_by_student.setdefault(credit[1], []).append(credit)
 
-    for linked_student in legacy_credit_records:
+    family_credit_sections = ""
+    for linked_student in linked_students:
+        if linked_student[3] != 1:
+            continue
         student_name = linked_student[1]
         student_url = quote(str(student_name or ''), safe='')
-        family_credit_rows += f"""
-        <tr>
-            <td><a href="/student/{student_url}">{escape(str(student_name or ''))}</a></td>
-            <td>
-                <strong>Legacy total credit</strong>
-                <span>No course-specific enrollment yet.</span>
-            </td>
-            <td>{escape(str(linked_student[5] or 'Unassigned'))}</td>
-            <td><span class="pill neutral">Needs setup</span></td>
-            <td>Use enrollment credit<span>Split this student into course buckets.</span></td>
-            <td>
-                <div class="row-actions">
-                    <a class="button compact" href="/add_enrollment?student_name={student_url}">Add course credit</a>
-                    <a class="button compact" href="/edit_student/{student_url}">Student setup</a>
+        student_credits = credits_by_student.get(student_name, [])
+        credit_rows = ""
+        for credit in student_credits:
+            enrollment_id, _student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status = credit
+            credit_status_class = "good" if float(lessons_left or 0) > 2 else "neutral"
+            credit_rows += f"""
+            <tr>
+                <td>
+                    <strong>{escape(str(course_name or 'Course'))}</strong>
+                    <span>{escape(str(enrollment_status or 'active')).title()}</span>
+                </td>
+                <td>{escape(str(teacher_name or 'Unassigned'))}</td>
+                <td><span class="pill {credit_status_class}">{float(lessons_left or 0):g} left</span></td>
+                <td>${hmusic_money(unit_price)} / lesson<span>{float(package_lessons or 0):g} lesson package · ${hmusic_money(package_amount)}</span></td>
+                <td>
+                    <div class="row-actions">
+                        <a class="button compact" href="/create_package_invoice/{student_url}?enrollment_id={enrollment_id}">Add billing</a>
+                        <a class="button compact" href="/payment/{student_url}?enrollment_id={enrollment_id}">Receive payment</a>
+                        <a class="button compact" href="/edit_enrollment/{enrollment_id}">Edit credit</a>
+                        <a class="button compact" href="/student_ledger/{student_url}">Ledger</a>
+                    </div>
+                </td>
+            </tr>
+            """
+        if not credit_rows:
+            credit_rows = f"""
+            <tr>
+                <td colspan="5" class="empty setup-empty">
+                    No course credits set up yet.
+                    <a class="button compact" href="/add_enrollment?student_name={student_url}">Add first course credit</a>
+                </td>
+            </tr>
+            """
+        family_credit_sections += f"""
+        <section class="credit-group">
+            <div class="credit-group-head">
+                <div>
+                    <h3>{escape(str(student_name or 'Student'))}</h3>
+                    <span>{len(student_credits)} course credit bucket(s)</span>
                 </div>
-            </td>
-        </tr>
+                <a class="button compact" href="/add_enrollment?student_name={student_url}">Add course credit</a>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <tr>
+                        <th>Course / Program</th>
+                        <th>Teacher</th>
+                        <th>Credits</th>
+                        <th>Tuition</th>
+                        <th>Action</th>
+                    </tr>
+                    {credit_rows}
+                </table>
+            </div>
+        </section>
         """
 
-    if not family_credit_rows:
-        family_credit_rows = "<tr><td colspan='6' class='empty'>No active children or course credits for this family yet.</td></tr>"
+    if not family_credit_sections:
+        family_credit_sections = "<div class='empty'>No active children or course credits for this family yet.</div>"
 
     family_invoice_rows = ""
     for inv in family_invoice_records:
@@ -16982,6 +17006,13 @@ def parent_admin(parent_id):
             .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
             .pill.good {{ background:var(--green-soft); color:var(--green); }}
             .pill.neutral {{ background:#eef2f7; color:#475467; }}
+            .credit-groups {{ display:grid; gap:10px; padding:12px; }}
+            .credit-group {{ border:1px solid var(--line); border-radius:9px; overflow:hidden; background:#fff; }}
+            .credit-group-head {{ min-height:38px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; background:#fbfdff; border-bottom:1px solid var(--line); }}
+            .credit-group-head h3 {{ margin:0; font-size:13px; font-weight:900; }}
+            .credit-group-head span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; font-weight:750; }}
+            .setup-empty {{ text-align:left; }}
+            .setup-empty .button {{ margin-left:10px; }}
             .table-wrap {{ overflow:auto; }}
             table {{ width:100%; border-collapse:collapse; min-width:880px; font-size:12px; }}
             th, td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }}
@@ -17113,20 +17144,10 @@ def parent_admin(parent_id):
                         </div>
                     </section>
 
-                    <section class="panel">
+                    <section class="panel" id="family-credits">
                         <div class="panel-head"><h2>Credits & Enrollments</h2><span>Course-level remaining lessons</span></div>
-                        <div class="table-wrap">
-                            <table>
-                                <tr>
-                                    <th>Student</th>
-                                    <th>Course</th>
-                                    <th>Teacher</th>
-                                    <th>Credits</th>
-                                    <th>Tuition</th>
-                                    <th>Action</th>
-                                </tr>
-                                {family_credit_rows}
-                            </table>
+                        <div class="credit-groups">
+                            {family_credit_sections}
                         </div>
                     </section>
 
@@ -20763,6 +20784,17 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     enrollment_id = invoice[7]
     checkout_session_id = checkout_session_id or invoice[8]
     payment_intent_id = payment_intent_id or invoice[9]
+    course_type_name = ""
+    teacher_name = ""
+    if enrollment_id:
+        cursor.execute("""
+        SELECT COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
+        FROM enrollments
+        WHERE id = ?
+        """, (enrollment_id,))
+        enrollment_row = cursor.fetchone()
+        if enrollment_row:
+            course_type_name, teacher_name = enrollment_row
 
     cursor.execute("""
     INSERT INTO payments
@@ -20773,11 +20805,13 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         payment_method,
         payment_date,
         enrollment_id,
+        course_type_name,
+        teacher_name,
         package_name,
         notes,
         visible_to_parent
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         student_name,
         amount,
@@ -20785,6 +20819,8 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
         "Stripe ACH",
         payment_date,
         enrollment_id,
+        course_type_name,
+        teacher_name,
         "Tuition Invoice",
         f"Invoice #{invoice_id} paid via Stripe ACH ({source})",
         1
@@ -20792,12 +20828,12 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
 
     payment_id = cursor.lastrowid
 
-    if lessons_added:
+    if lessons_added and enrollment_id:
         cursor.execute("""
-        UPDATE students
+        UPDATE enrollments
         SET lessons_left = COALESCE(lessons_left, 0) + ?
-        WHERE name = ?
-        """, (lessons_added, student_name))
+        WHERE id = ?
+        """, (lessons_added, enrollment_id))
 
     cursor.execute("""
     UPDATE invoices
@@ -21010,6 +21046,17 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
     enrollment_id = invoice[6]
     square_order_id = square_order_id or invoice[8]
     square_payment_id = square_payment_id or invoice[9]
+    course_type_name = ""
+    teacher_name = ""
+    if enrollment_id:
+        cursor.execute("""
+        SELECT COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
+        FROM enrollments
+        WHERE id = ?
+        """, (enrollment_id,))
+        enrollment_row = cursor.fetchone()
+        if enrollment_row:
+            course_type_name, teacher_name = enrollment_row
 
     cursor.execute("""
     INSERT INTO payments
@@ -21020,11 +21067,13 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
         payment_method,
         payment_date,
         enrollment_id,
+        course_type_name,
+        teacher_name,
         package_name,
         notes,
         visible_to_parent
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         student_name,
         amount,
@@ -21032,6 +21081,8 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
         "Square Card",
         payment_date,
         enrollment_id,
+        course_type_name,
+        teacher_name,
         "Tuition Invoice",
         f"Invoice #{invoice_id} paid via Square ({source})",
         1
@@ -21039,12 +21090,12 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
 
     payment_id = cursor.lastrowid
 
-    if lessons_added:
+    if lessons_added and enrollment_id:
         cursor.execute("""
-        UPDATE students
+        UPDATE enrollments
         SET lessons_left = COALESCE(lessons_left, 0) + ?
-        WHERE name = ?
-        """, (lessons_added, student_name))
+        WHERE id = ?
+        """, (lessons_added, enrollment_id))
 
     cursor.execute("""
     UPDATE invoices
