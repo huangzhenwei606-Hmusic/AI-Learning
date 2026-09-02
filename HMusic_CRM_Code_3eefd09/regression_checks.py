@@ -14,6 +14,9 @@ CHECKS = {
     "family workspace label": "Family Workspace",
     "parent billing add entry": "Add billing",
     "messages mark all read": "/messages/mark_all_read",
+    "course credit display": "Credits by course",
+    "invoice enrollment binding": "name=\"enrollment_id\"",
+    "schedule enrollment binding": "resolved_enrollment_id",
 }
 
 

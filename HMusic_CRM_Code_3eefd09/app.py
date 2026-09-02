@@ -4342,6 +4342,7 @@ def edit_student(name):
 
     ensure_v27_schema()
     ensure_teacher_management_schema()
+    ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     for column_name, column_sql in [
@@ -4503,6 +4504,7 @@ def edit_student(name):
 
     cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE student_name = ?", (student[0],))
     payment_total = cursor.fetchone()[0] or 0
+    total_course_credits, course_credit_rows = hmusic_student_total_course_credits(cursor, student[0], student[5])
 
     cursor.execute("""
     SELECT p.id
@@ -4544,6 +4546,8 @@ def edit_student(name):
 
     lesson_badge_class = "danger" if lessons_left <= 0 else "amber" if lessons_left <= 2 else "ok"
     lesson_badge_text = "No lessons" if lessons_left <= 0 else "Low lessons" if lessons_left <= 2 else "Lessons available"
+    course_lesson_badge_class = "danger" if total_course_credits <= 0 else "amber" if total_course_credits <= 2 else "ok"
+    course_lesson_badge_text = "No course credits" if total_course_credits <= 0 else "Low course credits" if total_course_credits <= 2 else "Course credits available"
     name_parts = str(student_name).split()
     first_name = name_parts[0] if name_parts else ""
     last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
@@ -4609,6 +4613,35 @@ def edit_student(name):
             <div>
                 <strong>No teacher linked</strong>
                 <span>Choose a primary teacher to grant teacher access.</span>
+            </div>
+        </div>
+        """
+
+    course_credit_html = ""
+    for enrollment in course_credit_rows:
+        enrollment_id = enrollment[0]
+        course_credit_html += f"""
+        <div class="credit-row">
+            <div>
+                <strong>{escape(str(enrollment[1] or 'Course'))}</strong>
+                <span>{escape(str(enrollment[2] or 'Unassigned'))} · {float(enrollment[3] or 0):g} left · ${hmusic_money(enrollment[4] or 0)}/lesson</span>
+            </div>
+            <div class="credit-actions">
+                <a class="teacher-link" href="/edit_enrollment/{enrollment_id}">Edit</a>
+                <a class="teacher-link" href="/enrollment_payment/{enrollment_id}">Payment</a>
+                <a class="teacher-link" href="/create_enrollment_invoice/{enrollment_id}">Invoice</a>
+            </div>
+        </div>
+        """
+    if not course_credit_html:
+        course_credit_html = f"""
+        <div class="credit-row">
+            <div>
+                <strong>Legacy total credit</strong>
+                <span>{lessons_left:g} left · Create separate course credits for piano, voice, group, or another teacher.</span>
+            </div>
+            <div class="credit-actions">
+                <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a>
             </div>
         </div>
         """
@@ -4723,6 +4756,11 @@ def edit_student(name):
             .mini-row {{ gap:8px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; }}
             .mini-row strong {{ color:var(--text); font-size:13px; font-weight:850; }}
             .mini-row span {{ color:var(--muted); font-size:12px; margin-top:3px; }}
+            .credit-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border); }}
+            .credit-row:last-child {{ border-bottom:0; }}
+            .credit-row strong {{ display:block; font-size:13px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .credit-row span {{ display:block; color:var(--muted); font-size:12px; margin-top:3px; line-height:1.35; }}
+            .credit-actions {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
             .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
@@ -4776,7 +4814,7 @@ def edit_student(name):
                         <h1>{escape(str(student_name))}</h1>
                         <div class="subline">
                             <span class="badge ok">Active</span>
-                            <span class="badge {lesson_badge_class}">{lesson_badge_text}</span>
+                            <span class="badge {course_lesson_badge_class}">{course_lesson_badge_text}</span>
                             <span>Updated Jul 30</span>
                             <span>Primary teacher: {escape(str(student[1] or 'Unassigned'))}</span>
                         </div>
@@ -4841,7 +4879,7 @@ def edit_student(name):
                                         </select>
                                     </div>
                                     <div>
-                                        <label>Lessons left</label>
+                                        <label>Legacy total lessons</label>
                                         <input type="number" name="lessons_left" value="{lessons_left}">
                                     </div>
                                     <div id="parent-contact">
@@ -4899,6 +4937,22 @@ def edit_student(name):
 
                             <div class="panel">
                                 <div class="panel-head">
+                                    <h2>Credits by course</h2>
+                                    <span><a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a></span>
+                                </div>
+                                <div class="panel-body">
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>{float(total_course_credits or 0):g} total active credits</strong>
+                                            <span>Use course rows for piano, voice, group, different teachers, and different tuition.</span>
+                                        </div>
+                                    </div>
+                                    {course_credit_html}
+                                </div>
+                            </div>
+
+                            <div class="panel">
+                                <div class="panel-head">
                                     <h2>At a glance</h2>
                                 </div>
                                 <div class="panel-body">
@@ -4912,6 +4966,12 @@ def edit_student(name):
                                         <div>
                                             <strong>Balance</strong>
                                             <span>$0 outstanding</span>
+                                        </div>
+                                    </div>
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Legacy total</strong>
+                                            <span>{lessons_left:g} lessons left</span>
                                         </div>
                                     </div>
                                     <div class="mini-row">
@@ -5231,6 +5291,7 @@ def ensure_student_detail_schema():
 @app.route("/student/<name>")
 def student_detail(name):
     ensure_student_detail_schema()
+    ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -5258,7 +5319,7 @@ def student_detail(name):
     lessons = cursor.fetchall()
 
     cursor.execute("""
-    SELECT id, payment_date, amount, lessons_added, payment_method
+    SELECT id, payment_date, amount, lessons_added, payment_method, COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
     FROM payments
     WHERE student_name = ?
     ORDER BY id DESC
@@ -5347,6 +5408,7 @@ def student_detail(name):
 
     cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
     all_teachers = cursor.fetchall()
+    total_course_credits, course_credit_rows = hmusic_student_total_course_credits(cursor, student[0], student[4])
     teacher_has_access = (
         require_teacher()
         and teacher_can_access_student_record(cursor, student[0], session.get("teacher_name"))
@@ -5481,13 +5543,17 @@ def student_detail(name):
 
     if payments:
         for payment in payments:
-            payment_id, payment_date, amount, lessons_added, payment_method = payment
+            payment_id, payment_date, amount, lessons_added, payment_method, payment_course, payment_teacher = payment
+            payment_credit_note = ""
+            if payment_course or payment_teacher:
+                payment_credit_note = f"<p class='muted'>Credit bucket: {escape(str(payment_course or 'Course'))} · {escape(str(payment_teacher or 'Unassigned'))}</p>"
             payment_html += f"""
             <div class="timeline-item billing">
                 <div class="timeline-date">{escape(payment_date or '')}</div>
                 <div>
                     <b>${escape(str(amount or '0'))}</b>
                     <p>{escape(str(lessons_added or 0))} lesson(s) added · {escape(payment_method or 'Payment')}</p>
+                    {payment_credit_note}
                 </div>
                 <div class="payment-actions">
                     <span class="pill amber">Payment</span>
@@ -5530,8 +5596,32 @@ def student_detail(name):
             return 0
 
     lessons_left = lesson_count(student[4])
-    balance_class = "danger" if lessons_left <= 2 else "ok"
-    balance_text = "Renewal needed" if lessons_left <= 2 else "Good standing"
+    balance_class = "danger" if total_course_credits <= 2 else "ok"
+    balance_text = "Renewal needed" if total_course_credits <= 2 else "Good standing"
+    course_credit_html = ""
+    for enrollment in course_credit_rows:
+        enrollment_id = enrollment[0]
+        course_credit_html += f"""
+            <div class="credit-card">
+                <div>
+                    <b>{escape(str(enrollment[1] or 'Course'))}</b>
+                    <p>{escape(str(enrollment[2] or 'Unassigned'))} · ${hmusic_money(enrollment[4] or 0)}/lesson</p>
+                </div>
+                <span class="pill {'danger' if float(enrollment[3] or 0) <= 2 else 'ok'}">{float(enrollment[3] or 0):g} left</span>
+                <a class="button" href="/edit_enrollment/{enrollment_id}">Edit</a>
+            </div>
+        """
+    if not course_credit_html:
+        course_credit_html = f"""
+            <div class="credit-card">
+                <div>
+                    <b>Legacy total credit</b>
+                    <p>No course-specific enrollment yet.</p>
+                </div>
+                <span class="pill {balance_class}">{lessons_left:g} left</span>
+                <a class="button" href="/add_enrollment?student_name={student_url_name}">Add course credit</a>
+            </div>
+        """
     next_lesson_label = "Not scheduled"
     next_lesson_meta = "Create a recurring lesson before activating parent app use."
     if next_lesson:
@@ -5635,6 +5725,10 @@ def student_detail(name):
             .kpi {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; }}
             .kpi span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
             .kpi b {{ display:block; font-size:24px; margin-top:4px; }}
+            .credit-list {{ display:grid; gap:10px; }}
+            .credit-card {{ display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:center; border:1px solid var(--border); border-radius:12px; background:#fbfdff; padding:12px; }}
+            .credit-card p {{ margin-top:4px; color:var(--muted); font-size:13px; }}
+            .credit-card .button {{ width:auto; min-height:34px; padding:7px 10px; font-size:12px; }}
             .info-list {{ display:grid; gap:10px; margin-top:12px; }}
             .info-line {{ display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:start; }}
             .info-line span {{ color:var(--muted); font-size:13px; }}
@@ -5719,7 +5813,7 @@ def student_detail(name):
                             </div>
                         </div>
                         <div class="kpis">
-                            <div class="kpi"><span>Credits</span><b>{escape(str(lessons_left))}</b></div>
+                            <div class="kpi"><span>Credits</span><b>{float(total_course_credits or 0):g}</b></div>
                             <div class="kpi"><span>Balance</span><b>{balance_text}</b></div>
                             <div class="kpi"><span>Next</span><b>{'Set' if next_lesson else 'None'}</b></div>
                         </div>
@@ -5731,6 +5825,13 @@ def student_detail(name):
                             <div class="info-line"><span>Guardian</span><b>{escape(student[5] or (parent_account[1] if parent_account else '') or 'Not set')}</b></div>
                             <div class="info-line"><span>Email</span><b>{escape(student[2] or (parent_account[2] if parent_account else '') or 'Not set')}</b></div>
                             <div class="info-line"><span>Phone</span><b>{escape(student[3] or (parent_account[3] if parent_account else '') or 'Not set')}</b></div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h2>Credits by Course</h2>
+                        <div class="credit-list">
+                            {course_credit_html}
                         </div>
                     </div>
 
@@ -6472,6 +6573,7 @@ def add_lesson(name):
         homework = request.form.get("homework", "")
 
         ensure_calendar_lesson_panel_schema()
+        ensure_v321_schema()
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
         schedule_params = [name, lesson_date]
@@ -6480,7 +6582,7 @@ def add_lesson(name):
             schedule_teacher_filter = "AND teacher = ?"
             schedule_params.append(session.get("teacher_name"))
         cursor.execute(f"""
-        SELECT id
+        SELECT id, enrollment_id, course_type_id, course_type_name, teacher
         FROM schedule
         WHERE student_name = ?
         AND lesson_date = ?
@@ -6490,6 +6592,15 @@ def add_lesson(name):
         """, schedule_params)
         schedule_row = cursor.fetchone()
         schedule_id = schedule_row[0] if schedule_row else None
+        schedule_enrollment_id = schedule_row[1] if schedule_row and len(schedule_row) > 1 else None
+        if schedule_row and not schedule_enrollment_id:
+            schedule_enrollment_id = hmusic_resolve_enrollment_id(
+                cursor,
+                name,
+                course_type_id=schedule_row[2],
+                teacher_name=schedule_row[4],
+                course_type_name=schedule_row[3]
+            )
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         actor = f"teacher:{session.get('teacher_name')}" if require_teacher() and not require_owner() else "owner"
 
@@ -6525,15 +6636,24 @@ def add_lesson(name):
             UPDATE schedule
             SET notes = ?,
                 homework_assignment = ?,
+                enrollment_id = COALESCE(enrollment_id, ?),
                 owner_calendar_updated_at = ?
             WHERE id = ?
-            """, (lesson_content, homework, now, schedule_id))
+            """, (lesson_content, homework, schedule_enrollment_id, now, schedule_id))
 
-        cursor.execute("""
-        UPDATE students
-        SET lessons_left = lessons_left - 1
-        WHERE name = ?
-        """, (name,))
+        if schedule_enrollment_id:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = lessons_left - 1,
+                updated_at = ?
+            WHERE id = ?
+            """, (now, schedule_enrollment_id))
+        else:
+            cursor.execute("""
+            UPDATE students
+            SET lessons_left = lessons_left - 1
+            WHERE name = ?
+            """, (name,))
 
         conn.commit()
         conn.close()
@@ -6596,14 +6716,35 @@ def payment(name):
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    course_credits = hmusic_student_course_credits(cursor, name)
+
     if request.method == "POST":
         amount = float(request.form["amount"])
-        lessons_added = int(request.form["lessons_added"])
+        lessons_added = float(request.form["lessons_added"])
         payment_method = request.form["payment_method"]
         payment_date = request.form["payment_date"]
+        enrollment_id = request.form.get("enrollment_id")
+        enrollment_id_int = int(enrollment_id) if enrollment_id else None
+        selected_enrollment = None
+        if enrollment_id_int:
+            cursor.execute("""
+            SELECT id, course_type_name, teacher_name
+            FROM enrollments
+            WHERE id = ?
+            AND student_name = ?
+            """, (enrollment_id_int, name))
+            selected_enrollment = cursor.fetchone()
 
-        conn = sqlite3.connect("hmusic.db")
-        cursor = conn.cursor()
+        course_type_name = selected_enrollment[1] if selected_enrollment else ""
+        teacher_name = selected_enrollment[2] if selected_enrollment else ""
+        credit_bucket_label = (
+            f"{course_type_name} / {teacher_name}"
+            if selected_enrollment else
+            "Legacy total lessons"
+        )
 
         cursor.execute("""
         INSERT INTO payments
@@ -6612,16 +6753,26 @@ def payment(name):
             amount,
             lessons_added,
             payment_method,
-            payment_date
+            payment_date,
+            enrollment_id,
+            course_type_name,
+            teacher_name,
+            package_name,
+            visible_to_parent
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
             amount,
             lessons_added,
             payment_method,
-            payment_date
+            payment_date,
+            enrollment_id_int,
+            course_type_name,
+            teacher_name,
+            f"{lessons_added:g} Lesson Package" if lessons_added else "Payment",
+            1
         ))
 
         payment_id = cursor.lastrowid
@@ -6647,15 +6798,27 @@ def payment(name):
             datetime.now().strftime("%Y-%m-%d %H:%M")
         ))
 
-        cursor.execute("""
-        UPDATE students
-        SET lessons_left = lessons_left + ?
-        WHERE name = ?
-        """,
-        (
-            lessons_added,
-            name
-        ))
+        if enrollment_id_int:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = COALESCE(lessons_left, 0) + ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                lessons_added,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                enrollment_id_int
+            ))
+        else:
+            cursor.execute("""
+            UPDATE students
+            SET lessons_left = lessons_left + ?
+            WHERE name = ?
+            """,
+            (
+                lessons_added,
+                name
+            ))
 
         conn.commit()
         conn.close()
@@ -6668,14 +6831,30 @@ def payment(name):
         <p>Lessons Added: {lessons_added}</p>
         <p>Payment Method: {payment_method}</p>
         <p>Payment Date: {payment_date}</p>
+        <p>Credit bucket: {escape(credit_bucket_label)}</p>
 
         <p><a href="/student/{name}">Back to Student</a></p>
         """
+
+    today = date.today().strftime("%Y-%m-%d")
+    enrollment_options = ""
+    for row in course_credits:
+        enrollment_options += f'<option value="{row[0]}">{escape(hmusic_course_credit_label(row))}</option>'
+    if not enrollment_options:
+        enrollment_options = '<option value="">Legacy total lessons</option>'
+    else:
+        enrollment_options += '<option value="">Legacy total lessons</option>'
+    conn.close()
 
     return f"""
     <h1>Receive Payment - {name}</h1>
 
     <form method="POST">
+        Credit course / teacher:<br>
+        <select name="enrollment_id">
+            {enrollment_options}
+        </select><br><br>
+
         Amount:<br>
         <input name="amount"><br><br>
 
@@ -6686,7 +6865,7 @@ def payment(name):
         <input name="payment_method"><br><br>
 
         Payment Date:<br>
-        <input name="payment_date"><br><br>
+        <input type="date" name="payment_date" value="{today}"><br><br>
 
         <button type="submit">Save Payment</button>
     </form>
@@ -6700,10 +6879,11 @@ def edit_payment(payment_id):
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT student_name, amount, lessons_added, payment_method, payment_date
+    SELECT student_name, amount, lessons_added, payment_method, payment_date, enrollment_id
     FROM payments
     WHERE id = ?
     """, (payment_id,))
@@ -6713,7 +6893,7 @@ def edit_payment(payment_id):
         conn.close()
         return redirect("/students")
 
-    student_name, old_amount, old_lessons_added, old_method, old_date = payment_row
+    student_name, old_amount, old_lessons_added, old_method, old_date, enrollment_id = payment_row
     student_url_name = quote(str(student_name or ""), safe="")
 
     if request.method == "GET":
@@ -6780,7 +6960,18 @@ def edit_payment(payment_id):
     WHERE id = ?
     """, (new_amount, new_lessons_added, new_method, new_date, payment_id))
 
-    if lesson_delta:
+    if lesson_delta and enrollment_id:
+        cursor.execute("""
+        UPDATE enrollments
+        SET lessons_left = MAX(COALESCE(lessons_left, 0) + ?, 0),
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            lesson_delta,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            enrollment_id
+        ))
+    elif lesson_delta:
         cursor.execute("""
         UPDATE students
         SET lessons_left = MAX(COALESCE(lessons_left, 0) + ?, 0)
@@ -6907,10 +7098,11 @@ def delete_payment(payment_id):
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT student_name, COALESCE(lessons_added, 0)
+    SELECT student_name, COALESCE(lessons_added, 0), enrollment_id
     FROM payments
     WHERE id = ?
     """, (payment_id,))
@@ -6920,7 +7112,7 @@ def delete_payment(payment_id):
         conn.close()
         return redirect("/students")
 
-    student_name, lessons_added = payment_row
+    student_name, lessons_added, enrollment_id = payment_row
 
     cursor.execute("""
     SELECT related_invoice_id
@@ -6930,11 +7122,23 @@ def delete_payment(payment_id):
     """, (payment_id,))
     invoice_ids = [row[0] for row in cursor.fetchall()]
 
-    cursor.execute("""
-    UPDATE students
-    SET lessons_left = MAX(COALESCE(lessons_left, 0) - ?, 0)
-    WHERE name = ?
-    """, (int(float(lessons_added or 0)), student_name))
+    if enrollment_id:
+        cursor.execute("""
+        UPDATE enrollments
+        SET lessons_left = MAX(COALESCE(lessons_left, 0) - ?, 0),
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            float(lessons_added or 0),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            enrollment_id
+        ))
+    else:
+        cursor.execute("""
+        UPDATE students
+        SET lessons_left = MAX(COALESCE(lessons_left, 0) - ?, 0)
+        WHERE name = ?
+        """, (int(float(lessons_added or 0)), student_name))
 
     cursor.execute("DELETE FROM student_ledger WHERE related_payment_id = ?", (payment_id,))
     cursor.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
@@ -7087,6 +7291,7 @@ H-Music
         smtp.send_message(msg)
 
     today = date.today().strftime("%Y-%m-%d")
+    selected_student_name = (request.args.get("student_name") or "").strip()
 
     cursor.execute("""
     INSERT INTO email_logs
@@ -9896,6 +10101,13 @@ def add_schedule():
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         generated_count = 0
         auto_link_student_teacher(cursor, student_name, teacher)
+        resolved_enrollment_id = hmusic_resolve_enrollment_id(
+            cursor,
+            student_name,
+            course_type_id=course_id,
+            teacher_name=teacher,
+            course_type_name=course_name
+        )
 
         for i in range(number_of_lessons):
             if schedule_type == "weekly":
@@ -9934,9 +10146,10 @@ def add_schedule():
                 group_student_names,
                 billing_decision,
                 custom_lesson_count,
+                enrollment_id,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 student_name,
                 teacher,
@@ -9965,6 +10178,7 @@ def add_schedule():
                 group_student_names if is_group else None,
                 billing_decision,
                 int(float(custom_lesson_count or 0)) if package_type == "custom" else None,
+                resolved_enrollment_id,
                 "scheduled"
             ))
             schedule_id = cursor.lastrowid
@@ -12548,6 +12762,101 @@ def hmusic_pending_fee_total(cursor, student_name):
     return round(float(cursor.fetchone()[0] or 0), 2)
 
 
+def hmusic_student_course_credits(cursor, student_name):
+    cursor.execute("""
+    SELECT
+        id,
+        COALESCE(course_type_name, 'Course'),
+        COALESCE(teacher_name, 'Unassigned'),
+        COALESCE(lessons_left, 0),
+        COALESCE(final_price, 0),
+        COALESCE(package_amount, 0),
+        COALESCE(package_lessons, 0),
+        COALESCE(status, 'active')
+    FROM enrollments
+    WHERE student_name = ?
+    AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+    ORDER BY
+        CASE WHEN COALESCE(LOWER(TRIM(status)), 'active') = 'active' THEN 0 ELSE 1 END,
+        course_type_name,
+        teacher_name,
+        id DESC
+    """, (student_name,))
+    return cursor.fetchall()
+
+
+def hmusic_student_total_course_credits(cursor, student_name, legacy_lessons_left=0):
+    credits = hmusic_student_course_credits(cursor, student_name)
+    if credits:
+        return round(sum(float(row[3] or 0) for row in credits), 2), credits
+    try:
+        return round(float(legacy_lessons_left or 0), 2), credits
+    except (TypeError, ValueError):
+        return 0, credits
+
+
+def hmusic_course_credit_label(row):
+    _, course_name, teacher_name, lessons_left, final_price, package_amount, package_lessons, status = row
+    price = final_price
+    if (not price) and package_amount and package_lessons:
+        try:
+            price = round(float(package_amount or 0) / float(package_lessons or 1), 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            price = 0
+    return (
+        f"{course_name} / {teacher_name} / "
+        f"{float(lessons_left or 0):g} left"
+        f"{(' / $' + hmusic_money(price)) if price else ''}"
+        f" / {status}"
+    )
+
+
+def hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=None, teacher_name=None, course_type_name=None):
+    if not student_name:
+        return None
+    params = [student_name]
+    where = """
+    student_name = ?
+    AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+    """
+    if course_type_id:
+        where += " AND course_type_id = ?"
+        params.append(course_type_id)
+    if teacher_name:
+        where += " AND LOWER(COALESCE(teacher_name, '')) = LOWER(?)"
+        params.append(teacher_name)
+    cursor.execute(f"""
+    SELECT id
+    FROM enrollments
+    WHERE {where}
+    ORDER BY
+        CASE WHEN COALESCE(LOWER(TRIM(status)), 'active') = 'active' THEN 0 ELSE 1 END,
+        id DESC
+    LIMIT 1
+    """, params)
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    if course_type_id and teacher_name:
+        return hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=course_type_id, teacher_name=None)
+    if course_type_name:
+        cursor.execute("""
+        SELECT id
+        FROM enrollments
+        WHERE student_name = ?
+        AND LOWER(COALESCE(course_type_name, '')) = LOWER(?)
+        AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+        ORDER BY
+            CASE WHEN COALESCE(LOWER(TRIM(status)), 'active') = 'active' THEN 0 ELSE 1 END,
+            id DESC
+        LIMIT 1
+        """, (student_name, course_type_name))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+    return None
+
+
 def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None, use_policy_waiver=True):
     ensure_v321_schema()
 
@@ -14097,6 +14406,7 @@ def create_package_invoice(name):
     parent_id = get_primary_parent_for_student(cursor, student[0])
     default_due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
     pending_fee_total = hmusic_pending_fee_total(cursor, student[0])
+    course_credits = hmusic_student_course_credits(cursor, student[0])
 
     def money_value(raw, default=0):
         try:
@@ -14105,6 +14415,20 @@ def create_package_invoice(name):
             return round(float(default or 0), 2)
 
     if request.method == "POST":
+        enrollment_id = request.form.get("enrollment_id")
+        enrollment_id_int = int(enrollment_id) if enrollment_id else None
+        selected_enrollment = None
+        if enrollment_id_int:
+            cursor.execute("""
+            SELECT id
+            FROM enrollments
+            WHERE id = ?
+            AND student_name = ?
+            """, (enrollment_id_int, student[0]))
+            selected_enrollment = cursor.fetchone()
+            if not selected_enrollment:
+                conn.close()
+                return redirect(f"/create_package_invoice/{quote(student[0])}?error=1")
         package_type = (request.form.get("package_type") or "10").strip()
         custom_lessons = money_value(request.form.get("custom_lessons"), 10)
         charge_lessons = 10 if package_type == "10" else custom_lessons
@@ -14171,9 +14495,10 @@ def create_package_invoice(name):
             discount_amount,
             payment_methods,
             package_options,
-            manual_payment_status
+            manual_payment_status,
+            enrollment_id
         )
-        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, NULL, ?, ?, 'unpaid', 'package_invoice', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
         """, (
             student[0],
             charge_lessons,
@@ -14185,7 +14510,8 @@ def create_package_invoice(name):
             discount_code,
             discount_amount,
             payment_methods,
-            package_options_json
+            package_options_json,
+            enrollment_id_int
         ))
         invoice_id = cursor.lastrowid
         if include_pending_fees and pending_fee_total > 0:
@@ -14228,16 +14554,24 @@ def create_package_invoice(name):
     pending_fee_html = ""
     pending_checked = ""
     default_unit_price = 65
+    selected_enrollment_id = request.args.get("enrollment_id") or (str(course_credits[0][0]) if course_credits else "")
+    enrollment_options = ""
+    for row in course_credits:
+        selected = "selected" if str(row[0]) == str(selected_enrollment_id) else ""
+        enrollment_options += f'<option value="{row[0]}" {selected}>{escape(hmusic_course_credit_label(row))}</option>'
+    if not enrollment_options:
+        enrollment_options = '<option value="">Legacy total lessons</option>'
     cursor.execute("""
     SELECT COALESCE(package_amount, 0), COALESCE(package_lessons, 0), COALESCE(final_price, 0)
     FROM enrollments
     WHERE student_name = ?
+    AND (? = '' OR id = ?)
     AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
     ORDER BY
         CASE WHEN COALESCE(LOWER(TRIM(status)), 'active') = 'active' THEN 0 ELSE 1 END,
         id DESC
     LIMIT 1
-    """, (student[0],))
+    """, (student[0], str(selected_enrollment_id or ""), selected_enrollment_id or 0))
     enrollment_price_row = cursor.fetchone()
     if enrollment_price_row:
         package_amount = float(enrollment_price_row[0] or 0)
@@ -14370,6 +14704,12 @@ def create_package_invoice(name):
             {error_html}
             <form method="POST">
                 <div class="grid">
+                    <div class="span-2">
+                        <label>Credit course / teacher</label>
+                        <select name="enrollment_id">
+                            {enrollment_options}
+                        </select>
+                    </div>
                     <div>
                         <label>Package</label>
                         <select name="package_type">
@@ -15068,6 +15408,17 @@ def pay_invoice(invoice_id):
         amount = invoice[3]
         enrollment_id = invoice[7]
         lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
+        course_type_name = ""
+        teacher_name = ""
+        if enrollment_id:
+            cursor.execute("""
+            SELECT COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
+            FROM enrollments
+            WHERE id = ?
+            """, (enrollment_id,))
+            enrollment_row = cursor.fetchone()
+            if enrollment_row:
+                course_type_name, teacher_name = enrollment_row
 
         cursor.execute("""
         INSERT INTO payments
@@ -15078,11 +15429,13 @@ def pay_invoice(invoice_id):
             payment_method,
             payment_date,
             enrollment_id,
+            course_type_name,
+            teacher_name,
             package_name,
             notes,
             visible_to_parent
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             student_name,
             amount,
@@ -15090,6 +15443,8 @@ def pay_invoice(invoice_id):
             payment_method,
             payment_date,
             enrollment_id,
+            course_type_name,
+            teacher_name,
             "Tuition Invoice",
             f"Invoice #{invoice_id} paid",
             1
@@ -15097,7 +15452,18 @@ def pay_invoice(invoice_id):
 
         payment_id = cursor.lastrowid
 
-        if lessons_added:
+        if lessons_added and enrollment_id:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = COALESCE(lessons_left, 0) + ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                lessons_added,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                enrollment_id
+            ))
+        elif lessons_added:
             cursor.execute("""
             UPDATE students
             SET lessons_left = COALESCE(lessons_left, 0) + ?
@@ -35660,7 +36026,10 @@ def add_enrollment():
 
     conn.close()
 
-    student_options = "".join([f"<option value='{s[0]}'>{s[0]}</option>" for s in students])
+    student_options = "".join([
+        f"<option value='{escape(str(s[0]), quote=True)}' {'selected' if s[0] == selected_student_name else ''}>{escape(str(s[0]))}</option>"
+        for s in students
+    ])
     teacher_options = "".join([f"<option value='{t[0]}'>{t[0]}</option>" for t in teachers])
     course_options = "".join([f"<option value='{c[0]}'>{c[1]} - {c[2]} mins</option>" for c in courses])
 
