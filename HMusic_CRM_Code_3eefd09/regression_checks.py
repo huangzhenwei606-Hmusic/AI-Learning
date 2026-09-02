@@ -22,10 +22,13 @@ CHECKS = {
     "course credit setup gate": "Set up course credits first",
     "add enrollment student preselect": "selected_student_name = (request.args.get(\"student_name\") or \"\").strip()",
     "student course credit update route": '"/update_student_course_credit/<name>"',
+    "quick add course credit route": '"/quick_add_course_credit/<name>"',
     "student inline credit rows": "credit-inline-row",
     "student credit stepper": "data-credit-step",
     "student credit row forms": "course_credit_forms_html",
+    "student quick credit form": "quickCourseCreditForm",
     "family credit row forms": "family_credit_forms_html",
+    "family quick credit form": "familyQuickCourseCreditForm",
     "family credit return target": "return_anchor",
     "student credit save action": "save-credit",
     "invoice enrollment binding": "name=\"enrollment_id\"",
@@ -38,6 +41,7 @@ FORBIDDEN = {
     "student-level credit write": "UPDATE students\n        SET lessons_left",
     "course credit selector empty state": "No course selected",
     "old edit credit action": "Edit credit",
+    "old add first course credit action": "Add first course credit",
 }
 
 

@@ -4507,6 +4507,14 @@ def edit_student(name):
     total_course_credits, course_credit_rows = hmusic_student_total_course_credits(cursor, student[0], student[5])
 
     cursor.execute("""
+    SELECT id, name, duration
+    FROM course_types
+    WHERE active = 1
+    ORDER BY name, duration
+    """)
+    quick_credit_courses = cursor.fetchall()
+
+    cursor.execute("""
     SELECT p.id
     FROM parent_profiles p
     LEFT JOIN parent_students ps
@@ -4626,7 +4634,35 @@ def edit_student(name):
         </div>
         """
 
-    course_credit_html = credit_notice_html = course_credit_forms_html = ""
+    quick_credit_course_options = "".join([
+        f'<option value="{course[0]}">{escape(str(course[1] or "Course"))} - {escape(str(course[2] or ""))} mins</option>'
+        for course in quick_credit_courses
+    ])
+    if not quick_credit_course_options:
+        quick_credit_course_options = '<option value="">No active courses</option>'
+
+    quick_credit_form_id = "quickCourseCreditForm"
+    quick_credit_add_html = f"""
+        <div class="quick-credit-add">
+            <div>
+                <strong>Add course</strong>
+                <span>Choose a course, enter the remaining credit, then save it here.</span>
+            </div>
+            <select name="course_type_id" form="{quick_credit_form_id}" aria-label="Course">
+                {quick_credit_course_options}
+            </select>
+            <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_credit_form_id}" aria-label="Credits left">
+            <button class="primary save-credit" type="submit" form="{quick_credit_form_id}">Save</button>
+        </div>
+    """
+    course_credit_html = ""
+    credit_notice_html = ""
+    course_credit_forms_html = f"""
+                <form id="{quick_credit_form_id}" method="POST" action="/quick_add_course_credit/{student_url_name}">
+                    <input type="hidden" name="return_to" value="/edit_student/{student_url_name}">
+                    <input type="hidden" name="return_anchor" value="course-credit-editor">
+                </form>
+    """
     if request.args.get("credit_saved") == "1":
         credit_notice_html = '<div class="credit-notice ok">Course credit updated.</div>'
     elif request.args.get("credit_error") == "1":
@@ -4660,26 +4696,21 @@ def edit_student(name):
         </div>
         """
     if not course_credit_html:
-        course_credit_html = f"""
+        course_credit_html = """
         <div class="course-credit-empty">
             <div>
                 <strong>No course credits yet.</strong>
                 <span>Create separate credit buckets for piano, voice, group, or another teacher.</span>
             </div>
-            <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add course</a>
         </div>
         """
     course_credit_html = f"""
         <div class="course-credit-list" id="course-credit-editor">
             {credit_notice_html}
             {course_credit_html}
+            {quick_credit_add_html}
         </div>
     """
-    course_credit_add_button = (
-        f'<span><a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a></span>'
-        if course_credit_rows else
-        ""
-    )
 
     page_html = f"""
     <html>
@@ -4808,6 +4839,9 @@ def edit_student(name):
             .course-credit-empty {{ display:grid; gap:9px; padding:12px; border:1px solid #bfdbfe; background:#eff6ff; border-radius:9px; }}
             .course-credit-empty strong {{ font-size:13px; }}
             .course-credit-empty span {{ display:block; color:var(--muted); font-size:12px; line-height:1.35; margin-top:3px; }}
+            .quick-credit-add {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 76px auto; gap:8px; align-items:end; padding:10px 0 0; margin-top:4px; border-top:1px solid var(--border); }}
+            .quick-credit-add strong {{ display:block; font-size:13px; font-weight:850; }}
+            .quick-credit-add span {{ display:block; color:var(--muted); font-size:12px; line-height:1.35; margin-top:3px; }}
             .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
@@ -4833,6 +4867,7 @@ def edit_student(name):
                 .credit-inline-row {{ grid-template-columns:1fr; }}
                 .credit-stepper {{ grid-template-columns:34px minmax(0,1fr) 34px; }}
                 .credit-stepper input {{ width:100%; }}
+                .quick-credit-add {{ grid-template-columns:1fr; }}
             }}
         </style>
     </head>
@@ -4985,7 +5020,6 @@ def edit_student(name):
                             <div class="panel">
                                 <div class="panel-head">
                                     <h2>Credits by course</h2>
-                                    {course_credit_add_button}
                                 </div>
                                 <div class="panel-body">
                                     {course_credit_html}
@@ -5114,6 +5148,138 @@ def update_student_course_credit(name):
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         enrollment_id_int
     ))
+    conn.commit()
+    conn.close()
+    return credit_redirect("credit_saved")
+
+
+@app.route("/quick_add_course_credit/<name>", methods=["POST"])
+def quick_add_course_credit(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    return_to = (request.form.get("return_to") or "").strip()
+    return_anchor = (request.form.get("return_anchor") or "").strip()
+
+    def credit_redirect(flag):
+        if return_to.startswith("/") and not return_to.startswith("//"):
+            separator = "&" if "?" in return_to else "?"
+            anchor = ""
+            if return_anchor.replace("-", "").replace("_", "").isalnum():
+                anchor = f"#{return_anchor}"
+            return redirect(f"{return_to}{separator}{flag}=1{anchor}")
+        return redirect(f"/edit_student/{quote(name)}?{flag}=1#course-credit-editor")
+
+    course_type_id = request.form.get("course_type_id")
+    lessons_left = request.form.get("lessons_left")
+    try:
+        course_type_id_int = int(course_type_id or 0)
+        lessons_left_value = float(lessons_left or 0)
+    except (TypeError, ValueError):
+        return credit_redirect("credit_error")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT name, COALESCE(teacher, '')
+    FROM students
+    WHERE name = ?
+    LIMIT 1
+    """, (name,))
+    student = cursor.fetchone()
+    if not student:
+        conn.close()
+        return credit_redirect("credit_error")
+
+    teacher_name = student[1] or ""
+    pricing = get_final_pricing(student[0], teacher_name, course_type_id_int)
+    if not pricing:
+        conn.close()
+        return credit_redirect("credit_error")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    final_price = float(pricing["student_charge_amount"] or 0)
+    teacher_pay_amount = float(pricing["teacher_pay_amount"] or 0)
+    package_lessons = lessons_left_value
+    package_amount = round(final_price * package_lessons, 2)
+
+    cursor.execute("""
+    SELECT id
+    FROM enrollments
+    WHERE student_name = ?
+    AND course_type_id = ?
+    AND COALESCE(teacher_name, '') = ?
+    AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+    ORDER BY id DESC
+    LIMIT 1
+    """, (student[0], course_type_id_int, teacher_name))
+    existing = cursor.fetchone()
+
+    if existing:
+        cursor.execute("""
+        UPDATE enrollments
+        SET lessons_left = ?,
+            package_lessons = ?,
+            package_amount = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (lessons_left_value, package_lessons, package_amount, now, existing[0]))
+    else:
+        cursor.execute("""
+        INSERT INTO enrollments (
+            student_name,
+            course_type_id,
+            course_type_name,
+            teacher_name,
+            duration,
+            student_billing_method,
+            base_price,
+            discount_type,
+            discount_value,
+            final_price,
+            teacher_billing_method,
+            teacher_rate,
+            teacher_pay_amount,
+            lessons_left,
+            status,
+            notes,
+            start_date,
+            package_amount,
+            package_lessons,
+            auto_renew_enabled,
+            auto_renew_lessons,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            student[0],
+            pricing["course_id"],
+            pricing["course_name"],
+            teacher_name,
+            pricing["duration"],
+            pricing["student_billing_method"],
+            pricing["student_charge_amount"],
+            "None",
+            0,
+            final_price,
+            pricing["teacher_billing_method"],
+            pricing["teacher_pay"],
+            teacher_pay_amount,
+            lessons_left_value,
+            "active",
+            "Quick course credit bucket.",
+            date.today().isoformat(),
+            package_amount,
+            package_lessons,
+            0,
+            package_lessons or 10,
+            now,
+            now
+        ))
+
     conn.commit()
     conn.close()
     return credit_redirect("credit_saved")
@@ -16825,6 +16991,14 @@ def parent_admin(parent_id):
         """, active_student_names)
         family_payment_records = cursor.fetchall()
 
+    cursor.execute("""
+    SELECT id, name, duration
+    FROM course_types
+    WHERE active = 1
+    ORDER BY name, duration
+    """)
+    quick_credit_courses = cursor.fetchall()
+
     conn.close()
 
     linked_rows = ""
@@ -16896,6 +17070,13 @@ def parent_admin(parent_id):
     for credit in family_credit_records:
         credits_by_student.setdefault(credit[1], []).append(credit)
 
+    quick_credit_course_options = "".join([
+        f'<option value="{course[0]}">{escape(str(course[1] or "Course"))} - {escape(str(course[2] or ""))} mins</option>'
+        for course in quick_credit_courses
+    ])
+    if not quick_credit_course_options:
+        quick_credit_course_options = '<option value="">No active courses</option>'
+
     family_credit_sections = ""
     family_credit_forms_html = ""
     family_credit_notice_html = ""
@@ -16911,6 +17092,30 @@ def parent_admin(parent_id):
         student_url = quote(str(student_name or ''), safe='')
         student_credits = credits_by_student.get(student_name, [])
         credit_rows = ""
+        quick_form_id = f"familyQuickCourseCreditForm{linked_student[0]}"
+        family_credit_forms_html += f"""
+            <form id="{quick_form_id}" method="POST" action="/quick_add_course_credit/{student_url}">
+                <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
+                <input type="hidden" name="return_anchor" value="family-credits">
+            </form>
+        """
+        quick_add_row = f"""
+            <tr>
+                <td colspan="5">
+                    <div class="quick-credit-add family-quick-credit-add">
+                        <div>
+                            <strong>Add course</strong>
+                            <span>Choose a course and set its remaining credit here.</span>
+                        </div>
+                        <select name="course_type_id" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} course">
+                            {quick_credit_course_options}
+                        </select>
+                        <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} credits left">
+                        <button class="button compact primary save-credit" type="submit" form="{quick_form_id}">Save</button>
+                    </div>
+                </td>
+            </tr>
+        """
         for credit in student_credits:
             enrollment_id, _student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status = credit
             credit_form_id = f"familyCreditForm{enrollment_id}"
@@ -16945,19 +17150,13 @@ def parent_admin(parent_id):
             </tr>
             """
         if not credit_rows:
-            credit_rows = f"""
+            credit_rows = """
             <tr>
                 <td colspan="5" class="empty setup-empty">
                     No course credits yet.
-                    <a class="button compact" href="/add_enrollment?student_name={student_url}">Add course</a>
                 </td>
             </tr>
             """
-        group_add_button = (
-            f'<a class="button compact" href="/add_enrollment?student_name={student_url}">Add course</a>'
-            if student_credits else
-            ""
-        )
         family_credit_sections += f"""
         <section class="credit-group">
             <div class="credit-group-head">
@@ -16965,7 +17164,6 @@ def parent_admin(parent_id):
                     <h3>{escape(str(student_name or 'Student'))}</h3>
                     <span>{len(student_credits)} course credit bucket(s)</span>
                 </div>
-                {group_add_button}
             </div>
             <div class="table-wrap">
                 <table>
@@ -16977,6 +17175,7 @@ def parent_admin(parent_id):
                         <th>Action</th>
                     </tr>
                     {credit_rows}
+                    {quick_add_row}
                 </table>
             </div>
         </section>
@@ -17145,6 +17344,9 @@ def parent_admin(parent_id):
             .credit-stepper {{ display:grid; grid-template-columns:30px 68px 30px; gap:5px; align-items:center; }}
             .credit-stepper button {{ width:30px; min-height:30px; padding:0; border-radius:7px; }}
             .credit-stepper input {{ width:68px; min-height:30px; padding:0 5px; text-align:center; }}
+            .quick-credit-add {{ display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1.2fr) 80px auto; gap:8px; align-items:center; }}
+            .quick-credit-add strong {{ display:block; font-size:12px; font-weight:900; }}
+            .quick-credit-add span {{ display:block; color:var(--muted); font-size:11px; line-height:1.35; margin-top:2px; }}
             .table-wrap {{ overflow:auto; }}
             table {{ width:100%; border-collapse:collapse; min-width:880px; font-size:12px; }}
             th, td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }}
@@ -17162,6 +17364,7 @@ def parent_admin(parent_id):
             @media (max-width:900px) {{
                 .topbar, .head, .layout, .add-grid {{ grid-template-columns:1fr; }}
                 .tabs, .top-actions {{ justify-content:flex-start; }}
+                .quick-credit-add {{ grid-template-columns:1fr; }}
             }}
         </style>
     </head>
