@@ -48,6 +48,12 @@ FORBIDDEN = {
     "old add first course credit action": "Add first course credit",
 }
 
+STUDENT_DETAIL_FORBIDDEN = {
+    "student profile course credit management": "<h2>Credits by Course</h2>",
+    "student profile parent app access management": "<h2>Parent App Access</h2>",
+    "student profile billing tab": 'data-student-tab="billing"',
+}
+
 
 def main():
     source = APP.read_text(encoding="utf-8")
@@ -62,6 +68,20 @@ def main():
         print("Regression check failed. Forbidden legacy patterns found:")
         for name in present:
             print(f"- {name}: {FORBIDDEN[name]}")
+        raise SystemExit(1)
+    try:
+        student_detail_source = source.split('def student_detail(name):', 1)[1].split('@app.route("/link_student_teacher/<name>"', 1)[0]
+    except IndexError:
+        print("Regression check failed. Could not locate student detail route.")
+        raise SystemExit(1)
+    student_detail_present = [
+        name for name, needle in STUDENT_DETAIL_FORBIDDEN.items()
+        if needle in student_detail_source
+    ]
+    if student_detail_present:
+        print("Regression check failed. Student Profile has duplicated family management:")
+        for name in student_detail_present:
+            print(f"- {name}: {STUDENT_DETAIL_FORBIDDEN[name]}")
         raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 

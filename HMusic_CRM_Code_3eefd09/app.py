@@ -6054,37 +6054,8 @@ def student_detail(name):
     course_credit_count = len(course_credit_rows)
     has_empty_course_credit = any(float(row[3] or 0) <= 0 for row in course_credit_rows)
     has_low_course_credit = any(0 < float(row[3] or 0) <= 2 for row in course_credit_rows)
-    balance_class = "danger" if course_credit_count == 0 or has_empty_course_credit else "amber" if has_low_course_credit else "ok"
-    balance_text = (
-        "Setup needed"
-        if course_credit_count == 0 else
-        "Course renewal needed"
-        if has_empty_course_credit or has_low_course_credit else
-        "Good standing"
-    )
-    course_credit_html = ""
-    for enrollment in course_credit_rows:
-        enrollment_id = enrollment[0]
-        course_credit_html += f"""
-            <div class="credit-card">
-                <div>
-                    <b>{escape(str(enrollment[1] or 'Course'))}</b>
-                    <p>{escape(str(enrollment[2] or 'Unassigned'))} · ${hmusic_money(enrollment[4] or 0)}/lesson</p>
-                </div>
-                <span class="pill {'danger' if float(enrollment[3] or 0) <= 2 else 'ok'}">{float(enrollment[3] or 0):g} left</span>
-                <a class="button" href="/edit_enrollment/{enrollment_id}">Edit</a>
-            </div>
-        """
-    if not course_credit_html:
-        course_credit_html = f"""
-            <div class="credit-card">
-                <div>
-                    <b>No course credits set up yet</b>
-                    <p>Create separate credit buckets for piano, voice, group, or another teacher.</p>
-                </div>
-                <a class="button" href="/add_enrollment?student_name={student_url_name}">Add course credit</a>
-            </div>
-        """
+    family_status_class = "ok" if parent_account else "danger"
+    family_status_text = "Family workspace ready" if parent_account else "Family setup needed"
     next_lesson_label = "Not scheduled"
     next_lesson_meta = "Create a recurring lesson before activating parent app use."
     if next_lesson:
@@ -6093,14 +6064,14 @@ def student_detail(name):
 
     parent_status = "No parent app account yet"
     parent_status_class = "danger"
-    parent_account_html = f"""
+    family_management_html = f"""
         <div class="account-box warning">
-            <div class="info-line"><span>Login email</span><b>{escape(student[2] or 'Missing parent email')}</b></div>
-            <div class="info-line"><span>Status</span><b>No parent app account connected</b></div>
-            <p class="muted">Create the family account after contact information is correct.</p>
+            <div class="info-line"><span>Status</span><b>No family workspace connected</b></div>
+            <div class="info-line"><span>Parent email</span><b>{escape(student[2] or 'Missing parent email')}</b></div>
+            <p class="muted">Family billing, parent app access, and course credits are managed in Family Workspace.</p>
             <div class="button-grid">
                 <form method="POST" action="/send_parent_welcome/{student_url_name}">
-                    <button class="primary" type="submit">Create + send welcome</button>
+                    <button class="primary" type="submit">Create family workspace</button>
                 </form>
                 <a class="button" href="/edit_student/{student_url_name}">Edit student contact</a>
             </div>
@@ -6110,36 +6081,33 @@ def student_detail(name):
         parent_status = "Active parent app account" if parent_account[4] else "Parent account inactive"
         parent_status_class = "ok" if parent_account[4] else "danger"
         must_change = "Must change password" if parent_account[5] else "Password set"
-        parent_account_html = f"""
+        family_management_html = f"""
         <div class="account-box">
             <div class="info-line"><span>Guardian</span><b>{escape(parent_account[1] or student[5] or 'Parent')}</b></div>
             <div class="info-line"><span>Login email</span><b>{escape(parent_account[2] or student[2] or '')}</b></div>
-            <div class="info-line"><span>Phone</span><b>{escape(parent_account[3] or student[3] or '')}</b></div>
-            <div class="info-line"><span>Password</span><b>{must_change}</b></div>
+            <div class="info-line"><span>Family status</span><b>{must_change}</b></div>
+            <p class="muted">Open Family Workspace to manage parent app access, billing, children, and course credits.</p>
             <div class="button-grid">
-                <form method="POST" action="/send_parent_welcome/{student_url_name}">
-                    <button class="primary" type="submit">Send welcome email</button>
-                </form>
-                <form method="POST" action="/reset_parent_password/{parent_account[0]}">
-                    <button type="submit">Reset password</button>
-                </form>
-                <a class="button" href="/parent_login_info/{student_url_name}">Copy login info</a>
-                <a class="button" href="/parent_admin/{parent_account[0]}">Family workspace</a>
+                <a class="button primary" href="/parent_admin/{parent_account[0]}">Open Family Workspace</a>
+                <a class="button" href="/edit_student/{student_url_name}">Edit student info</a>
             </div>
         </div>
         """
+
+    family_workspace_top_link = (
+        f'<a class="button" href="/parent_admin/{parent_account[0]}">Family Workspace</a>'
+        if require_owner() and parent_account else ""
+    )
 
     owner_actions = ""
     if require_owner():
         owner_actions = f"""
         <div class="button-grid">
             <a class="button primary" href="/calendar">Create schedule</a>
-            <a class="button primary" href="/create_package_invoice/{student_url_name}">Create package invoice</a>
             <a class="button" href="/add_lesson/{student_url_name}">Add lesson note</a>
-            <a class="button" href="/payment/{student_url_name}">Receive payment</a>
-            <a class="button" href="/student_ledger/{student_url_name}">Student ledger</a>
             <a class="button" href="/generate_parent_email/{student_url_name}">Generate lesson email</a>
             <a class="button" href="/send_parent_email/{student_url_name}">Send lesson email</a>
+            {family_workspace_top_link}
         </div>
         """
     elif teacher_has_access:
@@ -6153,10 +6121,6 @@ def student_detail(name):
         owner_actions = '<div class="button-grid"><a class="button primary" href="/parent_dashboard">Back to Parent App</a></div>'
 
     teacher_list_html = f"<ul class='teacher-list'>{teacher_link_html}</ul>"
-    family_workspace_top_link = (
-        f'<a class="button" href="/parent_admin/{parent_account[0]}">Family Workspace</a>'
-        if require_owner() and parent_account else ""
-    )
 
     return f"""
     <html>
@@ -6191,11 +6155,7 @@ def student_detail(name):
             .kpis {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:16px; }}
             .kpi {{ border:1px solid var(--border); background:#f9fafb; border-radius:10px; padding:12px; }}
             .kpi span {{ display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; }}
-            .kpi b {{ display:block; font-size:24px; margin-top:4px; }}
-            .credit-list {{ display:grid; gap:10px; }}
-            .credit-card {{ display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:center; border:1px solid var(--border); border-radius:12px; background:#fbfdff; padding:12px; }}
-            .credit-card p {{ margin-top:4px; color:var(--muted); font-size:13px; }}
-            .credit-card .button {{ width:auto; min-height:34px; padding:7px 10px; font-size:12px; }}
+            .kpi b {{ display:block; font-size:20px; line-height:1.15; margin-top:4px; }}
             .info-list {{ display:grid; gap:10px; margin-top:12px; }}
             .info-line {{ display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:start; }}
             .info-line span {{ color:var(--muted); font-size:13px; }}
@@ -6274,15 +6234,14 @@ def student_detail(name):
                             <div>
                                 <div class="name-row">
                                     <h2>{escape(student[0])}</h2>
-                                    <span class="pill {balance_class}">{course_credit_count} course credit{'s' if course_credit_count != 1 else ''}</span>
                                     <span class="pill {parent_status_class}">{parent_status}</span>
                                 </div>
                                 <p class="muted">Primary teacher: {escape(student[1] or 'Unassigned')}</p>
                             </div>
                         </div>
                         <div class="kpis">
-                            <div class="kpi"><span>Course credits</span><b>{course_credit_count} course{'s' if course_credit_count != 1 else ''}</b></div>
-                            <div class="kpi"><span>Balance</span><b>{balance_text}</b></div>
+                            <div class="kpi"><span>Family workspace</span><b>{family_status_text}</b></div>
+                            <div class="kpi"><span>Primary teacher</span><b>{escape(student[1] or 'Unassigned')}</b></div>
                             <div class="kpi"><span>Next</span><b>{'Set' if next_lesson else 'None'}</b></div>
                         </div>
                     </div>
@@ -6297,15 +6256,8 @@ def student_detail(name):
                     </div>
 
                     <div class="section">
-                        <h2>Credits by Course</h2>
-                        <div class="credit-list">
-                            {course_credit_html}
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <h2>Parent App Access</h2>
-                        {parent_account_html}
+                        <h2>Family Workspace</h2>
+                        {family_management_html}
                     </div>
 
                     <div class="section">
@@ -6320,7 +6272,6 @@ def student_detail(name):
                     <div class="tabs">
                         <button class="tab active" type="button" data-student-tab="overview">Overview</button>
                         <button class="tab" type="button" data-student-tab="lessons">Lessons</button>
-                        <button class="tab" type="button" data-student-tab="billing">Billing</button>
                         <button class="tab" type="button" data-student-tab="messages">Messages</button>
                     </div>
 
@@ -6352,13 +6303,6 @@ def student_detail(name):
                         </div>
                     </div>
 
-                    <div class="tab-panel" data-student-panel="billing" id="payments">
-                        <div class="section">
-                            <h2>Payment History</h2>
-                            <div class="timeline">{payment_html}</div>
-                        </div>
-                    </div>
-
                     <div class="tab-panel" data-student-panel="messages">
                         <div class="section">
                             <h2>Messages</h2>
@@ -6382,8 +6326,8 @@ def student_detail(name):
                 }}
                 tabs.forEach(tab => tab.addEventListener('click', () => showStudentTab(tab.dataset.studentTab)));
                 const initial = (window.location.hash || '').replace('#', '');
-                if (initial === 'payments') showStudentTab('billing');
-                else if (['overview', 'lessons', 'billing', 'messages'].includes(initial)) showStudentTab(initial);
+                if (initial === 'payments' && {str(bool(parent_account)).lower()}) window.location.href = "/parent_admin/{parent_account[0] if parent_account else ''}#family-billing";
+                else if (['overview', 'lessons', 'messages'].includes(initial)) showStudentTab(initial);
             }})();
         </script>
     </body>
