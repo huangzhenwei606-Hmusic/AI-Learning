@@ -4666,7 +4666,7 @@ def edit_student(name):
                 <strong>No course credits yet.</strong>
                 <span>Create separate credit buckets for piano, voice, group, or another teacher.</span>
             </div>
-            <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+            <a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add course</a>
         </div>
         """
     course_credit_html = f"""
@@ -4675,6 +4675,11 @@ def edit_student(name):
             {course_credit_html}
         </div>
     """
+    course_credit_add_button = (
+        f'<span><a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a></span>'
+        if course_credit_rows else
+        ""
+    )
 
     page_html = f"""
     <html>
@@ -4980,7 +4985,7 @@ def edit_student(name):
                             <div class="panel">
                                 <div class="panel-head">
                                     <h2>Credits by course</h2>
-                                    <span><a class="teacher-link" href="/add_enrollment?student_name={student_url_name}">Add</a></span>
+                                    {course_credit_add_button}
                                 </div>
                                 <div class="panel-body">
                                     {course_credit_html}
@@ -5067,13 +5072,25 @@ def update_student_course_credit(name):
 
     ensure_v321_schema()
 
+    return_to = (request.form.get("return_to") or "").strip()
+    return_anchor = (request.form.get("return_anchor") or "").strip()
+
+    def credit_redirect(flag):
+        if return_to.startswith("/") and not return_to.startswith("//"):
+            separator = "&" if "?" in return_to else "?"
+            anchor = ""
+            if return_anchor.replace("-", "").replace("_", "").isalnum():
+                anchor = f"#{return_anchor}"
+            return redirect(f"{return_to}{separator}{flag}=1{anchor}")
+        return redirect(f"/edit_student/{quote(name)}?{flag}=1#course-credit-editor")
+
     enrollment_id = request.form.get("enrollment_id")
     lessons_left = request.form.get("lessons_left")
     try:
         enrollment_id_int = int(enrollment_id or 0)
         lessons_left_value = float(lessons_left or 0)
     except (TypeError, ValueError):
-        return redirect(f"/edit_student/{quote(name)}?credit_error=1#course-credit-editor")
+        return credit_redirect("credit_error")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -5085,7 +5102,7 @@ def update_student_course_credit(name):
     """, (enrollment_id_int, name))
     if not cursor.fetchone():
         conn.close()
-        return redirect(f"/edit_student/{quote(name)}?credit_error=1#course-credit-editor")
+        return credit_redirect("credit_error")
 
     cursor.execute("""
     UPDATE enrollments
@@ -5099,7 +5116,7 @@ def update_student_course_credit(name):
     ))
     conn.commit()
     conn.close()
-    return redirect(f"/edit_student/{quote(name)}?credit_saved=1#course-credit-editor")
+    return credit_redirect("credit_saved")
 
 
 @app.route("/delete_student/<name>", methods=["POST"])
@@ -6839,7 +6856,7 @@ def payment(name):
         <p>{escape(name)} does not have course-specific credit buckets yet.</p>
         <p>Create one bucket for each course, teacher, and tuition before recording payment.</p>
         <p>
-            <a href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+            <a href="/add_enrollment?student_name={student_url_name}">Add course</a>
             · <a href="/student/{student_url_name}">Back to Student</a>
         </p>
         """
@@ -14514,7 +14531,7 @@ def create_package_invoice(name):
         <p>{escape(student[0])} does not have course-specific credit buckets yet.</p>
         <p>Create one bucket for each course, teacher, and tuition before creating package invoices.</p>
         <p>
-            <a href="/add_enrollment?student_name={student_url_name}">Add first course credit</a>
+            <a href="/add_enrollment?student_name={student_url_name}">Add course</a>
             · <a href="/student/{student_url_name}">Back to Student</a>
         </p>
         """
@@ -16880,6 +16897,13 @@ def parent_admin(parent_id):
         credits_by_student.setdefault(credit[1], []).append(credit)
 
     family_credit_sections = ""
+    family_credit_forms_html = ""
+    family_credit_notice_html = ""
+    if request.args.get("credit_saved") == "1":
+        family_credit_notice_html = '<div class="credit-notice ok">Course credit updated.</div>'
+    elif request.args.get("credit_error") == "1":
+        family_credit_notice_html = '<div class="credit-notice danger">Choose a valid course and credit number.</div>'
+
     for linked_student in linked_students:
         if linked_student[3] != 1:
             continue
@@ -16889,7 +16913,14 @@ def parent_admin(parent_id):
         credit_rows = ""
         for credit in student_credits:
             enrollment_id, _student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status = credit
-            credit_status_class = "good" if float(lessons_left or 0) > 2 else "neutral"
+            credit_form_id = f"familyCreditForm{enrollment_id}"
+            family_credit_forms_html += f"""
+            <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url}">
+                <input type="hidden" name="enrollment_id" value="{enrollment_id}">
+                <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
+                <input type="hidden" name="return_anchor" value="family-credits">
+            </form>
+            """
             credit_rows += f"""
             <tr>
                 <td>
@@ -16897,14 +16928,18 @@ def parent_admin(parent_id):
                     <span>{escape(str(enrollment_status or 'active')).title()}</span>
                 </td>
                 <td>{escape(str(teacher_name or 'Unassigned'))}</td>
-                <td><span class="pill {credit_status_class}">{float(lessons_left or 0):g} left</span></td>
+                <td>
+                    <div class="credit-stepper family-credit-stepper">
+                        <button type="button" data-credit-step="-0.5" aria-label="Decrease credit">-</button>
+                        <input type="number" step="0.5" min="0" name="lessons_left" value="{float(lessons_left or 0):g}" form="{credit_form_id}" aria-label="{escape(str(course_name or 'Course'), quote=True)} credits left">
+                        <button type="button" data-credit-step="0.5" aria-label="Increase credit">+</button>
+                    </div>
+                </td>
                 <td>${hmusic_money(unit_price)} / lesson<span>{float(package_lessons or 0):g} lesson package · ${hmusic_money(package_amount)}</span></td>
                 <td>
                     <div class="row-actions">
-                        <a class="button compact" href="/create_package_invoice/{student_url}?enrollment_id={enrollment_id}">Add billing</a>
-                        <a class="button compact" href="/payment/{student_url}?enrollment_id={enrollment_id}">Receive payment</a>
-                        <a class="button compact" href="/edit_enrollment/{enrollment_id}">Edit credit</a>
-                        <a class="button compact" href="/student_ledger/{student_url}">Ledger</a>
+                        <button class="button compact primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+                        <a class="button compact" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
                     </div>
                 </td>
             </tr>
@@ -16913,11 +16948,16 @@ def parent_admin(parent_id):
             credit_rows = f"""
             <tr>
                 <td colspan="5" class="empty setup-empty">
-                    No course credits set up yet.
-                    <a class="button compact" href="/add_enrollment?student_name={student_url}">Add first course credit</a>
+                    No course credits yet.
+                    <a class="button compact" href="/add_enrollment?student_name={student_url}">Add course</a>
                 </td>
             </tr>
             """
+        group_add_button = (
+            f'<a class="button compact" href="/add_enrollment?student_name={student_url}">Add course</a>'
+            if student_credits else
+            ""
+        )
         family_credit_sections += f"""
         <section class="credit-group">
             <div class="credit-group-head">
@@ -16925,7 +16965,7 @@ def parent_admin(parent_id):
                     <h3>{escape(str(student_name or 'Student'))}</h3>
                     <span>{len(student_credits)} course credit bucket(s)</span>
                 </div>
-                <a class="button compact" href="/add_enrollment?student_name={student_url}">Add course credit</a>
+                {group_add_button}
             </div>
             <div class="table-wrap">
                 <table>
@@ -17099,6 +17139,12 @@ def parent_admin(parent_id):
             .credit-group-head span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; font-weight:750; }}
             .setup-empty {{ text-align:left; }}
             .setup-empty .button {{ margin-left:10px; }}
+            .credit-notice {{ margin:12px 12px 0; border-radius:8px; padding:8px 10px; font-size:12px; font-weight:850; }}
+            .credit-notice.ok {{ background:var(--green-soft); color:var(--green); }}
+            .credit-notice.danger {{ background:var(--red-soft); color:var(--red); }}
+            .credit-stepper {{ display:grid; grid-template-columns:30px 68px 30px; gap:5px; align-items:center; }}
+            .credit-stepper button {{ width:30px; min-height:30px; padding:0; border-radius:7px; }}
+            .credit-stepper input {{ width:68px; min-height:30px; padding:0 5px; text-align:center; }}
             .table-wrap {{ overflow:auto; }}
             table {{ width:100%; border-collapse:collapse; min-width:880px; font-size:12px; }}
             th, td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }}
@@ -17238,6 +17284,7 @@ def parent_admin(parent_id):
 
                     <section class="panel" id="family-credits">
                         <div class="panel-head"><h2>Credits & Enrollments</h2><span>Course-level remaining lessons</span></div>
+                        {family_credit_notice_html}
                         <div class="credit-groups">
                             {family_credit_sections}
                         </div>
@@ -17296,7 +17343,21 @@ def parent_admin(parent_id):
                     </section>
                 </div>
             </section>
+            {family_credit_forms_html}
         </main>
+        <script>
+            document.querySelectorAll('[data-credit-step]').forEach((button) => {{
+                button.addEventListener('click', () => {{
+                    const stepper = button.closest('.credit-stepper');
+                    const input = stepper ? stepper.querySelector('input[name="lessons_left"]') : null;
+                    if (!input) return;
+                    const current = parseFloat(input.value || '0') || 0;
+                    const delta = parseFloat(button.dataset.creditStep || '0') || 0;
+                    const next = Math.max(0, current + delta);
+                    input.value = Number.isInteger(next) ? String(next) : next.toFixed(1);
+                }});
+            }});
+        </script>
     </body>
     </html>
     """

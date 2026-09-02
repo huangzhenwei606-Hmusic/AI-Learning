@@ -18,13 +18,15 @@ CHECKS = {
     "messages mark all read": "/messages/mark_all_read",
     "course credit display": "Credits by course",
     "family enrollment credits": "Credits & Enrollments",
-    "course credit actions": "Edit credit",
+    "course credit actions": "Full course setup",
     "course credit setup gate": "Set up course credits first",
     "add enrollment student preselect": "selected_student_name = (request.args.get(\"student_name\") or \"\").strip()",
     "student course credit update route": '"/update_student_course_credit/<name>"',
     "student inline credit rows": "credit-inline-row",
     "student credit stepper": "data-credit-step",
     "student credit row forms": "course_credit_forms_html",
+    "family credit row forms": "family_credit_forms_html",
+    "family credit return target": "return_anchor",
     "student credit save action": "save-credit",
     "invoice enrollment binding": "name=\"enrollment_id\"",
     "payment enrollment preselect": "selected_enrollment_id = request.args.get(\"enrollment_id\")",
@@ -34,6 +36,8 @@ CHECKS = {
 
 FORBIDDEN = {
     "student-level credit write": "UPDATE students\n        SET lessons_left",
+    "course credit selector empty state": "No course selected",
+    "old edit credit action": "Edit credit",
 }
 
 
