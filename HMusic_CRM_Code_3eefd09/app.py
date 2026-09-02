@@ -4602,6 +4602,7 @@ def edit_student(name):
             f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
             f'{escape(str(teacher_name))}</option>'
         )
+    quick_teacher_options = teacher_options
 
     teacher_history = []
     if student[1]:
@@ -4646,13 +4647,16 @@ def edit_student(name):
         <div class="quick-credit-add">
             <div>
                 <strong>Add course</strong>
-                <span>Choose a course, enter the remaining credit, then save it here.</span>
+                <span>Choose course type and teacher, then set its remaining credit.</span>
             </div>
             <select name="course_type_id" form="{quick_credit_form_id}" aria-label="Course">
                 {quick_credit_course_options}
             </select>
+            <select name="teacher_name" form="{quick_credit_form_id}" aria-label="Teacher">
+                {quick_teacher_options}
+            </select>
             <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_credit_form_id}" aria-label="Credits left">
-            <button class="primary save-credit" type="submit" form="{quick_credit_form_id}">Save</button>
+            <button class="primary save-credit" type="submit" form="{quick_credit_form_id}">Add</button>
         </div>
     """
     course_credit_html = ""
@@ -4822,11 +4826,14 @@ def edit_student(name):
             .mini-row {{ gap:8px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; }}
             .mini-row strong {{ color:var(--text); font-size:13px; font-weight:850; }}
             .mini-row span {{ color:var(--muted); font-size:12px; margin-top:3px; }}
+            .course-credit-section {{ margin-top:14px; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#fff; }}
+            .course-credit-section .panel-head {{ border-top:0; }}
+            .course-credit-note {{ color:var(--muted); font-size:12px; font-weight:700; }}
             .course-credit-list {{ display:grid; gap:0; }}
             .credit-notice {{ border-radius:7px; padding:7px 9px; font-size:12px; font-weight:850; }}
             .credit-notice.ok {{ background:var(--green-soft); color:var(--green); }}
             .credit-notice.danger {{ background:var(--red-soft); color:var(--red); }}
-            .credit-inline-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border); }}
+            .credit-inline-row {{ display:grid; grid-template-columns:minmax(220px,1fr) auto auto; gap:12px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--border); }}
             .credit-inline-row:last-child {{ border-bottom:0; }}
             .credit-main strong {{ display:block; font-size:13px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
             .credit-main span {{ display:block; color:var(--muted); font-size:12px; margin-top:3px; line-height:1.35; }}
@@ -4836,12 +4843,16 @@ def edit_student(name):
             .credit-stepper button {{ width:34px; min-height:34px; padding:0; border-radius:7px; }}
             .credit-stepper input {{ width:76px; min-height:34px; padding:0 6px; text-align:center; }}
             .save-credit {{ min-height:34px; padding:0 12px; }}
-            .course-credit-empty {{ display:grid; gap:9px; padding:12px; border:1px solid #bfdbfe; background:#eff6ff; border-radius:9px; }}
+            .course-credit-empty {{ display:grid; gap:9px; padding:14px; border-bottom:1px solid var(--border); background:#fff; }}
             .course-credit-empty strong {{ font-size:13px; }}
             .course-credit-empty span {{ display:block; color:var(--muted); font-size:12px; line-height:1.35; margin-top:3px; }}
-            .quick-credit-add {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 76px auto; gap:8px; align-items:end; padding:10px 0 0; margin-top:4px; border-top:1px solid var(--border); }}
+            .quick-credit-add {{ display:grid; grid-template-columns:minmax(170px,1fr) minmax(150px,1fr) minmax(150px,1fr) 86px auto; gap:10px; align-items:end; padding:14px; background:#fff; }}
             .quick-credit-add strong {{ display:block; font-size:13px; font-weight:850; }}
             .quick-credit-add span {{ display:block; color:var(--muted); font-size:12px; line-height:1.35; margin-top:3px; }}
+            .credit-summary-row {{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--border); }}
+            .credit-summary-row:last-child {{ border-bottom:0; }}
+            .credit-summary-row strong {{ font-size:13px; font-weight:850; }}
+            .credit-summary-row span {{ color:var(--muted); font-size:12px; font-weight:700; }}
             .badge {{ min-height:22px; padding:0 8px; font-size:12px; font-weight:850; }}
             .badge.ok {{ background:var(--green-soft); color:var(--green); }}
             .badge.danger, .badge.amber {{ background:var(--red-soft); color:var(--red); }}
@@ -4981,6 +4992,15 @@ def edit_student(name):
                                         <textarea name="internal_note">{escape(str(internal_note_value))}</textarea>
                                     </div>
                                 </div>
+                                <section class="course-credit-section">
+                                    <div class="panel-head">
+                                        <h2>Credits by course</h2>
+                                        <span class="course-credit-note">Each course has its own teacher, tuition, and remaining credit.</span>
+                                    </div>
+                                    <div class="panel-body">
+                                        {course_credit_html}
+                                    </div>
+                                </section>
                                 <div class="inactive-row">
                                     <span>Student stopped lessons? Set inactive to keep history while hiding from active lists.</span>
                                     <div class="danger-actions">
@@ -5019,15 +5039,6 @@ def edit_student(name):
 
                             <div class="panel">
                                 <div class="panel-head">
-                                    <h2>Credits by course</h2>
-                                </div>
-                                <div class="panel-body">
-                                    {course_credit_html}
-                                </div>
-                            </div>
-
-                            <div class="panel">
-                                <div class="panel-head">
                                     <h2>At a glance</h2>
                                 </div>
                                 <div class="panel-body">
@@ -5047,6 +5058,12 @@ def edit_student(name):
                                         <div>
                                             <strong>Historical total</strong>
                                             <span>Old student-level field: {lessons_left:g}. Use course credits above for billing.</span>
+                                        </div>
+                                    </div>
+                                    <div class="mini-row">
+                                        <div>
+                                            <strong>Course credits</strong>
+                                            <span>{course_credit_count} bucket{'s' if course_credit_count != 1 else ''} · {total_course_credits:g} total left</span>
                                         </div>
                                     </div>
                                     <div class="mini-row">
@@ -5173,6 +5190,7 @@ def quick_add_course_credit(name):
         return redirect(f"/edit_student/{quote(name)}?{flag}=1#course-credit-editor")
 
     course_type_id = request.form.get("course_type_id")
+    selected_teacher_name = (request.form.get("teacher_name") or "").strip()
     lessons_left = request.form.get("lessons_left")
     try:
         course_type_id_int = int(course_type_id or 0)
@@ -5193,7 +5211,7 @@ def quick_add_course_credit(name):
         conn.close()
         return credit_redirect("credit_error")
 
-    teacher_name = student[1] or ""
+    teacher_name = selected_teacher_name or student[1] or ""
     pricing = get_final_pricing(student[0], teacher_name, course_type_id_int)
     if not pricing:
         conn.close()
@@ -16999,6 +17017,14 @@ def parent_admin(parent_id):
     """)
     quick_credit_courses = cursor.fetchall()
 
+    cursor.execute("""
+    SELECT teacher_name
+    FROM teachers
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY teacher_name
+    """)
+    quick_credit_teachers = [row[0] for row in cursor.fetchall() if row[0]]
+
     conn.close()
 
     linked_rows = ""
@@ -17089,9 +17115,21 @@ def parent_admin(parent_id):
         if linked_student[3] != 1:
             continue
         student_name = linked_student[1]
+        student_teacher = linked_student[5] or ""
         student_url = quote(str(student_name or ''), safe='')
         student_credits = credits_by_student.get(student_name, [])
         credit_rows = ""
+        teacher_names = []
+        for teacher_name in [student_teacher] + quick_credit_teachers:
+            if teacher_name and teacher_name not in teacher_names:
+                teacher_names.append(teacher_name)
+        quick_teacher_options = '<option value="">Unassigned</option>'
+        for teacher_name in teacher_names:
+            selected = "selected" if teacher_name == student_teacher else ""
+            quick_teacher_options += (
+                f'<option value="{escape(str(teacher_name), quote=True)}" {selected}>'
+                f'{escape(str(teacher_name))}</option>'
+            )
         quick_form_id = f"familyQuickCourseCreditForm{linked_student[0]}"
         family_credit_forms_html += f"""
             <form id="{quick_form_id}" method="POST" action="/quick_add_course_credit/{student_url}">
@@ -17109,6 +17147,9 @@ def parent_admin(parent_id):
                         </div>
                         <select name="course_type_id" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} course">
                             {quick_credit_course_options}
+                        </select>
+                        <select name="teacher_name" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} teacher">
+                            {quick_teacher_options}
                         </select>
                         <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} credits left">
                         <button class="button compact primary save-credit" type="submit" form="{quick_form_id}">Save</button>
@@ -17344,7 +17385,7 @@ def parent_admin(parent_id):
             .credit-stepper {{ display:grid; grid-template-columns:30px 68px 30px; gap:5px; align-items:center; }}
             .credit-stepper button {{ width:30px; min-height:30px; padding:0; border-radius:7px; }}
             .credit-stepper input {{ width:68px; min-height:30px; padding:0 5px; text-align:center; }}
-            .quick-credit-add {{ display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1.2fr) 80px auto; gap:8px; align-items:center; }}
+            .quick-credit-add {{ display:grid; grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) 80px auto; gap:8px; align-items:center; }}
             .quick-credit-add strong {{ display:block; font-size:12px; font-weight:900; }}
             .quick-credit-add span {{ display:block; color:var(--muted); font-size:11px; line-height:1.35; margin-top:2px; }}
             .table-wrap {{ overflow:auto; }}
