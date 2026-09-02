@@ -4723,6 +4723,10 @@ def edit_student(name):
             <div class="credit-main">
                 <strong>{course_name}</strong>
                 <span>{teacher_name} · ${lesson_rate}/lesson</span>
+                <div class="credit-main-actions">
+                    <button type="button" class="inline-edit-link" data-credit-edit-target="{quick_edit_target_id}">Edit teacher/course</button>
+                    <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
+                </div>
             </div>
             <div class="credit-stepper">
                 <button type="button" data-credit-step="-0.5" aria-label="Decrease credit">-</button>
@@ -4731,8 +4735,6 @@ def edit_student(name):
             </div>
             <div class="credit-row-actions">
                 <button class="primary save-credit" type="submit" form="{credit_form_id}">Save</button>
-                <button type="button" class="quick-edit-btn" data-credit-edit-target="{quick_edit_target_id}">Edit</button>
-                <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full setup</a>
             </div>
         </div>
         <div class="credit-edit-row" id="{quick_edit_target_id}" hidden>
@@ -4892,6 +4894,9 @@ def edit_student(name):
             .credit-inline-row:last-child {{ border-bottom:0; }}
             .credit-main strong {{ display:block; font-size:13px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
             .credit-main span {{ display:block; color:var(--muted); font-size:12px; margin-top:3px; line-height:1.35; }}
+            .credit-main-actions {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:6px; }}
+            .inline-edit-link {{ border:0; background:transparent; padding:0; min-height:0; color:var(--blue-dark); font-size:12px; font-weight:850; cursor:pointer; }}
+            .inline-edit-link:hover {{ text-decoration:underline; }}
             .setup-link {{ display:inline-flex; margin-top:5px; color:var(--blue-dark); font-size:12px; font-weight:850; text-decoration:none; }}
             .setup-link:hover {{ text-decoration:underline; }}
             .credit-stepper {{ display:grid; grid-template-columns:34px 76px 34px; gap:6px; align-items:center; }}
@@ -4899,7 +4904,6 @@ def edit_student(name):
             .credit-stepper input {{ width:76px; min-height:34px; padding:0 6px; text-align:center; }}
             .save-credit {{ min-height:34px; padding:0 12px; }}
             .credit-row-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
-            .quick-edit-btn {{ color:var(--blue-dark); }}
             .credit-edit-row {{ display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto; gap:10px; align-items:end; padding:0 14px 12px; border-bottom:1px solid var(--border); background:#fbfcff; }}
             .credit-edit-row[hidden] {{ display:none; }}
             .credit-edit-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
@@ -17362,6 +17366,10 @@ def parent_admin(parent_id):
                 <td>
                     <strong>{escape(str(course_name or 'Course'))}</strong>
                     <span>{escape(str(enrollment_status or 'active')).title()}</span>
+                    <span class="family-course-actions">
+                        <button class="inline-edit-link" type="button" data-credit-edit-target="{quick_edit_target_id}">Edit teacher/course</button>
+                        <a href="/edit_enrollment/{enrollment_id}">Full setup</a>
+                    </span>
                 </td>
                 <td>{escape(str(teacher_name or 'Unassigned'))}</td>
                 <td>
@@ -17375,8 +17383,6 @@ def parent_admin(parent_id):
                 <td>
                     <div class="row-actions">
                         <button class="button compact primary save-credit" type="submit" form="{credit_form_id}">Save</button>
-                        <button class="button compact" type="button" data-credit-edit-target="{quick_edit_target_id}">Edit</button>
-                        <a class="button compact" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
                     </div>
                 </td>
             </tr>
@@ -17594,6 +17600,11 @@ def parent_admin(parent_id):
             .credit-stepper {{ display:grid; grid-template-columns:30px 68px 30px; gap:5px; align-items:center; }}
             .credit-stepper button {{ width:30px; min-height:30px; padding:0; border-radius:7px; }}
             .credit-stepper input {{ width:68px; min-height:30px; padding:0 5px; text-align:center; }}
+            .family-course-actions {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:5px; }}
+            .family-course-actions a,
+            .inline-edit-link {{ border:0; background:transparent; min-height:0; padding:0; color:var(--blue-dark); font-size:11px; font-weight:850; text-decoration:none; cursor:pointer; }}
+            .family-course-actions a:hover,
+            .inline-edit-link:hover {{ text-decoration:underline; }}
             .quick-credit-add {{ display:grid; grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) minmax(150px,1fr) 80px auto; gap:8px; align-items:center; }}
             .quick-credit-add strong {{ display:block; font-size:12px; font-weight:900; }}
             .quick-credit-add span {{ display:block; color:var(--muted); font-size:11px; line-height:1.35; margin-top:2px; }}
