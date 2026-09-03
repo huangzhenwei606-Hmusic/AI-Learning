@@ -10237,8 +10237,15 @@ def add_schedule():
         if require_teacher() and not require_owner():
             teacher = session.get("teacher_name")
             teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher)
+            cursor.execute("""
+            SELECT 1
+            FROM students
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+            LIMIT 1
+            """, (student_name,))
+            teacher_selected_existing_student = bool(cursor.fetchone())
 
-            if not teacher_linked and not allow_unassigned_teacher_schedule:
+            if not teacher_linked and not teacher_selected_existing_student and not allow_unassigned_teacher_schedule:
                 hidden_fields = {
                     "return_to": owner_calendar_return,
                     "action": "create_unassigned_teacher_schedule",
@@ -10295,7 +10302,7 @@ def add_schedule():
                 </html>
                 """
 
-            if not teacher_linked and allow_unassigned_teacher_schedule and not temporary_schedule_note:
+            if not teacher_linked and not teacher_selected_existing_student and allow_unassigned_teacher_schedule and not temporary_schedule_note:
                 conn.close()
                 return f"<h1>Temporary schedule note is required.</h1><p><a href='{escape(add_schedule_href, quote=True)}'>Back</a></p>"
 
