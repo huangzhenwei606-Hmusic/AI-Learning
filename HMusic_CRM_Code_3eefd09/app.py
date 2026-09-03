@@ -2634,6 +2634,7 @@ def home():
                     <a href="/students">Students</a>
                     <a href="/overdue">Renewals</a>
                     <a href="/calendar">Calendar</a>
+                    <a href="/owner_message_templates">Message Templates</a>
                     <a href="/teacher_dashboard">Teacher Dashboard</a>
         <a href="/teachers">Teacher Management</a>
                 </div>
@@ -2780,6 +2781,7 @@ def home():
         <a href="/messages">Message Center{message_badge}</a>
         <a href="/open_slots">Open Slots</a>
         <a href="/enrollment_renewals">Enrollment Renewals</a>
+        <a href="/owner_message_templates">Message Templates</a>
     </div>
 
     <details class="tool-drawer">
@@ -2802,6 +2804,245 @@ def home():
             </div>
 
         </div>
+    </body>
+    </html>
+    """
+
+
+@app.route("/owner_message_templates", methods=["GET", "POST"])
+def owner_message_templates():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_message_template_schema()
+    defaults = hmusic_default_message_template_map()
+    selected_key = request.values.get("template") or "invoice_payment_reminder"
+    notice = ""
+
+    if request.method == "POST":
+        selected_key = request.form.get("template_key") or selected_key
+        action = request.form.get("action") or "save"
+        default_template = defaults.get(selected_key)
+        if default_template:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            if action == "reset":
+                values = (
+                    default_template["group"], default_template["name"], default_template["description"],
+                    default_template["email_subject"], default_template["email_body"], default_template["sms_body"],
+                    default_template["app_title"], default_template["app_body"], default_template["variables"],
+                    now, selected_key
+                )
+                cursor.execute("""
+                UPDATE message_templates
+                SET group_name=?, display_name=?, description=?, email_subject=?, email_body=?,
+                    sms_body=?, app_title=?, app_body=?, variables=?, active=1, updated_at=?
+                WHERE template_key=?
+                """, values)
+                notice = "Template reset to default."
+            else:
+                cursor.execute("""
+                UPDATE message_templates
+                SET display_name=?, description=?, email_subject=?, email_body=?, sms_body=?,
+                    app_title=?, app_body=?, active=?, updated_at=?
+                WHERE template_key=?
+                """, (
+                    (request.form.get("display_name") or "").strip() or default_template["name"],
+                    (request.form.get("description") or "").strip(),
+                    request.form.get("email_subject") or "",
+                    request.form.get("email_body") or "",
+                    request.form.get("sms_body") or "",
+                    request.form.get("app_title") or "",
+                    request.form.get("app_body") or "",
+                    1 if request.form.get("active") == "1" else 0,
+                    now,
+                    selected_key,
+                ))
+                notice = "Template saved."
+            conn.commit()
+            conn.close()
+        else:
+            notice = "Unknown template key."
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT template_key, group_name, display_name, description, email_subject,
+           email_body, sms_body, app_title, app_body, variables, active, updated_at
+    FROM message_templates
+    ORDER BY group_name, display_name
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    templates = [{
+        "key": row[0], "group": row[1] or "", "name": row[2] or row[0], "description": row[3] or "",
+        "email_subject": row[4] or "", "email_body": row[5] or "", "sms_body": row[6] or "",
+        "app_title": row[7] or "", "app_body": row[8] or "", "variables": row[9] or "",
+        "active": int(row[10] if row[10] is not None else 1), "updated_at": row[11] or ""
+    } for row in rows]
+
+    template_by_key = {template["key"]: template for template in templates}
+    if selected_key not in template_by_key and templates:
+        selected_key = templates[0]["key"]
+    selected = template_by_key.get(selected_key, {})
+    preview_context = hmusic_template_preview_context()
+
+    groups_html = ""
+    for group_name in sorted({template["group"] for template in templates}):
+        group_links = ""
+        for template in [item for item in templates if item["group"] == group_name]:
+            selected_class = " selected" if template["key"] == selected_key else ""
+            active_label = "Active" if template["active"] else "Off"
+            group_links += f"""
+            <a class="template-link{selected_class}" href="/owner_message_templates?template={quote(template['key'])}">
+                <span><strong>{escape(template['name'])}</strong><small>{escape(template['key'])}</small></span>
+                <em>{active_label}</em>
+            </a>
+            """
+        groups_html += f"<section class='template-group'><h3>{escape(group_name or 'Other')}</h3>{group_links}</section>"
+
+    variable_html = ""
+    for variable in [item.strip() for item in selected.get("variables", "").split(",") if item.strip()]:
+        variable_html += f"<button type='button' class='variable-token' data-token='{{{escape(variable, quote=True)}}}'>{{{escape(variable)}}}</button>"
+
+    selected_default = defaults.get(selected_key, {})
+    reset_disabled = "" if selected_default else "disabled"
+    active_checked = "checked" if selected.get("active", 1) else ""
+    email_subject_preview = hmusic_render_message_template(selected_key, "email_subject", preview_context, selected.get("email_subject", ""))
+    email_body_preview = hmusic_render_message_template(selected_key, "email_body", preview_context, selected.get("email_body", ""))
+    sms_body_preview = hmusic_render_message_template(selected_key, "sms_body", preview_context, selected.get("sms_body", ""))
+    app_title_preview = hmusic_render_message_template(selected_key, "app_title", preview_context, selected.get("app_title", ""))
+    app_body_preview = hmusic_render_message_template(selected_key, "app_body", preview_context, selected.get("app_body", ""))
+    notice_html = f"<div class='notice'>{escape(notice)}</div>" if notice else ""
+
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Message Templates</title>
+        <style>
+            :root {{ --bg:#f5f7fb; --card:#fff; --text:#111827; --muted:#667085; --line:#e4e8f0; --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff; --green:#166534; --green-soft:#dcfce7; }}
+            * {{ box-sizing:border-box; }}
+            body {{ margin:0; background:var(--bg); color:var(--text); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:14px; }}
+            a {{ color:inherit; text-decoration:none; }}
+            .topbar {{ min-height:58px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:16px; padding:0 24px; background:#fff; border-bottom:1px solid var(--line); }}
+            .brand {{ font-size:20px; font-weight:850; white-space:nowrap; }}
+            .nav {{ display:flex; gap:8px; flex-wrap:wrap; }}
+            .nav a {{ min-height:34px; display:inline-flex; align-items:center; padding:0 11px; border-radius:8px; color:var(--muted); font-weight:800; }}
+            .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
+            .button, button {{ min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); padding:0 11px; font:inherit; font-weight:850; cursor:pointer; white-space:nowrap; }}
+            .button.primary, button.primary {{ background:var(--blue); border-color:var(--blue); color:#fff; }}
+            .page {{ padding:18px 24px 34px; max-width:1440px; margin:0 auto; }}
+            .head {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:end; margin-bottom:14px; }}
+            h1, h2, h3, p {{ margin:0; }}
+            h1 {{ font-size:28px; line-height:1.1; }}
+            h2 {{ font-size:16px; }}
+            h3 {{ font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin:14px 8px 7px; }}
+            .sub {{ color:var(--muted); margin-top:6px; font-weight:700; }}
+            .layout {{ display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; align-items:start; }}
+            .sidebar, .editor, .preview {{ background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 28px rgba(15,23,42,.05); overflow:hidden; }}
+            .template-group {{ border-bottom:1px solid var(--line); padding-bottom:8px; }}
+            .template-link {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; min-height:52px; padding:8px 10px; margin:0 8px 5px; border-radius:8px; }}
+            .template-link:hover, .template-link.selected {{ background:var(--blue-soft); }}
+            .template-link strong {{ display:block; font-size:13px; }}
+            .template-link small {{ display:block; color:var(--muted); margin-top:2px; }}
+            .template-link em {{ font-style:normal; color:var(--muted); font-size:11px; font-weight:850; }}
+            .content-grid {{ display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:12px; }}
+            .panel-head {{ min-height:46px; padding:0 14px; border-bottom:1px solid var(--line); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:10px; }}
+            .panel-body {{ padding:14px; }}
+            .form-grid {{ display:grid; gap:12px; }}
+            label {{ display:block; color:var(--muted); font-size:12px; font-weight:850; }}
+            input, textarea {{ width:100%; margin-top:5px; border:1px solid #d9dee8; border-radius:8px; background:#fff; color:var(--text); padding:9px 10px; font:inherit; font-size:13px; }}
+            textarea {{ min-height:130px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; line-height:1.45; }}
+            .sms-field {{ min-height:82px; }}
+            .two {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+            .switch-row {{ display:flex; align-items:center; gap:8px; color:var(--text); }}
+            .switch-row input {{ width:auto; margin:0; }}
+            .variables {{ display:flex; gap:6px; flex-wrap:wrap; }}
+            .variable-token {{ min-height:26px; padding:0 8px; border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; }}
+            .footer {{ display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; padding:12px 14px; border-top:1px solid var(--line); background:#fbfdff; }}
+            .preview-block {{ border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px; background:#fcfcfd; }}
+            .preview-block b {{ display:block; margin-bottom:6px; }}
+            .preview-block pre {{ white-space:pre-wrap; overflow-wrap:anywhere; margin:0; font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+            .notice {{ margin-bottom:12px; border:1px solid #bbf7d0; background:var(--green-soft); color:var(--green); border-radius:9px; padding:10px 12px; font-weight:850; }}
+            .danger {{ color:#b42318; border-color:#fecaca; }}
+            @media (max-width:1000px) {{ .layout, .content-grid, .head, .topbar {{ grid-template-columns:1fr; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <div class="brand">H-Music CRM</div>
+            <nav class="nav" aria-label="Owner navigation">
+                <a href="/">Owner Dashboard</a>
+                <a href="/students">Students</a>
+                <a href="/calendar">Calendar</a>
+                <a href="/invoices">Billing</a>
+                <a class="active" href="/owner_message_templates">Message Templates</a>
+            </nav>
+            <a class="button" href="/">Back to Owner</a>
+        </div>
+        <main class="page">
+            <section class="head">
+                <div>
+                    <h1>Message Templates</h1>
+                    <p class="sub">Edit email, SMS, and app notification copy from one owner-only page.</p>
+                </div>
+                <a class="button" href="/notification_queue">Notification Queue</a>
+            </section>
+            {notice_html}
+            <section class="layout">
+                <aside class="sidebar">
+                    <div class="panel-head"><h2>Template Library</h2><span>{len(templates)} templates</span></div>
+                    {groups_html}
+                </aside>
+                <section class="content-grid">
+                    <form class="editor" method="POST" action="/owner_message_templates?template={quote(selected_key)}">
+                        <input type="hidden" name="template_key" value="{escape(selected_key, quote=True)}">
+                        <div class="panel-head">
+                            <div><h2>{escape(selected.get('name', 'Template'))}</h2><p class="sub">{escape(selected.get('key', ''))}</p></div>
+                            <label class="switch-row"><input type="checkbox" name="active" value="1" {active_checked}> Active</label>
+                        </div>
+                        <div class="panel-body form-grid">
+                            <div class="two">
+                                <label>Display name<input name="display_name" value="{escape(selected.get('name', ''), quote=True)}"></label>
+                                <label>Last updated<input value="{escape(selected.get('updated_at') or 'Not saved yet', quote=True)}" disabled></label>
+                            </div>
+                            <label>Description<input name="description" value="{escape(selected.get('description', ''), quote=True)}"></label>
+                            <label>Email subject<input name="email_subject" value="{escape(selected.get('email_subject', ''), quote=True)}"></label>
+                            <label>Email body<textarea name="email_body">{escape(selected.get('email_body', ''))}</textarea></label>
+                            <label>SMS body<textarea class="sms-field" name="sms_body">{escape(selected.get('sms_body', ''))}</textarea></label>
+                            <div class="two">
+                                <label>App title<input name="app_title" value="{escape(selected.get('app_title', ''), quote=True)}"></label>
+                                <label>App body<input name="app_body" value="{escape(selected.get('app_body', ''), quote=True)}"></label>
+                            </div>
+                            <div><label>Available variables</label><div class="variables">{variable_html}</div></div>
+                        </div>
+                        <div class="footer">
+                            <button class="danger" name="action" value="reset" type="submit" {reset_disabled} onclick="return confirm('Reset this template to the H-Music default?');">Reset to default</button>
+                            <div>
+                                <a class="button" href="/owner_message_templates?template={quote(selected_key)}">Cancel</a>
+                                <button class="primary" name="action" value="save" type="submit">Save active template</button>
+                            </div>
+                        </div>
+                    </form>
+                    <aside class="preview">
+                        <div class="panel-head"><h2>Sample Preview</h2><span>Olivia Ma demo</span></div>
+                        <div class="panel-body">
+                            <div class="preview-block"><b>Email subject</b><pre>{escape(email_subject_preview)}</pre></div>
+                            <div class="preview-block"><b>Email body</b><pre>{escape(email_body_preview)}</pre></div>
+                            <div class="preview-block"><b>SMS body</b><pre>{escape(sms_body_preview)}</pre></div>
+                            <div class="preview-block"><b>App notification</b><pre>{escape(app_title_preview)}
+
+{escape(app_body_preview)}</pre></div>
+                        </div>
+                    </aside>
+                </section>
+            </section>
+        </main>
     </body>
     </html>
     """
@@ -6813,13 +7054,35 @@ def send_invoice_payment_reminder(invoice_id):
     parent_id, parent_email = parent
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     invoice_link = public_url_for(f"/parent_invoice/{invoice_id}")
-    title = f"H-Music Payment Reminder: {student_name}"
-    body = (
+    reminder_context = {
+        "parent_name": "",
+        "student_name": student_name,
+        "invoice_id": invoice_id,
+        "amount": hmusic_money(amount),
+        "due_date": "",
+        "lesson_count": f"{charge_lessons:g}",
+        "coverage": "",
+        "payment_methods": "",
+        "invoice_link": invoice_link,
+    }
+    title = hmusic_render_message_template(
+        "invoice_payment_reminder",
+        "email_subject",
+        reminder_context,
+        f"H-Music Payment Reminder: {student_name}"
+    )
+    body_fallback = (
         f"Hi, this is a friendly reminder that {student_name}'s "
         f"{invoice_type or 'tuition'} invoice #{invoice_id} for ${hmusic_money(amount)} is still open.\n\n"
         f"Package: {charge_lessons:g} lesson(s)\n"
         f"Please open the H-Music parent app to review and pay when convenient:\n{invoice_link}\n\n"
         "Thank you,\nH-Music"
+    )
+    body = hmusic_render_message_template(
+        "invoice_payment_reminder",
+        "email_body",
+        reminder_context,
+        body_fallback
     )
     cursor.execute("""
     INSERT INTO notification_delivery_queue (
@@ -29108,6 +29371,185 @@ def hmusic_money(value):
         return f"{float(value or 0):.2f}"
     except Exception:
         return "0.00"
+
+
+HMUSIC_MESSAGE_TEMPLATE_DEFAULTS = [
+    ("parent_welcome", "Parent Login", "Parent app welcome", "Sent when owner creates or resets parent app access.", "H-Music Parent App Login", "Hi {parent_name},\n\nYour H-Music parent app account is ready for {student_name}.\n\nLogin: {login_url}\nEmail: {parent_email}\nTemporary password: {temporary_password}\n\nPlease change your password after logging in. You can use the parent app to view lessons, notes, homework, messages, billing, and schedule updates.\n\nThank you,\nH-Music", "H-Music parent app is ready for {student_name}. Login: {login_url} Email: {parent_email} Temp password: {temporary_password}", "Parent app welcome queued", "Welcome login info was generated for {student_name}.", "parent_name, student_name, login_url, parent_email, temporary_password"),
+    ("trial_confirmation", "Trial", "Trial lesson confirmed", "Sent after owner confirms a trial lesson.", "H-Music Trial Lesson Confirmed", "Hi {parent_name},\n\n{student_name}'s trial lesson is confirmed.\n\nDate: {trial_date}\nTime: {trial_time}\nTeacher: {teacher_name}\nLocation: {location}\nTrial: {trial_duration} / {trial_fee}\nPayment method: {payment_method}\n\n{payment_line}\n\nAfter the trial, H-Music will help you set up the parent app if you continue lessons.\n\nThank you,\nH-Music", "H-Music trial confirmed for {student_name}: {trial_date} at {trial_time} with {teacher_name}.", "H-Music Trial Lesson Confirmed", "{student_name}'s trial lesson is confirmed for {trial_date} at {trial_time}.", "parent_name, student_name, trial_date, trial_time, teacher_name, location, trial_duration, trial_fee, payment_method, payment_line"),
+    ("trial_follow_up", "Trial", "Trial follow-up", "Suggested template for after a trial lesson.", "H-Music Trial Follow-Up for {student_name}", "Hi {parent_name},\n\nThank you for coming to {student_name}'s trial lesson with H-Music.\n\nIf you would like to continue, we can help set up the weekly schedule, tuition package, invoice, and parent app access.\n\nThank you,\nH-Music", "Thank you for joining {student_name}'s H-Music trial. Reply here if you would like help setting up weekly lessons.", "Trial follow-up", "Follow up with {parent_name} about {student_name}'s trial lesson.", "parent_name, student_name, teacher_name, trial_date"),
+    ("lesson_reminder", "Lesson Schedule", "Lesson reminder", "Sent before a scheduled lesson.", "H-Music Lesson Reminder: {student_name} - {lesson_date_short} at {lesson_time}", "Hi {parent_name},\n\nThis is a reminder that {student_first_name} has a lesson tomorrow.\n\nStudent: {student_name}\nDate: {lesson_date}\nTime: {lesson_time}\nTeacher: {teacher_name}\nLocation: {location}\n{address_line}\n\nPlease open the H-Music Parent App to view schedule details.\n\nThank you,\nH-Music", "H-Music reminder: {student_name} has a lesson {lesson_date} at {lesson_time} with {teacher_name}.", "Lesson reminder", "{student_name} has a lesson on {lesson_date} at {lesson_time}.", "parent_name, student_name, student_first_name, lesson_date, lesson_date_short, lesson_time, teacher_name, location, address_line"),
+    ("practice_reminder", "Practice / Homework", "Practice reminder", "Sent after a lesson when homework reminder is enabled.", "H-Music Practice Reminder for {student_name}", "Hi {parent_name},\n\nHere is {student_first_name}'s practice assignment from today's lesson:\n\n{homework}\n\nPlease open the H-Music parent app to review lesson notes and homework details:\n{parent_login_url}\n\nThank you,\nH-Music", "H-Music practice reminder for {student_name}: {homework_summary}. Full homework is in the parent app: {parent_login_url}", "H-Music Practice Reminder for {student_name}", "New practice homework is ready for {student_name}.", "parent_name, student_name, student_first_name, homework, homework_summary, parent_login_url"),
+    ("invoice_created", "Billing / Invoice", "New invoice", "Sent when a new tuition/package invoice is created.", "H-Music Tuition Invoice for {student_name}", "Hi {parent_name},\n\n{student_name}'s tuition invoice is ready.\n\nAmount due: ${amount}\nInvoice: #{invoice_id}\nDue date: {due_date}\n\nPlease open the H-Music Parent App to review payment options:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music invoice for {student_name}: ${amount}. Review/pay here: {invoice_link}", "New package invoice", "{student_name} has a tuition invoice due: ${amount}.", "parent_name, student_name, invoice_id, amount, due_date, invoice_link, lesson_count"),
+    ("invoice_payment_reminder", "Billing / Invoice", "Payment reminder", "Sent from Family billing when an invoice is still open.", "H-Music Payment Reminder: {student_name}", "Hi {parent_name},\n\nThis is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\nAmount due: ${amount}\nDue date: {due_date}\nPackage: {lesson_count} lesson(s)\nCoverage: {coverage}\nPayment options: {payment_methods}\n\nPlease open the H-Music Parent App to review the invoice and choose a payment method:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music reminder: {student_name} has an open invoice for ${amount}. Review/pay here: {invoice_link}", "H-Music payment reminder", "{student_name} has a tuition invoice ready for payment.", "parent_name, student_name, invoice_id, amount, due_date, lesson_count, coverage, payment_methods, invoice_link"),
+    ("payment_received", "Payment", "Payment received", "Sent after payment is confirmed.", "H-Music Payment Received for {student_name}", "Hi {parent_name},\n\nThank you. H-Music received payment for {student_name}.\n\nAmount: ${amount}\nInvoice: #{invoice_id}\n\nYour parent app has been updated.\n\nThank you,\nH-Music", "H-Music received payment for {student_name}: ${amount}. Thank you.", "Payment received", "Payment received for {student_name}: ${amount}.", "parent_name, student_name, amount, invoice_id"),
+    ("payment_failed", "Payment", "Payment failed", "Sent when a card/ACH payment fails.", "H-Music Payment Needs Attention for {student_name}", "Hi {parent_name},\n\nWe could not complete the payment for {student_name}'s invoice.\n\nAmount: ${amount}\nInvoice: #{invoice_id}\nReason: {payment_error}\n\nPlease open the H-Music Parent App to review the invoice and try again:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music payment issue for {student_name}: invoice #{invoice_id} for ${amount}. Please review: {invoice_link}", "Payment needs attention", "Payment for {student_name}'s invoice needs attention.", "parent_name, student_name, amount, invoice_id, payment_error, invoice_link"),
+    ("renewal_reminder", "Renewal / Low Balance", "Lesson package renewal", "Sent when lesson balance is low or over balance.", "{student_name}'s Lesson Package Renewal Reminder", "Dear Parent,\n\nThis is a friendly reminder that {student_first_name}'s lesson package is due for renewal.\n\n{balance_line}\n\nPlease open the H-Music parent app to review the renewal details and payment information:\n{parent_login_url}\n\nIf you have any questions before completing the renewal, please reply to this email.\n\nThank you,\nH-Music", "H-Music renewal reminder: {student_name}'s package is due for renewal. Details: {parent_login_url}", "Lesson package renewal", "{student_name}'s lesson package is due for renewal.", "student_name, student_first_name, balance_line, lesson_balance, package_count, package_size, parent_login_url"),
+    ("low_balance_alert", "Renewal / Low Balance", "Low lesson balance", "Sent when a lesson package balance is running low.", "Low Lesson Balance for {student_name}", "Hi {parent_name},\n\n{student_name}'s lesson package is running low.\n\nCurrent balance: {lesson_balance} lesson(s)\n\nPlease renew the package when convenient.\n\nThank you,\nH-Music", "H-Music low balance: {student_name} has {lesson_balance} lesson(s) left. Please renew when convenient.", "Low lesson balance", "{student_name}'s lesson package is running low. Please renew the package.", "parent_name, student_name, lesson_balance"),
+    ("reschedule_approved", "Reschedule / Cancellation", "Reschedule approved", "Sent when owner approves a reschedule request.", "H-Music Reschedule Approved for {student_name}", "Hi {parent_name},\n\nYour reschedule request for {student_name} has been approved.\n\nNew date: {new_date}\nNew time: {new_time}\nTeacher: {teacher_name}\n\nPlease open the H-Music Parent App for the updated schedule.\n\nThank you,\nH-Music", "H-Music reschedule approved for {student_name}: {new_date} at {new_time}.", "Reschedule approved", "Your reschedule request for {student_name} has been approved.", "parent_name, student_name, new_date, new_time, teacher_name"),
+    ("reschedule_rejected", "Reschedule / Cancellation", "Reschedule rejected", "Sent when owner rejects a reschedule request.", "H-Music Reschedule Update for {student_name}", "Hi {parent_name},\n\nWe could not approve the reschedule request for {student_name}.\n\nReason: {reason}\n\nPlease open the H-Music Parent App or reply to this message if you need help finding another option.\n\nThank you,\nH-Music", "H-Music reschedule update for {student_name}: {reason}", "Reschedule rejected", "We could not approve the reschedule request for {student_name}.", "parent_name, student_name, reason"),
+    ("cancellation_notice", "Reschedule / Cancellation", "Cancellation notice", "Used for cancellation, makeup, no-credit, or late-fee notices.", "H-Music Lesson Cancellation Update for {student_name}", "Hi {parent_name},\n\nThis is an update about {student_name}'s lesson on {lesson_date} at {lesson_time}.\n\nStatus: {cancellation_status}\nCredit result: {credit_result}\nFee: {fee_amount}\n\nPlease open the H-Music Parent App for details.\n\nThank you,\nH-Music", "H-Music cancellation update for {student_name}: {cancellation_status}. Credit: {credit_result}.", "Lesson cancellation update", "{student_name}'s lesson cancellation has been updated.", "parent_name, student_name, lesson_date, lesson_time, cancellation_status, credit_result, fee_amount"),
+    ("teacher_lesson_reminder", "Teacher / Owner Alerts", "Teacher lesson reminder", "Sent to teachers before lessons.", "Lesson reminder", "Hi {teacher_name},\n\n{student_name} has a lesson on {lesson_date} at {lesson_time} in {classroom}.\n\nThank you,\nH-Music", "Lesson reminder: {student_name} on {lesson_date} at {lesson_time} in {classroom}.", "Lesson reminder", "{student_name} has a lesson on {lesson_date} at {lesson_time} in {classroom}.", "teacher_name, student_name, lesson_date, lesson_time, classroom"),
+    ("studio_event", "Studio Event", "Studio event / RSVP", "For recital, studio event, and RSVP reminders.", "H-Music Event: {event_title}", "Hi {parent_name},\n\nYou are invited to {event_title}.\n\nDate: {event_date}\nTime: {event_time}\nLocation: {event_location}\n\nPlease open the H-Music Parent App to view details or RSVP.\n\nThank you,\nH-Music", "H-Music event: {event_title} on {event_date} at {event_time}. Details/RSVP: {event_link}", "Studio event", "{event_title} is coming up. Please view details or RSVP.", "parent_name, event_title, event_date, event_time, event_location, event_link"),
+]
+
+
+class HMusicTemplateDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def hmusic_default_message_template_map():
+    keys = ("key", "group", "name", "description", "email_subject", "email_body", "sms_body", "app_title", "app_body", "variables")
+    return {item[0]: dict(zip(keys, item)) for item in HMUSIC_MESSAGE_TEMPLATE_DEFAULTS}
+
+
+def ensure_message_template_schema(seed=True):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS message_templates (
+        template_key TEXT PRIMARY KEY,
+        group_name TEXT,
+        display_name TEXT,
+        description TEXT,
+        email_subject TEXT,
+        email_body TEXT,
+        sms_body TEXT,
+        app_title TEXT,
+        app_body TEXT,
+        variables TEXT,
+        active INTEGER DEFAULT 1,
+        updated_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("template_key", "template_key TEXT"),
+        ("group_name", "group_name TEXT"),
+        ("display_name", "display_name TEXT"),
+        ("description", "description TEXT"),
+        ("email_subject", "email_subject TEXT"),
+        ("email_body", "email_body TEXT"),
+        ("sms_body", "sms_body TEXT"),
+        ("app_title", "app_title TEXT"),
+        ("app_body", "app_body TEXT"),
+        ("variables", "variables TEXT"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("updated_at", "updated_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "message_templates", column_name, column_sql)
+    if seed:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for template in hmusic_default_message_template_map().values():
+            cursor.execute("""
+            INSERT OR IGNORE INTO message_templates (
+                template_key, group_name, display_name, description, email_subject,
+                email_body, sms_body, app_title, app_body, variables, active, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """, (
+                template["key"], template["group"], template["name"], template["description"],
+                template["email_subject"], template["email_body"], template["sms_body"],
+                template["app_title"], template["app_body"], template["variables"], now
+            ))
+    conn.commit()
+    conn.close()
+
+
+def hmusic_get_message_template(template_key):
+    defaults = hmusic_default_message_template_map()
+    fallback = defaults.get(template_key, {})
+    try:
+        ensure_message_template_schema()
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT template_key, group_name, display_name, description, email_subject,
+               email_body, sms_body, app_title, app_body, variables, active, updated_at
+        FROM message_templates
+        WHERE template_key = ?
+        """, (template_key,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                "key": row[0],
+                "group": row[1] or fallback.get("group", ""),
+                "name": row[2] or fallback.get("name", template_key),
+                "description": row[3] or fallback.get("description", ""),
+                "email_subject": row[4] if row[4] is not None else fallback.get("email_subject", ""),
+                "email_body": row[5] if row[5] is not None else fallback.get("email_body", ""),
+                "sms_body": row[6] if row[6] is not None else fallback.get("sms_body", ""),
+                "app_title": row[7] if row[7] is not None else fallback.get("app_title", ""),
+                "app_body": row[8] if row[8] is not None else fallback.get("app_body", ""),
+                "variables": row[9] or fallback.get("variables", ""),
+                "active": int(row[10] if row[10] is not None else 1),
+                "updated_at": row[11] or "",
+            }
+    except Exception:
+        app.logger.exception("Could not load message template %s", template_key)
+    return fallback
+
+
+def hmusic_render_message_template(template_key, field_name, context, fallback=""):
+    template = hmusic_get_message_template(template_key)
+    raw = template.get(field_name) or fallback or ""
+    values = HMusicTemplateDict({key: "" if value is None else value for key, value in (context or {}).items()})
+    try:
+        return raw.format_map(values)
+    except Exception:
+        app.logger.exception("Could not render message template %s.%s", template_key, field_name)
+        return fallback or raw
+
+
+def hmusic_template_preview_context():
+    return {
+        "parent_name": "Aadi Nakano",
+        "parent_contact": "kejia.ma@gmail.com",
+        "student_name": "Olivia Ma",
+        "student_first_name": "Olivia",
+        "parent_email": "kejia.ma@gmail.com",
+        "temporary_password": "HMusic-demo123",
+        "login_url": hmusic_public_app_url("/parent_login"),
+        "parent_login_url": hmusic_public_app_url("/parent_login"),
+        "invoice_id": "47",
+        "invoice_link": hmusic_public_app_url("/parent_invoice/47"),
+        "amount": "750.00",
+        "due_date": "2026-09-10",
+        "lesson_count": "10",
+        "coverage": "Private Lesson - Jianing Li",
+        "payment_methods": "ACH bank payment, Zelle, PayPal",
+        "payment_error": "Payment was declined.",
+        "trial_date": "2026-09-05",
+        "trial_time": "4:30 PM",
+        "teacher_name": "Jianing Li",
+        "location": "H-Music Studio",
+        "address_line": "Address: 123 Main Street",
+        "trial_duration": "30 minutes",
+        "trial_fee": "$40.00",
+        "payment_method": "Zelle",
+        "payment_line": "Please send the trial payment by Zelle to hmusicjustplay@gmail.com. Please include the student name in the payment note.",
+        "lesson_date": "Friday, September 4, 2026",
+        "lesson_date_short": "Sep 4",
+        "lesson_time": "4:30 PM",
+        "homework": "Practice C major scale slowly, hands separately, 10 minutes per day.",
+        "homework_summary": "Practice C major scale slowly.",
+        "lesson_balance": "2",
+        "package_count": "1",
+        "package_size": "10",
+        "balance_line": "Our records show that Olivia currently has 2 lessons remaining. This renewal is for 1 package.",
+        "new_date": "2026-09-08",
+        "new_time": "5:00 PM",
+        "reason": "The requested time is not available.",
+        "cancellation_status": "No charge cancellation",
+        "credit_result": "No credit deducted",
+        "fee_amount": "$0.00",
+        "classroom": "Room 2",
+        "event_title": "Winter Recital",
+        "event_date": "2026-12-12",
+        "event_time": "3:00 PM",
+        "event_location": "H-Music Studio",
+        "event_link": hmusic_public_app_url("/parent_events"),
+    }
 
 
 def hmusic_invoice_package_options(options_text, current_lessons, current_amount):
