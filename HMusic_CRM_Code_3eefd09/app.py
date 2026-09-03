@@ -4713,6 +4713,8 @@ def edit_student(name):
         credit_notice_html = '<div class="credit-notice ok">Course credit updated.</div>'
     elif request.args.get("credit_error") == "1":
         credit_notice_html = '<div class="credit-notice danger">Choose a valid course and credit number.</div>'
+    elif request.args.get("credit_archived") == "1":
+        credit_notice_html = '<div class="credit-notice ok">Course credit archived. History is still kept.</div>'
 
     for enrollment in course_credit_rows:
         enrollment_id = enrollment[0]
@@ -4723,12 +4725,17 @@ def edit_student(name):
         current_course_type_id = enrollment[8] if len(enrollment) > 8 else ""
         credit_form_id = f"courseCreditForm{enrollment_id}"
         quick_edit_form_id = f"courseQuickEditForm{enrollment_id}"
+        archive_form_id = f"courseArchiveForm{enrollment_id}"
         quick_edit_target_id = f"courseQuickEdit{enrollment_id}"
         course_credit_forms_html += f"""
                 <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url_name}">
                     <input type="hidden" name="enrollment_id" value="{enrollment_id}">
                 </form>
                 <form id="{quick_edit_form_id}" method="POST" action="/quick_edit_course_credit/{enrollment_id}">
+                    <input type="hidden" name="return_to" value="/edit_student/{student_url_name}">
+                    <input type="hidden" name="return_anchor" value="course-credit-editor">
+                </form>
+                <form id="{archive_form_id}" method="POST" action="/archive_course_credit/{enrollment_id}">
                     <input type="hidden" name="return_to" value="/edit_student/{student_url_name}">
                     <input type="hidden" name="return_anchor" value="course-credit-editor">
                 </form>
@@ -4751,6 +4758,7 @@ def edit_student(name):
             </div>
             <div class="credit-row-actions">
                 <button class="primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+                <button class="archive-credit" type="submit" form="{archive_form_id}" onclick="return confirm('Archive this course credit? History will stay, but it will no longer appear as an active course.');">Archive</button>
             </div>
         </div>
         <div class="credit-edit-row" id="{quick_edit_target_id}" hidden>
@@ -4919,6 +4927,8 @@ def edit_student(name):
             .credit-stepper button {{ width:34px; min-height:34px; padding:0; border-radius:7px; }}
             .credit-stepper input {{ width:76px; min-height:34px; padding:0 6px; text-align:center; }}
             .save-credit {{ min-height:34px; padding:0 12px; }}
+            .archive-credit {{ min-height:34px; padding:0 12px; border:1px solid #fecaca; border-radius:8px; background:#fff; color:var(--red); font-weight:900; cursor:pointer; }}
+            .archive-credit:hover {{ background:var(--red-soft); }}
             .credit-row-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
             .credit-edit-row {{ display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto; gap:10px; align-items:end; padding:0 14px 12px; border-bottom:1px solid var(--border); background:#fbfcff; }}
             .credit-edit-row[hidden] {{ display:none; }}
@@ -5481,6 +5491,53 @@ def quick_edit_course_credit(enrollment_id):
     conn.commit()
     conn.close()
     return credit_redirect(student_name, "credit_saved")
+
+
+@app.route("/archive_course_credit/<int:enrollment_id>", methods=["POST"])
+def archive_course_credit(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    return_to = (request.form.get("return_to") or "").strip()
+    return_anchor = (request.form.get("return_anchor") or "").strip()
+
+    def credit_redirect(student_name, flag):
+        if return_to.startswith("/") and not return_to.startswith("//"):
+            separator = "&" if "?" in return_to else "?"
+            anchor = ""
+            if return_anchor.replace("-", "").replace("_", "").isalnum():
+                anchor = f"#{return_anchor}"
+            return redirect(f"{return_to}{separator}{flag}=1{anchor}")
+        return redirect(f"/edit_student/{quote(student_name)}?{flag}=1#course-credit-editor")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT student_name
+    FROM enrollments
+    WHERE id = ?
+    LIMIT 1
+    """, (enrollment_id,))
+    enrollment = cursor.fetchone()
+    if not enrollment:
+        conn.close()
+        return redirect("/students")
+
+    student_name = enrollment[0]
+    cursor.execute("""
+    UPDATE enrollments
+    SET status = 'archived',
+        updated_at = ?
+    WHERE id = ?
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        enrollment_id
+    ))
+    conn.commit()
+    conn.close()
+    return credit_redirect(student_name, "credit_archived")
 
 
 @app.route("/delete_student/<name>", methods=["POST"])
@@ -17589,6 +17646,8 @@ def parent_admin(parent_id):
         family_credit_notice_html = '<div class="credit-notice ok">Course credit updated.</div>'
     elif request.args.get("credit_error") == "1":
         family_credit_notice_html = '<div class="credit-notice danger">Choose a valid course and credit number.</div>'
+    elif request.args.get("credit_archived") == "1":
+        family_credit_notice_html = '<div class="credit-notice ok">Course credit archived. History is still kept.</div>'
 
     for linked_student in linked_students:
         if linked_student[3] != 1:
@@ -17650,6 +17709,7 @@ def parent_admin(parent_id):
             enrollment_id, _student_name, course_name, teacher_name, lessons_left, unit_price, package_lessons, package_amount, enrollment_status, course_type_id, _duration = credit
             credit_form_id = f"familyCreditForm{enrollment_id}"
             quick_edit_form_id = f"familyCourseQuickEditForm{enrollment_id}"
+            archive_form_id = f"familyCourseArchiveForm{enrollment_id}"
             quick_edit_target_id = f"familyCourseQuickEdit{enrollment_id}"
             family_credit_forms_html += f"""
             <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url}">
@@ -17658,6 +17718,10 @@ def parent_admin(parent_id):
                 <input type="hidden" name="return_anchor" value="family-credits">
             </form>
             <form id="{quick_edit_form_id}" method="POST" action="/quick_edit_course_credit/{enrollment_id}">
+                <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
+                <input type="hidden" name="return_anchor" value="family-credits">
+            </form>
+            <form id="{archive_form_id}" method="POST" action="/archive_course_credit/{enrollment_id}">
                 <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
                 <input type="hidden" name="return_anchor" value="family-credits">
             </form>
@@ -17685,6 +17749,7 @@ def parent_admin(parent_id):
                 <td>
                     <div class="row-actions">
                         <button class="button compact primary save-credit" type="submit" form="{credit_form_id}">Save</button>
+                        <button class="button compact archive-credit" type="submit" form="{archive_form_id}" onclick="return confirm('Archive this course credit? History will stay, but it will no longer appear as an active course.');">Archive</button>
                     </div>
                 </td>
             </tr>
@@ -17884,6 +17949,8 @@ def parent_admin(parent_id):
             .panel-head-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }}
             .row-actions {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }}
             .row-actions .inline-form button {{ min-height:28px; padding:0 9px; font-size:11px; }}
+            .archive-credit {{ border-color:#fecaca; background:#fff; color:var(--red); }}
+            .archive-credit:hover {{ background:var(--red-soft); }}
             .inline-form {{ display:inline; margin:0; }}
             .hint-line {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }}
             .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
