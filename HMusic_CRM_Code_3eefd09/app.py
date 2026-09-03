@@ -12083,8 +12083,22 @@ def teacher_dashboard():
     """)
     cursor.executemany("INSERT OR IGNORE INTO classrooms (room_name) VALUES (?)", [("Room 1",), ("Room 2",), ("Room 3",), ("Trial Room",)])
     conn.commit()
-    cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
+    cursor.execute("""
+    SELECT
+        r.id,
+        r.location_id,
+        r.room_name,
+        COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON l.id = r.location_id
+    WHERE COALESCE(r.active, 1) = 1
+    AND COALESCE(l.active, 1) = 1
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(l.location_name, ''), COALESCE(r.sort_order, 0), r.room_name
+    """)
     teacher_calendar_rooms = cursor.fetchall()
+    if not teacher_calendar_rooms:
+        cursor.execute("SELECT NULL, NULL, room_name, '' FROM classrooms ORDER BY room_name")
+        teacher_calendar_rooms = cursor.fetchall()
     cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
     teacher_calendar_courses = cursor.fetchall()
     teacher_calendar_students = hmusic_teacher_student_rows(cursor, teacher_name)
@@ -12096,7 +12110,17 @@ def teacher_dashboard():
     pending_count = unread_messages + missing_homework_count
     today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
     homework_badge = hstudio_badge(missing_homework_count)
-    teacher_calendar_room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in teacher_calendar_rooms)
+    teacher_calendar_room_options = ''.join(
+        f'<option value="{escape(r[2] or "", quote=True)}" data-room-id="{escape(str(r[0] or ""), quote=True)}" data-location-id="{escape(str(r[1] or ""), quote=True)}" data-location-name="{escape(r[3] or "", quote=True)}">{escape(((r[3] + " - ") if r[3] else "") + (r[2] or ""))}</option>'
+        for r in teacher_calendar_rooms
+    )
+    def teacher_course_default_sort_key(course):
+        name = (course[1] or "").lower()
+        duration = safe_minutes(course[2], 0)
+        is_group = int(course[3] or 0)
+        private_30 = (not is_group) and duration == 30 and "private" in name
+        return (0 if private_30 else 1, is_group, 0 if duration == 30 else 1, name, duration)
+    teacher_calendar_courses = sorted(teacher_calendar_courses, key=teacher_course_default_sort_key)
     teacher_calendar_course_options = ''.join(
         f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Single"}</option>'
         for c in teacher_calendar_courses
@@ -12511,6 +12535,9 @@ def teacher_dashboard():
                     <input type="hidden" name="return_to" value="{teacher_schedule_return_url_attr}">
                     <input type="hidden" name="teacher" value="{escape(teacher_name or '', quote=True)}">
                     <input type="hidden" name="weekday" id="teacherAddWeekday">
+                    <input type="hidden" name="location_id" id="teacherAddLocationId">
+                    <input type="hidden" name="room_id" id="teacherAddRoomId">
+                    <input type="hidden" name="location" id="teacherAddLocationName">
                     <input type="hidden" name="billing_decision" value="existing_credits">
                     <div class="teacher-add-head">
                         <div>
@@ -12540,7 +12567,7 @@ def teacher_dashboard():
                             </label>
                             <label>
                                 <span class="teacher-add-label">Room</span>
-                                <select class="teacher-add-select" name="classroom" required>{teacher_calendar_room_options}</select>
+                                <select class="teacher-add-select" name="classroom" id="teacherInlineRoomSelect" onchange="syncTeacherInlineRoom()" required>{teacher_calendar_room_options}</select>
                             </label>
                             <label>
                                 <span class="teacher-add-label">Format</span>
@@ -12791,6 +12818,17 @@ def teacher_dashboard():
             customCount.required = isCustom;
             if (!isCustom) customCount.value = '';
         }}
+        function syncTeacherInlineRoom() {{
+            const roomSelect = document.getElementById('teacherInlineRoomSelect');
+            if (!roomSelect || !roomSelect.options[roomSelect.selectedIndex]) return;
+            const option = roomSelect.options[roomSelect.selectedIndex];
+            const locationId = document.getElementById('teacherAddLocationId');
+            const roomId = document.getElementById('teacherAddRoomId');
+            const locationName = document.getElementById('teacherAddLocationName');
+            if (locationId) locationId.value = option.dataset.locationId || '';
+            if (roomId) roomId.value = option.dataset.roomId || '';
+            if (locationName) locationName.value = option.dataset.locationName || '';
+        }}
         function teacherOpenAddSchedule(dateStr) {{
             if (!TEACHER_CAN_ADD_SCHEDULE) {{
                 alert('Add Schedule requires owner permission.');
@@ -12805,6 +12843,7 @@ def teacher_dashboard():
             if (sub) sub.textContent = 'Create a lesson on ' + (dateStr || 'this date') + ' without leaving the calendar.';
             syncTeacherInlineAddFormat();
             syncTeacherInlinePackage();
+            syncTeacherInlineRoom();
             if (overlay) overlay.classList.add('show');
             setTimeout(() => {{
                 const first = document.getElementById('teacherAddStudent');
@@ -12833,6 +12872,7 @@ def teacher_dashboard():
         }});
         syncTeacherInlineAddFormat();
         syncTeacherInlinePackage();
+        syncTeacherInlineRoom();
         bindTeacherStatusForms();
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
             card.addEventListener("click", e => {{

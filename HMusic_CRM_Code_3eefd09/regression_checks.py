@@ -51,6 +51,10 @@ CHECKS = {
     "teacher inline add schedule form": "teacherInlineAddScheduleForm",
     "teacher add schedule respects return": "teacher_return = owner_calendar_return",
     "teacher inline package defaults ten lessons": '<select class="teacher-add-select" name="package_type" id="teacherInlinePackageType" onchange="syncTeacherInlinePackage()">\n                                    <option value="10">10 lessons</option>',
+    "teacher inline course defaults private 30": "teacher_course_default_sort_key",
+    "teacher inline room shows location": "data-location-name",
+    "teacher inline room sync": "syncTeacherInlineRoom",
+    "teacher inline room ids submit": 'name="room_id" id="teacherAddRoomId"',
 }
 
 
