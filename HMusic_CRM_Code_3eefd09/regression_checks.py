@@ -19,6 +19,8 @@ CHECKS = {
     "course credit display": "Credits by course",
     "family enrollment credits": "Credits & Enrollments",
     "course credit actions": "Full course setup",
+    "course credit tuition action": "Set tuition",
+    "enrollment tuition anchor": 'id="tuition"',
     "course credit setup gate": "Set up course credits first",
     "add enrollment student preselect": "selected_student_name = (request.args.get(\"student_name\") or \"\").strip()",
     "student course credit update route": '"/update_student_course_credit/<name>"',

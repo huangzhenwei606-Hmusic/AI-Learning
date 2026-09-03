@@ -4725,6 +4725,7 @@ def edit_student(name):
                 <span>{teacher_name} · ${lesson_rate}/lesson</span>
                 <div class="credit-main-actions">
                     <button type="button" class="inline-edit-link" data-credit-edit-target="{quick_edit_target_id}">Edit teacher/course</button>
+                    <a class="setup-link" href="/enrollment/{enrollment_id}#tuition">Set tuition</a>
                     <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
                 </div>
             </div>
@@ -17312,7 +17313,8 @@ def parent_admin(parent_id):
                     <span>{escape(str(enrollment_status or 'active')).title()}</span>
                     <span class="family-course-actions">
                         <button class="inline-edit-link" type="button" data-credit-edit-target="{quick_edit_target_id}">Edit teacher/course</button>
-                        <a href="/edit_enrollment/{enrollment_id}">Full setup</a>
+                        <a href="/enrollment/{enrollment_id}#tuition">Set tuition</a>
+                        <a href="/edit_enrollment/{enrollment_id}">Full course setup</a>
                     </span>
                 </td>
                 <td>{escape(str(teacher_name or 'Unassigned'))}</td>
@@ -37260,7 +37262,7 @@ def enrollment_detail(enrollment_id):
                 </div>
             </div>
 
-            <h3>Confirmed Tuition</h3>
+            <h3 id="tuition">Confirmed Tuition</h3>
             <form method="POST" action="/update_enrollment_tuition/{e[0]}">
                 <div class="grid">
                     <div class="card">
