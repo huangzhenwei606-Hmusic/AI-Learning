@@ -12101,7 +12101,7 @@ def teacher_dashboard():
         teacher_calendar_rooms = cursor.fetchall()
     cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
     teacher_calendar_courses = cursor.fetchall()
-    teacher_calendar_students = hmusic_teacher_student_rows(cursor, teacher_name)
+    teacher_calendar_students = hmusic_teacher_student_rows(cursor, teacher_name, include_all=True)
     conn.close()
 
     completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
