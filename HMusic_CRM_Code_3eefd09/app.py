@@ -10673,7 +10673,9 @@ def add_schedule():
             )
 
         if require_teacher() and not require_owner():
-            return redirect(f"/teacher_dashboard?view=add_schedule&created={generated_count}")
+            teacher_return = owner_calendar_return if owner_calendar_return.startswith("/teacher_dashboard") else "/teacher_dashboard?view=add_schedule"
+            created_sep = "&" if "?" in teacher_return else "?"
+            return redirect(f"{teacher_return}{created_sep}created={generated_count}")
 
         student_charge_summary = ""
         if not (require_teacher() and not require_owner()):
@@ -12073,6 +12075,19 @@ def teacher_dashboard():
     cursor.execute("SELECT COALESCE(hourly_rate, 0) FROM teachers WHERE teacher_name=?", (teacher_name,))
     rate_row = cursor.fetchone()
     teacher_rate = rate_row[0] if rate_row else 0
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classrooms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_name TEXT UNIQUE
+    )
+    """)
+    cursor.executemany("INSERT OR IGNORE INTO classrooms (room_name) VALUES (?)", [("Room 1",), ("Room 2",), ("Room 3",), ("Trial Room",)])
+    conn.commit()
+    cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
+    teacher_calendar_rooms = cursor.fetchall()
+    cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
+    teacher_calendar_courses = cursor.fetchall()
+    teacher_calendar_students = hmusic_teacher_student_rows(cursor, teacher_name)
     conn.close()
 
     completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
@@ -12081,6 +12096,15 @@ def teacher_dashboard():
     pending_count = unread_messages + missing_homework_count
     today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
     homework_badge = hstudio_badge(missing_homework_count)
+    teacher_calendar_room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in teacher_calendar_rooms)
+    teacher_calendar_course_options = ''.join(
+        f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Single"}</option>'
+        for c in teacher_calendar_courses
+    )
+    teacher_calendar_student_options = ''.join(
+        f'<option value="{escape(hmusic_student_parent_label(r[0], r[1]), quote=True)}"></option>'
+        for r in teacher_calendar_students
+    )
 
     def status_label(status):
         raw = (status or "").strip().lower()
@@ -12248,6 +12272,25 @@ def teacher_dashboard():
     .teacher-rs-buttons{display:flex;gap:8px;margin-top:14px}
     .teacher-rs-buttons button{flex:1;border:1px solid #D9DEE8;border-radius:10px;padding:9px 10px;font-weight:700;cursor:pointer}
     .teacher-rs-ok{background:var(--blue);border-color:var(--blue)!important;color:white}
+    .teacher-add-overlay{position:fixed;inset:0;background:rgba(15,23,42,.42);display:none;align-items:center;justify-content:center;z-index:1200;padding:18px}
+    .teacher-add-overlay.show{display:flex}
+    .teacher-add-modal{width:min(760px,calc(100vw - 28px));max-height:calc(100vh - 44px);overflow:auto;background:#fff;color:#172033;border:1px solid #E5E7EB;border-radius:14px;box-shadow:0 24px 72px rgba(15,23,42,.24)}
+    .teacher-add-head{display:flex;align-items:flex-start;gap:14px;justify-content:space-between;padding:20px 22px 16px;border-bottom:1px solid #E5E7EB;background:#fff}
+    .teacher-add-head h2{margin:0 0 4px;font-size:24px;line-height:1.15;color:#172033}
+    .teacher-add-head p{margin:0;color:#667085;font-weight:700}
+    .teacher-add-close{width:38px;height:38px;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#667085;font-size:22px;cursor:pointer}
+    .teacher-add-body{padding:18px 22px 22px}
+    .teacher-add-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .teacher-add-full{grid-column:1 / -1}
+    .teacher-add-label{display:block;color:#667085;font-weight:900;font-size:12px;text-transform:uppercase;letter-spacing:0;margin-bottom:6px}
+    .teacher-add-input,.teacher-add-select,.teacher-add-textarea{width:100%;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;font:inherit;font-weight:800;padding:11px 12px}
+    .teacher-add-textarea{min-height:92px;resize:vertical;font-weight:700}
+    .teacher-add-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #E5E7EB}
+    .teacher-add-actions button,.teacher-add-actions a{border:1px solid #D9DEE8;border-radius:8px;padding:11px 16px;font:inherit;font-weight:900;text-decoration:none;cursor:pointer}
+    .teacher-add-cancel{background:#fff;color:#172033}
+    .teacher-add-submit{background:var(--blue);border-color:var(--blue)!important;color:#fff}
+    .teacher-add-note{border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:10px;padding:10px 12px;font-weight:800;line-height:1.4}
+    @media(max-width:780px){.teacher-add-grid{grid-template-columns:1fr}.teacher-add-full{grid-column:auto}.teacher-add-actions{display:grid}.teacher-add-actions button,.teacher-add-actions a{width:100%;text-align:center}}
     .lesson-scrim{position:fixed;inset:0;background:rgba(17,24,39,.42);display:none;z-index:1100}.lesson-scrim.show{display:block}
     .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#fff;color:#172033;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);display:flex;flex-direction:column;border-left:1px solid #E5E7EB}.lesson-panel.show{transform:translateX(0)}
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
@@ -12425,6 +12468,8 @@ def teacher_dashboard():
         owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
+        teacher_schedule_return_url = request.full_path if request.query_string else "/teacher_dashboard?view=schedule"
+        teacher_schedule_return_url_attr = escape(teacher_schedule_return_url, quote=True)
         content = f"""
             <div class="schedule-head">
                 <div class="schedule-title">
@@ -12459,6 +12504,86 @@ def teacher_dashboard():
             <button class="teacher-multi-clear" type="button" onclick="teacherMultiClear()">Clear</button>
         </div>
         <div class="calendar-grid" id="teacherCalendarGrid">{day_columns}</div>
+
+        <div class="teacher-add-overlay" id="teacherAddOverlay" onclick="teacherCloseAddSchedule(event)">
+            <div class="teacher-add-modal" role="dialog" aria-modal="true" aria-labelledby="teacherAddTitle" onclick="event.stopPropagation()">
+                <form method="POST" action="/add_schedule" id="teacherInlineAddScheduleForm">
+                    <input type="hidden" name="return_to" value="{teacher_schedule_return_url_attr}">
+                    <input type="hidden" name="teacher" value="{escape(teacher_name or '', quote=True)}">
+                    <input type="hidden" name="weekday" id="teacherAddWeekday">
+                    <input type="hidden" name="billing_decision" value="existing_credits">
+                    <div class="teacher-add-head">
+                        <div>
+                            <h2 id="teacherAddTitle">Add lesson</h2>
+                            <p id="teacherAddSub">Create a lesson without leaving the calendar.</p>
+                        </div>
+                        <button class="teacher-add-close" type="button" onclick="teacherCloseAddSchedule()"><i class="ti ti-x"></i></button>
+                    </div>
+                    <div class="teacher-add-body">
+                        <div class="teacher-add-grid">
+                            <label>
+                                <span class="teacher-add-label">Date</span>
+                                <input class="teacher-add-input" type="date" name="start_date" id="teacherAddDate" required>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Time</span>
+                                <input class="teacher-add-input" type="time" name="lesson_time" required>
+                            </label>
+                            <label class="teacher-add-full" id="teacherAddStudentField">
+                                <span class="teacher-add-label">Student</span>
+                                <input class="teacher-add-input student-picker-compact" id="teacherAddStudent" name="student_name" list="teacherInlineStudentList" placeholder="Search existing or type full student name" autocomplete="off" required>
+                                <datalist id="teacherInlineStudentList">{teacher_calendar_student_options}</datalist>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Course</span>
+                                <select class="teacher-add-select" name="course_type_id" id="teacherInlineCourseSelect" onchange="syncTeacherInlineAddFormat()" required>{teacher_calendar_course_options}</select>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Room</span>
+                                <select class="teacher-add-select" name="classroom" required>{teacher_calendar_room_options}</select>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Format</span>
+                                <select class="teacher-add-select" name="lesson_format" id="teacherInlineLessonFormat" onchange="syncTeacherInlineAddFormat()">
+                                    <option value="private">Private</option>
+                                    <option value="group">Group</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Schedule Type</span>
+                                <select class="teacher-add-select" name="schedule_type">
+                                    <option value="weekly">Weekly</option>
+                                    <option value="one_time">One time</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Package</span>
+                                <select class="teacher-add-select" name="package_type" id="teacherInlinePackageType" onchange="syncTeacherInlinePackage()">
+                                    <option value="10">10 lessons</option>
+                                    <option value="12">12 lessons</option>
+                                    <option value="24">24 lessons</option>
+                                    <option value="custom">Custom count</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span class="teacher-add-label">Custom Count</span>
+                                <input class="teacher-add-input" type="number" name="custom_lesson_count" id="teacherInlineCustomCount" min="1" max="260" placeholder="Only if custom" disabled>
+                            </label>
+                            <label class="teacher-add-full" id="teacherInlineGroupStudentsField" style="display:none">
+                                <span class="teacher-add-label">Group Students</span>
+                                <textarea class="teacher-add-textarea" id="teacherInlineGroupStudents" name="group_student_names" placeholder="For group classes, list at least two student names separated by commas."></textarea>
+                            </label>
+                            <div class="teacher-add-full teacher-add-note">Billing stays owner-managed. This adds the schedule from the teacher calendar and uses existing credits unless owner changes billing later.</div>
+                        </div>
+                        <div class="teacher-add-actions">
+                            <a class="teacher-add-cancel" href="/teacher_dashboard?view=add_schedule">Full Add Schedule page</a>
+                            <button class="teacher-add-cancel" type="button" onclick="teacherCloseAddSchedule()">Cancel</button>
+                            <button class="teacher-add-submit" type="submit">Create lesson</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
 
         <div class="lesson-scrim" id="teacherLessonScrim" onclick="closeTeacherLessonPanel()"></div>
         <aside class="lesson-panel" id="teacherLessonPanel" aria-hidden="true">
@@ -12496,6 +12621,7 @@ def teacher_dashboard():
         const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         const TEACHER_CAN_DELETE = {str(delete_allowed).lower()};
+        const TEACHER_CAN_ADD_SCHEDULE = {str(bool(teacher_perms.get("add_own_schedule"))).lower()};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherPanelSaving = false;
@@ -12625,9 +12751,87 @@ def teacher_dashboard():
                 location.reload();
             }}).catch(e => alert(e.message));
         }}
-        function teacherAddOnDate(dateStr) {{
-            window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
+        function teacherWeekdayFromDate(dateStr) {{
+            const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+            const d = new Date(dateStr + 'T12:00:00');
+            return names[d.getDay()] || '';
         }}
+        function teacherInlineCourseIsGroup() {{
+            const select = document.getElementById('teacherInlineCourseSelect');
+            if (!select || !select.options[select.selectedIndex]) return false;
+            return select.options[select.selectedIndex].text.toLowerCase().includes('group');
+        }}
+        function teacherInlineIsGroupLesson() {{
+            const format = document.getElementById('teacherInlineLessonFormat');
+            return teacherInlineCourseIsGroup() || (format && format.value === 'group');
+        }}
+        function syncTeacherInlineAddFormat() {{
+            const format = document.getElementById('teacherInlineLessonFormat');
+            const groupField = document.getElementById('teacherInlineGroupStudentsField');
+            const groupNames = document.getElementById('teacherInlineGroupStudents');
+            const studentField = document.getElementById('teacherAddStudentField');
+            const student = document.getElementById('teacherAddStudent');
+            if (format && teacherInlineCourseIsGroup()) format.value = 'group';
+            const isGroup = teacherInlineIsGroupLesson();
+            if (groupField) groupField.style.display = isGroup ? 'block' : 'none';
+            if (studentField) studentField.style.display = isGroup ? 'none' : 'block';
+            if (student) {{
+                student.required = !isGroup;
+                if (isGroup) student.value = '';
+            }}
+            if (groupNames && !isGroup) groupNames.value = '';
+        }}
+        function syncTeacherInlinePackage() {{
+            const packageType = document.getElementById('teacherInlinePackageType');
+            const customCount = document.getElementById('teacherInlineCustomCount');
+            if (!packageType || !customCount) return;
+            const isCustom = packageType.value === 'custom';
+            customCount.disabled = !isCustom;
+            customCount.required = isCustom;
+            if (!isCustom) customCount.value = '';
+        }}
+        function teacherOpenAddSchedule(dateStr) {{
+            if (!TEACHER_CAN_ADD_SCHEDULE) {{
+                alert('Add Schedule requires owner permission.');
+                return;
+            }}
+            const overlay = document.getElementById('teacherAddOverlay');
+            const dateInput = document.getElementById('teacherAddDate');
+            const weekdayInput = document.getElementById('teacherAddWeekday');
+            const sub = document.getElementById('teacherAddSub');
+            if (dateInput) dateInput.value = dateStr || '';
+            if (weekdayInput) weekdayInput.value = teacherWeekdayFromDate(dateStr || '');
+            if (sub) sub.textContent = 'Create a lesson on ' + (dateStr || 'this date') + ' without leaving the calendar.';
+            syncTeacherInlineAddFormat();
+            syncTeacherInlinePackage();
+            if (overlay) overlay.classList.add('show');
+            setTimeout(() => {{
+                const first = document.getElementById('teacherAddStudent');
+                const time = document.querySelector('#teacherInlineAddScheduleForm input[name="lesson_time"]');
+                if (first && first.offsetParent !== null) first.focus();
+                else if (time) time.focus();
+            }}, 50);
+        }}
+        function teacherCloseAddSchedule(event) {{
+            if (event && event.target !== document.getElementById('teacherAddOverlay')) return;
+            const overlay = document.getElementById('teacherAddOverlay');
+            if (overlay) overlay.classList.remove('show');
+        }}
+        function teacherAddOnDate(dateStr) {{
+            teacherOpenAddSchedule(dateStr);
+        }}
+        const teacherInlineAddScheduleForm = document.getElementById('teacherInlineAddScheduleForm');
+        if (teacherInlineAddScheduleForm) teacherInlineAddScheduleForm.addEventListener('submit', function(e) {{
+            if (!teacherInlineIsGroupLesson()) return;
+            const namesInput = document.getElementById('teacherInlineGroupStudents');
+            const names = (namesInput ? namesInput.value : '').split(',').map(name => name.trim()).filter(Boolean);
+            if (Array.from(new Set(names)).length < 2) {{
+                e.preventDefault();
+                alert('Group class needs at least two different students.');
+            }}
+        }});
+        syncTeacherInlineAddFormat();
+        syncTeacherInlinePackage();
         bindTeacherStatusForms();
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
             card.addEventListener("click", e => {{

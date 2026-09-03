@@ -46,6 +46,10 @@ CHECKS = {
     "teacher status ajax endpoint": "wants_json = \"application/json\"",
     "teacher status repaint": "repaintTeacherScheduleEvent",
     "teacher status form binding": "bindTeacherStatusForms();",
+    "teacher inline add schedule modal": "teacherAddOverlay",
+    "teacher calendar date opens add modal": "teacherOpenAddSchedule(dateStr)",
+    "teacher inline add schedule form": "teacherInlineAddScheduleForm",
+    "teacher add schedule respects return": "teacher_return = owner_calendar_return",
 }
 
 
