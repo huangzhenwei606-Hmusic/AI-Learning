@@ -37101,261 +37101,148 @@ def enrollment_detail(enrollment_id):
     return f"""
     <html>
     <head>
-        <title>Enrollment Detail</title>
+        <title>Set Tuition</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #f7f7fb;
-                padding: 40px;
+            :root {{
+                --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#667085; --line:#e3e8f0;
+                --blue:#1f6fb8; --blue-dark:#155c9c; --blue-soft:#eaf4ff;
             }}
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 14px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            }}
-            .actions {{
-                margin-bottom: 24px;
-            }}
-            .actions a {{
-                display: inline-block;
-                background: #635bff;
-                color: white;
-                padding: 10px 14px;
-                border-radius: 8px;
-                text-decoration: none;
-                font-weight: bold;
-                margin-right: 8px;
-            }}
-            .grid {{
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 16px;
-                margin: 20px 0;
-            }}
-            .card {{
-                background: #f8f8ff;
-                padding: 18px;
-                border-radius: 12px;
-            }}
-            .label {{
-                color: #6b7280;
-                font-size: 13px;
-            }}
-            .value {{
-                font-size: 24px;
-                font-weight: bold;
-                margin-top: 6px;
-            }}
-            h3 {{
-                margin-top: 32px;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 12px;
-                margin-bottom: 24px;
-            }}
-            th, td {{
-                padding: 10px;
-                border-bottom: 1px solid #eee;
-                text-align: left;
-                font-size: 14px;
-            }}
-            th {{
-                background: #f0f0ff;
-            }}
-            .muted {{
-                color: #6b7280;
-            }}
-            input {{
-                width: 100%;
-                box-sizing: border-box;
-                padding: 10px;
-                margin-top: 6px;
-                border: 1px solid #d1d5db;
-                border-radius: 8px;
-                font-size: 15px;
-            }}
-            button.save-button, button.mini-button {{
-                background: #635bff;
-                color: white;
-                border: none;
-                padding: 11px 15px;
-                border-radius: 8px;
-                font-weight: bold;
-                margin-right: 10px;
-            }}
-            button.mini-button {{
-                padding: 8px 10px;
-                font-size: 12px;
-                background: #111827;
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }}
+            .page {{ padding:28px; }}
+            .container {{ max-width:1180px; margin:0 auto; }}
+            .hero {{ background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(15,23,42,.06); overflow:hidden; }}
+            .header {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:22px 24px; border-bottom:1px solid var(--line); }}
+            h1, h2, h3, p {{ margin:0; }}
+            h1 {{ font-size:30px; line-height:1.15; }}
+            h2 {{ font-size:17px; color:var(--muted); margin-top:6px; font-weight:750; }}
+            h3 {{ font-size:18px; margin:0 0 14px; }}
+            .actions {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }}
+            .actions a, .button, button.save-button, button.mini-button {{ display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 13px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); text-decoration:none; font-weight:850; font-size:13px; cursor:pointer; box-sizing:border-box; }}
+            .actions a.primary, .button.primary, button.save-button {{ background:var(--blue); border-color:var(--blue); color:#fff; }}
+            button.mini-button {{ background:#111827; color:#fff; min-height:30px; font-size:12px; }}
+            .summary {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; padding:18px 24px; border-bottom:1px solid var(--line); background:#fbfcff; }}
+            .metric {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }}
+            .label {{ color:var(--muted); font-size:12px; font-weight:800; }}
+            .value {{ font-size:20px; line-height:1.15; font-weight:900; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .tuition-panel {{ padding:22px 24px 24px; }}
+            .tuition-card {{ border:1px solid var(--line); border-radius:10px; background:#fff; padding:18px; }}
+            .tuition-head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; }}
+            .suggested {{ border-radius:999px; background:var(--blue-soft); color:var(--blue-dark); padding:7px 10px; font-size:12px; font-weight:900; white-space:nowrap; }}
+            .form-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; align-items:end; }}
+            label {{ display:grid; gap:6px; color:#344054; font-size:13px; font-weight:850; }}
+            input {{ width:100%; box-sizing:border-box; min-height:42px; padding:0 11px; border:1px solid #d6dde8; border-radius:8px; font:inherit; font-weight:750; background:#fff; }}
+            .help {{ color:var(--muted); font-size:12px; line-height:1.4; margin-top:12px; }}
+            .save-row {{ display:flex; gap:10px; align-items:center; margin-top:16px; flex-wrap:wrap; }}
+            details.advanced {{ margin-top:16px; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(15,23,42,.04); overflow:hidden; }}
+            details.advanced > summary {{ list-style:none; cursor:pointer; padding:16px 18px; font-size:16px; font-weight:900; border-bottom:1px solid var(--line); }}
+            details.advanced > summary::-webkit-details-marker {{ display:none; }}
+            .advanced-body {{ padding:18px; }}
+            .grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:0 0 18px; }}
+            table {{ width:100%; border-collapse:collapse; margin:10px 0 22px; }}
+            th, td {{ padding:9px 10px; border-bottom:1px solid #eef2f7; text-align:left; font-size:13px; }}
+            th {{ color:var(--muted); background:#f8fafc; font-weight:850; }}
+            .muted {{ color:var(--muted); }}
+            .detail-lines {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 18px; margin-bottom:20px; font-size:13px; }}
+            .detail-lines b {{ color:#344054; }}
+            @media (max-width:900px) {{
+                .page {{ padding:14px; }}
+                .header {{ flex-direction:column; }}
+                .actions {{ justify-content:flex-start; }}
+                .summary, .form-grid, .grid, .detail-lines {{ grid-template-columns:1fr; }}
             }}
         </style>
     </head>
 
     <body>
-        <div class="container">
-
-            <h1>Enrollment Detail</h1>
-            <h2>{e[1]} - {e[2]}</h2>
-
-            <div class="actions">
-                <a href="/enrollments">Back</a>
-                <a href="/enrollment_payment/{e[0]}">Payment</a>
-                <a href="/create_enrollment_invoice/{e[0]}">Create Tuition Invoice</a>
-                <a href="/add_enrollment_schedule/{e[0]}">Schedule</a>
-                <a href="/edit_enrollment/{e[0]}">Edit</a>
-            </div>
-
-            <h3>Overview</h3>
-
-            <div class="grid">
-                <div class="card">
-                    <div class="label">Student</div>
-                    <div class="value">{e[1]}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Teacher</div>
-                    <div class="value">{e[4]}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Course</div>
-                    <div class="value">{e[2]}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Status</div>
-                    <div class="value">{e[15]}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Confirmed Tuition / Lesson</div>
-                    <div class="value">${confirmed_tuition}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Teacher Pay / Lesson</div>
-                    <div class="value">${e[13]}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Profit / Lesson</div>
-                    <div class="value">${tuition_profit}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Lessons Left</div>
-                    <div class="value">{e[14]}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Auto-Renew</div>
-                    <div class="value">{"On" if e[20] == 1 else "Off"}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Renewal Lessons</div>
-                    <div class="value">{e[21] or e[19] or 10}</div>
-                </div>
-            </div>
-
-            <h3 id="tuition">Confirmed Tuition</h3>
-            <form method="POST" action="/update_enrollment_tuition/{e[0]}">
-                <div class="grid">
-                    <div class="card">
-                        <div class="label">Teacher</div>
-                        <div class="value">{e[4]}</div>
+        <main class="page">
+            <div class="container">
+                <section class="hero">
+                    <div class="header">
+                        <div>
+                            <h1 id="tuition">Set Tuition</h1>
+                            <h2>{escape(str(e[1] or 'Student'))} · {escape(str(e[2] or 'Course'))}</h2>
+                        </div>
+                        <div class="actions">
+                            <a href="/student/{quote(str(e[1] or ''), safe='')}">Student profile</a>
+                            <a href="/edit_enrollment/{e[0]}">Full course setup</a>
+                            <a class="primary" href="/create_enrollment_invoice/{e[0]}">Create invoice</a>
+                        </div>
                     </div>
-                    <div class="card">
-                        <div class="label">Course Type</div>
-                        <div class="value">{e[2]}</div>
+
+                    <div class="summary">
+                        <div class="metric"><div class="label">Teacher</div><div class="value">{escape(str(e[4] or 'Unassigned'))}</div></div>
+                        <div class="metric"><div class="label">Current Tuition / Lesson</div><div class="value">${hmusic_money(confirmed_tuition)}</div></div>
+                        <div class="metric"><div class="label">Package</div><div class="value">{float(confirmed_package_lessons or 0):g} lessons · ${hmusic_money(confirmed_package_amount)}</div></div>
+                        <div class="metric"><div class="label">Credits Left</div><div class="value">{float(e[14] or 0):g}</div></div>
                     </div>
-                    <div class="card">
-                        <div class="label">Duration</div>
-                        <div class="value">{e[5]} mins</div>
+
+                    <div class="tuition-panel">
+                        <form class="tuition-card" method="POST" action="/update_enrollment_tuition/{e[0]}">
+                            <div class="tuition-head">
+                                <div>
+                                    <h3>Tuition for this course</h3>
+                                    <p class="muted">This controls invoices and future renewal amounts for this specific course bucket.</p>
+                                </div>
+                                <span class="suggested">Suggested: ${hmusic_money(suggested_price)} / lesson</span>
+                            </div>
+
+                            <div class="form-grid">
+                                <label>
+                                    Class Size
+                                    <input type="number" name="class_size" min="1" step="1" value="{class_size_value}" placeholder="1">
+                                </label>
+                                <label>
+                                    Tuition / Lesson
+                                    <input type="number" step="0.01" name="final_price" value="{confirmed_tuition}" required>
+                                </label>
+                                <label>
+                                    Package Lessons
+                                    <input type="number" step="0.5" name="package_lessons" value="{confirmed_package_lessons}">
+                                </label>
+                                <label>
+                                    Package Amount
+                                    <input type="number" step="0.01" name="package_amount" value="{confirmed_package_amount}">
+                                </label>
+                            </div>
+
+                            <p class="help">For example: $60 per lesson x 7 lessons = $420 package. If Package Amount is different, invoices use the amount entered here.</p>
+                            <div class="save-row">
+                                <button type="submit" class="save-button">Save tuition</button>
+                                <span class="muted">Last updated: {escape(str(e[25] or 'Not saved yet'))}</span>
+                            </div>
+                        </form>
                     </div>
-                    <div class="card">
-                        <div class="label">Suggested Price</div>
-                        <div class="value">${suggested_price}</div>
-                    </div>
-                </div>
-                <div class="grid">
-                    <div>
-                        <label><b>Class Size</b></label><br>
-                        <input type="number" name="class_size" min="1" step="1" value="{class_size_value}" placeholder="1 for private, group size for group">
-                    </div>
-                    <div>
-                        <label><b>Final Student Tuition / Lesson</b></label><br>
-                        <input type="number" step="0.01" name="final_price" value="{confirmed_tuition}" required>
-                    </div>
-                    <div>
-                        <label><b>Invoice Package Lessons</b></label><br>
-                        <input type="number" step="0.5" name="package_lessons" value="{confirmed_package_lessons}">
-                    </div>
-                    <div>
-                        <label><b>Invoice Package Amount</b></label><br>
-                        <input type="number" step="0.01" name="package_amount" value="{confirmed_package_amount}">
-                    </div>
-                </div>
-                <p class="muted">Invoices and auto-renewal will use this confirmed tuition/package amount first. Suggested price is only a reference from Course Type rules.</p>
-                <button type="submit" class="save-button">Update Confirmed Tuition</button>
-                <span class="muted">Last updated: {e[25] or ""}</span>
-            </form>
+                </section>
 
-            <h3>Financial Summary</h3>
+                <details class="advanced">
+                    <summary>Advanced details</summary>
+                    <div class="advanced-body">
+                        <h3>Course Details</h3>
+                        <div class="detail-lines">
+                            <p><b>Course Type:</b> {escape(str(e[2] or ''))}</p>
+                            <p><b>Duration:</b> {escape(str(e[5] or ''))} mins</p>
+                            <p><b>Status:</b> {escape(str(e[15] or ''))}</p>
+                            <p><b>Billing:</b> {escape(str(e[6] or ''))}</p>
+                            <p><b>Base Price:</b> ${hmusic_money(e[7] or 0)}</p>
+                            <p><b>Discount:</b> {escape(str(e[8] or ''))} {escape(str(e[9] or ''))}</p>
+                            <p><b>Start Date:</b> {escape(str(e[17] or ''))}</p>
+                            <p><b>Auto-Renew:</b> {"On" if e[20] == 1 else "Off"}</p>
+                            <p><b>Renewal Reminder Sent:</b> {escape(str(e[22] or ''))}</p>
+                            <p><b>Last Auto-Renew:</b> {escape(str(e[23] or ''))}</p>
+                            <p><b>Notes:</b> {escape(str(e[16] or ''))}</p>
+                        </div>
 
-            <div class="card">
-                <div class="label">Package Value</div>
-                <div class="value">${package_value}</div>
-            </div>
-
-                <div class="card">
-                    <div class="label">Lessons Purchased</div>
-                    <div class="value">{total_lessons_purchased}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Lessons Used</div>
-                    <div class="value">{lessons_used}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Utilization</div>
-                    <div class="value">{utilization}%</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Revenue Earned</div>
-                    <div class="value">${revenue_earned}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Teacher Cost</div>
-                    <div class="value">${teacher_cost}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Profit Earned</div>
-                    <div class="value">${profit_earned}</div>
-                </div>
-
-                <div class="card">
-                    <div class="label">Outstanding Balance</div>
-                    <div class="value">${outstanding_balance}</div>
-                </div>
-            </div>
-
-            <h3>Pricing Details</h3>
-            <p><b>Billing:</b> {e[6]}</p>
-            <p><b>Base Price:</b> ${e[7]}</p>
-            <p><b>Discount:</b> {e[8]} {e[9]}</p>
-            <p><b>Start Date:</b> {e[17]}</p>
-            <p><b>Renewal Reminder Sent:</b> {e[22] or ""}</p>
-            <p><b>Last Auto-Renew:</b> {e[23] or ""}</p>
-            <p><b>Notes:</b> {e[16] or ""}</p>
+                        <h3>Financial Summary</h3>
+                        <div class="grid">
+                            <div class="metric"><div class="label">Teacher Pay / Lesson</div><div class="value">${hmusic_money(e[13] or 0)}</div></div>
+                            <div class="metric"><div class="label">Profit / Lesson</div><div class="value">${hmusic_money(tuition_profit)}</div></div>
+                            <div class="metric"><div class="label">Package Value</div><div class="value">${hmusic_money(package_value)}</div></div>
+                            <div class="metric"><div class="label">Outstanding Balance</div><div class="value">${hmusic_money(outstanding_balance)}</div></div>
+                            <div class="metric"><div class="label">Lessons Purchased</div><div class="value">{float(total_lessons_purchased or 0):g}</div></div>
+                            <div class="metric"><div class="label">Lessons Used</div><div class="value">{float(lessons_used or 0):g}</div></div>
+                            <div class="metric"><div class="label">Utilization</div><div class="value">{utilization}%</div></div>
+                            <div class="metric"><div class="label">Profit Earned</div><div class="value">${hmusic_money(profit_earned)}</div></div>
+                        </div>
 
             <h3>Recent Lessons</h3>
             <table>
@@ -37410,7 +37297,10 @@ def enrollment_detail(enrollment_id):
                 {ledger_rows}
             </table>
 
-        </div>
+                    </div>
+                </details>
+            </div>
+        </main>
     </body>
     </html>
     """
