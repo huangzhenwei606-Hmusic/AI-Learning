@@ -12470,9 +12470,19 @@ def teacher_dashboard():
         return (0 if private_30 else 1, is_group, 0 if duration == 30 else 1, name, duration)
     teacher_calendar_courses = sorted(teacher_calendar_courses, key=teacher_course_default_sort_key)
     teacher_calendar_course_options = ''.join(
-        f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Single"}</option>'
+        f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Private"}</option>'
         for c in teacher_calendar_courses
     )
+    teacher_calendar_course_payload = json.dumps([
+        {
+            "id": int(c[0] or 0),
+            "name": c[1] or "Course",
+            "duration": safe_minutes(c[2], 30),
+            "is_group": int(c[3] or 0),
+            "label": f'{c[1] or "Course"} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Private"}',
+        }
+        for c in teacher_calendar_courses
+    ])
     teacher_calendar_student_options = ''.join(
         f'<option value="{escape(hmusic_student_parent_label(r[0], r[1]), quote=True)}"></option>'
         for r in teacher_calendar_students
@@ -12967,6 +12977,7 @@ def teacher_dashboard():
           <div class="lesson-panel-scroll">
             <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
             <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
+            <div class="panel-section"><h3>Course & duration</h3><select class="panel-field" id="tPanelCourseType" onchange="syncTeacherPanelCourse()">{teacher_calendar_course_options}</select></div>
         <div class="panel-section"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
@@ -12999,11 +13010,13 @@ def teacher_dashboard():
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         const TEACHER_CAN_DELETE = {str(delete_allowed).lower()};
         const TEACHER_CAN_ADD_SCHEDULE = {str(bool(teacher_perms.get("add_own_schedule"))).lower()};
+        const TEACHER_COURSES = {teacher_calendar_course_payload};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherRescheduleScope = 'once';
         let teacherPanelSaving = false;
         let teacherMultiOn = false;
+        let teacherPanelCourseChanged = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
         function teacherStatusDotClass(st) {{ return st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'last_min_cancel' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
@@ -13065,13 +13078,15 @@ def teacher_dashboard():
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
         function setTeacherRescheduleScope(scope) {{ teacherRescheduleScope = scope === 'following' ? 'following' : 'once'; const once = document.getElementById('tPanelScopeOnce'); const following = document.getElementById('tPanelScopeFollowing'); if (once) once.classList.toggle('active', teacherRescheduleScope === 'once'); if (following) following.classList.toggle('active', teacherRescheduleScope === 'following'); document.querySelectorAll('[name="tPanelRescheduleScope"]').forEach(input => input.checked = input.value === teacherRescheduleScope); }}
+        function selectedTeacherPanelCourse() {{ const select = document.getElementById('tPanelCourseType'); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
+        function syncTeacherPanelCourse() {{ const course = selectedTeacherPanelCourse(); if (!course) return; if (activeTeacherLesson) {{ teacherPanelCourseChanged = teacherPanelCourseChanged || Number(activeTeacherLesson.course_type_id || 0) !== Number(course.id || 0); activeTeacherLesson.course_type_id = course.id; activeTeacherLesson.course_name = course.name; activeTeacherLesson.duration = course.duration; activeTeacherLesson.is_group = course.is_group; }} document.getElementById('tPanelCourse').textContent = (course.name || 'Lesson') + ' · ' + ((activeTeacherLesson && activeTeacherLesson.teacher) || ''); document.getElementById('tPanelType').textContent = course.is_group ? 'Group lesson' : 'Private lesson'; if (typeof renderTeacherGroupRoster === 'function' && activeTeacherLesson) renderTeacherGroupRoster(activeTeacherLesson); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const text = await r.text(); let d = null; try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }} catch (_) {{ const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html'); d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh this page, then log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}}; }} if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
-        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.schedule_type || 'Lesson'; document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = d.lesson.is_group ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
-        function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
+        function teacherPayload() {{ const course = selectedTeacherPanelCourse(); return {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
-        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following') setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
@@ -15025,6 +15040,7 @@ def calendar_lesson_action():
         teacher_change_scope = (data.get("change_scope") or data.get("scope") or "once").strip()
         teacher_change_scope = teacher_change_scope if teacher_change_scope in {"once", "following"} else "once"
         teacher_following_ids = calendar_following_lesson_ids(cursor, row, schedule_id) if is_teacher and teacher_change_scope == "following" else []
+        teacher_course_update = {}
 
         if not is_owner:
             if status != row[6] and not teacher_permissions.get("attendance"):
@@ -15039,6 +15055,29 @@ def calendar_lesson_action():
             if homework and not teacher_permissions.get("homework"):
                 conn.close()
                 return {"ok": False, "error": "Homework permission is not enabled."}, 403
+            if any(key in data for key in ("course_type_id", "duration", "lesson_format")):
+                lesson_format_detail = (data.get("lesson_format") or ("group" if int(row[18] or 0) else "private")).strip()
+                is_group_detail = 1 if lesson_format_detail == "group" else 0
+                course_detail = resolve_calendar_course_type(
+                    cursor,
+                    data.get("course_type_id") or row[19] or 0,
+                    row[7] or "",
+                    data.get("duration") or row[10] or 30,
+                    is_group_detail,
+                )
+                if not course_detail:
+                    conn.close()
+                    return {"ok": False, "error": "Course type not found. Please choose an existing course duration."}, 400
+                try:
+                    duration_detail = int(float(data.get("duration") or course_detail[2] or row[10] or 30))
+                except:
+                    duration_detail = int(course_detail[2] or row[10] or 30)
+                teacher_course_update = {
+                    "course_type_id": int(course_detail[0] or 0),
+                    "course_type_name": course_detail[1] or "Course",
+                    "duration": max(1, min(duration_detail, 600)),
+                    "is_group": int(course_detail[3] or is_group_detail or 0),
+                }
 
         if status != row[6]:
             conn.close()
@@ -15303,9 +15342,23 @@ def calendar_lesson_action():
             placeholders = ",".join(["?"] * len(update_ids))
             cursor.execute(f"""
             UPDATE schedule
-            SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
+            SET course_type_id = COALESCE(?, course_type_id),
+                course_type_name = COALESCE(?, course_type_name),
+                duration = COALESCE(?, duration),
+                is_group = COALESCE(?, is_group),
+                notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
             WHERE id IN ({placeholders})
-            """, (lesson_note, private_note, homework, practice_reminder, *update_ids))
+            """, (
+                teacher_course_update.get("course_type_id"),
+                teacher_course_update.get("course_type_name"),
+                teacher_course_update.get("duration"),
+                teacher_course_update.get("is_group"),
+                lesson_note,
+                private_note,
+                homework,
+                practice_reminder,
+                *update_ids
+            ))
         effective_student_name = detail_update.get("student_name") if detail_update else row[1]
         effective_teacher_name = detail_update.get("teacher") if detail_update else row[2]
         effective_lesson_date = detail_update.get("lesson_date") if detail_update else row[3]
