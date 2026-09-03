@@ -57,6 +57,8 @@ CHECKS = {
     "teacher inline room ids submit": 'name="room_id" id="teacherAddRoomId"',
     "teacher inline student search all students": "teacher_calendar_students = hmusic_teacher_student_rows(cursor, teacher_name, include_all=True)",
     "teacher can schedule existing student": "teacher_selected_existing_student",
+    "teacher calendar compact month grid": "calendar-grid.month-view .calendar-day",
+    "teacher calendar schedule grid class": "schedule_grid_class",
 }
 
 

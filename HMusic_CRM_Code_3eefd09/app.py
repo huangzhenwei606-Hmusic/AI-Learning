@@ -1383,7 +1383,13 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .schedule-tabs a {{ border:0; border-radius:0; background:white; padding:7px 11px; }}
             .schedule-tabs a.active {{ background:var(--td-blue-soft); color:var(--td-blue); font-weight:500; }}
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
-            .calendar-day {{ min-height:300px; background:white; padding:3px; min-width:0; }}
+            .calendar-day {{ min-height:220px; background:white; padding:3px; min-width:0; }}
+            .calendar-grid.month-view .calendar-day {{ min-height:132px; }}
+            .calendar-grid.month-view .calendar-event {{ padding:2px 4px; margin-bottom:2px; }}
+            .calendar-grid.month-view .event-status-form {{ margin-top:1px; }}
+            .calendar-grid.month-view .event-status-form select,
+            .calendar-grid.month-view .event-status-form button {{ height:16px; }}
+            .calendar-grid.week-view .calendar-day {{ min-height:240px; }}
             .calendar-day.today {{ background:#fbfdff; }}
             .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:4px; align-items:center; min-height:15px; margin-bottom:3px; color:var(--td-muted); font-size:9.5px; }}
             .calendar-day-head strong {{ color:var(--td-text); font-size:11px; font-weight:500; }}
@@ -12488,6 +12494,7 @@ def teacher_dashboard():
 
         week_active = "active" if schedule_mode == "week" else ""
         month_active = "active" if schedule_mode == "month" else ""
+        schedule_grid_class = "month-view" if schedule_mode == "month" else "week-view"
         direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
         direct_cancel = bool(teacher_perms.get("direct_cancel"))
         delete_allowed = bool(teacher_perms.get("delete_lessons"))
@@ -12534,7 +12541,7 @@ def teacher_dashboard():
             <button class="teacher-multi-apply" type="button" onclick="teacherMultiApply()">Apply</button>
             <button class="teacher-multi-clear" type="button" onclick="teacherMultiClear()">Clear</button>
         </div>
-        <div class="calendar-grid" id="teacherCalendarGrid">{day_columns}</div>
+        <div class="calendar-grid {schedule_grid_class}" id="teacherCalendarGrid">{day_columns}</div>
 
         <div class="teacher-add-overlay" id="teacherAddOverlay" onclick="teacherCloseAddSchedule(event)">
             <div class="teacher-add-modal" role="dialog" aria-modal="true" aria-labelledby="teacherAddTitle" onclick="event.stopPropagation()">
