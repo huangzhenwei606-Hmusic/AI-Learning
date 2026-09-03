@@ -21,6 +21,8 @@ CHECKS = {
     "course credit actions": "Full course setup",
     "course credit tuition action": "Set tuition",
     "enrollment tuition anchor": 'id="tuition"',
+    "set tuition return parameter": "return_to",
+    "set tuition back action": '<a href="{return_to_attr}">Back</a>',
     "course credit setup gate": "Set up course credits first",
     "add enrollment student preselect": "selected_student_name = (request.args.get(\"student_name\") or \"\").strip()",
     "student course credit update route": '"/update_student_course_credit/<name>"',

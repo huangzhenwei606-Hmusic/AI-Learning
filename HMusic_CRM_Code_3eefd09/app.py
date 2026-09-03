@@ -4725,7 +4725,7 @@ def edit_student(name):
                 <span>{teacher_name} · ${lesson_rate}/lesson</span>
                 <div class="credit-main-actions">
                     <button type="button" class="inline-edit-link" data-credit-edit-target="{quick_edit_target_id}">Edit teacher/course</button>
-                    <a class="setup-link" href="/enrollment/{enrollment_id}#tuition">Set tuition</a>
+                    <a class="setup-link" href="/enrollment/{enrollment_id}?return_to={quote(f'/edit_student/{student_url_name}#course-credit-editor', safe='')}#tuition">Set tuition</a>
                     <a class="setup-link" href="/edit_enrollment/{enrollment_id}">Full course setup</a>
                 </div>
             </div>
@@ -17313,7 +17313,7 @@ def parent_admin(parent_id):
                     <span>{escape(str(enrollment_status or 'active')).title()}</span>
                     <span class="family-course-actions">
                         <button class="inline-edit-link" type="button" data-credit-edit-target="{quick_edit_target_id}">Edit teacher/course</button>
-                        <a href="/enrollment/{enrollment_id}#tuition">Set tuition</a>
+                        <a href="/enrollment/{enrollment_id}?return_to={quote(f'/parent_admin/{parent[0]}#family-credits', safe='')}#tuition">Set tuition</a>
                         <a href="/edit_enrollment/{enrollment_id}">Full course setup</a>
                     </span>
                 </td>
@@ -36925,6 +36925,10 @@ def enrollment_detail(enrollment_id):
         conn.close()
         return "<h1>Enrollment not found</h1>"
 
+    return_to = (request.args.get("return_to") or "").strip()
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = f"/student/{quote(str(e[1] or ''), safe='')}"
+    return_to_attr = escape(return_to, quote=True)
     # Payments summary
     cursor.execute("""
     SELECT
@@ -37163,6 +37167,7 @@ def enrollment_detail(enrollment_id):
                             <h2>{escape(str(e[1] or 'Student'))} · {escape(str(e[2] or 'Course'))}</h2>
                         </div>
                         <div class="actions">
+                            <a href="{return_to_attr}">Back</a>
                             <a href="/student/{quote(str(e[1] or ''), safe='')}">Student profile</a>
                             <a href="/edit_enrollment/{e[0]}">Full course setup</a>
                             <a class="primary" href="/create_enrollment_invoice/{e[0]}">Create invoice</a>
@@ -37178,6 +37183,7 @@ def enrollment_detail(enrollment_id):
 
                     <div class="tuition-panel">
                         <form class="tuition-card" method="POST" action="/update_enrollment_tuition/{e[0]}">
+                            <input type="hidden" name="return_to" value="{return_to_attr}">
                             <div class="tuition-head">
                                 <div>
                                     <h3>Tuition for this course</h3>
@@ -37312,6 +37318,11 @@ def update_enrollment_tuition(enrollment_id):
 
     ensure_v321_schema()
 
+    return_to = (request.form.get("return_to") or "").strip()
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = ""
+    return_to_query = f"?return_to={quote(return_to, safe='')}" if return_to else ""
+
     class_size = request.form.get("class_size") or None
     final_price = float(request.form.get("final_price") or 0)
     package_lessons = float(request.form.get("package_lessons") or 0)
@@ -37344,7 +37355,7 @@ def update_enrollment_tuition(enrollment_id):
     conn.commit()
     conn.close()
 
-    return redirect(f"/enrollment/{enrollment_id}")
+    return redirect(f"/enrollment/{enrollment_id}{return_to_query}#tuition")
 
 
 @app.route("/edit_enrollment/<int:enrollment_id>", methods=["GET", "POST"])
