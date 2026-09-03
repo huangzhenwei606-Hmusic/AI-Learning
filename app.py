@@ -12257,9 +12257,14 @@ def teacher_dashboard():
             "location_id": int(row[1] or 0),
             "room_name": row[2] or "",
             "location_name": row[3] or "",
+            "label": ((row[3] + " - ") if row[3] else "") + (row[2] or ""),
         }
         for row in teacher_rooms
     ])
+    teacher_calendar_room_options = ''.join(
+        f'<option value="{escape(row[2] or "", quote=True)}" data-room-id="{escape(str(row[0] or ""), quote=True)}" data-location-id="{escape(str(row[1] or ""), quote=True)}" data-location-name="{escape(row[3] or "", quote=True)}">{escape(((row[3] + " - ") if row[3] else "") + (row[2] or ""))}</option>'
+        for row in teacher_rooms
+    )
     def teacher_course_default_sort_key(course):
         name = (course[1] or "").lower()
         duration = safe_minutes(course[2], 0)
@@ -12779,6 +12784,7 @@ def teacher_dashboard():
           <div class="lesson-panel-scroll">
             <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
             <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
+            <div class="panel-section"><h3>Location & room</h3><select class="panel-field" id="tPanelRoomSelect" onchange="syncTeacherPanelRoom()">{teacher_calendar_room_options}</select></div>
             <div class="panel-section"><h3>Course & duration</h3><select class="panel-field" id="tPanelCourseType" onchange="syncTeacherPanelCourse()">{teacher_calendar_course_options}</select><button class="panel-inline-link" type="button" onclick="toggleTeacherDurationRequest()">Request another option</button><div class="teacher-duration-request" id="tPanelDurationRequest"><div class="panel-row"><input class="panel-field" type="number" id="tPanelRequestedDuration" min="5" max="240" step="5" placeholder="Minutes"><select class="panel-field" id="tPanelRequestedFormat"><option value="private">Private</option><option value="group">Group</option></select></div><input class="panel-field" style="margin-top:10px" id="tPanelDurationReason" placeholder="Reason / note for manager"><button class="panel-action" style="margin-top:10px;width:100%;min-height:44px" type="button" onclick="teacherRequestCourseDuration()">Send request to manager</button></div></div>
         <div class="panel-section" id="tPanelAttendanceSection"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
             <div class="teacher-group-roster" id="tPanelGroupRosterSection"><h3>Group attendance</h3><div class="teacher-group-roster-list" id="tPanelGroupRoster"></div></div>
@@ -12818,6 +12824,7 @@ def teacher_dashboard():
         const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         const TEACHER_MULTI_ROOMS = {teacher_room_payload};
+        const TEACHER_ROOMS = TEACHER_MULTI_ROOMS;
         const TEACHER_COURSES = {teacher_calendar_course_payload};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
@@ -12825,6 +12832,7 @@ def teacher_dashboard():
         let teacherPanelSaving = false;
         let teacherMultiOn = false;
         let teacherPanelCourseChanged = false;
+        let teacherPanelRoomChanged = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
@@ -12832,6 +12840,9 @@ def teacher_dashboard():
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
         function setTeacherRescheduleScope(scope) {{ teacherRescheduleScope = scope === 'following' ? 'following' : 'once'; const once = document.getElementById('tPanelScopeOnce'); const following = document.getElementById('tPanelScopeFollowing'); if (once) once.classList.toggle('active', teacherRescheduleScope === 'once'); if (following) following.classList.toggle('active', teacherRescheduleScope === 'following'); document.querySelectorAll('[name="tPanelRescheduleScope"]').forEach(input => input.checked = input.value === teacherRescheduleScope); }}
+        function selectedTeacherPanelRoom() {{ const select = document.getElementById('tPanelRoomSelect'); const option = select && select.selectedOptions ? select.selectedOptions[0] : null; const roomId = Number(option ? option.dataset.roomId || 0 : 0); const roomName = select ? select.value || '' : ''; return TEACHER_ROOMS.find(room => Number(room.id || 0) === roomId && room.room_name === roomName) || TEACHER_ROOMS.find(room => room.room_name === roomName) || null; }}
+        function teacherPanelRoomPayload() {{ const select = document.getElementById('tPanelRoomSelect'); const option = select && select.selectedOptions ? select.selectedOptions[0] : null; const room = selectedTeacherPanelRoom(); const currentRoom = activeTeacherLesson || {{}}; return {{classroom: room ? room.room_name : ((select && select.value) ? select.value : (currentRoom.classroom || '')), room_id: room ? room.id : Number(option ? option.dataset.roomId || 0 : (currentRoom.room_id || 0)), location_id: room ? room.location_id : Number(option ? option.dataset.locationId || 0 : (currentRoom.location_id || 0)), location: room ? room.location_name : (option ? option.dataset.locationName || '' : (currentRoom.location || ''))}}; }}
+        function syncTeacherPanelRoom() {{ const room = teacherPanelRoomPayload(); if (activeTeacherLesson) {{ teacherPanelRoomChanged = teacherPanelRoomChanged || String(activeTeacherLesson.classroom || '') !== String(room.classroom || '') || Number(activeTeacherLesson.room_id || 0) !== Number(room.room_id || 0); activeTeacherLesson.classroom = room.classroom; activeTeacherLesson.room_id = room.room_id; activeTeacherLesson.location_id = room.location_id; activeTeacherLesson.location = room.location; }} const label = room.location ? room.location + ' - ' + room.classroom : (room.classroom || '-'); const display = document.getElementById('tPanelRoom'); if (display) display.textContent = label; }}
         function selectedTeacherPanelCourse() {{ const select = document.getElementById('tPanelCourseType'); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
         function syncTeacherPanelCourse() {{ const course = selectedTeacherPanelCourse(); if (!course) return; if (activeTeacherLesson) {{ teacherPanelCourseChanged = teacherPanelCourseChanged || Number(activeTeacherLesson.course_type_id || 0) !== Number(course.id || 0); activeTeacherLesson.course_type_id = course.id; activeTeacherLesson.course_name = course.name; activeTeacherLesson.duration = course.duration; activeTeacherLesson.is_group = course.is_group; }} document.getElementById('tPanelCourse').textContent = (course.name || 'Lesson') + ' · ' + ((activeTeacherLesson && activeTeacherLesson.teacher) || ''); document.getElementById('tPanelType').textContent = course.is_group ? 'Group lesson' : 'Private lesson'; if (typeof renderTeacherGroupRoster === 'function' && activeTeacherLesson) renderTeacherGroupRoster(activeTeacherLesson); }}
         function toggleTeacherDurationRequest() {{ const box = document.getElementById('tPanelDurationRequest'); if (!box) return; box.classList.toggle('show'); const course = selectedTeacherPanelCourse(); const format = document.getElementById('tPanelRequestedFormat'); if (course && format) format.value = course.is_group ? 'group' : 'private'; }}
@@ -12871,14 +12882,14 @@ def teacher_dashboard():
                 attendance_status: select.value || 'scheduled'
             }}));
         }}
-        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; const isGroup = Number(d.lesson.is_group || 0) === 1; document.getElementById('tPanelStudent').textContent = isGroup ? 'Group Class' : (d.lesson.student || 'Student'); document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.classroom || '-'; document.getElementById('tPanelType').textContent = isGroup ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); renderTeacherGroupRoster(d.lesson); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; teacherPanelRoomChanged = false; const isGroup = Number(d.lesson.is_group || 0) === 1; document.getElementById('tPanelStudent').textContent = isGroup ? 'Group Class' : (d.lesson.student || 'Student'); document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.location ? d.lesson.location + ' - ' + (d.lesson.classroom || '') : (d.lesson.classroom || '-'); document.getElementById('tPanelType').textContent = isGroup ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const roomSelect = document.getElementById('tPanelRoomSelect'); if (roomSelect) {{ let matched = false; Array.from(roomSelect.options).forEach(opt => {{ const byId = Number(d.lesson.room_id || 0) && Number(opt.dataset.roomId || 0) === Number(d.lesson.room_id || 0); const byName = !matched && opt.value === (d.lesson.classroom || ''); if (!matched && (byId || byName)) {{ opt.selected = true; matched = true; }} }}); if (!matched && d.lesson.classroom) {{ const opt = document.createElement('option'); opt.value = d.lesson.classroom || ''; opt.textContent = d.lesson.location ? d.lesson.location + ' - ' + d.lesson.classroom : d.lesson.classroom; opt.dataset.roomId = d.lesson.room_id || ''; opt.dataset.locationId = d.lesson.location_id || ''; opt.dataset.locationName = d.lesson.location || ''; roomSelect.insertBefore(opt, roomSelect.firstChild); opt.selected = true; }} }} const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); renderTeacherGroupRoster(d.lesson); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
-        function teacherPayload() {{ const course = selectedTeacherPanelCourse(); const isGroup = activeTeacherLesson && Number(activeTeacherLesson.is_group || 0) === 1; return {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked, group_students:isGroup ? collectTeacherGroupRoster() : []}}; }}
+        function teacherPayload() {{ const course = selectedTeacherPanelCourse(); const room = teacherPanelRoomPayload(); const isGroup = activeTeacherLesson && Number(activeTeacherLesson.is_group || 0) === 1; return {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked, group_students:isGroup ? collectTeacherGroupRoster() : []}}; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
-        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
-        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+        function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; const room = teacherPanelRoomPayload(); teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(d => {{ teacherPanelToast(d.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? (teacherRescheduleScope === 'following' ? 'Cancel this and following lessons now?' : 'Cancel this lesson now?') : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, cancel_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherDeleteLesson() {{ if (!activeTeacherLesson) return; const msg = teacherRescheduleScope === 'following' ? 'Delete this and following lessons from your calendar?' : 'Delete this lesson from your calendar?'; if (!confirm(msg)) return; teacherLessonAction({{action:'delete', schedule_id:activeTeacherLesson.id, delete_scope:teacherRescheduleScope}}).then(d => {{ teacherPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
@@ -14887,6 +14898,44 @@ def calendar_lesson_action():
     actor = "owner" if is_owner else f"teacher:{teacher_name}"
     teacher_permissions = get_teacher_permissions(teacher_name) if not is_owner else dict(TEACHER_PERMISSION_DEFAULTS)
 
+    def resolve_schedule_room_payload():
+        classroom_detail = (data.get("classroom") or row[5] or "").strip()
+        location_detail = (data.get("location") or row[27] or "").strip()
+        try:
+            location_id_detail = int(float(data.get("location_id") or 0)) or None
+        except (TypeError, ValueError):
+            location_id_detail = None
+        try:
+            room_id_detail = int(float(data.get("room_id") or 0)) or None
+        except (TypeError, ValueError):
+            room_id_detail = None
+        if room_id_detail:
+            cursor.execute("""
+            SELECT r.id, r.location_id, r.room_name, COALESCE(l.location_name, '')
+            FROM studio_rooms r
+            LEFT JOIN studio_locations l ON l.id = r.location_id
+            WHERE r.id = ?
+              AND COALESCE(r.active, 1) = 1
+              AND COALESCE(l.active, 1) = 1
+            """, (room_id_detail,))
+            room_detail = cursor.fetchone()
+            if not room_detail:
+                return None
+            room_id_detail = int(room_detail[0] or 0) or None
+            location_id_detail = int(room_detail[1] or 0) or None
+            classroom_detail = room_detail[2] or classroom_detail
+            location_detail = room_detail[3] or location_detail
+        elif location_id_detail and not location_detail:
+            cursor.execute("SELECT location_name FROM studio_locations WHERE id = ? AND COALESCE(active, 1) = 1", (location_id_detail,))
+            location_row = cursor.fetchone()
+            location_detail = location_row[0] if location_row else location_detail
+        return {
+            "location_id": location_id_detail,
+            "room_id": room_id_detail,
+            "location": location_detail,
+            "classroom": classroom_detail,
+        }
+
     if action == "save":
         status = (data.get("status") or row[6] or "scheduled").strip()
         lesson_note = hmusic_parent_visible_lesson_note(data.get("lesson_note") or "")
@@ -14905,6 +14954,7 @@ def calendar_lesson_action():
         teacher_change_scope = teacher_change_scope if teacher_change_scope in {"once", "following"} else "once"
         teacher_following_ids = calendar_following_lesson_ids(cursor, row, schedule_id) if is_teacher and teacher_change_scope == "following" else []
         teacher_course_update = {}
+        teacher_location_update = {}
 
         if not is_owner:
             if status != row[6] and not teacher_permissions.get("attendance"):
@@ -14942,6 +14992,11 @@ def calendar_lesson_action():
                     "duration": max(1, min(duration_detail, 600)),
                     "is_group": int(course_detail[3] or is_group_detail or 0),
                 }
+            if any(key in data for key in ("location_id", "room_id", "location", "classroom")):
+                teacher_location_update = resolve_schedule_room_payload()
+                if not teacher_location_update:
+                    conn.close()
+                    return {"ok": False, "error": "Room not found. Please choose an active room."}, 400
 
         if status != row[6]:
             conn.close()
@@ -15350,6 +15405,10 @@ def calendar_lesson_action():
                 course_type_name = COALESCE(?, course_type_name),
                 duration = COALESCE(?, duration),
                 is_group = COALESCE(?, is_group),
+                location_id = COALESCE(?, location_id),
+                room_id = COALESCE(?, room_id),
+                location = COALESCE(?, location),
+                classroom = COALESCE(?, classroom),
                 notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
             WHERE id IN ({placeholders})
             """, (
@@ -15357,6 +15416,10 @@ def calendar_lesson_action():
                 teacher_course_update.get("course_type_name"),
                 teacher_course_update.get("duration"),
                 teacher_course_update.get("is_group"),
+                teacher_location_update.get("location_id"),
+                teacher_location_update.get("room_id"),
+                teacher_location_update.get("location"),
+                teacher_location_update.get("classroom"),
                 lesson_note,
                 private_note,
                 homework,
@@ -15367,7 +15430,7 @@ def calendar_lesson_action():
         effective_teacher_name = detail_update.get("teacher") if detail_update else row[2]
         effective_lesson_date = detail_update.get("lesson_date") if detail_update else row[3]
         effective_lesson_time = detail_update.get("lesson_time") if detail_update else row[4]
-        effective_classroom = detail_update.get("classroom") if detail_update else row[5]
+        effective_classroom = detail_update.get("classroom") if detail_update else (teacher_location_update.get("classroom") if teacher_location_update else row[5])
         upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, actor)
         if not is_owner and teacher_following_ids:
             for following_id in teacher_following_ids:
@@ -15418,7 +15481,11 @@ def calendar_lesson_action():
         if is_owner or (is_teacher and teacher_permissions.get("direct_reschedule")):
             new_date = (data.get("new_date") or "").strip()
             new_time = (data.get("new_time") or row[4] or "").strip()
-            classroom = (data.get("classroom") or row[5] or "").strip()
+            room_update = resolve_schedule_room_payload() if any(key in data for key in ("location_id", "room_id", "location", "classroom")) else {}
+            if room_update is None:
+                conn.close()
+                return {"ok": False, "error": "Room not found. Please choose an active room."}, 400
+            classroom = (room_update.get("classroom") if room_update else row[5] or "").strip()
             reschedule_scope = (data.get("reschedule_scope") or data.get("scope") or "once").strip()
             reschedule_scope = reschedule_scope if reschedule_scope in {"once", "following"} else "once"
             try:
@@ -15471,9 +15538,23 @@ def calendar_lesson_action():
                     except ValueError:
                         target_date_obj = new_date_obj
                 cursor.execute("""
-                UPDATE schedule SET lesson_date = ?, weekday = ?, lesson_time = ?, classroom = ?, status = 'scheduled'
+                UPDATE schedule
+                SET lesson_date = ?, weekday = ?, lesson_time = ?,
+                    location_id = COALESCE(?, location_id),
+                    room_id = COALESCE(?, room_id),
+                    location = COALESCE(?, location),
+                    classroom = ?, status = 'scheduled'
                 WHERE id = ?
-                """, (target_date_obj.strftime("%Y-%m-%d"), target_date_obj.strftime("%A"), new_time, classroom, moved_id))
+                """, (
+                    target_date_obj.strftime("%Y-%m-%d"),
+                    target_date_obj.strftime("%A"),
+                    new_time,
+                    room_update.get("location_id") if room_update else None,
+                    room_update.get("room_id") if room_update else None,
+                    room_update.get("location") if room_update else None,
+                    classroom,
+                    moved_id
+                ))
             conn.commit()
             conn.close()
             following_count = max(0, len(moved_rows) - 1)
