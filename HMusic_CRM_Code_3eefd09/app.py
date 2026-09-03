@@ -12163,7 +12163,7 @@ def teacher_dashboard():
         if st == "late":      return "sd-late"
         if st in ("no_show","no-show"): return "sd-noshow"
         if st in ("excused_24h","excused"): return "sd-early-cancel"
-        if st and st.startswith("cancel"): return "sd-cancelled"
+        if st in ("last_min_cancel", "teacher_cancelled") or (st and st.startswith("cancel")): return "sd-cancelled"
         return "sd-scheduled"
 
     def _t_status_label(st):
@@ -12280,16 +12280,17 @@ def teacher_dashboard():
             </label>
             <div class="event-top">
                 <span class="event-time">
-                  <span class="t-status-badge {dot}">{status_text}</span>
+                  <span class="t-status-badge {dot}" data-teacher-status-badge>{status_text}</span>
                   <span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>
                 </span>
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(lesson[3] or '-')}</button>
             <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
             {cancel_result}
-            <form method="POST" action="/update_lesson_status" class="event-status-form">
+            <form method="POST" action="/update_lesson_status" class="event-status-form" data-teacher-status-form onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
                 <input type="hidden" name="schedule_id" value="{lesson[0]}">
                 <input type="hidden" name="return_to" value="{schedule_return_url}">
+                <input type="hidden" name="ajax" value="1">
                 <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
                 <button type="submit">Save</button>
             </form>
@@ -12501,6 +12502,61 @@ def teacher_dashboard():
         let teacherMultiOn = false;
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
+        function teacherStatusDotClass(st) {{ return st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'last_min_cancel' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
+        function repaintTeacherScheduleEvent(scheduleId, status) {{
+            const st = status || 'scheduled';
+            const isEarlyCancel = st === 'excused_24h' || st === 'excused';
+            document.querySelectorAll('.calendar-event[data-id]').forEach(card => {{
+                if (card.dataset.id !== String(scheduleId)) return;
+                card.classList.toggle('early-cancel', isEarlyCancel);
+                const badge = card.querySelector('[data-teacher-status-badge]');
+                if (badge) {{
+                    badge.textContent = teacherStatusLabel(st);
+                    badge.className = 't-status-badge ' + teacherStatusDotClass(st);
+                }}
+                const select = card.querySelector('select[name="status"]');
+                if (select) select.value = st;
+                let cancelResult = card.querySelector('.event-cancel-result');
+                if (isEarlyCancel && !cancelResult) {{
+                    cancelResult = document.createElement('div');
+                    cancelResult.className = 'event-cancel-result';
+                    cancelResult.textContent = 'No credit deducted · No fee';
+                    const line = card.querySelector('.event-line');
+                    if (line) line.insertAdjacentElement('afterend', cancelResult);
+                }} else if (!isEarlyCancel && cancelResult) {{
+                    cancelResult.remove();
+                }}
+            }});
+        }}
+        function bindTeacherStatusForms() {{
+            document.querySelectorAll('.event-status-form[data-teacher-status-form]').forEach(form => {{
+                form.addEventListener('submit', e => {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const button = form.querySelector('button[type="submit"]');
+                    const originalText = button ? button.textContent : '';
+                    if (button) {{ button.disabled = true; button.textContent = 'Saving'; }}
+                    fetch(form.action, {{
+                        method: 'POST',
+                        headers: {{'Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
+                        body: new FormData(form)
+                    }}).then(async r => {{
+                        const text = await r.text();
+                        let d = null;
+                        try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }}
+                        catch (_) {{ d = {{ok:false,error:'Server returned an unreadable response. Please refresh and try again.'}}; }}
+                        if (!r.ok || !d.ok) throw new Error(d.error || 'Status was not saved');
+                        repaintTeacherScheduleEvent(d.schedule_id || form.querySelector('input[name="schedule_id"]').value, d.status || form.querySelector('select[name="status"]').value);
+                        if (button) button.textContent = 'Saved';
+                        setTimeout(() => {{ if (button) button.textContent = originalText || 'Save'; }}, 900);
+                    }}).catch(err => {{
+                        alert(err.message);
+                    }}).finally(() => {{
+                        if (button) setTimeout(() => {{ button.disabled = false; }}, 250);
+                    }});
+                }});
+            }});
+        }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
         function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
@@ -12510,7 +12566,7 @@ def teacher_dashboard():
         function teacherPayload() {{ return {{action:'save', schedule_id:activeTeacherLesson.id, status:activeTeacherStatus, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
-        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
@@ -12572,6 +12628,7 @@ def teacher_dashboard():
         function teacherAddOnDate(dateStr) {{
             window.location.href = `/add_schedule?prefill_date=${{dateStr}}&prefill_teacher=${{encodeURIComponent("{escape(teacher_name or '')}")}}`;
         }}
+        bindTeacherStatusForms();
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
             card.addEventListener("click", e => {{
                 if (!teacherMultiOn) return;
@@ -13947,7 +14004,10 @@ def teacher_multi_select_action():
 @app.route("/update_lesson_status", methods=["POST"])
 def update_lesson_status():
 
+    wants_json = "application/json" in (request.headers.get("Accept") or "") or request.form.get("ajax") == "1"
     if not (require_owner() or require_teacher()):
+        if wants_json:
+            return {"ok": False, "error": "Login required"}, 401
         return redirect("/teacher_login")
 
     schedule_id = request.form.get("schedule_id")
@@ -13973,11 +14033,23 @@ def update_lesson_status():
     )
 
     if not result["ok"]:
+        if wants_json:
+            return {"ok": False, "error": result["error"]}, 400
         return f"""
         <h1>Lesson Status Not Updated</h1>
         <p>{result["error"]}</p>
         <p><a href="{back_link}">{back_label}</a></p>
         """
+
+    if wants_json:
+        return {
+            "ok": True,
+            "schedule_id": schedule_id,
+            "status": status or "scheduled",
+            "status_label": calendar_status_label(status),
+            "status_key": hstudio_status_key(status),
+            "message": "Status saved.",
+        }
 
     return redirect(return_to)
 

@@ -42,6 +42,10 @@ CHECKS = {
     "invoice enrollment binding": "name=\"enrollment_id\"",
     "payment enrollment preselect": "selected_enrollment_id = request.args.get(\"enrollment_id\")",
     "schedule enrollment binding": "resolved_enrollment_id",
+    "teacher status ajax form": "data-teacher-status-form",
+    "teacher status ajax endpoint": "wants_json = \"application/json\"",
+    "teacher status repaint": "repaintTeacherScheduleEvent",
+    "teacher status form binding": "bindTeacherStatusForms();",
 }
 
 
