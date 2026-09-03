@@ -1385,10 +1385,14 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
             .calendar-day {{ min-height:220px; background:white; padding:3px; min-width:0; }}
             .calendar-grid.month-view .calendar-day {{ min-height:132px; }}
-            .calendar-grid.month-view .calendar-event {{ padding:2px 4px; margin-bottom:2px; }}
-            .calendar-grid.month-view .event-status-form {{ margin-top:1px; }}
+            .calendar-grid.month-view .calendar-event {{ padding:2px 4px 1px; margin-bottom:2px; line-height:1; }}
+            .calendar-grid.month-view .event-top,
+            .calendar-grid.month-view .event-student,
+            .calendar-grid.month-view .event-line,
+            .calendar-grid.month-view .event-cancel-result {{ margin-bottom:0; }}
+            .calendar-grid.month-view .event-status-form {{ margin:1px 0 0; line-height:1; }}
             .calendar-grid.month-view .event-status-form select,
-            .calendar-grid.month-view .event-status-form button {{ height:16px; }}
+            .calendar-grid.month-view .event-status-form button {{ display:block; height:14px; line-height:1; padding:0 3px; }}
             .calendar-grid.week-view .calendar-day {{ min-height:240px; }}
             .calendar-day.today {{ background:#fbfdff; }}
             .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:4px; align-items:center; min-height:15px; margin-bottom:3px; color:var(--td-muted); font-size:9.5px; }}

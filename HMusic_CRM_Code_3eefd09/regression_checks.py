@@ -59,6 +59,7 @@ CHECKS = {
     "teacher can schedule existing student": "teacher_selected_existing_student",
     "teacher calendar compact month grid": "calendar-grid.month-view .calendar-day",
     "teacher calendar schedule grid class": "schedule_grid_class",
+    "teacher calendar compact event controls": "calendar-grid.month-view .event-status-form button {{ display:block; height:14px;",
 }
 
 
