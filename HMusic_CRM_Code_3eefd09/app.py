@@ -4567,6 +4567,11 @@ def edit_student(name):
     course_credit_count = len(course_credit_rows)
     has_empty_course_credit = any(float(row[3] or 0) <= 0 for row in course_credit_rows)
     has_low_course_credit = any(0 < float(row[3] or 0) <= 2 for row in course_credit_rows)
+    add_billing_href = (
+        f"/create_enrollment_invoice/{course_credit_rows[0][0]}"
+        if course_credit_rows else
+        f"/create_package_invoice/{student_url_name}"
+    )
     course_lesson_badge_class = "danger" if course_credit_count == 0 or has_empty_course_credit else "amber" if has_low_course_credit else "ok"
     course_lesson_badge_text = (
         "No course credits"
@@ -4997,7 +5002,7 @@ def edit_student(name):
                         <a class="button" href="/student/{student_url_name}">Student profile</a>
                         <a class="button" href="/calendar?{urlencode({'student': student_name})}">Schedule</a>
                         {family_workspace_button}
-                        <a class="button" href="/create_package_invoice/{student_url_name}">Add billing</a>
+                        <a class="button" href="{add_billing_href}">Add billing</a>
                     </div>
                 </section>
 
@@ -13535,7 +13540,7 @@ def hmusic_student_total_course_credits(cursor, student_name, legacy_lessons_lef
 
 
 def hmusic_course_credit_label(row):
-    _, course_name, teacher_name, lessons_left, final_price, package_amount, package_lessons, status = row
+    _, course_name, teacher_name, lessons_left, final_price, package_amount, package_lessons, status, *_ = row
     price = final_price
     if (not price) and package_amount and package_lessons:
         try:
@@ -15171,6 +15176,16 @@ def create_package_invoice(name):
             · <a href="/student/{student_url_name}">Back to Student</a>
         </p>
         """
+
+    if request.method == "GET":
+        selected_enrollment_id = request.args.get("enrollment_id") or str(course_credits[0][0])
+        try:
+            enrollment_id_int = int(selected_enrollment_id)
+        except (TypeError, ValueError):
+            enrollment_id_int = int(course_credits[0][0])
+        if any(int(row[0]) == enrollment_id_int for row in course_credits):
+            conn.close()
+            return redirect(f"/create_enrollment_invoice/{enrollment_id_int}")
 
     if request.method == "POST":
         enrollment_id = request.form.get("enrollment_id")
