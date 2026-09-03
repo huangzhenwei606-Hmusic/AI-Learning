@@ -17515,7 +17515,8 @@ def parent_admin(parent_id):
         cursor.execute(f"""
         SELECT i.id, i.student_name, COALESCE(i.charge_lessons, 0), COALESCE(i.amount, 0),
                COALESCE(i.status, 'unpaid'), COALESCE(i.invoice_type, 'invoice'),
-               COALESCE(i.created_at, ''), COALESCE(e.course_type_name, ''), COALESCE(e.teacher_name, '')
+               COALESCE(i.created_at, ''), COALESCE(e.course_type_name, ''), COALESCE(e.teacher_name, ''),
+               COALESCE(i.payment_reminder_sent_at, ''), COALESCE(i.payment_reminder_count, 0)
         FROM invoices i
         LEFT JOIN enrollments e ON e.id = i.enrollment_id
         WHERE i.student_name IN ({placeholders})
@@ -17809,10 +17810,24 @@ def parent_admin(parent_id):
 
     family_invoice_rows = ""
     for inv in family_invoice_records:
-        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at, invoice_course, invoice_teacher = inv
+        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at, invoice_course, invoice_teacher, payment_reminder_sent_at, payment_reminder_count = inv
         invoice_bucket = ""
         if invoice_course or invoice_teacher:
             invoice_bucket = f"<span>{escape(str(invoice_course or 'Course'))} · {escape(str(invoice_teacher or 'Unassigned'))}</span>"
+        invoice_status_key = str(invoice_status or "unpaid").lower()
+        reminder_note = ""
+        if payment_reminder_sent_at:
+            reminder_note = f"<span>Reminder sent {escape(str(payment_reminder_sent_at))}</span>"
+        elif payment_reminder_count:
+            reminder_note = f"<span>Reminder count {int(payment_reminder_count or 0)}</span>"
+        reminder_action = ""
+        if invoice_status_key in ("unpaid", "payment_failed", "pending_confirmation"):
+            reminder_action = f"""
+                <form method="POST" action="/send_invoice_payment_reminder/{invoice_id}" class="inline-form" onsubmit="return confirm('Send email reminder for invoice #{invoice_id}?');">
+                    <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
+                    <button class="button compact" type="submit">Email reminder</button>
+                </form>
+            """
         family_invoice_rows += f"""
         <tr>
             <td><a class="invoice-link" href="/parent_invoice/{invoice_id}">#{invoice_id}</a><span>{escape(str(created_at or ''))}</span></td>
@@ -17820,8 +17835,13 @@ def parent_admin(parent_id):
             <td>{escape(str(invoice_type or 'invoice')).replace('_', ' ')}{invoice_bucket}</td>
             <td>{lessons:g}</td>
             <td>${hmusic_money(amount)}</td>
-            <td><span class="pill {'good' if str(invoice_status).lower() == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span></td>
-            <td><a class="button" href="/edit_invoice/{invoice_id}">Edit</a></td>
+            <td><span class="pill {'good' if invoice_status_key == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span>{reminder_note}</td>
+            <td>
+                <div class="row-actions">
+                    {reminder_action}
+                    <a class="button compact" href="/edit_invoice/{invoice_id}">Edit</a>
+                </div>
+            </td>
         </tr>
         """
     if not family_invoice_rows:

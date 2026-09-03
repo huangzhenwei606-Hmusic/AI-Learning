@@ -18660,7 +18660,9 @@ def parent_admin(parent_id):
             COALESCE(coverage_title, ''),
             COALESCE(coverage_class, ''),
             COALESCE(coverage_start, ''),
-            COALESCE(coverage_note, '')
+            COALESCE(coverage_note, ''),
+            COALESCE(payment_reminder_sent_at, ''),
+            COALESCE(payment_reminder_count, 0)
         FROM invoices
         WHERE student_name IN ({placeholders})
         ORDER BY COALESCE(created_at, '') DESC, id DESC
@@ -18769,9 +18771,23 @@ def parent_admin(parent_id):
 
     family_invoice_record_rows = ""
     for inv in family_invoice_records:
-        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at, due_date, coverage_title, coverage_class, coverage_start, coverage_note = inv
+        invoice_id, student_name, lessons, amount, invoice_status, invoice_type, created_at, due_date, coverage_title, coverage_class, coverage_start, coverage_note, payment_reminder_sent_at, payment_reminder_count = inv
         coverage_bits = [str(item or "").strip() for item in (coverage_title, coverage_class, f"Starts {coverage_start}" if coverage_start else "", coverage_note) if str(item or "").strip()]
         coverage_html = "".join(f"<span>{escape(bit)}</span>" for bit in coverage_bits) or "<span>No coverage details</span>"
+        invoice_status_key = str(invoice_status or "unpaid").lower()
+        reminder_note = ""
+        if payment_reminder_sent_at:
+            reminder_note = f"<span class='invoice-reminder-note'>Reminder sent {escape(str(payment_reminder_sent_at))}</span>"
+        elif payment_reminder_count:
+            reminder_note = f"<span class='invoice-reminder-note'>Reminder count {int(payment_reminder_count or 0)}</span>"
+        reminder_action = ""
+        if invoice_status_key in ("unpaid", "payment_failed", "pending_confirmation"):
+            reminder_action = f"""
+                <form method="POST" action="/send_invoice_payment_reminder/{invoice_id}" class="inline-form" onsubmit="return confirm('Send email reminder for invoice #{invoice_id}?');">
+                    <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
+                    <button class="button" type="submit">Email reminder</button>
+                </form>
+            """
         family_invoice_record_rows += f"""
         <tr>
             <td>
@@ -18783,8 +18799,13 @@ def parent_admin(parent_id):
             <td>${hmusic_money(amount)}</td>
             <td><div class="coverage-summary">{coverage_html}</div></td>
             <td>{escape(str(due_date or ''))}</td>
-            <td><span class="pill {'good' if str(invoice_status).lower() == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span></td>
-            <td><a class="button" href="/edit_invoice/{invoice_id}">Edit</a></td>
+            <td><span class="pill {'good' if invoice_status_key == 'paid' else 'neutral'}">{escape(str(invoice_status or 'unpaid')).replace('_', ' ')}</span>{reminder_note}</td>
+            <td>
+                <div class="row-actions">
+                    {reminder_action}
+                    <a class="button" href="/edit_invoice/{invoice_id}">Edit</a>
+                </div>
+            </td>
         </tr>
         """
 
@@ -18900,6 +18921,8 @@ def parent_admin(parent_id):
             .button, button {{ min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); padding:0 11px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }}
             .button.primary, button.primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
             .button.danger, button.danger {{ color:var(--red); border-color:#fecaca; background:#fff; }}
+            .row-actions {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }}
+            .invoice-reminder-note {{ display:block; color:var(--muted); font-size:11px; margin-top:3px; white-space:nowrap; }}
             .inline-form {{ display:inline; margin:0; }}
             .hint-line {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }}
             .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
