@@ -8283,16 +8283,22 @@ def calendar():
                 early_cancel = event_status in ("excused_24h", "excused")
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
+                event_line = f"{event[5] or '-'} · {event[7] or course_name or 'Lesson'}"
                 event_cards += f"""
                 <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
-                    <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span><span class="ev-icon-stack">{status_icons}</span></span>
+                    <span class="ev-head">
+                      <span class="ev-time">
+                        <span class="ev-status-badge {dot_class}">{status_label}</span>
+                        <span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>
+                      </span>
+                      <span class="ev-icon-stack">{status_icons}</span>
+                    </span>
                     <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event[3] or ""))}</a>
-                    <span class="ev-time calendar-time-chip">{time_range}</span>
-                    <span class="ev-sub">{escape(str(course_name or "Lesson"))} · {escape(str(event[4] or ""))}</span>
+                    <span class="ev-sub">{escape(str(event_line))}</span>
                     {cancel_result}
                     {warning}
                     <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
@@ -8488,25 +8494,25 @@ def calendar():
             .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
             /* event card */
-            .ev{{border-radius:4px;padding:2px 3px;font-size:9px;margin-bottom:2px;
-                 border-left:3px solid transparent;line-height:1.18;
+            .ev{{border-radius:5px;padding:2px 4px 1px;font-size:9px;margin-bottom:2px;
+                 border-left:3px solid transparent;line-height:1;
                  cursor:grab;user-select:none;overflow:hidden}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
-            .ev-name{{font-weight:800;display:block;color:inherit;text-decoration:none;border-radius:3px;
+            .ev-name{{font-weight:900;display:block;color:inherit;text-decoration:none;border-radius:3px;
                       width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis;
-                      font-size:9.5px;line-height:1.08;white-space:nowrap}}
+                      font-size:10px;line-height:1.04;white-space:nowrap;margin-bottom:0}}
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
-            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:3px;margin-bottom:1px}}
-            .ev-time{{font-size:8.5px;line-height:1.05;opacity:.9;display:block;color:#475569;font-weight:500}}
+            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:3px;margin-bottom:0}}
+            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:8.5px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}}
             .calendar-time-chip{{display:inline-block;width:max-content;max-width:100%;
                                  background:rgba(255,255,255,.86);color:#111827!important;font-weight:900;
                                  border-radius:3px;padding:1px 2px;
                                  opacity:1!important;text-decoration:none!important}}
-            .ev-sub{{font-size:8.2px;line-height:1.05;opacity:.68;display:block;
+            .ev-sub{{font-size:8.5px;line-height:1.04;opacity:.78;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-            .ev-cancel-result{{font-size:8px;line-height:1.05;opacity:.78;display:block;margin-top:0}}
+            .ev-cancel-result{{font-size:8px;line-height:1.04;opacity:.78;display:block;margin-top:0;margin-bottom:0}}
             .ev .warn-pill,.ev .last-pill{{font-size:8px;padding:0 4px;line-height:1.1}}
             .ev-status-badge{{display:inline-flex;align-items:center;gap:2px;
                               border-radius:999px;padding:1px 5px;font-size:7.5px;
@@ -8526,9 +8532,9 @@ def calendar():
             .ev-icon-noshow{{color:#B42318;background:#FEE4E2}}
             .ev-icon-lastmin{{color:#B54708;background:#FFEAD5}}
             .ev-icon-cancelled{{color:#475467;background:#EEF2F7}}
-            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 30px;
-                                gap:2px;margin-top:2px;align-items:center}}
-            .owner-status-form select,.owner-status-form button{{height:18px;border:1px solid rgba(0,0,0,.16);
+            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 28px;
+                                gap:2px;margin:1px 0 0;align-items:center;line-height:1}}
+            .owner-status-form select,.owner-status-form button{{display:block;height:14px;line-height:1;border:1px solid rgba(0,0,0,.16);
                                 border-radius:4px;background:rgba(255,255,255,.92);
                                 font-family:inherit;font-size:8.5px;color:#1C1C1E;
                                 min-width:0;padding:0 3px}}

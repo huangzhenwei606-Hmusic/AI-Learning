@@ -60,6 +60,8 @@ CHECKS = {
     "teacher calendar compact month grid": "calendar-grid.month-view .calendar-day",
     "teacher calendar schedule grid class": "schedule_grid_class",
     "teacher calendar compact event controls": "calendar-grid.month-view .event-status-form button {{ display:block; height:14px;",
+    "owner calendar teacher-style event time": '<span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>',
+    "owner calendar compact event controls": ".owner-status-form select,.owner-status-form button{{display:block;height:14px;",
 }
 
 
