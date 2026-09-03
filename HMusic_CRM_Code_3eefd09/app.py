@@ -12559,11 +12559,11 @@ def teacher_dashboard():
                             <label>
                                 <span class="teacher-add-label">Package</span>
                                 <select class="teacher-add-select" name="package_type" id="teacherInlinePackageType" onchange="syncTeacherInlinePackage()">
-                                    <option value="unlimited">Ongoing no package</option>
                                     <option value="10">10 lessons</option>
                                     <option value="12">12 lessons</option>
                                     <option value="24">24 lessons</option>
                                     <option value="custom">Custom count</option>
+                                    <option value="unlimited">Ongoing no package</option>
                                 </select>
                             </label>
                             <label>
