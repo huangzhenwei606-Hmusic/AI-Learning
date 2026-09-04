@@ -19312,6 +19312,7 @@ def parent_admin(parent_id):
         unlink_action = ""
         if s[3] == 1:
             unlink_action = f"""
+            <a class="button" href="/new_owner_message?{urlencode({'parent_id': parent_id, 'student_name': s[1] or '', 'subject': 'Message about ' + str(s[1] or '')})}">Message</a>
             <form method="POST" action="/unlink_parent_student/{s[0]}" class="inline-form">
                 <button class="button danger" type="submit">Remove access</button>
             </form>
@@ -19600,8 +19601,9 @@ def parent_admin(parent_id):
                 <a href="/teachers">Teachers</a>
             </nav>
             <div class="top-actions">
+                <a class="button primary" href="/new_owner_message?{urlencode({'parent_id': parent[0], 'subject': 'Message from H-Music'})}">Message parent</a>
                 <a class="button" href="/parents">Back</a>
-                <a class="button primary" href="/edit_parent_admin/{parent[0]}">Edit parent</a>
+                <a class="button" href="/edit_parent_admin/{parent[0]}">Edit parent</a>
             </div>
         </div>
         <main class="page">
@@ -24284,6 +24286,9 @@ def new_owner_message():
         return redirect("/owner_login")
 
     ensure_v29_schema()
+    selected_parent_id = (request.args.get("parent_id") or "").strip()
+    selected_student_name = (request.args.get("student_name") or "").strip()
+    selected_subject = (request.args.get("subject") or "").strip()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -24380,7 +24385,7 @@ def new_owner_message():
     conn.close()
 
     parent_options = "".join([
-        f'<option value="{p[0]}">{escape(p[1] or p[2] or f"Parent #{p[0]}")} | {escape(p[2] or "")}</option>'
+        f'<option value="{p[0]}" {"selected" if str(p[0]) == selected_parent_id else ""}>{escape(p[1] or p[2] or f"Parent #{p[0]}")} | {escape(p[2] or "")}</option>'
         for p in parents
     ]) or '<option value="">No parents found</option>'
     teacher_options = "".join([
@@ -24388,7 +24393,7 @@ def new_owner_message():
         for t in teachers
     ]) or '<option value="">No teachers found</option>'
     student_options = '<option value="">No student / general message</option>' + "".join([
-        f'<option value="{escape(s[0])}">{escape(s[0])} | Teacher: {escape(s[1] or "")}</option>'
+        f'<option value="{escape(s[0], quote=True)}" {"selected" if s[0] == selected_student_name else ""}>{escape(s[0])} | Teacher: {escape(s[1] or "")}</option>'
         for s in students
     ])
 
@@ -24460,7 +24465,7 @@ def new_owner_message():
                 <select name="student_name">{student_options}</select>
 
                 Subject (optional):<br>
-                <input name="subject" placeholder="Leave blank to auto-create subject">
+                <input name="subject" value="{escape(selected_subject, quote=True)}" placeholder="Leave blank to auto-create subject">
                 <div class="subtle">Examples: Tuition question, schedule update, reminder, lesson follow-up.</div>
 
                 Message:<br>
