@@ -8650,6 +8650,13 @@ def calendar():
           <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
           <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
         </div>
+        <div class="panel-section" id="panelStudentEditSection">
+          <h3>Student</h3>
+          <div class="panel-row">
+            <input class="panel-field student-picker-compact" id="panelDetailStudent" list="popStudentList" placeholder="Search or type student name">
+            <button class="panel-action" type="button" onclick="saveLessonPanel()"><i class="ti ti-device-floppy"></i>Save student change</button>
+          </div>
+        </div>
         <div class="panel-section" id="panelTrialSection" style="display:none">
           <h3>Trial details</h3>
           <div class="detail-grid" style="padding:0">
@@ -8677,7 +8684,6 @@ def calendar():
         <details class="panel-details" id="panelDetailsBilling" open>
           <summary>Edit schedule and billing <span class="panel-details-scope">applies to this lesson</span></summary>
           <div class="detail-grid">
-            <label id="panelDetailStudentWrap"><span class="detail-label">Student</span><input class="panel-field student-picker-compact" id="panelDetailStudent" list="popStudentList"></label>
             <label><span class="detail-label">Teacher</span><select class="panel-field" id="panelDetailTeacher">{teacher_picker_options}</select></label>
             <label><span class="detail-label">Course</span><select class="panel-field" id="panelDetailCourse" onchange="updatePanelCourseBilling()">{quick_course_options}</select></label>
             <label><span class="detail-label">Duration</span><input class="panel-field" type="number" id="panelDetailDuration" min="15" max="240" step="5" onchange="updatePanelChargePreview()"></label>
@@ -9703,8 +9709,8 @@ def calendar():
       updatePanelRooms(lesson.room_id, lesson.classroom);
       updatePanelPackageFields();
       updatePanelChargePreview();
-      const studentWrap = document.getElementById('panelDetailStudentWrap');
-      if (studentWrap) studentWrap.style.display = isGroupLesson ? 'none' : '';
+      const studentEditSection = document.getElementById('panelStudentEditSection');
+      if (studentEditSection) studentEditSection.style.display = (isGroupLesson || isTrialHold) ? 'none' : '';
       const trialSection = document.getElementById('panelTrialSection');
       if (trialSection) trialSection.style.display = isTrialHold ? 'block' : 'none';
       document.querySelectorAll('.panel-private-billing-field').forEach(el => el.style.display = isGroupLesson ? 'none' : '');
