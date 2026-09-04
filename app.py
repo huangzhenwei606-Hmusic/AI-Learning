@@ -2174,7 +2174,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                     <label class="mode-pill"><input type="radio" name="student_mode" value="existing" checked> Existing student</label>
                     <label class="mode-pill"><input type="radio" name="student_mode" value="new"> New student</label>
                 </div>
-                <label class="existing-student-field">Student<input class="student-picker-compact" id="student_name" name="student_name" list="teacherStudentList" placeholder="Type student name..." autocomplete="off" required><datalist id="teacherStudentList">{student_datalist_options}</datalist></label>
+                <label class="existing-student-field">Student<input class="student-picker-compact" id="student_name" name="student_name" list="teacherStudentList" placeholder="Type student name..." autocomplete="off" required><datalist id="teacherStudentList">{student_datalist_options}</datalist><button class="teacher-add-secondary" type="button" id="teacherUseTypedStudentButton">Use typed student name</button></label>
                 <div class="new-student-box full" id="newStudentBox">
                     <div class="new-student-grid">
                         <label>Student name<input type="text" name="new_student_name" placeholder="Required for new student"></label>
@@ -2224,6 +2224,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
             .student-mode-row {{ display:flex; gap:8px; flex-wrap:wrap; }}
             .mode-pill {{ width:auto !important; display:inline-flex !important; align-items:center; gap:7px; min-height:38px; padding:0 12px; border:1px solid var(--td-line); border-radius:999px; background:#fff; color:var(--td-text) !important; font-size:13px; }}
             .mode-pill input {{ width:auto; margin:0; }}
+            .teacher-add-secondary {{ width:auto !important; margin-top:8px; border:1px solid #bfdbfe !important; background:#eff6ff !important; color:var(--td-blue) !important; border-radius:8px; padding:8px 10px !important; font-size:12px; font-weight:900; }}
             .new-student-box {{ display:none; border:1px solid #fed7aa; border-radius:10px; background:#fffaf0; padding:10px; }}
             .new-student-box.show {{ display:block; }}
             .new-student-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
@@ -2259,6 +2260,7 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                 const lessonFormat = document.getElementById('teacherLessonFormat');
                 const groupStudentsField = document.getElementById('teacherGroupStudentsField');
                 const groupStudentNames = document.getElementById('teacherGroupStudentNames');
+                const useTypedStudentButton = document.getElementById('teacherUseTypedStudentButton');
                 window.updateTeacherScheduleRoomId = function() {{
                     if (!roomSelect || !roomIdInput) return;
                     const selected = roomSelect.options[roomSelect.selectedIndex];
@@ -2300,6 +2302,18 @@ def teacher_dashboard_add_schedule_content(teacher_name, return_to=""):
                     if (existingStudentInput) existingStudentInput.required = !isNew && !isGroup;
                     if (newName) newName.required = isNew;
                 }}
+                if (useTypedStudentButton) useTypedStudentButton.addEventListener('click', function() {{
+                    const typedName = existingStudentInput ? existingStudentInput.value.trim() : '';
+                    if (!typedName) {{
+                        alert('Please type the full student name first.');
+                        if (existingStudentInput) existingStudentInput.focus();
+                        return;
+                    }}
+                    const newMode = document.querySelector('input[name="student_mode"][value="new"]');
+                    if (newMode) newMode.checked = true;
+                    if (newName) newName.value = typedName;
+                    syncStudentMode();
+                }});
                 function teacherCourseIsGroup() {{
                     if (!courseSelect || !courseSelect.options[courseSelect.selectedIndex]) return false;
                     return courseSelect.options[courseSelect.selectedIndex].text.toLowerCase().includes('group');

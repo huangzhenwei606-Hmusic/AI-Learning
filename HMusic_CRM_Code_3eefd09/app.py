@@ -12677,6 +12677,7 @@ def teacher_dashboard():
     .teacher-add-full{grid-column:1 / -1}
     .teacher-add-label{display:block;color:#667085;font-weight:900;font-size:12px;text-transform:uppercase;letter-spacing:0;margin-bottom:6px}
     .teacher-add-input,.teacher-add-select,.teacher-add-textarea{width:100%;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;font:inherit;font-weight:800;padding:11px 12px}
+    .teacher-add-student-tools{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.teacher-add-secondary{border:1px solid #B8CCE3;background:#EFF6FF;color:var(--blue);border-radius:8px;padding:8px 10px;font:inherit;font-size:12px;font-weight:900;cursor:pointer}.teacher-add-secondary.active{background:var(--blue);border-color:var(--blue);color:#fff}.teacher-add-mode-note{display:none;margin-top:8px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:800;line-height:1.35}.teacher-add-mode-note.show{display:block}
     .teacher-add-textarea{min-height:92px;resize:vertical;font-weight:700}
     .teacher-add-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #E5E7EB}
     .teacher-add-actions button,.teacher-add-actions a{border:1px solid #D9DEE8;border-radius:8px;padding:11px 16px;font:inherit;font-weight:900;text-decoration:none;cursor:pointer}
@@ -12903,6 +12904,8 @@ def teacher_dashboard():
             <div class="teacher-add-modal" role="dialog" aria-modal="true" aria-labelledby="teacherAddTitle" onclick="event.stopPropagation()">
                 <form method="POST" action="/add_schedule" id="teacherInlineAddScheduleForm">
                     <input type="hidden" name="return_to" value="{teacher_schedule_return_url_attr}">
+                    <input type="hidden" name="action" id="teacherAddAction" value="">
+                    <input type="hidden" name="temporary_schedule_note" id="teacherAddTempNote" value="">
                     <input type="hidden" name="teacher" value="{escape(teacher_name or '', quote=True)}">
                     <input type="hidden" name="weekday" id="teacherAddWeekday">
                     <input type="hidden" name="location_id" id="teacherAddLocationId">
@@ -12930,6 +12933,10 @@ def teacher_dashboard():
                                 <span class="teacher-add-label">Student</span>
                                 <input class="teacher-add-input student-picker-compact" id="teacherAddStudent" name="student_name" list="teacherInlineStudentList" placeholder="Search existing or type full student name" autocomplete="off" required>
                                 <datalist id="teacherInlineStudentList">{teacher_calendar_student_options}</datalist>
+                                <div class="teacher-add-student-tools">
+                                    <button class="teacher-add-secondary" id="teacherUseTypedStudentButton" type="button" onclick="teacherUseTypedStudentName()">Use typed student name</button>
+                                </div>
+                                <div class="teacher-add-mode-note" id="teacherTypedStudentNote">This lesson will be created for the typed student name and manager will be notified to review or add the student record.</div>
                             </label>
                             <label>
                                 <span class="teacher-add-label">Course</span>
@@ -13192,6 +13199,7 @@ def teacher_dashboard():
                 student.required = !isGroup;
                 if (isGroup) student.value = '';
             }}
+            if (isGroup) teacherResetTypedStudentMode();
             if (groupNames && !isGroup) groupNames.value = '';
         }}
         function syncTeacherInlinePackage() {{
@@ -13202,6 +13210,39 @@ def teacher_dashboard():
             customCount.disabled = !isCustom;
             customCount.required = isCustom;
             if (!isCustom) customCount.value = '';
+        }}
+        function teacherUseTypedStudentName() {{
+            const student = document.getElementById('teacherAddStudent');
+            const action = document.getElementById('teacherAddAction');
+            const note = document.getElementById('teacherAddTempNote');
+            const button = document.getElementById('teacherUseTypedStudentButton');
+            const noteBox = document.getElementById('teacherTypedStudentNote');
+            const studentName = student ? student.value.trim() : '';
+            if (!studentName) {{
+                alert('Please type the full student name first.');
+                if (student) student.focus();
+                return;
+            }}
+            if (action) action.value = 'create_unassigned_teacher_schedule';
+            if (note) note.value = 'Teacher entered a walk-in / outside-system student from quick add: ' + studentName;
+            if (button) {{
+                button.classList.add('active');
+                button.textContent = 'Typed name selected';
+            }}
+            if (noteBox) noteBox.classList.add('show');
+        }}
+        function teacherResetTypedStudentMode() {{
+            const action = document.getElementById('teacherAddAction');
+            const note = document.getElementById('teacherAddTempNote');
+            const button = document.getElementById('teacherUseTypedStudentButton');
+            const noteBox = document.getElementById('teacherTypedStudentNote');
+            if (action) action.value = '';
+            if (note) note.value = '';
+            if (button) {{
+                button.classList.remove('active');
+                button.textContent = 'Use typed student name';
+            }}
+            if (noteBox) noteBox.classList.remove('show');
         }}
         function syncTeacherInlineRoom() {{
             const roomSelect = document.getElementById('teacherInlineRoomSelect');
@@ -13226,6 +13267,7 @@ def teacher_dashboard():
             if (dateInput) dateInput.value = dateStr || '';
             if (weekdayInput) weekdayInput.value = teacherWeekdayFromDate(dateStr || '');
             if (sub) sub.textContent = 'Create a lesson on ' + (dateStr || 'this date') + ' without leaving the calendar.';
+            teacherResetTypedStudentMode();
             syncTeacherInlineAddFormat();
             syncTeacherInlinePackage();
             syncTeacherInlineRoom();
@@ -13246,6 +13288,8 @@ def teacher_dashboard():
             teacherOpenAddSchedule(dateStr);
         }}
         const teacherInlineAddScheduleForm = document.getElementById('teacherInlineAddScheduleForm');
+        const teacherAddStudentInput = document.getElementById('teacherAddStudent');
+        if (teacherAddStudentInput) teacherAddStudentInput.addEventListener('input', teacherResetTypedStudentMode);
         if (teacherInlineAddScheduleForm) teacherInlineAddScheduleForm.addEventListener('submit', function(e) {{
             if (!teacherInlineIsGroupLesson()) return;
             const namesInput = document.getElementById('teacherInlineGroupStudents');
