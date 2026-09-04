@@ -1399,7 +1399,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-day-head strong {{ color:var(--td-text); font-size:11px; font-weight:500; }}
             .calendar-event {{ display:block; border:1px solid var(--td-line); border-left:4px solid var(--td-blue); border-radius:5px; padding:3px 4px; margin-bottom:3px; background:#fbfcff; min-width:0; overflow:visible; box-shadow:inset 0 0 0 999px rgba(255,255,255,.04); }}
             .calendar-event.private-30 {{ border-left-color:#38bdf8; background:#dff4ff; border-color:#8bdcff; }}
-            .calendar-event.private-45 {{ border-left-color:#1e40af; background:#60a5fa; border-color:#2563eb; color:#07152f; }}
+            .calendar-event.private-45 {{ border-left-color:#1d4ed8; background:#93c5fd; border-color:#3b82f6; color:#111827; }}
             .calendar-event.private-60 {{ border-left-color:#0f172a; background:#93c5fd; border-color:#1d4ed8; }}
             .calendar-event.private-long {{ border-left-color:#172554; background:#bfdbfe; border-color:#1e40af; }}
             .calendar-event.group-small {{ border-left-color:#a855f7; background:#eadcff; border-color:#c084fc; }}
@@ -35226,19 +35226,19 @@ def _blend_hex(color, target="#ffffff", amount=0.84):
 
 def course_color_background(color):
     if normalize_hex_color(color) == "#1e3a8a":
-        return "#60a5fa"
+        return "#93c5fd"
     return _blend_hex(color, "#ffffff", 0.84)
 
 
 def course_color_border(color):
     if normalize_hex_color(color) == "#1e3a8a":
-        return "#2563eb"
+        return "#3b82f6"
     return _blend_hex(color, "#ffffff", 0.52)
 
 
 def course_color_text(color):
     if normalize_hex_color(color) == "#1e3a8a":
-        return "#07152f"
+        return "#111827"
     r, g, b = _hex_rgb(color)
     luminance = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
     if luminance > 170:
