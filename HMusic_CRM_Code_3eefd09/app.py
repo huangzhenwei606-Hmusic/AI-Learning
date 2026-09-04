@@ -8602,7 +8602,7 @@ def calendar():
                 status_icons = owner_status_icons(event_status)
                 time_range = owner_time_range(event[2], event[12])
                 warning = warning_pill(event[13], event[8])
-                course_color = event[10] or default_course_color(course_name, event[12], event[14])
+                course_color = course_calendar_color(event[10], course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
                 early_cancel = event_status in ("excused_24h", "excused")
@@ -12703,7 +12703,7 @@ def teacher_dashboard():
         cancel_result = '<div class="event-cancel-result">No credit deducted · No fee</div>' if is_early_cancel else ""
         dot = _t_status_dot(lesson_status)
         status_text = _t_status_label(lesson_status)
-        course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
+        course_color = course_calendar_color(lesson[11], lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
         return f"""
         <div class="calendar-event{event_class}"
@@ -35136,6 +35136,10 @@ def default_course_color(name="", duration=None, is_group=0):
     return "#64748b"
 
 
+def course_calendar_color(display_color="", name="", duration=None, is_group=0):
+    return normalize_hex_color(display_color) or default_course_color(name, duration, is_group)
+
+
 def normalize_hex_color(color, fallback=None):
     value = str(color or "").strip()
     if value.startswith("#"):
@@ -35181,8 +35185,8 @@ def course_calendar_style(color):
     color = normalize_hex_color(color, "#64748b")
     return (
         f"background:{course_color_background(color)};"
-        f"border-left-color:{color};"
         f"border-color:{course_color_border(color)};"
+        f"border-left-color:{color};"
         f"color:{course_color_text(color)};"
     )
 

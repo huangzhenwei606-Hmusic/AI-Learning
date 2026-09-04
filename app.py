@@ -7669,7 +7669,7 @@ def calendar():
                     display_sub = f"{display_sub} · {trial_status_text}" if display_sub else trial_status_text
                 group_count = f" · {group_size} students" if is_group_event and group_size else ""
                 warning = "" if (is_group_event or is_trial_hold) else warning
-                course_color = event[10] or default_course_color(course_name, event[12], event[14])
+                course_color = course_calendar_color(event[10], course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
                 name_html = (
@@ -12539,7 +12539,7 @@ def teacher_dashboard():
         cancel_result = '<div class="event-cancel-result">No credit deducted · No fee</div>' if is_early_cancel else ""
         dot = _t_status_dot(lesson_status)
         status_text = _t_status_label(lesson_status)
-        course_color = lesson[11] or default_course_color(lesson[7], lesson[6], lesson[8])
+        course_color = course_calendar_color(lesson[11], lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
         place_label = lesson[12] or lesson[4] or "-"
         course_label = compact_course_label(lesson[7])
@@ -37200,6 +37200,10 @@ def default_course_color(name="", duration=None, is_group=0):
     return "#64748b"
 
 
+def course_calendar_color(display_color="", name="", duration=None, is_group=0):
+    return normalize_hex_color(display_color) or default_course_color(name, duration, is_group)
+
+
 def normalize_hex_color(color, fallback=None):
     value = str(color or "").strip()
     if value.startswith("#"):
@@ -37245,8 +37249,8 @@ def course_calendar_style(color):
     color = normalize_hex_color(color, "#64748b")
     return (
         f"background:{course_color_background(color)};"
-        f"border-left-color:{color};"
         f"border-color:{course_color_border(color)};"
+        f"border-left-color:{color};"
         f"color:{course_color_text(color)};"
     )
 
