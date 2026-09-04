@@ -31477,6 +31477,59 @@ def hmusic_invoice_payment_reminder_body(invoice_row, invoice_link):
     }, fallback)
 
 
+def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, amount=None):
+    student_name = enrollment[1] or ""
+    course_name = enrollment[2] or "Tuition"
+    teacher_name = enrollment[3] or ""
+    lesson_count = enrollment[6] or enrollment[7] or 10
+    invoice_amount = amount if amount is not None else enrollment[5]
+    if invoice_amount is None or invoice_amount == 0:
+        invoice_amount = round((enrollment[4] or 0) * lesson_count, 2)
+
+    cursor.execute("""
+    SELECT COALESCE(parent_name, '')
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+    student_parent = cursor.fetchone()
+    parent_name = student_parent[0] if student_parent else ""
+
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+    if parent_id and not parent_name:
+        cursor.execute("SELECT COALESCE(parent_name, '') FROM parent_profiles WHERE id = ?", (parent_id,))
+        parent_profile = cursor.fetchone()
+        parent_name = parent_profile[0] if parent_profile else ""
+
+    invoice_link = (
+        hmusic_public_app_url(f"/parent_invoice/{invoice_id}")
+        if invoice_id
+        else hmusic_public_app_url("/parent_dashboard#billing")
+    )
+    context = {
+        "parent_name": parent_name,
+        "student_name": student_name,
+        "invoice_id": invoice_id or "",
+        "amount": hmusic_money(invoice_amount),
+        "due_date": date.today().strftime("%Y-%m-%d"),
+        "invoice_link": invoice_link,
+        "lesson_count": hmusic_lesson_count_label(lesson_count),
+        "coverage": " · ".join([item for item in [course_name, teacher_name] if item]),
+        "payment_methods": "ACH bank payment, Zelle, PayPal",
+    }
+    fallback = (
+        f"Hi {parent_name or 'Parent'},\n\n"
+        f"{student_name}'s tuition invoice is ready.\n\n"
+        f"Amount due: ${hmusic_money(invoice_amount)}\n"
+        f"Due date: {context['due_date']}\n"
+        f"Package: {context['lesson_count']} lesson(s)\n\n"
+        f"Please open the H-Music Parent App to review payment options:\n"
+        f"{invoice_link}\n\n"
+        "Thank you,\n"
+        "H-Music"
+    )
+    return hmusic_render_message_template("invoice_created", "email_body", context, fallback)
+
+
 def hmusic_get_invoice_payment_reminder_target(cursor, invoice_id):
     cursor.execute("""
     SELECT
@@ -41737,11 +41790,8 @@ def create_enrollment_invoice_route(enrollment_id):
         suggested_amount = round((enrollment[4] or 0) * suggested_lessons, 2)
 
     if request.method == "GET":
+        default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment)
         conn.close()
-        default_message = (
-            f"Hi, {enrollment[1]}'s tuition invoice is ready. "
-            f"Amount due: ${suggested_amount}. Please open the invoice in the H-Music parent app when convenient."
-        )
         return f"""
         <html>
         <head>
@@ -41772,7 +41822,8 @@ def create_enrollment_invoice_route(enrollment_id):
 
                 <form method="POST">
                     Message to parent:<br>
-                    <textarea name="message_body" required>{default_message}</textarea>
+                    <textarea name="message_body" required>{escape(default_message)}</textarea>
+                    <input type="hidden" name="default_message_body" value="{escape(default_message, quote=True)}">
                     <br>
                     <button type="submit" name="action" value="create_only" class="secondary">Create invoice only</button>
                     <button type="submit" name="action" value="send">Send Invoice + Message</button>
@@ -41802,14 +41853,16 @@ def create_enrollment_invoice_route(enrollment_id):
     invoice = cursor.fetchone()
 
     parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
+    default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=invoice_id, amount=invoice[1]) if invoice else ""
 
     conn.commit()
     conn.close()
 
     if invoice and request.form.get("action") == "send":
         message_body = (request.form.get("message_body") or "").strip()
-        if not message_body:
-            message_body = f"Tuition invoice #{invoice_id} for {invoice[0]} is ready. Amount due: ${invoice[1]}."
+        posted_default_message = (request.form.get("default_message_body") or "").strip()
+        if not message_body or message_body == posted_default_message:
+            message_body = default_message
         create_invoice_message_event(
             invoice_id,
             "sent",
