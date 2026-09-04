@@ -35159,7 +35159,7 @@ COURSE_COLOR_PRESETS = [
     ("#8b5cf6", "Group Piano - Purple"),
     ("#c4b5fd", "Piano Group - Light Purple"),
     ("#93c5fd", "Private 30m - Light Blue"),
-    ("#1d4ed8", "Private 45m - Deep Blue"),
+    ("#1e3a8a", "Private 45m - Dark Blue"),
     ("#db2777", "Private 60m - Deep Pink"),
     ("#facc15", "Trial - Yellow"),
     ("#64748b", "Other - Slate"),
@@ -35180,7 +35180,7 @@ def course_color_from_rules(name="", duration=None, is_group=0):
         if duration_text == "30":
             return "#93c5fd"
         if duration_text == "45":
-            return "#1d4ed8"
+            return "#1e3a8a"
         if duration_text == "60":
             return "#db2777"
     if is_group or "group" in course_name:
