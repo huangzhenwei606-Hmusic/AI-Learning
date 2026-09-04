@@ -16290,7 +16290,8 @@ def create_package_invoice(name):
         conn.commit()
         conn.close()
 
-        if parent_id:
+        send_parent_notice = request.form.get("send_parent") == "1"
+        if parent_id and send_parent_notice:
             notify_parent_tuition_due(
                 student[0],
                 parent_id,
@@ -16532,7 +16533,8 @@ def create_package_invoice(name):
                 </div>
                 <div class="summary" id="invoicePreview"></div>
                 <div class="actions">
-                    <button type="submit">Create invoice</button>
+                    <button type="submit">Create invoice only</button>
+                    <button type="submit" name="send_parent" value="1">Create + send to parent</button>
                     <button type="submit" name="preview_parent" value="1">Create + preview parent page</button>
                     <a class="button secondary" href="/student/{quote(student[0])}">Cancel</a>
                 </div>
@@ -41678,7 +41680,8 @@ def create_enrollment_invoice_route(enrollment_id):
                     Message to parent:<br>
                     <textarea name="message_body" required>{default_message}</textarea>
                     <br>
-                    <button type="submit">Send Invoice + Message</button>
+                    <button type="submit" name="action" value="create_only" class="secondary">Create invoice only</button>
+                    <button type="submit" name="action" value="send">Send Invoice + Message</button>
                     <a class="button secondary" href="/enrollment/{enrollment_id}">Back</a>
                 </form>
             </div>
@@ -41709,7 +41712,7 @@ def create_enrollment_invoice_route(enrollment_id):
     conn.commit()
     conn.close()
 
-    if invoice:
+    if invoice and request.form.get("action") == "send":
         message_body = (request.form.get("message_body") or "").strip()
         if not message_body:
             message_body = f"Tuition invoice #{invoice_id} for {invoice[0]} is ready. Amount due: ${invoice[1]}."
