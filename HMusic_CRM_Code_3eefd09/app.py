@@ -12342,6 +12342,7 @@ def teacher_dashboard():
     ensure_v321_schema()
     ensure_calendar_lesson_panel_schema()
     ensure_teacher_permission_schema()
+    ensure_location_room_schema()
 
     teacher_name = session.get("teacher_name")
     teacher_perms = get_teacher_permissions(teacher_name)
