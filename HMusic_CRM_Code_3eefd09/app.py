@@ -1909,6 +1909,10 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     conn.close()
     room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in classrooms)
     course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
+    course_data_json = json.dumps([
+        {"id": int(c[0] or 0), "name": c[1] or "Course", "duration": safe_minutes(c[2], 30), "is_group": int(c[3] or 0)}
+        for c in course_types
+    ])
     student_datalist_options = ''.join(
         f'<option value="{escape(hmusic_student_parent_label(r[0], r[1]), quote=True)}"></option>'
         for r in students
@@ -1931,7 +1935,14 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option></select></label>
                 <label>Custom Count<input type="number" name="custom_lesson_count" min="1" max="260" placeholder="Only if package is custom"></label>
                 <label>Start Date<input type="date" name="start_date" value="{date.today().strftime('%Y-%m-%d')}" required></label>
-                <label>Course<select name="course_type_id" id="teacherCourseSelect" onchange="syncTeacherLessonFormat()" required>{course_options}</select></label>
+                <label>Course<select name="course_type_id" id="teacherCourseSelect" onchange="syncTeacherLessonFormat()" required>{course_options}</select><button class="teacher-course-duration-action" type="button" onclick="toggleTeacherAddScheduleDuration()">+ Add a new duration to this course</button></label>
+                <div class="teacher-duration-quick full" id="teacherAddScheduleDurationBox">
+                    <div class="duration-grid">
+                        <label>New Duration<input type="number" id="teacherAddScheduleNewDuration" min="15" max="240" step="5" placeholder="45"></label>
+                        <label>Format<select id="teacherAddScheduleNewDurationFormat"><option value="private">Private</option><option value="group">Group</option></select></label>
+                    </div>
+                    <button type="button" class="teacher-duration-submit" onclick="teacherAddScheduleCourseDuration()">Add to course catalog</button>
+                </div>
                 <label>Format<select name="lesson_format" id="teacherLessonFormat" onchange="syncTeacherLessonFormat()"><option value="private">Private</option><option value="group">Group</option></select></label>
                 <input type="hidden" name="billing_decision" value="existing_credits">
                 <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
@@ -1956,11 +1967,17 @@ def teacher_dashboard_add_schedule_content(teacher_name):
             .td-form label {{ display:block; color:var(--td-muted); font-weight:600; }}
             .td-form input,.td-form select,.td-form textarea {{ width:100%; margin-top:6px; border:1px solid var(--td-line); border-radius:8px; padding:10px 12px; font:inherit; color:var(--td-text); background:#fff; }}
             .td-form textarea {{ min-height:90px; resize:vertical; }} .td-form button {{ background:var(--td-blue); color:white; border:0; border-radius:8px; padding:11px 14px; font-weight:800; cursor:pointer; }}
+            .teacher-course-duration-action {{ width:100% !important; margin-top:8px; border:1px dashed #bfdbfe !important; background:#eff6ff !important; color:var(--td-blue) !important; border-radius:8px; padding:10px 12px !important; font-size:14px; font-weight:900; text-align:left; }}
+            .teacher-duration-quick {{ display:none; border:1px solid var(--td-line); border-radius:8px; background:#f8fafc; padding:12px; }}
+            .teacher-duration-quick.show {{ display:block; }}
+            .duration-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+            .teacher-duration-submit {{ width:100%; margin-top:10px; background:#fff !important; color:var(--td-blue) !important; border:1px solid #bfdbfe !important; }}
             .duration-request-card {{ margin-top:14px; }}
             .duration-request-card h2 {{ margin:0 0 6px; font-size:18px; }}
             .td-note {{ color:var(--td-muted); margin:0 0 14px; line-height:1.45; }}
         </style>
         <script>
+            const TEACHER_ADD_SCHEDULE_COURSES = {course_data_json};
             function teacherCourseIsGroup() {{
                 const select = document.getElementById('teacherCourseSelect');
                 if (!select || !select.options[select.selectedIndex]) return false;
@@ -1980,6 +1997,38 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 if (field) field.style.display = isGroup ? 'block' : 'none';
                 if (names && !isGroup) names.value = '';
                 if (student) student.required = !isGroup;
+            }}
+            function selectedTeacherAddScheduleCourse() {{
+                const select = document.getElementById('teacherCourseSelect');
+                const id = Number(select ? select.value : 0);
+                return TEACHER_ADD_SCHEDULE_COURSES.find(course => Number(course.id) === id) || null;
+            }}
+            function toggleTeacherAddScheduleDuration() {{
+                const box = document.getElementById('teacherAddScheduleDurationBox');
+                if (box) box.classList.toggle('show');
+                const course = selectedTeacherAddScheduleCourse();
+                const format = document.getElementById('teacherAddScheduleNewDurationFormat');
+                if (course && format) format.value = course.is_group ? 'group' : 'private';
+            }}
+            function teacherAddScheduleCourseDuration() {{
+                const course = selectedTeacherAddScheduleCourse();
+                const durationInput = document.getElementById('teacherAddScheduleNewDuration');
+                const duration = Number(durationInput ? durationInput.value : 0);
+                const lessonFormat = (document.getElementById('teacherAddScheduleNewDurationFormat') || {{value:'private'}}).value;
+                if (!course || !duration) {{
+                    alert('Choose a course and enter the new duration.');
+                    if (durationInput) durationInput.focus();
+                    return;
+                }}
+                fetch('/add_course_duration_quick', {{
+                    method:'POST',
+                    headers: {{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
+                    body: JSON.stringify({{course_type_id:course.id, duration:duration, lesson_format:lessonFormat}})
+                }}).then(async r => {{
+                    const d = await r.json().catch(() => ({{ok:false,error:'Server returned an unreadable response.'}}));
+                    if (!r.ok || !d.ok) throw new Error(d.error || 'Could not add duration.');
+                    window.location.reload();
+                }}).catch(e => alert(e.message));
             }}
             const teacherScheduleForm = document.querySelector('form[action="/add_schedule"]');
             if (teacherScheduleForm) teacherScheduleForm.addEventListener('submit', function(e) {{
@@ -12678,6 +12727,7 @@ def teacher_dashboard():
     .teacher-add-label{display:block;color:#667085;font-weight:900;font-size:12px;text-transform:uppercase;letter-spacing:0;margin-bottom:6px}
     .teacher-add-input,.teacher-add-select,.teacher-add-textarea{width:100%;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;font:inherit;font-weight:800;padding:11px 12px}
     .teacher-add-student-tools{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.teacher-add-secondary{border:1px solid #B8CCE3;background:#EFF6FF;color:var(--blue);border-radius:8px;padding:8px 10px;font:inherit;font-size:12px;font-weight:900;cursor:pointer}.teacher-add-secondary.active{background:var(--blue);border-color:var(--blue);color:#fff}.teacher-add-mode-note{display:none;margin-top:8px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:800;line-height:1.35}.teacher-add-mode-note.show{display:block}
+    .teacher-course-duration-action{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:9px;border:1px dashed #B8CCE3;background:#F8FBFF;color:var(--blue);border-radius:8px;padding:10px 12px;font:inherit;font-weight:900;cursor:pointer}.teacher-course-duration-action:hover{background:var(--blue-bg)}.teacher-duration-quick{display:none;margin-top:10px;padding:12px;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC}.teacher-duration-quick.show{display:block}
     .teacher-add-textarea{min-height:92px;resize:vertical;font-weight:700}
     .teacher-add-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #E5E7EB}
     .teacher-add-actions button,.teacher-add-actions a{border:1px solid #D9DEE8;border-radius:8px;padding:11px 16px;font:inherit;font-weight:900;text-decoration:none;cursor:pointer}
@@ -12941,6 +12991,14 @@ def teacher_dashboard():
                             <label>
                                 <span class="teacher-add-label">Course</span>
                                 <select class="teacher-add-select" name="course_type_id" id="teacherInlineCourseSelect" onchange="syncTeacherInlineAddFormat()" required>{teacher_calendar_course_options}</select>
+                                <button class="teacher-course-duration-action" type="button" onclick="toggleTeacherQuickDuration('teacherInlineDurationBox', 'teacherInlineCourseSelect', 'teacherInlineNewDurationFormat')">+ Add a new duration to this course</button>
+                                <div class="teacher-duration-quick" id="teacherInlineDurationBox">
+                                    <div class="panel-row">
+                                        <input class="panel-field" type="number" id="teacherInlineNewDuration" min="15" max="240" step="5" placeholder="New duration">
+                                        <select class="panel-field" id="teacherInlineNewDurationFormat"><option value="private">Private</option><option value="group">Group</option></select>
+                                    </div>
+                                    <button class="panel-action" style="margin-top:10px;width:100%;min-height:44px" type="button" onclick="teacherAddCourseDuration('teacherInlineCourseSelect', 'teacherInlineNewDuration', 'teacherInlineNewDurationFormat')">Add to course catalog</button>
+                                </div>
                             </label>
                             <label>
                                 <span class="teacher-add-label">Room</span>
@@ -12996,7 +13054,7 @@ def teacher_dashboard():
             <div class="lesson-panel-head"><button class="lesson-panel-close" type="button" onclick="closeTeacherLessonPanel()"><i class="ti ti-x"></i></button><div class="panel-status" id="tPanelStatus">Scheduled</div><h2 id="tPanelStudent">Student</h2><div class="panel-sub" id="tPanelCourse">Course</div></div>
             <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
             <div class="panel-section"><h3>Location & room</h3><select class="panel-field" id="tPanelRoomSelect" onchange="syncTeacherPanelRoom()">{teacher_calendar_room_options}</select></div>
-            <div class="panel-section"><h3>Course & duration</h3><select class="panel-field" id="tPanelCourseType" onchange="syncTeacherPanelCourse()">{teacher_calendar_course_options}</select><button class="panel-inline-link" type="button" onclick="toggleTeacherDurationRequest()">Request another option</button><div class="teacher-duration-request" id="tPanelDurationRequest"><div class="panel-row"><input class="panel-field" type="number" id="tPanelRequestedDuration" min="5" max="240" step="5" placeholder="Minutes"><select class="panel-field" id="tPanelRequestedFormat"><option value="private">Private</option><option value="group">Group</option></select></div><input class="panel-field" style="margin-top:10px" id="tPanelDurationReason" placeholder="Reason / note for manager"><button class="panel-action" style="margin-top:10px;width:100%;min-height:44px" type="button" onclick="teacherRequestCourseDuration()">Send request to manager</button></div></div>
+            <div class="panel-section"><h3>Course & duration</h3><select class="panel-field" id="tPanelCourseType" onchange="syncTeacherPanelCourse()">{teacher_calendar_course_options}</select><button class="teacher-course-duration-action" type="button" onclick="toggleTeacherQuickDuration('tPanelDurationRequest', 'tPanelCourseType', 'tPanelRequestedFormat')">+ Add a new duration to this course</button><div class="teacher-duration-quick" id="tPanelDurationRequest"><div class="panel-row"><input class="panel-field" type="number" id="tPanelRequestedDuration" min="15" max="240" step="5" placeholder="New duration"><select class="panel-field" id="tPanelRequestedFormat"><option value="private">Private</option><option value="group">Group</option></select></div><button class="panel-action" style="margin-top:10px;width:100%;min-height:44px" type="button" onclick="teacherAddCourseDuration('tPanelCourseType', 'tPanelRequestedDuration', 'tPanelRequestedFormat')">Add to course catalog</button></div></div>
         <div class="panel-section"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
@@ -13104,8 +13162,9 @@ def teacher_dashboard():
         function syncTeacherPanelRoom() {{ const room = teacherPanelRoomPayload(); if (activeTeacherLesson) {{ teacherPanelRoomChanged = teacherPanelRoomChanged || String(activeTeacherLesson.classroom || '') !== String(room.classroom || '') || Number(activeTeacherLesson.room_id || 0) !== Number(room.room_id || 0); activeTeacherLesson.classroom = room.classroom; activeTeacherLesson.room_id = room.room_id; activeTeacherLesson.location_id = room.location_id; activeTeacherLesson.location = room.location; }} const label = room.location ? room.location + ' - ' + room.classroom : (room.classroom || '-'); const display = document.getElementById('tPanelRoom'); if (display) display.textContent = label; }}
         function selectedTeacherPanelCourse() {{ const select = document.getElementById('tPanelCourseType'); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
         function syncTeacherPanelCourse() {{ const course = selectedTeacherPanelCourse(); if (!course) return; if (activeTeacherLesson) {{ teacherPanelCourseChanged = teacherPanelCourseChanged || Number(activeTeacherLesson.course_type_id || 0) !== Number(course.id || 0); activeTeacherLesson.course_type_id = course.id; activeTeacherLesson.course_name = course.name; activeTeacherLesson.duration = course.duration; activeTeacherLesson.is_group = course.is_group; }} document.getElementById('tPanelCourse').textContent = (course.name || 'Lesson') + ' · ' + ((activeTeacherLesson && activeTeacherLesson.teacher) || ''); document.getElementById('tPanelType').textContent = course.is_group ? 'Group lesson' : 'Private lesson'; if (typeof renderTeacherGroupRoster === 'function' && activeTeacherLesson) renderTeacherGroupRoster(activeTeacherLesson); }}
-        function toggleTeacherDurationRequest() {{ const box = document.getElementById('tPanelDurationRequest'); if (!box) return; box.classList.toggle('show'); const course = selectedTeacherPanelCourse(); const format = document.getElementById('tPanelRequestedFormat'); if (course && format) format.value = course.is_group ? 'group' : 'private'; }}
-        function teacherRequestCourseDuration() {{ const course = selectedTeacherPanelCourse(); const durationInput = document.getElementById('tPanelRequestedDuration'); const formatInput = document.getElementById('tPanelRequestedFormat'); const reasonInput = document.getElementById('tPanelDurationReason'); const duration = Number(durationInput ? durationInput.value : 0); if (!course || !duration) {{ alert('Choose a course and enter the requested minutes.'); return; }} const form = new FormData(); form.append('course_type_id', course.id); form.append('requested_duration', duration); form.append('lesson_format', formatInput ? formatInput.value : (course.is_group ? 'group' : 'private')); form.append('reason', reasonInput ? reasonInput.value : ''); fetch('/request_course_duration', {{method:'POST', headers:{{'Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:form}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Server returned an unreadable response.'}})); if (!r.ok || !d.ok) throw new Error(d.error || 'Request was not sent.'); if (durationInput) durationInput.value = ''; if (reasonInput) reasonInput.value = ''; const box = document.getElementById('tPanelDurationRequest'); if (box) box.classList.remove('show'); teacherPanelToast(d.message || 'Request sent to manager.'); }}).catch(e => alert(e.message)); }}
+        function teacherSelectedCourse(selectId) {{ const select = document.getElementById(selectId); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
+        function toggleTeacherQuickDuration(boxId, courseSelectId, formatId) {{ const box = document.getElementById(boxId); if (!box) return; box.classList.toggle('show'); const course = teacherSelectedCourse(courseSelectId); const format = document.getElementById(formatId); if (course && format) format.value = course.is_group ? 'group' : 'private'; }}
+        function teacherAddCourseDuration(courseSelectId, durationInputId, formatId) {{ const course = teacherSelectedCourse(courseSelectId); const durationInput = document.getElementById(durationInputId); const duration = Number(durationInput ? durationInput.value : 0); const lessonFormat = (document.getElementById(formatId) || {{value:'private'}}).value; if (!course || !duration) {{ alert('Choose a course and enter the new duration.'); if (durationInput) durationInput.focus(); return; }} fetch('/add_course_duration_quick', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify({{course_type_id:course.id, duration:duration, lesson_format:lessonFormat}})}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Server returned an unreadable response.'}})); if (!r.ok || !d.ok) throw new Error(d.error || 'Could not add duration.'); teacherPanelToast('Added ' + (d.label || 'new duration') + '.'); setTimeout(() => location.reload(), 800); }}).catch(e => alert(e.message)); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const text = await r.text(); let d = null; try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }} catch (_) {{ const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html'); d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh this page, then log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}}; }} if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
         function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; teacherPanelRoomChanged = false; document.getElementById('tPanelStudent').textContent = d.lesson.student || 'Student'; document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.location ? d.lesson.location + ' - ' + (d.lesson.classroom || '') : (d.lesson.classroom || '-'); document.getElementById('tPanelType').textContent = d.lesson.is_group ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const roomSelect = document.getElementById('tPanelRoomSelect'); if (roomSelect) {{ let matched = false; Array.from(roomSelect.options).forEach(opt => {{ const byId = Number(d.lesson.room_id || 0) && Number(opt.dataset.roomId || 0) === Number(d.lesson.room_id || 0); const byName = !matched && opt.value === (d.lesson.classroom || ''); if (!matched && (byId || byName)) {{ opt.selected = true; matched = true; }} }}); if (!matched && d.lesson.classroom) {{ const opt = document.createElement('option'); opt.value = d.lesson.classroom || ''; opt.textContent = d.lesson.location ? d.lesson.location + ' - ' + d.lesson.classroom : d.lesson.classroom; opt.dataset.roomId = d.lesson.room_id || ''; opt.dataset.locationId = d.lesson.location_id || ''; opt.dataset.locationName = d.lesson.location || ''; roomSelect.insertBefore(opt, roomSelect.firstChild); opt.selected = true; }} }} const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
@@ -35427,8 +35486,8 @@ def create_course_duration_from_base(cursor, course_type_id, requested_duration,
 
 @app.route("/add_course_duration_quick", methods=["POST"])
 def add_course_duration_quick():
-    if not require_owner():
-        return {"ok": False, "error": "Owner login required."}, 403
+    if not (require_owner() or require_teacher()):
+        return {"ok": False, "error": "Owner or teacher login required."}, 403
 
     ensure_v18_schema()
     data = request.get_json(silent=True) or {}
