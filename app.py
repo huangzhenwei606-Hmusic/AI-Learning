@@ -5079,6 +5079,9 @@ def edit_student(name):
 
     ensure_v27_schema()
     ensure_teacher_management_schema()
+    return_to = (request.form.get("return_to") or request.args.get("return_to") or "").strip()
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = ""
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     ensure_student_detail_schema(cursor)
@@ -5108,7 +5111,7 @@ def edit_student(name):
                 return f"""
                 <h1>Student name already exists</h1>
                 <p>{escape(updated_name)} already exists. If this is a duplicate, delete the duplicate record first or use a different name.</p>
-                <p><a href="/edit_student/{quote(name)}">Back to edit student</a></p>
+                <p><a href="/edit_student/{quote(name)}{('?' + urlencode({'return_to': return_to})) if return_to else ''}">Back to edit student</a></p>
                 """, 409
 
         def table_has_column(table_name, column_name):
@@ -5177,7 +5180,7 @@ def edit_student(name):
         conn.commit()
         conn.close()
 
-        return redirect(f"/student/{quote(updated_name)}")
+        return redirect(return_to or f"/student/{quote(updated_name)}")
 
     cursor.execute("""
     SELECT name, teacher, parent_name, parent_email, parent_phone, lessons_left,
@@ -5250,6 +5253,8 @@ def edit_student(name):
 
     student_name = student[0] or name
     student_url_name = quote(student_name)
+    back_href = return_to or f"/student/{student_url_name}"
+    return_to_input = f'<input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">' if return_to else ""
     lessons_left = lesson_count(student[5])
     current_teacher_edit_url = f"/edit_teacher/{current_teacher[0]}" if current_teacher else "/teachers"
     add_teacher_url = f"/add_teacher?{urlencode({'return_to': f'/edit_student/{student_url_name}#teacher-lessons'})}"
@@ -5471,7 +5476,7 @@ def edit_student(name):
                     <a href="/teachers">Teachers</a>
                 </div>
                 <div class="savebar">
-                    <a class="button" href="/student/{student_url_name}">Cancel</a>
+                    <a class="button" href="{escape(back_href, quote=True)}">Cancel</a>
                     <button class="primary" type="submit" form="editStudentForm">Save</button>
                 </div>
             </div>
@@ -5501,6 +5506,7 @@ def edit_student(name):
                 </section>
 
                 <form id="editStudentForm" method="POST">
+                    {return_to_input}
                     <section class="layout">
                         <nav class="side" aria-label="Student edit sections">
                             <a class="active" href="#profile">Profile</a>
@@ -7718,7 +7724,8 @@ def calendar():
                 warning = "" if (is_group_event or is_trial_hold) else warning
                 course_color = course_calendar_color(event[10], course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
-                student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
+                student_return_href = f"/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}"
+                student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}?{urlencode({'return_to': student_return_href})}"
                 name_html = (
                     f'<span class="ev-name">{escape(display_name)}</span>'
                     if (is_trial_hold or is_group_event)
@@ -8696,6 +8703,7 @@ def calendar():
         <div class="panel-section"><h3>Quick actions</h3><div class="panel-actions">
           <button class="panel-action" onclick="ownerReschedule()"><i class="ti ti-calendar"></i>Reschedule</button>
           <button class="panel-action" onclick="ownerMessageParent()"><i class="ti ti-message"></i>Message parent</button>
+          <button class="panel-action" onclick="ownerEditStudent()"><i class="ti ti-user-edit"></i>Edit student info</button>
           <button class="panel-action" onclick="ownerViewStudent()"><i class="ti ti-user"></i>View student</button>
           <button class="panel-action" onclick="ownerRenewPackage()"><i class="ti ti-refresh"></i>Renew package</button>
           <button class="panel-action" onclick="ownerDuplicateLesson()"><i class="ti ti-copy"></i>Duplicate lesson</button>
@@ -9033,6 +9041,13 @@ def calendar():
       if (!activePanelLesson) return;
       if (Number(activePanelLesson.is_group || 0)) {{ showPanelToast('Choose a student from the group roster.'); return; }}
       window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || '');
+    }}
+    function ownerEditStudent() {{
+      if (!activePanelLesson) return;
+      if (Number(activePanelLesson.trial_hold || 0)) {{ showPanelToast('Trial holds do not have a full student profile yet.'); return; }}
+      if (Number(activePanelLesson.is_group || 0)) {{ showPanelToast('Choose a student from the group roster.'); return; }}
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.href = '/edit_student/' + encodeURIComponent(activePanelLesson.student || '') + '?return_to=' + encodeURIComponent(returnTo);
     }}
     function ownerRenewPackage() {{
       if (!activePanelLesson) return;
