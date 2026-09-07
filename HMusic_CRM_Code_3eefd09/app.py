@@ -5560,12 +5560,15 @@ def update_student_course_credit(name):
     return credit_redirect("credit_saved")
 
 
-@app.route("/quick_add_course_credit/<name>", methods=["POST"])
+@app.route("/quick_add_course_credit/<name>", methods=["GET", "POST"])
 def quick_add_course_credit(name):
     if not require_owner():
         return redirect("/owner_login")
 
     ensure_v321_schema()
+
+    if request.method == "GET":
+        return redirect(f"/edit_student/{quote(name)}#course-credit-editor")
 
     return_to = (request.form.get("return_to") or "").strip()
     return_anchor = (request.form.get("return_anchor") or "").strip()
