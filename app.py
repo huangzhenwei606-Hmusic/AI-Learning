@@ -31523,16 +31523,18 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
     }
     fallback = (
         f"Hi {parent_name or 'Parent'},\n\n"
-        f"{student_name}'s tuition invoice is ready.\n\n"
+        f"This is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\n"
         f"Amount due: ${hmusic_money(invoice_amount)}\n"
         f"Due date: {context['due_date']}\n"
-        f"Package: {context['lesson_count']} lesson(s)\n\n"
-        f"Please open the H-Music Parent App to review payment options:\n"
+        f"Package: {context['lesson_count']} lesson(s)\n"
+        f"Coverage: {context['coverage']}\n"
+        f"Payment options: {context['payment_methods']}\n\n"
+        f"Please open the H-Music Parent App to review the invoice and choose a payment method:\n"
         f"{invoice_link}\n\n"
         "Thank you,\n"
         "H-Music"
     )
-    return hmusic_render_message_template("invoice_created", "email_body", context, fallback)
+    return hmusic_render_message_template("invoice_payment_reminder", "email_body", context, fallback)
 
 
 def hmusic_get_invoice_payment_reminder_target(cursor, invoice_id):
@@ -36909,6 +36911,7 @@ def inquiry_detail(inquiry_id):
             .wrap {{ max-width:1120px; margin:0 auto; }}
             .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); margin-bottom:18px; }}
             .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .top-actions {{ display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
             .btn, button {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border:0; border-radius:8px; text-decoration:none; font-weight:700; cursor:pointer; }}
             .secondary {{ background:#111827; }}
             .success {{ background:#16a34a; }}
@@ -36935,7 +36938,8 @@ def inquiry_detail(inquiry_id):
                 <h1>{v35_safe(inquiry['student_name'], 'New Student Lead')}</h1>
                 <p>New Student Intake #{inquiry_id}</p>
             </div>
-            <div>
+            <div class="top-actions">
+                <a class="btn secondary" href="/owner_dashboard">Back to Owner Home</a>
                 <a class="btn secondary" href="/new_students">Back to Intake</a>
                 <a class="btn" href="/new_student_intake">Manual Entry</a>
             </div>
