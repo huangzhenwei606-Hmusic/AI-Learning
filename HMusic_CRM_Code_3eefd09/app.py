@@ -14708,6 +14708,7 @@ def teacher_multi_select_action():
 
     updated = 0
     errors = []
+    teacher_cancel_notice_ids = []
     actor = f"teacher:{teacher_name}"
     for schedule_id in owned_ids:
         result = apply_lesson_status(
@@ -14718,6 +14719,8 @@ def teacher_multi_select_action():
         )
         if result.get("ok"):
             updated += 1
+            if target_status == "teacher_cancelled":
+                teacher_cancel_notice_ids.append(int(schedule_id))
         else:
             errors.append(result.get("error") or f"Lesson {schedule_id} failed")
 
@@ -14726,6 +14729,8 @@ def teacher_multi_select_action():
             "owner", "owner", notification_title, notification_body,
             "/calendar", related_type="teacher_multi_select", related_id=0
         )
+        for notice_schedule_id in teacher_cancel_notice_ids:
+            hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
 
     return {
         "ok": updated > 0,
@@ -14773,6 +14778,12 @@ def update_lesson_status():
         <p>{result["error"]}</p>
         <p><a href="{back_link}">{back_label}</a></p>
         """
+
+    if result.get("status") == "teacher_cancelled":
+        try:
+            hmusic_queue_teacher_cancel_parent_notice(int(schedule_id))
+        except Exception:
+            app.logger.exception("Lesson status saved, but teacher cancel parent notice queueing failed")
 
     if wants_json:
         return {
@@ -14929,6 +14940,82 @@ def calendar_queue_parent_notice(student_name, title, body, related_type, relate
     for parent_id in parent_ids:
         create_notification("parent", str(parent_id), title, body, "/parent_dashboard", related_type=related_type, related_id=related_id)
     return new_count
+
+
+def hmusic_queue_teacher_cancel_parent_notice(schedule_id):
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        COALESCE(student_name, ''),
+        COALESCE(lesson_date, ''),
+        COALESCE(lesson_time, ''),
+        COALESCE(teacher, ''),
+        COALESCE(classroom, '')
+    FROM schedule
+    WHERE id = ?
+    """, (schedule_id,))
+    lesson = cursor.fetchone()
+    if not lesson:
+        conn.close()
+        return 0
+    parent_ids = calendar_parent_ids(cursor, lesson[0])
+    parent_names = {}
+    if parent_ids:
+        placeholders = ",".join(["?"] * len(parent_ids))
+        cursor.execute(f"""
+        SELECT id, COALESCE(parent_name, '')
+        FROM parent_profiles
+        WHERE id IN ({placeholders})
+        """, parent_ids)
+        parent_names = {int(row[0]): row[1] for row in cursor.fetchall()}
+    conn.close()
+
+    queued = 0
+    for parent_id in parent_ids:
+        context = {
+            "parent_name": parent_names.get(int(parent_id), "") or "Parent",
+            "student_name": lesson[0],
+            "lesson_date": lesson[1],
+            "lesson_time": lesson[2],
+            "teacher_name": lesson[3],
+            "location": lesson[4],
+            "cancellation_status": "Teacher Cancel",
+            "credit_result": "No lesson credit deducted",
+            "fee_amount": "$0.00",
+        }
+        title = hmusic_render_message_template(
+            "cancellation_notice",
+            "email_subject",
+            context,
+            f"H-Music Lesson Cancellation Update for {lesson[0]}"
+        )
+        body = hmusic_render_message_template(
+            "cancellation_notice",
+            "email_body",
+            context,
+            (
+                f"Hi {context['parent_name']},\n\n"
+                f"This is an update about {lesson[0]}'s lesson on {lesson[1]} at {lesson[2]}.\n\n"
+                "Status: Teacher Cancel\n"
+                "Credit result: No lesson credit deducted\n"
+                "Fee: $0.00\n\n"
+                "Please open the H-Music Parent App for details.\n\n"
+                "Thank you,\n"
+                "H-Music"
+            )
+        )
+        create_notification(
+            "parent",
+            str(parent_id),
+            title,
+            body,
+            "/parent_dashboard",
+            related_type="teacher_cancelled_lesson",
+            related_id=int(schedule_id)
+        )
+        queued += 1
+    return queued
 
 
 def hmusic_practice_reminder_title(student_name):
@@ -15186,6 +15273,8 @@ def calendar_lesson_action():
 
     if action == "save":
         status = (data.get("status") or row[6] or "scheduled").strip()
+        original_status = row[6] or "scheduled"
+        teacher_cancel_notice_ids = []
         lesson_note = hmusic_parent_visible_lesson_note(data.get("lesson_note") or "")
         private_note = (data.get("private_note") or "").strip()
         homework_items = data.get("homework_items")
@@ -15255,6 +15344,8 @@ def calendar_lesson_action():
                     if int(status_schedule_id) == int(schedule_id):
                         return {"ok": False, "error": result.get("error", "Attendance was not updated")}, 400
                     status_errors.append(result.get("error", "Attendance was not updated"))
+                elif status == "teacher_cancelled":
+                    teacher_cancel_notice_ids.append(int(status_schedule_id))
             conn = sqlite3.connect("hmusic.db")
             cursor = conn.cursor()
             row = calendar_lesson_row(cursor, schedule_id)
@@ -15564,6 +15655,9 @@ def calendar_lesson_action():
                     queued += create_lesson_reminders_for_date(effective_lesson_date)
             if is_owner and low_balance_alert:
                 queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
+            if status == "teacher_cancelled" and original_status != "teacher_cancelled":
+                for notice_schedule_id in teacher_cancel_notice_ids:
+                    queued += hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
         except Exception:
             app.logger.exception("Calendar lesson saved, but parent notice queueing failed")
             notice_warning = " Parent notice queueing failed; the lesson changes were saved."
@@ -15715,10 +15809,13 @@ def calendar_lesson_action():
             conn.close()
             updated = 0
             first_error = ""
+            teacher_cancel_notice_ids = []
             for cancel_id in cancel_ids:
                 result = apply_lesson_status(cancel_id, status, actor=actor, reason=data.get("reason"))
                 if result.get("ok"):
                     updated += 1
+                    if status == "teacher_cancelled":
+                        teacher_cancel_notice_ids.append(int(cancel_id))
                 elif int(cancel_id) == int(schedule_id):
                     first_error = result.get("error") or "Lesson was not cancelled."
                     break
@@ -15727,10 +15824,21 @@ def calendar_lesson_action():
                 if updated > 1:
                     detail += f" {updated - 1} following lesson(s) were cancelled."
                 create_notification("owner", "owner", "Teacher cancelled lesson", detail, "/calendar", related_type="teacher_direct_cancel", related_id=int(schedule_id))
+            parent_notice_count = 0
+            notice_warning = ""
+            if teacher_cancel_notice_ids:
+                try:
+                    for notice_schedule_id in teacher_cancel_notice_ids:
+                        parent_notice_count += hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
+                except Exception:
+                    app.logger.exception("Teacher cancellation saved, but parent notice queueing failed")
+                    notice_warning = " Parent notice queueing failed."
             if first_error:
                 return {"ok": False, "message": first_error, "error": first_error}
             message = f"Cancelled {updated} lesson(s)." if updated > 1 else "Lesson cancelled."
-            return {"ok": updated > 0, "message": message, "error": "" if updated else "Lesson was not cancelled."}
+            if parent_notice_count:
+                message += f" {parent_notice_count} parent notice(s) queued."
+            return {"ok": updated > 0, "message": message + notice_warning, "error": "" if updated else "Lesson was not cancelled."}
         reason = (data.get("reason") or "Teacher requested cancellation from calendar panel").strip()
         thread_id = get_or_create_message_thread(f"Cancel request - {row[1]}", student_name=row[1], teacher_name=row[2], thread_type="teacher_cancel_request", related_type="schedule", related_id=int(schedule_id))
         add_message(thread_id, "teacher", row[2], "owner", f"Cancel request for {row[1]} on {row[3]} {row[4]}. Reason: {reason}")
