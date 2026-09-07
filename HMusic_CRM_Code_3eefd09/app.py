@@ -8423,7 +8423,25 @@ def calendar():
         c.display_color,
         COALESCE(s.course_type_name, ''),
         COALESCE(s.duration, 30),
-        COALESCE(st.lessons_left, 0),
+        COALESCE((
+            SELECT e.lessons_left
+            FROM enrollments e
+            WHERE e.student_name = s.student_name
+              AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+              AND (
+                (s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id)
+                OR (COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id)
+                OR (
+                    LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
+                    AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
+                )
+              )
+            ORDER BY
+              CASE WHEN s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id THEN 0 ELSE 1 END,
+              e.id DESC
+            LIMIT 1
+        ), st.lessons_left, 0),
         COALESCE(s.is_group, 0)
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
@@ -15075,7 +15093,25 @@ def calendar_lesson_row(cursor, schedule_id):
     SELECT
         s.id, s.student_name, s.teacher, s.lesson_date, s.lesson_time, COALESCE(s.classroom, ''),
         COALESCE(s.status, 'scheduled'), COALESCE(s.course_type_name, ''), COALESCE(s.schedule_type, ''),
-        COALESCE(s.package_type, ''), COALESCE(s.duration, 30), COALESCE(st.lessons_left, 0),
+        COALESCE(s.package_type, ''), COALESCE(s.duration, 30), COALESCE((
+            SELECT e.lessons_left
+            FROM enrollments e
+            WHERE e.student_name = s.student_name
+              AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+              AND (
+                (s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id)
+                OR (COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id)
+                OR (
+                    LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
+                    AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
+                )
+              )
+            ORDER BY
+              CASE WHEN s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id THEN 0 ELSE 1 END,
+              e.id DESC
+            LIMIT 1
+        ), st.lessons_left, 0),
         COALESCE(s.notes, ''), COALESCE(s.private_note, ''), COALESCE(s.homework_assignment, ''),
         COALESCE(s.parent_lesson_reminder_enabled, 0), COALESCE(s.practice_reminder_enabled, 0),
         COALESCE(s.low_balance_alert_enabled, 0), COALESCE(s.is_group, 0),
