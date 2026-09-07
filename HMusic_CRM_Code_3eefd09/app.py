@@ -34789,6 +34789,7 @@ def inquiry_detail(inquiry_id):
             .wrap {{ max-width:1120px; margin:0 auto; }}
             .panel {{ background:white; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(15,23,42,.08); margin-bottom:18px; }}
             .top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .top-actions {{ display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }}
             .btn, button {{ display:inline-block; padding:11px 16px; background:#4f46e5; color:white; border:0; border-radius:8px; text-decoration:none; font-weight:700; cursor:pointer; }}
             .secondary {{ background:#111827; }}
             .success {{ background:#16a34a; }}
@@ -34815,7 +34816,8 @@ def inquiry_detail(inquiry_id):
                 <h1>{v35_safe(inquiry['student_name'], 'New Student Lead')}</h1>
                 <p>New Student Intake #{inquiry_id}</p>
             </div>
-            <div>
+            <div class="top-actions">
+                <a class="btn secondary" href="/owner_dashboard">Back to Owner Home</a>
                 <a class="btn secondary" href="/new_students">Back to Intake</a>
                 <a class="btn" href="/new_student_intake">Manual Entry</a>
             </div>
@@ -37993,6 +37995,7 @@ def add_enrollment():
 
         invoice_id = None
         parent_id = None
+        invoice_message_body = ""
         if package_amount > 0:
             invoice_id = create_enrollment_invoice(
                 cursor,
@@ -38001,6 +38004,21 @@ def add_enrollment():
                 "Initial tuition invoice created from new enrollment."
             )
             parent_id = get_primary_parent_for_student(cursor, student_name)
+            invoice_message_body = hmusic_enrollment_invoice_message_body(
+                cursor,
+                (
+                    enrollment_id,
+                    student_name,
+                    course_type_name,
+                    teacher_name,
+                    final_price,
+                    package_amount,
+                    package_lessons,
+                    auto_renew_lessons,
+                ),
+                invoice_id=invoice_id,
+                amount=package_amount,
+            )
 
         conn.commit()
         conn.close()
@@ -38009,7 +38027,7 @@ def add_enrollment():
             create_invoice_message_event(
                 invoice_id,
                 "sent",
-                f"Hi, {student_name}'s new enrollment tuition invoice is ready. Amount due: ${package_amount}. Please open the invoice in the H-Music parent app when convenient.",
+                invoice_message_body,
                 parent_id=parent_id,
                 student_name=student_name,
                 amount=package_amount
@@ -39515,6 +39533,61 @@ def toggle_parent_payment_visibility(payment_id):
     return redirect("/enrollment_payments")
 
 
+def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, amount=None):
+    student_name = enrollment[1] or ""
+    course_name = enrollment[2] or "Tuition"
+    teacher_name = enrollment[3] or ""
+    lesson_count = enrollment[6] or enrollment[7] or 10
+    invoice_amount = amount if amount is not None else enrollment[5]
+    if invoice_amount is None or invoice_amount == 0:
+        invoice_amount = round((enrollment[4] or 0) * lesson_count, 2)
+
+    cursor.execute("""
+    SELECT COALESCE(parent_name, '')
+    FROM students
+    WHERE name = ?
+    """, (student_name,))
+    student_parent = cursor.fetchone()
+    parent_name = student_parent[0] if student_parent else ""
+
+    parent_id = get_primary_parent_for_student(cursor, student_name)
+    if parent_id and not parent_name:
+        cursor.execute("SELECT COALESCE(parent_name, '') FROM parent_profiles WHERE id = ?", (parent_id,))
+        parent_profile = cursor.fetchone()
+        parent_name = parent_profile[0] if parent_profile else ""
+
+    invoice_link = (
+        hmusic_public_app_url(f"/parent_invoice/{invoice_id}")
+        if invoice_id
+        else hmusic_public_app_url("/parent_dashboard#billing")
+    )
+    context = {
+        "parent_name": parent_name,
+        "student_name": student_name,
+        "invoice_id": invoice_id or "",
+        "amount": hmusic_money(invoice_amount),
+        "due_date": date.today().strftime("%Y-%m-%d"),
+        "invoice_link": invoice_link,
+        "lesson_count": hmusic_lesson_count_label(lesson_count),
+        "coverage": " · ".join([item for item in [course_name, teacher_name] if item]),
+        "payment_methods": "ACH bank payment, Zelle, PayPal",
+    }
+    fallback = (
+        f"Hi {parent_name or 'Parent'},\n\n"
+        f"This is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\n"
+        f"Amount due: ${hmusic_money(invoice_amount)}\n"
+        f"Due date: {context['due_date']}\n"
+        f"Package: {context['lesson_count']} lesson(s)\n"
+        f"Coverage: {context['coverage']}\n"
+        f"Payment options: {context['payment_methods']}\n\n"
+        f"Please open the H-Music Parent App to review the invoice and choose a payment method:\n"
+        f"{invoice_link}\n\n"
+        "Thank you,\n"
+        "H-Music"
+    )
+    return hmusic_render_message_template("invoice_payment_reminder", "email_body", context, fallback)
+
+
 @app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
 def create_enrollment_invoice_route(enrollment_id):
     if not require_owner():
@@ -39550,11 +39623,8 @@ def create_enrollment_invoice_route(enrollment_id):
         suggested_amount = round((enrollment[4] or 0) * suggested_lessons, 2)
 
     if request.method == "GET":
+        default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment)
         conn.close()
-        default_message = (
-            f"Hi, {enrollment[1]}'s tuition invoice is ready. "
-            f"Amount due: ${suggested_amount}. Please open the invoice in the H-Music parent app when convenient."
-        )
         return f"""
         <html>
         <head>
@@ -39585,7 +39655,8 @@ def create_enrollment_invoice_route(enrollment_id):
 
                 <form method="POST">
                     Message to parent:<br>
-                    <textarea name="message_body" required>{default_message}</textarea>
+                    <textarea name="message_body" required>{escape(default_message)}</textarea>
+                    <input type="hidden" name="default_message_body" value="{escape(default_message, quote=True)}">
                     <br>
                     <button type="submit" name="action" value="create_only" class="secondary">Create invoice only</button>
                     <button type="submit" name="action" value="send">Send Invoice + Message</button>
@@ -39615,14 +39686,16 @@ def create_enrollment_invoice_route(enrollment_id):
     invoice = cursor.fetchone()
 
     parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
+    default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=invoice_id, amount=invoice[1]) if invoice else ""
 
     conn.commit()
     conn.close()
 
     if invoice and request.form.get("action") == "send":
         message_body = (request.form.get("message_body") or "").strip()
-        if not message_body:
-            message_body = f"Tuition invoice #{invoice_id} for {invoice[0]} is ready. Amount due: ${invoice[1]}."
+        posted_default_message = (request.form.get("default_message_body") or "").strip()
+        if not message_body or message_body == posted_default_message:
+            message_body = default_message
         create_invoice_message_event(
             invoice_id,
             "sent",
