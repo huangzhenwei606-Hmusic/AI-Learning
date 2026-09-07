@@ -13129,13 +13129,19 @@ def teacher_dashboard():
                 form.addEventListener('submit', e => {{
                     e.preventDefault();
                     e.stopPropagation();
+                    const statusSelect = form.querySelector('select[name="status"]');
+                    const sendCancelNotice = statusSelect && statusSelect.value === 'teacher_cancelled'
+                        ? confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.')
+                        : false;
+                    let formData = new FormData(form);
+                    if (sendCancelNotice) formData.append('notify_parent_on_teacher_cancel', '1');
                     const button = form.querySelector('button[type="submit"]');
                     const originalText = button ? button.textContent : '';
                     if (button) {{ button.disabled = true; button.textContent = 'Saving'; }}
                     fetch(form.action, {{
                         method: 'POST',
                         headers: {{'Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
-                        body: new FormData(form)
+                        body: formData
                     }}).then(async r => {{
                         const text = await r.text();
                         let d = null;
@@ -13171,11 +13177,11 @@ def teacher_dashboard():
         function teacherPayload() {{ const course = selectedTeacherPanelCourse(); const room = teacherPanelRoomPayload(); return {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
-        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); return teacherLessonAction(teacherPayload()).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); const payload = teacherPayload(); if (activeTeacherStatus === 'teacher_cancelled' && activeTeacherLesson.status !== 'teacher_cancelled') payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); return teacherLessonAction(payload).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; const room = teacherPanelRoomPayload(); teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
-        function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? (teacherRescheduleScope === 'following' ? 'Cancel this and following lessons now?' : 'Cancel this lesson now?') : 'Send cancellation request to owner?'; if (!confirm(msg)) return; teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, cancel_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
+        function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? (teacherRescheduleScope === 'following' ? 'Cancel this and following lessons now?' : 'Cancel this lesson now?') : 'Send cancellation request to owner?'; if (!confirm(msg)) return; const payload = {{action:'cancel_request', schedule_id:activeTeacherLesson.id, cancel_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}; if (TEACHER_CAN_DIRECT_CANCEL) payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); teacherLessonAction(payload).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherDeleteLesson() {{ if (!activeTeacherLesson || !TEACHER_CAN_DELETE) return; const msg = teacherRescheduleScope === 'following' ? 'Delete this and following lessons from your calendar?' : 'Delete this lesson from your calendar?'; if (!confirm(msg)) return; teacherLessonAction({{action:'delete', schedule_id:activeTeacherLesson.id, delete_scope:teacherRescheduleScope}}).then(d => {{ teacherPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
 
@@ -13214,6 +13220,7 @@ def teacher_dashboard():
             const payload = {{action, schedule_ids: ids}};
             if (action === 'set_status') payload.status = document.getElementById('teacherMultiStatus').value;
             if (action === 'cancel_lessons' && !confirm('Cancel selected lessons?')) return;
+            if ((action === 'cancel_lessons') || (action === 'set_status' && payload.status === 'teacher_cancelled')) payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.');
             fetch('/teacher_multi_select_action', {{
                 method:'POST',
                 headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
@@ -14729,8 +14736,9 @@ def teacher_multi_select_action():
             "owner", "owner", notification_title, notification_body,
             "/calendar", related_type="teacher_multi_select", related_id=0
         )
-        for notice_schedule_id in teacher_cancel_notice_ids:
-            hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
+        if data.get("notify_parent_on_teacher_cancel"):
+            for notice_schedule_id in teacher_cancel_notice_ids:
+                hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
 
     return {
         "ok": updated > 0,
@@ -14779,7 +14787,7 @@ def update_lesson_status():
         <p><a href="{back_link}">{back_label}</a></p>
         """
 
-    if result.get("status") == "teacher_cancelled":
+    if result.get("status") == "teacher_cancelled" and request.form.get("notify_parent_on_teacher_cancel") == "1":
         try:
             hmusic_queue_teacher_cancel_parent_notice(int(schedule_id))
         except Exception:
@@ -15655,7 +15663,7 @@ def calendar_lesson_action():
                     queued += create_lesson_reminders_for_date(effective_lesson_date)
             if is_owner and low_balance_alert:
                 queued += calendar_queue_parent_notice(effective_student_name, "Low lesson balance", f"{effective_student_name}'s lesson package is running low. Please renew the package.", "low_balance_alert", int(schedule_id))
-            if status == "teacher_cancelled" and original_status != "teacher_cancelled":
+            if status == "teacher_cancelled" and original_status != "teacher_cancelled" and data.get("notify_parent_on_teacher_cancel"):
                 for notice_schedule_id in teacher_cancel_notice_ids:
                     queued += hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
         except Exception:
@@ -15826,7 +15834,7 @@ def calendar_lesson_action():
                 create_notification("owner", "owner", "Teacher cancelled lesson", detail, "/calendar", related_type="teacher_direct_cancel", related_id=int(schedule_id))
             parent_notice_count = 0
             notice_warning = ""
-            if teacher_cancel_notice_ids:
+            if teacher_cancel_notice_ids and data.get("notify_parent_on_teacher_cancel"):
                 try:
                     for notice_schedule_id in teacher_cancel_notice_ids:
                         parent_notice_count += hmusic_queue_teacher_cancel_parent_notice(notice_schedule_id)
