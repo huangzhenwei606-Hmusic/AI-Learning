@@ -162,6 +162,24 @@ def hmusic_teacher_student_rows(cursor, teacher_name=None, include_all=False):
     return cursor.fetchall()
 
 
+def hmusic_active_course_credit_rows(cursor, student_name):
+    cursor.execute("""
+    SELECT
+        COALESCE(course_type_name, 'Course'),
+        COALESCE(teacher_name, 'Unassigned'),
+        COALESCE(lessons_left, 0),
+        COALESCE(final_price, 0),
+        COALESCE(package_lessons, 0),
+        COALESCE(package_amount, 0),
+        COALESCE(status, 'active')
+    FROM enrollments
+    WHERE student_name = ?
+    AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+    ORDER BY course_type_name, teacher_name, id DESC
+    """, (student_name,))
+    return cursor.fetchall()
+
+
 def hmusic_parent_visible_lesson_note(value):
     text = str(value or "").strip()
     if not text:
@@ -27662,6 +27680,7 @@ def parent_dashboard():
         return redirect("/parent_login")
 
     ensure_v27_schema()
+    ensure_v19_schema()
 
     parent_id = session.get("parent_id")
     unread_messages = get_unread_message_count("parent", parent_id) if parent_id else 0
@@ -27706,6 +27725,9 @@ def parent_dashboard():
         conn.close()
         session.clear()
         return redirect("/parent_login")
+
+    course_credit_rows = hmusic_active_course_credit_rows(cursor, current_student)
+    course_credit_total = sum(float(row[2] or 0) for row in course_credit_rows)
 
     today = date.today().strftime("%Y-%m-%d")
 
@@ -28045,7 +28067,7 @@ def parent_dashboard():
         except Exception:
             next_lesson_pill = "Next"
 
-    renewal_copy = "Renew soon" if (student[3] or 0) <= 2 else "Lessons available"
+    renewal_copy = "Renew soon" if course_credit_total <= 2 else "Lessons available"
     notes_preview = lesson_note_cards
 
     weekday_header = "".join(f"<div>{d}</div>" for d in ["S", "M", "T", "W", "T", "F", "S"])
@@ -28176,7 +28198,7 @@ def parent_dashboard():
             </div>
             <div class="alerts">{tuition_alert}{notice_alert}{app_notification_alert}</div>
             <div class="kpis">
-                <section class="app-card"><div class="kpi-label">Lessons left</div><div class="kpi-value">{student[3]}</div><div class="kpi-sub">{renewal_copy}</div></section>
+                <section class="app-card"><div class="kpi-label">Lessons left</div><div class="kpi-value">{course_credit_total:g}</div><div class="kpi-sub">{renewal_copy}</div></section>
                 <section class="app-card kpi-next"><div class="kpi-label">Next lesson</div><div class="kpi-value">{next_lesson_day}</div><div class="kpi-sub">{next_lesson_time or next_lesson_teacher}</div></section>
             </div>
             <section class="app-card next-card">
@@ -28595,6 +28617,7 @@ def parent_credits():
         return redirect("/parent_login")
 
     ensure_parent_portal_feature_schema()
+    ensure_v19_schema()
     parent_id, linked_students, current_student = get_parent_context()
     requested_student = request.args.get("student_name")
     if requested_student and parent_can_access_student(parent_id, requested_student):
@@ -28606,8 +28629,8 @@ def parent_credits():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT lessons_left FROM students WHERE name = ?", (current_student,))
-    student_row = cursor.fetchone() or (0,)
+    course_credit_rows = hmusic_active_course_credit_rows(cursor, current_student)
+    lesson_credit_total = sum(float(row[2] or 0) for row in course_credit_rows)
     cursor.execute("""
     SELECT service_credits, makeup_credits, monetary_credits, notes, updated_at
     FROM student_credit_wallets
@@ -28645,17 +28668,22 @@ def parent_credits():
         f"<div class='list-row'><div><b>{escape(str(row[0]).replace('_', ' ').title())}</b><p class='muted'>{escape(str(row[1] or 'Date TBD'))} {escape(str(row[2] or ''))}</p></div><span class='pill warn'>{escape(str(row[3] or 'pending'))}</span></div>"
         for row in requests
     ) or "<p class='muted'>No booking or makeup requests yet.</p>"
+    course_credit_list = "".join(
+        f"<div class='list-row'><div><b>{escape(str(row[0] or 'Course'))}</b><p class='muted'>{escape(str(row[1] or 'Unassigned'))} · ${hmusic_money(row[3])}/lesson · {escape(str(row[6] or 'active'))}</p></div><span class='pill'>{float(row[2] or 0):g} left</span></div>"
+        for row in course_credit_rows
+    ) or "<p class='muted'>No active lesson credits yet.</p>"
 
     body = f"""
     <h1>Credits</h1>
     <p class="muted">{escape(str(current_student))}</p>
     <div class="actions" style="grid-template-columns:1fr 1fr; margin-bottom:12px;">{student_tabs}</div>
     <div class="grid-2">
-        <section class="app-card metric"><div class="metric-label">Lesson Credits</div><div class="metric-value">{student_row[0] or 0}</div><div class="metric-sub">Package balance</div></section>
+        <section class="app-card metric"><div class="metric-label">Lesson Credits</div><div class="metric-value">{lesson_credit_total:g}</div><div class="metric-sub">Course buckets total</div></section>
         <section class="app-card metric"><div class="metric-label">Service Credits</div><div class="metric-value">{wallet[0] or 0}</div><div class="metric-sub">Studio-issued service credit</div></section>
         <section class="app-card metric"><div class="metric-label">Makeup Credits</div><div class="metric-value">{wallet[1] or 0}</div><div class="metric-sub">Available makeup lessons</div></section>
         <section class="app-card metric"><div class="metric-label">Monetary Credits</div><div class="metric-value">${hmusic_money(wallet[2])}</div><div class="metric-sub">Money credit on account</div></section>
     </div>
+    <section class="app-card"><div class="section-head"><h2>Lesson Credits by Course</h2></div>{course_credit_list}</section>
     <section class="app-card"><div class="section-head"><h2>Recent Credit Activity</h2></div>{ledger_rows}</section>
     <section class="app-card"><div class="section-head"><h2>Requests</h2><a href="/parent_schedule">Schedule</a></div>{request_rows}</section>
     """
