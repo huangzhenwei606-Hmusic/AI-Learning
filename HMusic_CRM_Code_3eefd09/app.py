@@ -19779,7 +19779,7 @@ def get_student_teacher_names(cursor, student_name):
     return teachers
 
 
-def notify_thread_participants(thread_id, sender_role, sender_key, body):
+def notify_thread_participants(thread_id, sender_role, sender_key, body, message_id=None, sender_name=None):
     ensure_v29_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -19794,12 +19794,15 @@ def notify_thread_participants(thread_id, sender_role, sender_key, body):
     for role, key, is_observer in participants:
         if role == sender_role and str(key) == str(sender_key):
             continue
+        title = f"New message from {sender_name}" if sender_name else "New message"
         create_notification(
             role,
             str(key),
-            "New message",
+            title,
             body or "New attachment",
-            f"/message_thread/{thread_id}"
+            f"/message_thread/{thread_id}",
+            related_type="message",
+            related_id=message_id
         )
 
 
@@ -20452,6 +20455,10 @@ def save_message_attachments(message_id, files):
     conn.close()
 
 
+def hmusic_should_send_message_email_now(user_role, title):
+    return user_role == "parent" and "message" in (title or "").lower()
+
+
 def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True):
     ensure_v29_schema()
 
@@ -20537,7 +20544,7 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
         related_type=related_type,
         related_id=related_id
     )
-    queue_notification_delivery(
+    email_queue_id = queue_notification_delivery(
         user_role,
         user_key,
         title,
@@ -20547,6 +20554,11 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
         related_type=related_type,
         related_id=related_id
     )
+    if email_queue_id and hmusic_should_send_message_email_now(user_role, title):
+        try:
+            send_queued_email_now(email_queue_id)
+        except Exception:
+            app.logger.exception("Immediate message email delivery failed")
     if should_queue_sms_notification(title):
         queue_sms_if_available(
             user_role,
@@ -23721,7 +23733,14 @@ def new_parent_message():
 
             message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "owner", body or "")
             save_message_attachments(message_id, files)
-            notify_thread_participants(thread_id, "parent", str(parent_id), body or "Parent sent a message.")
+            notify_thread_participants(
+                thread_id,
+                "parent",
+                str(parent_id),
+                body or "Parent sent a message.",
+                message_id=message_id,
+                sender_name=session.get("parent_name", "Parent")
+            )
 
             conn.close()
             return redirect(f"/message_thread/{thread_id}")
@@ -23757,7 +23776,14 @@ def new_parent_message():
 
         message_id = add_message(thread_id, "parent", session.get("parent_name", "Parent"), "participants", body or "")
         save_message_attachments(message_id, files)
-        notify_thread_participants(thread_id, "parent", str(parent_id), body or "Parent sent a message.")
+        notify_thread_participants(
+            thread_id,
+            "parent",
+            str(parent_id),
+            body or "Parent sent a message.",
+            message_id=message_id,
+            sender_name=session.get("parent_name", "Parent")
+        )
 
         conn.close()
         return redirect(f"/message_thread/{thread_id}")
@@ -23947,7 +23973,15 @@ def new_teacher_message():
 
         message_id = add_message(thread_id, "teacher", teacher_name, "parent", body or "")
         save_message_attachments(message_id, files)
-        create_notification("parent", str(parent_id), "New teacher message", body or "Teacher sent a message.", f"/message_thread/{thread_id}")
+        create_notification(
+            "parent",
+            str(parent_id),
+            f"New message from {teacher_name}",
+            body or "Teacher sent a message.",
+            f"/message_thread/{thread_id}",
+            related_type="message",
+            related_id=message_id
+        )
 
         conn.close()
         return redirect(f"/message_thread/{thread_id}")
@@ -24087,7 +24121,14 @@ def message_thread(thread_id):
 
             message_id = add_message(thread_id, sender_role, sender_name, recipient_role, body or "")
             save_message_attachments(message_id, files)
-            notify_thread_participants(thread_id, sender_role, sender_key, body or "New attachment")
+            notify_thread_participants(
+                thread_id,
+                sender_role,
+                sender_key,
+                body or "New attachment",
+                message_id=message_id,
+                sender_name=sender_name
+            )
 
         return redirect(f"/message_thread/{thread_id}")
 
