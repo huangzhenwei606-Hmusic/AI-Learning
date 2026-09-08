@@ -1905,7 +1905,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
     classrooms = cursor.fetchall()
     cursor.execute("SELECT id, name, duration, is_group FROM course_types WHERE active = 1 ORDER BY name, duration")
     course_types = cursor.fetchall()
-    students = hmusic_teacher_student_rows(cursor, teacher_name)
+    students = hmusic_teacher_student_rows(cursor, teacher_name, include_all=True)
     conn.close()
     room_options = ''.join(f'<option value="{escape(r[0])}">{escape(r[0])}</option>' for r in classrooms)
     course_options = ''.join(f'<option value="{c[0]}">{escape(c[1] or "Course")} - {safe_minutes(c[2], 0)} mins - {"Group" if c[3] else "Single"}</option>' for c in course_types)
@@ -11314,7 +11314,7 @@ def add_schedule():
     student_rows = hmusic_teacher_student_rows(
         cursor,
         session.get("teacher_name") if require_teacher() and not require_owner() else None,
-        include_all=not (require_teacher() and not require_owner())
+        include_all=True
     )
 
     conn.close()
