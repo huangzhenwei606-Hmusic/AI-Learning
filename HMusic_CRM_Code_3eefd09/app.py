@@ -8428,17 +8428,9 @@ def calendar():
             FROM enrollments e
             WHERE e.student_name = s.student_name
               AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
-              AND (
-                (s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id)
-                OR (COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id)
-                OR (
-                    LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
-                    AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
-                )
-              )
+              AND LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
+              AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
             ORDER BY
-              CASE WHEN s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id THEN 0 ELSE 1 END,
-              CASE WHEN COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id THEN 0 ELSE 1 END,
               e.id DESC
             LIMIT 1
         ), st.lessons_left, 0),
@@ -15098,17 +15090,9 @@ def calendar_lesson_row(cursor, schedule_id):
             FROM enrollments e
             WHERE e.student_name = s.student_name
               AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
-              AND (
-                (s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id)
-                OR (COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id)
-                OR (
-                    LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
-                    AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
-                )
-              )
+              AND LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
+              AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
             ORDER BY
-              CASE WHEN s.enrollment_id IS NOT NULL AND e.id = s.enrollment_id THEN 0 ELSE 1 END,
-              CASE WHEN COALESCE(s.course_type_id, 0) != 0 AND e.course_type_id = s.course_type_id THEN 0 ELSE 1 END,
               e.id DESC
             LIMIT 1
         ), st.lessons_left, 0),
@@ -41680,6 +41664,7 @@ def ensure_production_schema():
 
     ensure_base_schema()
     ensure_teacher_management_schema()
+    ensure_v19_schema()
     ensure_v26_schema()
     ensure_v27_schema()
     ensure_v29_schema()
