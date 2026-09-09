@@ -18432,6 +18432,13 @@ def parent_admin(parent_id):
     if not student_options:
         student_options = '<option value="">No available students</option>'
 
+    new_child_teacher_options = '<option value="">Unassigned</option>'
+    for teacher_name in quick_credit_teachers:
+        new_child_teacher_options += (
+            f'<option value="{escape(str(teacher_name), quote=True)}">'
+            f'{escape(str(teacher_name))}</option>'
+        )
+
     activity_rows = ""
     for a in activities:
         activity_rows += f"""
@@ -18456,6 +18463,16 @@ def parent_admin(parent_id):
     ])
     if not quick_credit_course_options:
         quick_credit_course_options = '<option value="">No active courses</option>'
+
+    new_child_course_options = '<option value="">No course credit yet</option>' + quick_credit_course_options
+
+    family_notice_html = ""
+    if request.args.get("child_created") == "1":
+        family_notice_html = '<div class="credit-notice ok family-notice">New child added to this family.</div>'
+    elif request.args.get("child_linked_existing") == "1":
+        family_notice_html = '<div class="credit-notice ok family-notice">Existing student linked to this family.</div>'
+    elif request.args.get("child_error") == "1":
+        family_notice_html = '<div class="credit-notice danger family-notice">Could not create the child. Check the name, course, and credit fields.</div>'
 
     def family_course_type_options(current_course_type_id=None):
         html = ""
@@ -18787,6 +18804,7 @@ def parent_admin(parent_id):
             .explain {{ margin-top:10px; padding:9px 10px; border-radius:8px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:12px; font-weight:750; line-height:1.35; }}
             .stack {{ display:grid; gap:12px; }}
             .add-grid {{ display:grid; grid-template-columns:minmax(260px,1fr) 160px auto; gap:8px; align-items:end; }}
+            .new-child-grid {{ display:grid; grid-template-columns:minmax(180px,1.2fr) minmax(150px,1fr) minmax(120px,.7fr) minmax(170px,1fr) 110px auto; gap:8px; align-items:end; }}
             label {{ display:block; color:var(--muted); font-size:11px; font-weight:850; margin-bottom:4px; }}
             select, input {{ width:100%; min-height:34px; border:1px solid #d9dee8; border-radius:8px; background:#fff; color:var(--text); padding:0 9px; font:inherit; font-size:12px; font-weight:700; }}
             .button, button {{ min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); padding:0 11px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }}
@@ -18811,6 +18829,7 @@ def parent_admin(parent_id):
             .setup-empty {{ text-align:left; }}
             .setup-empty .button {{ margin-left:10px; }}
             .credit-notice {{ margin:12px 12px 0; border-radius:8px; padding:8px 10px; font-size:12px; font-weight:850; }}
+            .family-notice {{ margin:0; }}
             .credit-notice.ok {{ background:var(--green-soft); color:var(--green); }}
             .credit-notice.danger {{ background:var(--red-soft); color:var(--red); }}
             .credit-stepper {{ display:grid; grid-template-columns:30px 68px 30px; gap:5px; align-items:center; }}
@@ -18839,7 +18858,7 @@ def parent_admin(parent_id):
             .invoice-link {{ color:var(--blue-dark); font-weight:900; display:block; }}
             .invoice-link + span, td > span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
             @media (max-width:900px) {{
-                .topbar, .head, .layout, .add-grid {{ grid-template-columns:1fr; }}
+                .topbar, .head, .layout, .add-grid, .new-child-grid {{ grid-template-columns:1fr; }}
                 .tabs, .top-actions {{ justify-content:flex-start; }}
                 .quick-credit-add {{ grid-template-columns:1fr; }}
             }}
@@ -18914,6 +18933,7 @@ def parent_admin(parent_id):
                 </aside>
 
                 <div class="stack">
+                    {family_notice_html}
                     <section class="panel">
                         <div class="panel-head"><h2>Add existing student to this parent</h2><span>Fast link</span></div>
                         <div class="panel-body">
@@ -18941,6 +18961,42 @@ def parent_admin(parent_id):
                                     <span class="pill">Homework</span>
                                     <span class="pill">Invoices</span>
                                     <span class="pill">Messages</span>
+                                </div>
+                            </form>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Create new child for this parent</h2><span>Later enrollment</span></div>
+                        <div class="panel-body">
+                            <form method="POST" action="/create_parent_child/{parent[0]}">
+                                <div class="new-child-grid">
+                                    <div>
+                                        <label>Student name</label>
+                                        <input name="student_name" required placeholder="New child name">
+                                    </div>
+                                    <div>
+                                        <label>Teacher</label>
+                                        <select name="teacher_name">{new_child_teacher_options}</select>
+                                    </div>
+                                    <div>
+                                        <label>Relationship</label>
+                                        <select name="relationship">
+                                            <option value="Parent">Parent</option>
+                                            <option value="Mother">Mother</option>
+                                            <option value="Father">Father</option>
+                                            <option value="Guardian">Guardian</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label>Course</label>
+                                        <select name="course_type_id">{new_child_course_options}</select>
+                                    </div>
+                                    <div>
+                                        <label>Initial credits</label>
+                                        <input type="number" step="0.5" min="0" name="lessons_left" value="0">
+                                    </div>
+                                    <button class="primary" type="submit">Create child</button>
                                 </div>
                             </form>
                         </div>
@@ -19243,6 +19299,214 @@ def link_parent_student(parent_id):
     conn.close()
 
     return redirect(f"/parent_admin/{parent_id}")
+
+
+@app.route("/create_parent_child/<int:parent_id>", methods=["POST"])
+def create_parent_child(parent_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_student_detail_schema()
+    ensure_v27_schema()
+    ensure_v321_schema()
+    ensure_teacher_management_schema()
+
+    student_name = (request.form.get("student_name") or "").strip()
+    teacher_name = (request.form.get("teacher_name") or "").strip()
+    relationship = (request.form.get("relationship") or "Parent").strip() or "Parent"
+    course_type_id = request.form.get("course_type_id")
+    lessons_left = request.form.get("lessons_left")
+
+    if not student_name:
+        return redirect(f"/parent_admin/{parent_id}?child_error=1")
+
+    try:
+        course_type_id_int = int(course_type_id or 0)
+        lessons_left_value = float(lessons_left or 0)
+    except (TypeError, ValueError):
+        return redirect(f"/parent_admin/{parent_id}?child_error=1")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT parent_name, email, phone
+    FROM parent_profiles
+    WHERE id = ?
+    """, (parent_id,))
+    parent = cursor.fetchone()
+    if not parent:
+        conn.close()
+        return "<h1>Parent not found</h1>"
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    linked_existing = False
+    credit_error = False
+
+    try:
+        cursor.execute("""
+        SELECT name
+        FROM students
+        WHERE lower(trim(name)) = lower(trim(?))
+        LIMIT 1
+        """, (student_name,))
+        existing_student = cursor.fetchone()
+
+        if existing_student:
+            student_name = existing_student[0]
+            linked_existing = True
+            cursor.execute("""
+            UPDATE students
+            SET parent_name = COALESCE(NULLIF(parent_name, ''), ?),
+                parent_email = COALESCE(NULLIF(parent_email, ''), ?),
+                parent_phone = COALESCE(NULLIF(parent_phone, ''), ?)
+            WHERE name = ?
+            """, (parent[0], parent[1], parent[2], student_name))
+        else:
+            cursor.execute("""
+            INSERT INTO students (
+                name,
+                teacher,
+                parent_name,
+                parent_email,
+                parent_phone,
+                lessons_left
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                student_name,
+                teacher_name,
+                parent[0],
+                parent[1],
+                parent[2],
+                int(lessons_left_value or 0)
+            ))
+
+        sync_parent_profile_for_student(cursor, student_name, parent[0], parent[1], parent[2])
+
+        cursor.execute("""
+        INSERT OR IGNORE INTO parent_students (
+            parent_id,
+            student_name,
+            relationship,
+            active,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """, (parent_id, student_name, relationship, 1, now))
+
+        cursor.execute("""
+        UPDATE parent_students
+        SET relationship = ?,
+            active = 1
+        WHERE parent_id = ?
+        AND student_name = ?
+        """, (relationship, parent_id, student_name))
+
+        if course_type_id_int and lessons_left_value > 0:
+            cursor.execute("""
+            SELECT
+                id,
+                name,
+                duration,
+                student_billing_method,
+                student_price,
+                teacher_billing_method,
+                teacher_pay
+            FROM course_types
+            WHERE id = ?
+            AND COALESCE(active, 1) = 1
+            """, (course_type_id_int,))
+            course = cursor.fetchone()
+            if course:
+                final_price = float(course[4] or 0)
+                teacher_pay_amount = float(course[6] or 0)
+                package_lessons = lessons_left_value
+                package_amount = round(final_price * package_lessons, 2)
+                cursor.execute("""
+                INSERT INTO enrollments (
+                    student_name,
+                    course_type_id,
+                    course_type_name,
+                    teacher_name,
+                    duration,
+                    student_billing_method,
+                    base_price,
+                    discount_type,
+                    discount_value,
+                    final_price,
+                    teacher_billing_method,
+                    teacher_rate,
+                    teacher_pay_amount,
+                    lessons_left,
+                    status,
+                    notes,
+                    start_date,
+                    package_amount,
+                    package_lessons,
+                    auto_renew_enabled,
+                    auto_renew_lessons,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    student_name,
+                    course[0],
+                    course[1],
+                    teacher_name,
+                    course[2],
+                    course[3],
+                    course[4],
+                    "None",
+                    0,
+                    final_price,
+                    course[5],
+                    course[6],
+                    teacher_pay_amount,
+                    lessons_left_value,
+                    "active",
+                    "Created from family workspace.",
+                    date.today().isoformat(),
+                    package_amount,
+                    package_lessons,
+                    0,
+                    package_lessons or 10,
+                    now,
+                    now
+                ))
+            else:
+                credit_error = True
+
+        cursor.execute("""
+        INSERT INTO parent_activity_logs (
+            parent_id,
+            student_name,
+            action_type,
+            description,
+            related_schedule_id,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            parent_id,
+            student_name,
+            "owner_create_family_child" if not linked_existing else "owner_link_student",
+            f"Owner {'linked existing student' if linked_existing else 'created new student'} {student_name} from family workspace.",
+            None,
+            now
+        ))
+
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        conn.close()
+        return redirect(f"/parent_admin/{parent_id}?child_error=1")
+
+    conn.close()
+    flag = "child_linked_existing" if linked_existing else "child_created"
+    extra = "&credit_error=1#family-credits" if credit_error else ""
+    return redirect(f"/parent_admin/{parent_id}?{flag}=1{extra}")
 
 
 @app.route("/unlink_parent_student/<int:link_id>", methods=["POST"])
