@@ -4569,42 +4569,79 @@ def add_student():
     if not require_owner():
         return redirect("/owner_login")
 
+    ensure_student_detail_schema()
     ensure_v27_schema()
+    ensure_teacher_management_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
     if request.method == "POST":
-        name = request.form.get("name")
-        teacher = request.form.get("teacher")
-        parent_name = request.form.get("parent_name")
-        parent_email = request.form.get("parent_email")
-        parent_phone = request.form.get("parent_phone")
+        name = (request.form.get("name") or "").strip()
+        teacher = (request.form.get("teacher") or "").strip()
+        parent_name = (request.form.get("parent_name") or "").strip()
+        parent_email = (request.form.get("parent_email") or "").strip()
+        parent_phone = (request.form.get("parent_phone") or "").strip()
         lessons_left = request.form.get("lessons_left") or 0
 
-        cursor.execute("""
-        INSERT INTO students (
-            name,
-            teacher,
-            parent_name,
-            parent_email,
-            parent_phone,
-            lessons_left
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            name,
-            teacher,
-            parent_name,
-            parent_email,
-            parent_phone,
-            int(float(lessons_left or 0))
-        ))
+        if not name:
+            conn.close()
+            return """
+            <h1>Student name is required</h1>
+            <p>Please enter a student name before creating the record.</p>
+            <p><a href="/add_student">Back to Add Student</a></p>
+            """, 400
 
-        sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
-        conn.commit()
-        conn.close()
+        try:
+            lessons_left_value = int(float(lessons_left or 0))
+        except (TypeError, ValueError):
+            lessons_left_value = 0
 
-        return redirect(f"/student/{name}")
+        cursor.execute("SELECT name FROM students WHERE lower(trim(name)) = lower(trim(?)) LIMIT 1", (name,))
+        existing_student = cursor.fetchone()
+        if existing_student:
+            conn.close()
+            existing_url = quote(existing_student[0], safe="")
+            return f"""
+            <h1>Student already exists</h1>
+            <p>{escape(existing_student[0])} is already in Students. Open that profile instead of creating a duplicate.</p>
+            <p><a href="/student/{existing_url}">Open existing student</a> | <a href="/add_student">Back to Add Student</a></p>
+            """, 409
+
+        try:
+            cursor.execute("""
+            INSERT INTO students (
+                name,
+                teacher,
+                parent_name,
+                parent_email,
+                parent_phone,
+                lessons_left
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                name,
+                teacher,
+                parent_name,
+                parent_email,
+                parent_phone,
+                lessons_left_value
+            ))
+
+            sync_parent_profile_for_student(cursor, name, parent_name, parent_email, parent_phone)
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            conn.close()
+            return f"""
+            <h1>Student already exists</h1>
+            <p>{escape(name)} is already in Students. Please open the existing profile or use a different name.</p>
+            <p><a href="/students">Students</a> | <a href="/add_student">Back to Add Student</a></p>
+            """, 409
+        finally:
+            if conn:
+                conn.close()
+
+        return redirect(f"/student/{quote(name, safe='')}")
 
     cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
     teachers = cursor.fetchall()
