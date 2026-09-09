@@ -9185,6 +9185,7 @@ def calendar():
             .panel-toggle{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0}}
             .panel-toggle strong{{display:block;color:var(--text);font-size:15px}} .panel-toggle span{{display:block;color:var(--muted);font-size:12px;margin-top:2px}}
             .panel-toggle input{{width:42px;height:24px;accent-color:var(--blue)}}
+            .reminder-scope-label{{display:block;margin-top:10px}}
             .panel-mini-note{{margin-top:8px;color:var(--muted);font-size:12px;font-weight:800}}
             .panel-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
             .panel-action{{min-height:54px;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
@@ -9590,7 +9591,8 @@ def calendar():
           <label class="panel-toggle"><span><strong>24h before lesson</strong><span>Email or SMS to parent</span></span><input type="checkbox" id="panelPreReminder"></label>
           <label class="panel-toggle"><span><strong>Practice reminder after lesson</strong><span>2h after lesson · includes homework</span></span><input type="checkbox" id="panelPracticeReminder"></label>
           <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
-          <div class="panel-mini-note">Reminder choices apply only to this lesson.</div>
+          <label class="reminder-scope-label"><span class="detail-label">Apply reminder to</span><select class="panel-field" id="panelReminderScope"><option value="following">This recurring lesson line</option><option value="once">Only this lesson</option></select></label>
+          <div class="panel-mini-note">Reminder settings are separate from schedule and billing changes.</div>
         </div>
         <details class="panel-details" id="panelDetailsBilling" open>
           <summary>Edit schedule and billing <span class="panel-details-scope">applies to this lesson</span></summary>
@@ -9728,6 +9730,7 @@ def calendar():
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
     let panelDetailBaseline = null;
+    let panelReminderBaseline = null;
     function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
     function statusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
@@ -9820,17 +9823,29 @@ def calendar():
       const current = panelDetailValues();
       return Object.keys(current).some(key => String(current[key] ?? '') !== String(panelDetailBaseline[key] ?? ''));
     }}
+    function panelReminderValues() {{
+      return {{
+        parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked,
+        practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked,
+        low_balance_alert_enabled:document.getElementById('panelLowBalance').checked
+      }};
+    }}
+    function panelRemindersChanged() {{
+      if (!panelReminderBaseline) return false;
+      const current = panelReminderValues();
+      return Object.keys(current).some(key => Boolean(current[key]) !== Boolean(panelReminderBaseline[key]));
+    }}
     function panelSavePayload() {{
       const detailValues = panelDetailValues();
+      const reminderValues = panelReminderValues();
       return {{
         action:'save',
         schedule_id:activePanelLesson.id,
         status:activePanelStatus,
         lesson_note:document.getElementById('panelLessonNote').value,
         homework:document.getElementById('panelHomework').value,
-        parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked,
-        practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked,
-        low_balance_alert_enabled:document.getElementById('panelLowBalance').checked,
+        ...reminderValues,
+        reminder_scope:panelRemindersChanged() ? document.getElementById('panelReminderScope').value : 'once',
         detail_scope:panelDetailsChanged() ? document.getElementById('panelDetailScope').value : 'once',
         ...detailValues
       }};
@@ -10421,6 +10436,7 @@ def calendar():
       setValue('panelBillingBasis', methodToBillingBasis(lesson.student_billing_method));
       setValue('panelStudentRate', Number(lesson.student_price || lesson.student_charge_amount || 0).toFixed(2));
       setValue('panelBillingDecision', lesson.billing_decision || 'existing_credits');
+      setValue('panelReminderScope', 'following');
       setValue('panelDetailScope', 'once');
       const locationSelect = document.getElementById('panelDetailLocation');
       if (locationSelect) {{
@@ -10434,6 +10450,7 @@ def calendar():
       updatePanelPackageFields();
       updatePanelChargePreview();
       panelDetailBaseline = panelDetailValues();
+      panelReminderBaseline = panelReminderValues();
     }}
     function weekdayName(dateStr) {{
       const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -15388,6 +15405,9 @@ def calendar_lesson_action():
         parent_reminder = 1 if data.get("parent_lesson_reminder_enabled") else 0
         practice_reminder = 1 if data.get("practice_reminder_enabled") else 0
         low_balance_alert = 1 if data.get("low_balance_alert_enabled") else 0
+        reminder_scope = (data.get("reminder_scope") or "once").strip()
+        reminder_scope = reminder_scope if reminder_scope in {"once", "following"} else "once"
+        reminder_following_ids = calendar_following_lesson_ids(cursor, row, schedule_id) if is_owner and reminder_scope == "following" else []
         detail_update = {}
         teacher_change_scope = (data.get("change_scope") or data.get("scope") or "once").strip()
         teacher_change_scope = teacher_change_scope if teacher_change_scope in {"once", "following"} else "once"
@@ -15697,6 +15717,24 @@ def calendar_lesson_action():
                     )
                     for following_id in following_ids
                 ])
+            if reminder_following_ids:
+                cursor.executemany("""
+                UPDATE schedule
+                SET parent_lesson_reminder_enabled = ?,
+                    practice_reminder_enabled = ?,
+                    low_balance_alert_enabled = ?,
+                    owner_calendar_updated_at = ?
+                WHERE id = ?
+                """, [
+                    (
+                        parent_reminder,
+                        practice_reminder,
+                        low_balance_alert,
+                        now,
+                        reminder_following_id,
+                    )
+                    for reminder_following_id in reminder_following_ids
+                ])
         else:
             update_ids = [int(schedule_id)] + teacher_following_ids
             placeholders = ",".join(["?"] * len(update_ids))
@@ -15765,10 +15803,14 @@ def calendar_lesson_action():
             app.logger.exception("Calendar lesson saved, but parent notice queueing failed")
             notice_warning = " Parent notice queueing failed; the lesson changes were saved."
         scope_count = len(following_ids) if is_owner and detail_update else 0
+        reminder_scope_count = len(reminder_following_ids) if is_owner else 0
         if not is_owner and teacher_following_ids:
             return {"ok": True, "message": f"Saved this lesson and {len(teacher_following_ids)} following lesson(s).{notice_warning}"}
         if scope_count:
-            return {"ok": True, "message": f"Saved this lesson and {scope_count} following lesson(s).{notice_warning}"}
+            reminder_text = f" Reminder settings updated for {reminder_scope_count} following lesson(s)." if reminder_scope_count else ""
+            return {"ok": True, "message": f"Saved this lesson and {scope_count} following lesson(s).{reminder_text}{notice_warning}"}
+        if reminder_scope_count:
+            return {"ok": True, "message": f"Saved reminder settings for this lesson and {reminder_scope_count} following lesson(s).{notice_warning}"}
         return {"ok": True, "message": (f"Saved. {queued} parent notice(s) queued." if queued else "Saved.") + notice_warning}
 
     if action == "reschedule":
