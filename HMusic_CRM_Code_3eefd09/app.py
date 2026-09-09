@@ -18282,7 +18282,7 @@ def parent_admin(parent_id):
 
     cursor.execute("""
     SELECT ps.id, ps.student_name, ps.relationship, ps.active, ps.created_at,
-           COALESCE(s.teacher, ''), COALESCE(s.parent_email, '')
+           COALESCE(s.teacher, ''), COALESCE(s.parent_email, ''), COALESCE(s.parent_phone, '')
     FROM parent_students ps
     LEFT JOIN students s ON s.name = ps.student_name
     WHERE ps.parent_id = ?
@@ -18384,6 +18384,12 @@ def parent_admin(parent_id):
     for s in linked_students:
         status = "Active" if s[3] == 1 else "Hidden"
         status_class = "good" if s[3] == 1 else "neutral"
+        profile_email = (s[6] or "").strip()
+        current_parent_email = (parent[2] or "").strip()
+        child_contact = current_parent_email or (parent[3] or "Parent account")
+        profile_email_note = ""
+        if profile_email and current_parent_email and profile_email.lower() != current_parent_email.lower():
+            profile_email_note = f"<span class='contact-warning'>Profile primary: {escape(profile_email)}</span>"
         unlink_action = ""
         if s[3] == 1:
             unlink_action = f"""
@@ -18397,7 +18403,8 @@ def parent_admin(parent_id):
             <td>
                 <div class="child-cell">
                     <a href="/student/{quote(str(s[1] or ''), safe='')}">{escape(str(s[1] or '-'))}</a>
-                    <span>{escape(str(s[6] or 'Student record'))}</span>
+                    <span>{escape(str(child_contact))}</span>
+                    {profile_email_note}
                 </div>
             </td>
             <td>{escape(str(s[5] or 'Unassigned'))}</td>
@@ -18469,8 +18476,8 @@ def parent_admin(parent_id):
     family_notice_html = ""
     if request.args.get("child_created") == "1":
         family_notice_html = '<div class="credit-notice ok family-notice">New child added to this family.</div>'
-    elif request.args.get("child_linked_existing") == "1":
-        family_notice_html = '<div class="credit-notice ok family-notice">Existing student linked to this family.</div>'
+    elif request.args.get("child_exists") == "1":
+        family_notice_html = '<div class="credit-notice danger family-notice">A student with that name already exists. Use Add existing student only if it is the same child, or create the new child with a more specific name.</div>'
     elif request.args.get("child_error") == "1":
         family_notice_html = '<div class="credit-notice danger family-notice">Could not create the child. Check the name, course, and credit fields.</div>'
 
@@ -18851,6 +18858,7 @@ def parent_admin(parent_id):
             .child-cell a {{ color:var(--text); font-weight:900; display:block; }}
             .child-cell a:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
             .child-cell span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
+            .child-cell .contact-warning {{ color:#b45309; }}
             .access-pills {{ display:flex; gap:4px; flex-wrap:wrap; }}
             .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
@@ -19340,7 +19348,6 @@ def create_parent_child(parent_id):
         return "<h1>Parent not found</h1>"
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    linked_existing = False
     credit_error = False
 
     try:
@@ -19353,34 +19360,27 @@ def create_parent_child(parent_id):
         existing_student = cursor.fetchone()
 
         if existing_student:
-            student_name = existing_student[0]
-            linked_existing = True
-            cursor.execute("""
-            UPDATE students
-            SET parent_name = COALESCE(NULLIF(parent_name, ''), ?),
-                parent_email = COALESCE(NULLIF(parent_email, ''), ?),
-                parent_phone = COALESCE(NULLIF(parent_phone, ''), ?)
-            WHERE name = ?
-            """, (parent[0], parent[1], parent[2], student_name))
-        else:
-            cursor.execute("""
-            INSERT INTO students (
-                name,
-                teacher,
-                parent_name,
-                parent_email,
-                parent_phone,
-                lessons_left
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                student_name,
-                teacher_name,
-                parent[0],
-                parent[1],
-                parent[2],
-                int(lessons_left_value or 0)
-            ))
+            conn.close()
+            return redirect(f"/parent_admin/{parent_id}?child_exists=1")
+
+        cursor.execute("""
+        INSERT INTO students (
+            name,
+            teacher,
+            parent_name,
+            parent_email,
+            parent_phone,
+            lessons_left
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            student_name,
+            teacher_name,
+            parent[0],
+            parent[1],
+            parent[2],
+            int(lessons_left_value or 0)
+        ))
 
         sync_parent_profile_for_student(cursor, student_name, parent[0], parent[1], parent[2])
 
@@ -19491,8 +19491,8 @@ def create_parent_child(parent_id):
         """, (
             parent_id,
             student_name,
-            "owner_create_family_child" if not linked_existing else "owner_link_student",
-            f"Owner {'linked existing student' if linked_existing else 'created new student'} {student_name} from family workspace.",
+            "owner_create_family_child",
+            f"Owner created new student {student_name} from family workspace.",
             None,
             now
         ))
@@ -19504,9 +19504,8 @@ def create_parent_child(parent_id):
         return redirect(f"/parent_admin/{parent_id}?child_error=1")
 
     conn.close()
-    flag = "child_linked_existing" if linked_existing else "child_created"
     extra = "&credit_error=1#family-credits" if credit_error else ""
-    return redirect(f"/parent_admin/{parent_id}?{flag}=1{extra}")
+    return redirect(f"/parent_admin/{parent_id}?child_created=1{extra}")
 
 
 @app.route("/unlink_parent_student/<int:link_id>", methods=["POST"])
