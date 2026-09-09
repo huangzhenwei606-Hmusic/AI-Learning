@@ -62,6 +62,7 @@ HMUSIC_TIMEZONE = ZoneInfo(HMUSIC_TIMEZONE_NAME) if ZoneInfo else None
 DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
+_v17_schema_ready = False
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
 _sqlite_connect = sqlite3._hmusic_original_connect
@@ -33415,6 +33416,10 @@ def v35_add_column_if_missing(cursor, table_name, column_name, column_sql):
 
 
 def ensure_v17_schema():
+    global _v17_schema_ready
+    if _v17_schema_ready:
+        return
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -33489,9 +33494,13 @@ def ensure_v17_schema():
     cursor.execute("UPDATE inquiries SET lead_temperature = 'Warm' WHERE lead_temperature IS NULL OR lead_temperature = ''")
     cursor.execute("UPDATE inquiries SET follow_up_status = 'New' WHERE follow_up_status IS NULL OR follow_up_status = ''")
     cursor.execute("UPDATE inquiries SET owner_verified = 0 WHERE owner_verified IS NULL")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_inquiries_updated_at ON inquiries(updated_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_inquiries_trial_status ON inquiries(trial_status)")
 
     conn.commit()
     conn.close()
+    _v17_schema_ready = True
 
 
 def build_v35_trial_plan(data):
@@ -34536,7 +34545,36 @@ def inquiries():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM inquiries ORDER BY datetime(updated_at) DESC, id DESC")
+    cursor.execute("""
+    SELECT
+        id,
+        student_name,
+        parent_name,
+        parent_email,
+        phone,
+        age,
+        instrument,
+        source,
+        status,
+        trial_date,
+        trial_time,
+        notes,
+        updated_at,
+        program_interest,
+        preferred_days,
+        preferred_times,
+        trial_status,
+        lead_temperature,
+        follow_up_status,
+        owner_verified,
+        trial_duration,
+        trial_fee,
+        payment_method,
+        existing_family
+    FROM inquiries
+    ORDER BY COALESCE(updated_at, '') DESC, id DESC
+    LIMIT 300
+    """)
     rows = cursor.fetchall()
     conn.close()
     public_trial_url = request.host_url.rstrip("/") + "/trial"
