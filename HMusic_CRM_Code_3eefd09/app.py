@@ -18477,7 +18477,16 @@ def parent_admin(parent_id):
     if request.args.get("child_created") == "1":
         family_notice_html = '<div class="credit-notice ok family-notice">New child added to this family.</div>'
     elif request.args.get("child_exists") == "1":
-        family_notice_html = '<div class="credit-notice danger family-notice">A student with that name already exists. Use Add existing student only if it is the same child, or create the new child with a more specific name.</div>'
+        duplicate_name = (request.args.get("duplicate_name") or "That student").strip()
+        parent_suffix = (parent[1] or parent[2] or "family").strip()
+        suggested_name = f"{duplicate_name} ({parent_suffix})"
+        family_notice_html = (
+            '<div class="credit-notice danger family-notice">'
+            f'{escape(duplicate_name)} already exists. Use Add existing student only if it is the same child. '
+            f'For a different child with the same name, create a unique profile name like '
+            f'<b>{escape(suggested_name)}</b>.'
+            '</div>'
+        )
     elif request.args.get("child_error") == "1":
         family_notice_html = '<div class="credit-notice danger family-notice">Could not create the child. Check the name, course, and credit fields.</div>'
 
@@ -18980,8 +18989,8 @@ def parent_admin(parent_id):
                             <form method="POST" action="/create_parent_child/{parent[0]}">
                                 <div class="new-child-grid">
                                     <div>
-                                        <label>Student name</label>
-                                        <input name="student_name" required placeholder="New child name">
+                                        <label>Student profile name</label>
+                                        <input name="student_name" required placeholder="Emma Shi (Feiwen)">
                                     </div>
                                     <div>
                                         <label>Teacher</label>
@@ -19007,6 +19016,9 @@ def parent_admin(parent_id):
                                     <button class="primary" type="submit">Create child</button>
                                 </div>
                             </form>
+                            <div class="hint-line">
+                                <span>Student profile names must be unique because schedule, credits, invoices, and parent access are tied to this name.</span>
+                            </div>
                         </div>
                     </section>
 
@@ -19361,7 +19373,11 @@ def create_parent_child(parent_id):
 
         if existing_student:
             conn.close()
-            return redirect(f"/parent_admin/{parent_id}?child_exists=1")
+            query = urlencode({
+                "child_exists": "1",
+                "duplicate_name": existing_student[0],
+            })
+            return redirect(f"/parent_admin/{parent_id}?{query}")
 
         cursor.execute("""
         INSERT INTO students (
