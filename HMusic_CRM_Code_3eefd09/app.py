@@ -9185,6 +9185,7 @@ def calendar():
             .panel-toggle{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0}}
             .panel-toggle strong{{display:block;color:var(--text);font-size:15px}} .panel-toggle span{{display:block;color:var(--muted);font-size:12px;margin-top:2px}}
             .panel-toggle input{{width:42px;height:24px;accent-color:var(--blue)}}
+            .panel-mini-note{{margin-top:8px;color:var(--muted);font-size:12px;font-weight:800}}
             .panel-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
             .panel-action{{min-height:54px;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;font:inherit;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;padding:9px;box-shadow:0 1px 2px rgba(15,23,42,.04)}}
             .panel-action:hover{{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}}
@@ -9589,6 +9590,7 @@ def calendar():
           <label class="panel-toggle"><span><strong>24h before lesson</strong><span>Email or SMS to parent</span></span><input type="checkbox" id="panelPreReminder"></label>
           <label class="panel-toggle"><span><strong>Practice reminder after lesson</strong><span>2h after lesson · includes homework</span></span><input type="checkbox" id="panelPracticeReminder"></label>
           <label class="panel-toggle"><span><strong>Low balance alert</strong><span>Notify parent to renew package</span></span><input type="checkbox" id="panelLowBalance"></label>
+          <div class="panel-mini-note">Reminder choices apply only to this lesson.</div>
         </div>
         <details class="panel-details" id="panelDetailsBilling" open>
           <summary>Edit schedule and billing <span class="panel-details-scope">applies to this lesson</span></summary>
@@ -9725,6 +9727,7 @@ def calendar():
     // ---- owner lesson panel ----
     let activePanelLesson = null;
     let activePanelStatus = 'scheduled';
+    let panelDetailBaseline = null;
     function statusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
     function statusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
@@ -9790,18 +9793,9 @@ def calendar():
       }}).catch(e => alert(e.message));
     }}
     function closeLessonPanel() {{ document.getElementById('lessonScrim').classList.remove('show'); document.getElementById('lessonPanel').classList.remove('show'); activePanelLesson = null; }}
-    function panelSavePayload() {{
+    function panelDetailValues() {{
       updatePanelRoomId();
       return {{
-        action:'save',
-        schedule_id:activePanelLesson.id,
-        status:activePanelStatus,
-        lesson_note:document.getElementById('panelLessonNote').value,
-        homework:document.getElementById('panelHomework').value,
-        parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked,
-        practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked,
-        low_balance_alert_enabled:document.getElementById('panelLowBalance').checked,
-        detail_scope:document.getElementById('panelDetailScope').value,
         student_name:document.getElementById('panelDetailStudent').value,
         teacher:document.getElementById('panelDetailTeacher').value,
         course_type_id:document.getElementById('panelDetailCourse').value,
@@ -9819,6 +9813,26 @@ def calendar():
         billing_basis:document.getElementById('panelBillingBasis').value,
         student_rate:document.getElementById('panelStudentRate').value,
         billing_decision:document.getElementById('panelBillingDecision').value
+      }};
+    }}
+    function panelDetailsChanged() {{
+      if (!panelDetailBaseline) return false;
+      const current = panelDetailValues();
+      return Object.keys(current).some(key => String(current[key] ?? '') !== String(panelDetailBaseline[key] ?? ''));
+    }}
+    function panelSavePayload() {{
+      const detailValues = panelDetailValues();
+      return {{
+        action:'save',
+        schedule_id:activePanelLesson.id,
+        status:activePanelStatus,
+        lesson_note:document.getElementById('panelLessonNote').value,
+        homework:document.getElementById('panelHomework').value,
+        parent_lesson_reminder_enabled:document.getElementById('panelPreReminder').checked,
+        practice_reminder_enabled:document.getElementById('panelPracticeReminder').checked,
+        low_balance_alert_enabled:document.getElementById('panelLowBalance').checked,
+        detail_scope:panelDetailsChanged() ? document.getElementById('panelDetailScope').value : 'once',
+        ...detailValues
       }};
     }}
     function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) {{ showPanelToast(d.message || 'Saved.'); setTimeout(() => location.reload(), 900); }} }}).catch(e => alert(e.message)); }}
@@ -10407,6 +10421,7 @@ def calendar():
       setValue('panelBillingBasis', methodToBillingBasis(lesson.student_billing_method));
       setValue('panelStudentRate', Number(lesson.student_price || lesson.student_charge_amount || 0).toFixed(2));
       setValue('panelBillingDecision', lesson.billing_decision || 'existing_credits');
+      setValue('panelDetailScope', 'once');
       const locationSelect = document.getElementById('panelDetailLocation');
       if (locationSelect) {{
         if (lesson.location_id) locationSelect.value = String(lesson.location_id);
@@ -10418,6 +10433,7 @@ def calendar():
       updatePanelRooms(lesson.room_id, lesson.classroom);
       updatePanelPackageFields();
       updatePanelChargePreview();
+      panelDetailBaseline = panelDetailValues();
     }}
     function weekdayName(dateStr) {{
       const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
