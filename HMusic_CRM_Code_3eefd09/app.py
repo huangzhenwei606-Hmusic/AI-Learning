@@ -42006,6 +42006,38 @@ def list_backup_files():
     return sorted(rows, key=lambda row: row["modified"], reverse=True)
 
 
+def read_latest_backup_manifest():
+    ensure_backup_dir()
+    manifests = []
+    for name in os.listdir(HMUSIC_BACKUP_DIR):
+        if not (name.startswith("hmusic_") and name.endswith("_manifest.json")):
+            continue
+        path = os.path.join(HMUSIC_BACKUP_DIR, name)
+        if os.path.isfile(path):
+            manifests.append((os.path.getmtime(path), path, name))
+
+    if not manifests:
+        return None
+
+    _, path, name = sorted(manifests, reverse=True)[0]
+    try:
+        with open(path) as f:
+            manifest = json.load(f)
+        manifest["manifest_file"] = manifest.get("manifest_file") or name
+        return manifest
+    except Exception as exc:
+        return {
+            "created_at": datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
+            "label": "unknown",
+            "manifest_file": name,
+            "offsite_backup": {
+                "configured": get_offsite_backup_config() is not None,
+                "uploaded": [],
+                "errors": [f"Could not read latest manifest: {exc}"],
+            },
+        }
+
+
 @app.route("/owner_backup", methods=["GET", "POST"])
 def owner_backup():
     if not require_owner():
@@ -42044,16 +42076,26 @@ def owner_backup():
             state = {}
 
     last_auto = state.get("last_auto_backup_at", "Not yet")
+    latest_manifest = read_latest_backup_manifest()
     offsite_config = get_offsite_backup_config()
-    offsite_status = state.get("last_auto_backup_offsite") or {}
+    offsite_status = (latest_manifest or {}).get("offsite_backup") or state.get("last_auto_backup_offsite") or {}
     offsite_uploaded = offsite_status.get("uploaded") or []
     offsite_errors = offsite_status.get("errors") or []
+    latest_backup_label = ""
+    if latest_manifest:
+        manifest_name = latest_manifest.get("manifest_file", "manifest")
+        latest_backup_label = (
+            f'<br>Latest backup checked: {escape(str(latest_manifest.get("label", "backup")))} '
+            f'at {escape(str(latest_manifest.get("created_at", "unknown")))} '
+            f'({escape(str(manifest_name))})'
+        )
     if offsite_config:
         offsite_html = f"""
         <div class="notice">
             Offsite backup configured: {escape(offsite_config["bucket"])}
             {('/' + escape(offsite_config["prefix"])) if offsite_config.get("prefix") else ''}
-            <br>Last offsite upload: {len(offsite_uploaded)} file(s) uploaded.
+            {latest_backup_label}
+            <br>Latest offsite upload: {len(offsite_uploaded)} file(s) uploaded.
             {('<br>Errors: ' + escape('; '.join(offsite_errors))) if offsite_errors else ''}
         </div>
         """
