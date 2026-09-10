@@ -68,6 +68,20 @@ CHECKS = {
     "teacher calendar compact event controls": "calendar-grid.month-view .event-status-form button {{ display:block; height:14px;",
     "owner calendar teacher-style event time": '<span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>',
     "owner calendar compact event controls": ".owner-status-form select,.owner-status-form button{{display:block;height:14px;",
+    "teacher mobile bootstrap api": '"/api/teacher/bootstrap"',
+    "teacher mobile device token api": '"/api/teacher/device_token"',
+    "teacher mobile calendar api": '"/api/teacher/calendar"',
+    "teacher mobile lookups api": '"/api/teacher/lookups"',
+    "teacher mobile lesson detail api": '"/api/teacher/lesson/<int:schedule_id>"',
+    "teacher mobile lesson status api": '"/api/teacher/lesson/status"',
+    "teacher mobile bulk status api": '"/api/teacher/lesson/bulk_status"',
+    "teacher mobile lesson save api": '"/api/teacher/lesson/save"',
+    "teacher mobile open slots api": '"/api/teacher/open_slots"',
+    "teacher mobile time off api": '"/api/teacher/time_off"',
+    "teacher mobile messages api": '"/api/teacher/messages"',
+    "teacher mobile add schedule api": '"/api/teacher/add_schedule"',
+    "teacher mobile message recipients": "message_recipients",
+    "teacher mobile device token table": "teacher_device_tokens",
 }
 
 

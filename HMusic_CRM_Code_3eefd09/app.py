@@ -42793,3 +42793,674 @@ def add_open_slot_quick():
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# ================================================================
+# Teacher mobile app API
+# JSON endpoints used by the iOS teacher app. These keep the same
+# permission rules as the teacher web portal and return app-friendly
+# payloads instead of HTML pages.
+# ================================================================
+
+def ensure_teacher_mobile_app_schema():
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_device_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_name TEXT,
+        platform TEXT,
+        device_token TEXT UNIQUE,
+        app_version TEXT,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT,
+        last_seen_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("teacher_name", "teacher_name TEXT"),
+        ("platform", "platform TEXT"),
+        ("device_token", "device_token TEXT UNIQUE"),
+        ("app_version", "app_version TEXT"),
+        ("active", "active INTEGER DEFAULT 1"),
+        ("created_at", "created_at TEXT"),
+        ("updated_at", "updated_at TEXT"),
+        ("last_seen_at", "last_seen_at TEXT"),
+    ]:
+        add_column_if_missing(cursor, "teacher_device_tokens", column_name, column_sql)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_teacher_device_tokens_teacher ON teacher_device_tokens(teacher_name, active)")
+    conn.commit()
+    conn.close()
+
+
+def teacher_api_identity():
+    if not require_teacher() or require_owner():
+        return None, ({"ok": False, "error": "Teacher login required"}, 401)
+    teacher_name = session.get("teacher_name") or ""
+    if not teacher_name:
+        return None, ({"ok": False, "error": "Teacher login required"}, 401)
+    return teacher_name, None
+
+
+def teacher_api_schedule_payload(row):
+    return {
+        "id": int(row[0] or 0),
+        "date": row[1] or "",
+        "time": row[2] or "",
+        "time_range": format_lesson_time_range(row[2], row[6]),
+        "student_name": row[3] or "",
+        "classroom": row[4] or "",
+        "status": row[5] or "scheduled",
+        "status_label": calendar_status_label(row[5]),
+        "duration": int(row[6] or 30),
+        "course_type_name": row[7] or "",
+        "is_group": int(row[8] or 0),
+        "group_size": int(row[9] or 0),
+        "schedule_type": row[10] or "",
+        "display_color": row[11] or "",
+        "location": row[12] or "",
+        "location_id": int(row[13] or 0),
+        "room_id": int(row[14] or 0),
+        "lessons_left": float(row[15] or 0),
+        "homework": row[16] or "",
+        "lesson_note": hmusic_parent_visible_lesson_note(row[17] or ""),
+        "private_note": row[18] or "",
+        "parent_lesson_reminder_enabled": int(row[19] or 0),
+        "practice_reminder_enabled": int(row[20] or 0),
+        "low_balance_alert_enabled": int(row[21] or 0),
+    }
+
+
+def teacher_api_schedule_rows(cursor, teacher_name, start_date, end_date):
+    cursor.execute("""
+    SELECT
+        s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, COALESCE(s.status, 'scheduled'),
+        COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
+        COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
+        COALESCE(s.location, ''), COALESCE(s.location_id, 0), COALESCE(s.room_id, 0),
+        COALESCE((
+            SELECT e.lessons_left
+            FROM enrollments e
+            WHERE e.student_name = s.student_name
+              AND COALESCE(LOWER(TRIM(e.status)), 'active') NOT IN ('inactive', 'cancelled', 'canceled', 'archived', 'deleted')
+              AND LOWER(COALESCE(e.course_type_name, '')) = LOWER(COALESCE(s.course_type_name, ''))
+              AND LOWER(COALESCE(e.teacher_name, '')) = LOWER(COALESCE(s.teacher, ''))
+            ORDER BY e.id DESC
+            LIMIT 1
+        ), st.lessons_left, 0),
+        COALESCE(s.homework_assignment, ''), COALESCE(s.notes, ''), COALESCE(s.private_note, ''),
+        COALESCE(s.parent_lesson_reminder_enabled, 0), COALESCE(s.practice_reminder_enabled, 0),
+        COALESCE(s.low_balance_alert_enabled, 0)
+    FROM schedule s
+    LEFT JOIN students st ON st.name = s.student_name
+    LEFT JOIN course_types c ON s.course_type_id = c.id
+    WHERE s.teacher = ?
+      AND s.lesson_date >= ?
+      AND s.lesson_date <= ?
+    ORDER BY s.lesson_date, s.lesson_time, s.id
+    """, (teacher_name, start_date, end_date))
+    return cursor.fetchall()
+
+
+@app.route("/api/teacher/bootstrap")
+def api_teacher_bootstrap():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    ensure_teacher_mobile_app_schema()
+    return {
+        "ok": True,
+        "teacher": {
+            "name": teacher_name,
+            "permissions": get_teacher_permissions(teacher_name),
+            "unread_messages": get_unread_message_count("teacher", teacher_name),
+            "missing_homework": get_missing_homework_count(teacher_name),
+        },
+        "server_time": hmusic_now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+@app.route("/api/teacher/device_token", methods=["POST"])
+def api_teacher_device_token():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    ensure_teacher_mobile_app_schema()
+    data = request.get_json(silent=True) or {}
+    token = (data.get("device_token") or data.get("token") or "").strip()
+    platform = (data.get("platform") or "ios").strip().lower()
+    app_version = (data.get("app_version") or "").strip()
+    if not token:
+        return {"ok": False, "error": "device_token required"}, 400
+    now = hmusic_now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO teacher_device_tokens (teacher_name, platform, device_token, app_version, active, created_at, updated_at, last_seen_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+    ON CONFLICT(device_token) DO UPDATE SET
+        teacher_name = excluded.teacher_name,
+        platform = excluded.platform,
+        app_version = excluded.app_version,
+        active = 1,
+        updated_at = excluded.updated_at,
+        last_seen_at = excluded.last_seen_at
+    """, (teacher_name, platform, token, app_version, now, now, now))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.route("/api/teacher/calendar")
+def api_teacher_calendar():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    ensure_calendar_lesson_panel_schema()
+    view = (request.args.get("view") or "day").strip().lower()
+    today = hmusic_today()
+    if view == "month":
+        month_text = request.args.get("month") or today.strftime("%Y-%m")
+        try:
+            start_obj = date(int(month_text[:4]), int(month_text[5:7]), 1)
+        except Exception:
+            start_obj = date(today.year, today.month, 1)
+        if start_obj.month == 12:
+            end_obj = date(start_obj.year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end_obj = date(start_obj.year, start_obj.month + 1, 1) - timedelta(days=1)
+    elif view == "week":
+        date_text = request.args.get("date") or today.strftime("%Y-%m-%d")
+        try:
+            selected = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except Exception:
+            selected = today
+        start_obj = selected - timedelta(days=(selected.weekday() + 1) % 7)
+        end_obj = start_obj + timedelta(days=6)
+    else:
+        date_text = request.args.get("date") or today.strftime("%Y-%m-%d")
+        try:
+            start_obj = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except Exception:
+            start_obj = today
+        end_obj = start_obj
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    rows = teacher_api_schedule_rows(cursor, teacher_name, start_obj.strftime("%Y-%m-%d"), end_obj.strftime("%Y-%m-%d"))
+    conn.close()
+    lessons = [teacher_api_schedule_payload(row) for row in rows]
+    return {
+        "ok": True,
+        "view": view,
+        "start_date": start_obj.strftime("%Y-%m-%d"),
+        "end_date": end_obj.strftime("%Y-%m-%d"),
+        "lessons": lessons,
+        "summary": {
+            "lesson_count": len(lessons),
+            "alerts": len([l for l in lessons if l["status"] in ("no_show", "last_min_cancel", "teacher_cancelled") or not l["homework"]]),
+        },
+    }
+
+
+@app.route("/api/teacher/lookups")
+def api_teacher_lookups():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    ensure_calendar_lesson_panel_schema()
+    ensure_location_room_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    students = [
+        {"name": row[0], "parent_name": row[1], "label": hmusic_student_parent_label(row[0], row[1])}
+        for row in hmusic_teacher_student_rows(cursor, teacher_name, include_all=True)
+    ]
+    cursor.execute("""
+    SELECT DISTINCT s.student_name, ps.parent_id, COALESCE(p.parent_name, ''), COALESCE(p.email, '')
+    FROM schedule s
+    JOIN parent_students ps
+        ON ps.student_name = s.student_name
+        AND ps.active = 1
+    JOIN parent_profiles p
+        ON p.id = ps.parent_id
+    WHERE s.teacher = ?
+    ORDER BY s.student_name, p.parent_name
+    """, (teacher_name,))
+    message_recipients = [
+        {
+            "student_name": r[0],
+            "parent_id": int(r[1] or 0),
+            "parent_name": r[2] or "",
+            "parent_email": r[3] or "",
+            "label": f"{r[0]} | Parent: {r[2] or r[3] or r[1]}",
+        }
+        for r in cursor.fetchall()
+    ]
+    cursor.execute("""
+    SELECT id, name, COALESCE(duration, 30), COALESCE(is_group, 0)
+    FROM course_types
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY COALESCE(is_group, 0), name, duration
+    """)
+    courses = [{"id": r[0], "name": r[1], "duration": r[2], "is_group": int(r[3] or 0)} for r in cursor.fetchall()]
+    cursor.execute("""
+    SELECT r.id, r.room_name, COALESCE(r.location_id, 0), COALESCE(l.location_name, '')
+    FROM studio_rooms r
+    LEFT JOIN studio_locations l ON l.id = r.location_id
+    WHERE COALESCE(r.active, 1) = 1
+    ORDER BY COALESCE(l.sort_order, 0), COALESCE(r.sort_order, 0), r.room_name
+    """)
+    rooms = [{"id": r[0], "name": r[1], "location_id": int(r[2] or 0), "location": r[3]} for r in cursor.fetchall()]
+    conn.close()
+    return {"ok": True, "students": students, "message_recipients": message_recipients, "courses": courses, "rooms": rooms}
+
+
+@app.route("/api/teacher/lesson/<int:schedule_id>")
+def api_teacher_lesson_detail(schedule_id):
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    rows = teacher_api_schedule_rows(cursor, teacher_name, "0000-01-01", "9999-12-31")
+    lesson = next((row for row in rows if int(row[0] or 0) == int(schedule_id)), None)
+    conn.close()
+    if not lesson:
+        return {"ok": False, "error": "Lesson not found or permission denied"}, 404
+    return {"ok": True, "lesson": teacher_api_schedule_payload(lesson)}
+
+
+@app.route("/api/teacher/lesson/status", methods=["POST"])
+def api_teacher_lesson_status():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    if not teacher_has_permission(teacher_name, "attendance"):
+        return {"ok": False, "error": "Attendance permission is not enabled"}, 403
+    data = request.get_json(silent=True) or {}
+    schedule_id = data.get("schedule_id")
+    status = (data.get("status") or "").strip()
+    if status not in {"scheduled", "present", "no_show", "last_min_cancel", "excused_24h", "teacher_cancelled"}:
+        return {"ok": False, "error": "Invalid status"}, 400
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher FROM schedule WHERE id = ?", (schedule_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row or row[0] != teacher_name:
+        return {"ok": False, "error": "Lesson not found or permission denied"}, 404
+    result = apply_lesson_status(schedule_id, status, actor=f"teacher:{teacher_name}", reason=data.get("reason"))
+    if result.get("ok") and status == "teacher_cancelled" and data.get("notify_parent"):
+        hmusic_queue_teacher_cancel_parent_notice(int(schedule_id))
+    return result
+
+
+@app.route("/api/teacher/lesson/bulk_status", methods=["POST"])
+def api_teacher_lesson_bulk_status():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    if not teacher_has_permission(teacher_name, "attendance"):
+        return {"ok": False, "error": "Attendance permission is not enabled"}, 403
+    data = request.get_json(silent=True) or {}
+    status = (data.get("status") or "").strip()
+    if status not in {"scheduled", "present", "no_show", "last_min_cancel", "excused_24h", "teacher_cancelled"}:
+        return {"ok": False, "error": "Invalid status"}, 400
+    ids = []
+    for raw_id in data.get("schedule_ids") or []:
+        try:
+            ids.append(int(raw_id))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))[:100]
+    if not ids:
+        return {"ok": False, "error": "Choose at least one lesson"}, 400
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(ids))
+    cursor.execute(f"SELECT id FROM schedule WHERE id IN ({placeholders}) AND teacher = ?", (*ids, teacher_name))
+    owned_ids = [int(r[0]) for r in cursor.fetchall()]
+    conn.close()
+    updated = 0
+    errors = []
+    parent_notices = 0
+    for schedule_id in owned_ids:
+        result = apply_lesson_status(schedule_id, status, actor=f"teacher:{teacher_name}", reason="Teacher mobile bulk update")
+        if result.get("ok"):
+            updated += 1
+            if status == "teacher_cancelled" and data.get("notify_parent"):
+                parent_notices += hmusic_queue_teacher_cancel_parent_notice(schedule_id)
+        else:
+            errors.append(result.get("error") or f"Lesson {schedule_id} failed")
+    if updated:
+        create_notification("owner", "owner", "Teacher batch attendance update", f"{teacher_name} updated {updated} lesson(s) to {calendar_status_label(status)}.", "/calendar", related_type="teacher_mobile_bulk_status", related_id=0)
+    return {"ok": updated > 0, "updated": updated, "parent_notices": parent_notices, "errors": errors[:5]}
+
+
+@app.route("/api/teacher/lesson/save", methods=["POST"])
+def api_teacher_lesson_save():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    schedule_id = data.get("schedule_id")
+    lesson_note = hmusic_parent_visible_lesson_note(data.get("lesson_note") or "")
+    private_note = (data.get("private_note") or "").strip()
+    homework = (data.get("homework") or "").strip()
+    perms = get_teacher_permissions(teacher_name)
+    if lesson_note and not perms.get("lesson_notes"):
+        return {"ok": False, "error": "Lesson note permission is not enabled"}, 403
+    if private_note and not perms.get("private_notes"):
+        return {"ok": False, "error": "Private note permission is not enabled"}, 403
+    if homework and not perms.get("homework"):
+        return {"ok": False, "error": "Homework permission is not enabled"}, 403
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, student_name FROM schedule WHERE id = ? AND teacher = ?", (schedule_id, teacher_name))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return {"ok": False, "error": "Lesson not found or permission denied"}, 404
+    cursor.execute("""
+    UPDATE schedule
+    SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
+    WHERE id = ? AND teacher = ?
+    """, (lesson_note, private_note, homework, 1 if data.get("practice_reminder_enabled") else 0, schedule_id, teacher_name))
+    upsert_calendar_lesson_record(cursor, int(schedule_id), row[1], lesson_note, homework, private_note, f"teacher:{teacher_name}")
+    conn.commit()
+    conn.close()
+    notices = 0
+    if homework and (data.get("send_homework_now") or data.get("practice_reminder_enabled")):
+        notices = calendar_queue_parent_notice(row[1], hmusic_practice_reminder_title(row[1]), hmusic_practice_reminder_body(row[1], homework), "homework_assignment", int(schedule_id))
+    return {"ok": True, "message": "Lesson saved", "parent_notices": notices}
+
+
+@app.route("/api/teacher/open_slots")
+def api_teacher_open_slots():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    ensure_v282_schema()
+    status_filter = (request.args.get("status") or "available").strip().lower()
+    slots = get_available_open_slots(teachers=[teacher_name], include_inactive_manual=True)
+    payload = []
+    for slot in slots:
+        display_status = get_open_slot_display_status(slot)
+        if status_filter != "all" and display_status.lower() != status_filter:
+            continue
+        payload.append({
+            "id": slot.get("id"),
+            "date": slot.get("slot_date"),
+            "time": slot.get("slot_time"),
+            "teacher": slot.get("teacher"),
+            "classroom": slot.get("classroom"),
+            "source": slot.get("source", "auto_gap"),
+            "status": display_status,
+            "notes": slot.get("notes", ""),
+        })
+    return {"ok": True, "slots": payload}
+
+
+@app.route("/api/teacher/open_slots", methods=["POST"])
+def api_teacher_create_open_slot():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    if not teacher_has_permission(teacher_name, "add_own_schedule"):
+        return {"ok": False, "error": "Open slot creation requires owner permission"}, 403
+    ensure_v282_schema()
+    data = request.get_json(silent=True) or {}
+    slot_date = (data.get("date") or data.get("slot_date") or "").strip()
+    slot_time = (data.get("time") or data.get("slot_time") or data.get("start_time") or "").strip()
+    classroom = (data.get("classroom") or "").strip()
+    notes = (data.get("notes") or "").strip()
+    if not slot_date or not slot_time or not classroom:
+        return {"ok": False, "error": "date, time, and classroom are required"}, 400
+    now = hmusic_now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO teacher_open_slots (teacher, slot_date, slot_time, classroom, source, active, notes, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'manual', 1, ?, ?, ?, ?)
+    """, (teacher_name, slot_date, slot_time, classroom, notes, f"teacher:{teacher_name}", now, now))
+    slot_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    create_notification("owner", "owner", "Teacher added open slot", f"{teacher_name} opened {slot_date} {slot_time} in {classroom}.", "/open_slots", related_type="teacher_open_slot", related_id=slot_id)
+    return {"ok": True, "slot_id": slot_id}
+
+
+@app.route("/api/teacher/time_off", methods=["GET", "POST"])
+def api_teacher_time_off():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    ensure_teacher_time_off_schema()
+    if request.method == "GET":
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT id, start_date, end_date, start_time, end_time, all_day, reason, status, created_at
+        FROM teacher_time_off_requests
+        WHERE teacher_name = ?
+        ORDER BY id DESC
+        LIMIT 50
+        """, (teacher_name,))
+        rows = cursor.fetchall()
+        conn.close()
+        return {"ok": True, "requests": [
+            {"id": r[0], "start_date": r[1], "end_date": r[2], "start_time": r[3], "end_time": r[4], "all_day": int(r[5] or 0), "reason": r[6], "status": r[7], "created_at": r[8]}
+            for r in rows
+        ]}
+    data = request.get_json(silent=True) or {}
+    start_date = (data.get("start_date") or "").strip()
+    end_date = (data.get("end_date") or start_date).strip()
+    start_time = (data.get("start_time") or "").strip()
+    end_time = (data.get("end_time") or "").strip()
+    all_day = 1 if data.get("all_day") else 0
+    reason = (data.get("reason") or "").strip()
+    if not start_date:
+        return {"ok": False, "error": "start_date required"}, 400
+    now = hmusic_now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO teacher_time_off_requests (teacher_name, start_date, end_date, start_time, end_time, all_day, reason, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    """, (teacher_name, start_date, end_date, start_time, end_time, all_day, reason, now, now))
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    time_label = "full day" if all_day else f"{start_time or '?'}-{end_time or '?'}"
+    create_notification("owner", "owner", "Teacher time off request", f"{teacher_name} requested time off from {start_date} to {end_date} ({time_label}).", "/teacher_dashboard", related_type="teacher_time_off", related_id=request_id)
+    return {"ok": True, "request_id": request_id}
+
+
+@app.route("/api/teacher/messages")
+def api_teacher_messages():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    rows = get_message_inbox_threads("teacher", teacher_name)
+    return {"ok": True, "threads": [
+        {
+            "id": r[0], "subject": r[1], "student_name": r[2], "parent_name": r[3],
+            "teacher_name": r[4], "thread_type": r[5], "status": r[6], "updated_at": r[7],
+            "is_group": int(r[8] or 0), "latest_message": r[9], "unread_count": int(r[10] or 0),
+            "attachment_count": int(r[11] or 0),
+        }
+        for r in rows
+    ]}
+
+
+@app.route("/api/teacher/messages", methods=["POST"])
+def api_teacher_create_message():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    if not teacher_has_permission(teacher_name, "message_parents"):
+        return {"ok": False, "error": "Message permission is not enabled"}, 403
+    ensure_v29_schema()
+    data = request.get_json(silent=True) or {}
+    recipient_mode = (data.get("recipient_mode") or "parent").strip()
+    student_name = hmusic_clean_student_picker_value(data.get("student_name") or "")
+    body = (data.get("body") or "").strip()
+    parent_id = data.get("parent_id")
+    if not body:
+        return {"ok": False, "error": "Message body required"}, 400
+    if recipient_mode == "director":
+        subject = "Teacher / Administrator Message" + (f" - {student_name}" if student_name else "")
+        thread_id = get_or_create_message_thread(subject, student_name=student_name or None, teacher_name=teacher_name, thread_type="teacher_director")
+        message_id = add_message(thread_id, "teacher", teacher_name, "owner", body)
+        create_notification("owner", "owner", "New teacher message to Administrator", body, f"/message_thread/{thread_id}", related_type="message", related_id=message_id)
+        return {"ok": True, "thread_id": thread_id, "message_id": message_id}
+    if not student_name or not parent_id:
+        return {"ok": False, "error": "student_name and parent_id required"}, 400
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM schedule WHERE teacher = ? AND student_name = ? LIMIT 1", (teacher_name, student_name))
+    teaches_student = bool(cursor.fetchone())
+    conn.close()
+    if not teaches_student:
+        return {"ok": False, "error": "Permission denied"}, 403
+    thread_id = get_or_create_message_thread(f"Teacher / Parent Message - {student_name}", student_name=student_name, parent_id=int(parent_id), teacher_name=teacher_name, thread_type="parent_teacher", related_type="parent_teacher")
+    message_id = add_message(thread_id, "teacher", teacher_name, "parent", body)
+    create_notification("parent", str(parent_id), f"New message from {teacher_name}", body, f"/message_thread/{thread_id}", related_type="message", related_id=message_id)
+    return {"ok": True, "thread_id": thread_id, "message_id": message_id}
+
+
+@app.route("/api/teacher/messages/<int:thread_id>", methods=["GET", "POST"])
+def api_teacher_message_thread(thread_id):
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    if not user_can_view_thread(thread_id):
+        return {"ok": False, "error": "Permission denied"}, 403
+    ensure_v29_schema()
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        body = (data.get("body") or "").strip()
+        if not body:
+            return {"ok": False, "error": "Message body required"}, 400
+        message_id = add_message(thread_id, "teacher", teacher_name, "participants", body)
+        notify_thread_participants(thread_id, "teacher", teacher_name, body, message_id=message_id, sender_name=teacher_name)
+        return {"ok": True, "message_id": message_id}
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, subject, student_name, thread_type, status, updated_at FROM message_threads WHERE id = ?", (thread_id,))
+    thread = cursor.fetchone()
+    cursor.execute("""
+    SELECT id, sender_role, sender_name, recipient_role, body, created_at
+    FROM messages
+    WHERE thread_id = ?
+    ORDER BY id ASC
+    """, (thread_id,))
+    messages = cursor.fetchall()
+    conn.close()
+    mark_message_thread_read(thread_id)
+    return {
+        "ok": True,
+        "thread": {"id": thread[0], "subject": thread[1], "student_name": thread[2], "thread_type": thread[3], "status": thread[4], "updated_at": thread[5]} if thread else None,
+        "messages": [
+            {"id": m[0], "sender_role": m[1], "sender_name": m[2], "recipient_role": m[3], "body": m[4], "created_at": m[5]}
+            for m in messages
+        ],
+    }
+
+
+@app.route("/api/teacher/add_schedule", methods=["POST"])
+def api_teacher_add_schedule():
+    teacher_name, error = teacher_api_identity()
+    if error:
+        return error
+    if not teacher_has_permission(teacher_name, "add_own_schedule"):
+        return {"ok": False, "error": "Add Schedule requires owner permission"}, 403
+    ensure_v18_schema()
+    data = request.get_json(silent=True) or {}
+    student_name = hmusic_clean_student_picker_value(data.get("student_name") or "")
+    lesson_date = (data.get("lesson_date") or data.get("start_date") or "").strip()
+    lesson_time = (data.get("lesson_time") or "").strip()
+    course_type_id = data.get("course_type_id")
+    classroom = (data.get("classroom") or "").strip()
+    schedule_type = (data.get("schedule_type") or "one_time").strip()
+    package_type = (data.get("package_type") or ("10" if schedule_type == "weekly" else "single")).strip()
+    if not student_name or not lesson_date or not lesson_time or not course_type_id or not classroom:
+        return {"ok": False, "error": "student_name, lesson_date, lesson_time, course_type_id, and classroom are required"}, 400
+    if not parse_lesson_time_value(lesson_time):
+        return {"ok": False, "error": "Invalid lesson time"}, 400
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, name, COALESCE(duration, 30), student_billing_method, student_price,
+           teacher_billing_method, teacher_pay, COALESCE(is_group, 0)
+    FROM course_types
+    WHERE id = ?
+    """, (course_type_id,))
+    course = cursor.fetchone()
+    if not course:
+        conn.close()
+        return {"ok": False, "error": "Course type not found"}, 404
+    pricing = get_final_pricing(student_name, teacher_name, course_type_id)
+    if pricing:
+        course_id = pricing["course_id"]
+        course_name = pricing["course_name"]
+        duration = pricing["duration"]
+        student_billing_method = pricing["student_billing_method"]
+        student_price = pricing["student_price"]
+        teacher_billing_method = pricing["teacher_billing_method"]
+        teacher_pay = pricing["teacher_pay"]
+        student_charge_amount = pricing["student_charge_amount"]
+        teacher_pay_amount = pricing["teacher_pay_amount"]
+        is_group = pricing["is_group"]
+    else:
+        course_id, course_name, duration, student_billing_method, student_price, teacher_billing_method, teacher_pay, is_group = course
+        student_charge_amount = calculate_course_amount(student_billing_method, student_price, duration)
+        teacher_pay_amount = calculate_course_amount(teacher_billing_method, teacher_pay, duration)
+    try:
+        date_obj = datetime.strptime(lesson_date, "%Y-%m-%d").date()
+    except Exception:
+        conn.close()
+        return {"ok": False, "error": "Invalid lesson date"}, 400
+    number_of_lessons = 1
+    if schedule_type == "weekly":
+        if package_type == "custom":
+            try:
+                number_of_lessons = int(float(data.get("custom_lesson_count") or 1))
+            except Exception:
+                number_of_lessons = 1
+        elif package_type in ("10", "12", "24"):
+            number_of_lessons = int(package_type)
+    number_of_lessons = max(1, min(number_of_lessons, 260))
+    created_ids = []
+    auto_link_student_teacher(cursor, student_name, teacher_name)
+    enrollment_id = hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=course_id, teacher_name=teacher_name, course_type_name=course_name)
+    now = hmusic_now().strftime("%Y-%m-%d %H:%M")
+    teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher_name)
+    schedule_note = ""
+    if not teacher_linked:
+        schedule_note = "Teacher mobile app created temporary schedule for student not linked to this teacher."
+    for idx in range(number_of_lessons):
+        current_date = date_obj + timedelta(days=7 * idx) if schedule_type == "weekly" else date_obj
+        cursor.execute("""
+        INSERT INTO schedule (
+            student_name, teacher, classroom, weekday, lesson_time, schedule_type, package_type,
+            start_date, lesson_date, course_type_id, course_type_name, duration,
+            student_billing_method, student_price, teacher_billing_method, teacher_pay,
+            student_charge_amount, teacher_pay_amount, is_group, notes, enrollment_id, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+        """, (
+            student_name, teacher_name, classroom, current_date.strftime("%A"), lesson_time, schedule_type,
+            package_type, lesson_date, current_date.strftime("%Y-%m-%d"), course_id, course_name, duration,
+            student_billing_method, student_price, teacher_billing_method, teacher_pay,
+            student_charge_amount, teacher_pay_amount, is_group, schedule_note, enrollment_id
+        ))
+        created_ids.append(cursor.lastrowid)
+    conn.commit()
+    conn.close()
+    if not teacher_linked:
+        create_notification("owner", "owner", "Temporary schedule needs owner review", f"{teacher_name} created a temporary schedule for {student_name}.", "/calendar", related_type="teacher_student_setup", related_id=created_ids[0] if created_ids else 0)
+    return {"ok": True, "created": len(created_ids), "schedule_ids": created_ids}
