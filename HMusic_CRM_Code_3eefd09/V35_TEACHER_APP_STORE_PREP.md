@@ -27,7 +27,7 @@ Owner and billing administration remain controlled by the CRM web owner account.
 
 ## Teacher Mobile API
 
-- `GET /api/teacher/bootstrap`
+- `GET /api/teacher/bootstrap` returns teacher identity, permissions, counts, server time, and `csrf_token`.
 - `POST /api/teacher/device_token`
 - `GET /api/teacher/calendar?view=day|week|month`
 - `GET /api/teacher/lookups`
@@ -40,6 +40,8 @@ Owner and billing administration remain controlled by the CRM web owner account.
 - `GET/POST /api/teacher/messages`
 - `GET/POST /api/teacher/messages/<thread_id>`
 - `POST /api/teacher/add_schedule`
+
+All teacher mobile `POST` requests must send the latest bootstrap token in the `X-CSRFToken` header.
 
 ## Notification Readiness
 

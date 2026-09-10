@@ -69,6 +69,7 @@ CHECKS = {
     "owner calendar teacher-style event time": '<span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>',
     "owner calendar compact event controls": ".owner-status-form select,.owner-status-form button{{display:block;height:14px;",
     "teacher mobile bootstrap api": '"/api/teacher/bootstrap"',
+    "teacher mobile bootstrap csrf token": '"csrf_token": hmusic_csrf_token()',
     "teacher mobile device token api": '"/api/teacher/device_token"',
     "teacher mobile calendar api": '"/api/teacher/calendar"',
     "teacher mobile lookups api": '"/api/teacher/lookups"',

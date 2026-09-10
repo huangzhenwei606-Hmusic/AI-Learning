@@ -42912,6 +42912,7 @@ def api_teacher_bootstrap():
     ensure_teacher_mobile_app_schema()
     return {
         "ok": True,
+        "csrf_token": hmusic_csrf_token(),
         "teacher": {
             "name": teacher_name,
             "permissions": get_teacher_permissions(teacher_name),
