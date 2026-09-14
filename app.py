@@ -24373,9 +24373,92 @@ def new_owner_message():
         return "<h1>Invalid recipient.</h1><a href='/new_owner_message'>Back</a>"
 
     cursor.execute("""
-        SELECT id, COALESCE(parent_name, ''), COALESCE(email, '')
-        FROM parent_profiles
-        ORDER BY parent_name, email
+        SELECT name, COALESCE(parent_name, ''), COALESCE(parent_email, ''), COALESCE(parent_phone, '')
+        FROM students
+        WHERE TRIM(COALESCE(parent_email, '')) != ''
+           OR TRIM(COALESCE(parent_phone, '')) != ''
+        ORDER BY parent_name, parent_email, name
+    """)
+    student_parent_contacts = cursor.fetchall()
+    for student_name, parent_name, parent_email, parent_phone in student_parent_contacts:
+        parent_name = (parent_name or "").strip()
+        parent_email = (parent_email or "").strip()
+        parent_phone = (parent_phone or "").strip()
+        email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
+        display_name = parent_name or (email_key.split("@")[0] if "@" in email_key else "Parent")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("SELECT id FROM parent_profiles WHERE email = ?", (email_key,))
+        parent = cursor.fetchone()
+        if parent:
+            cursor.execute("""
+                UPDATE parent_profiles
+                SET parent_name = CASE WHEN ? != '' THEN ? ELSE parent_name END,
+                    phone = CASE WHEN ? != '' THEN ? ELSE phone END,
+                    active = 1,
+                    updated_at = ?
+                WHERE id = ?
+            """, (display_name, display_name, parent_phone, parent_phone, now, parent[0]))
+            parent_id = parent[0]
+        else:
+            cursor.execute("""
+                INSERT INTO parent_profiles (
+                    parent_name,
+                    email,
+                    phone,
+                    password,
+                    password_hash,
+                    must_change_password,
+                    active,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                display_name,
+                email_key,
+                parent_phone or None,
+                "",
+                hmusic_password_hash("1234"),
+                1,
+                1,
+                now,
+                now
+            ))
+            parent_id = cursor.lastrowid
+        cursor.execute("""
+            INSERT OR IGNORE INTO parent_students (
+                parent_id,
+                student_name,
+                relationship,
+                active,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+        """, (parent_id, student_name, "Parent", 1, now))
+        cursor.execute("""
+            UPDATE parent_students
+            SET active = 1
+            WHERE parent_id = ?
+              AND student_name = ?
+        """, (parent_id, student_name))
+    conn.commit()
+
+    cursor.execute("""
+        SELECT
+            p.id,
+            COALESCE(NULLIF(TRIM(p.parent_name), ''), NULLIF(TRIM(p.email), ''), 'Parent'),
+            COALESCE(p.email, ''),
+            COALESCE(p.phone, ''),
+            COALESCE(GROUP_CONCAT(DISTINCT COALESCE(s.name, ps.student_name)), '')
+        FROM parent_profiles p
+        LEFT JOIN parent_students ps
+            ON ps.parent_id = p.id
+            AND COALESCE(ps.active, 1) = 1
+        LEFT JOIN students s
+            ON LOWER(TRIM(s.name)) = LOWER(TRIM(ps.student_name))
+        WHERE COALESCE(p.active, 1) = 1
+        GROUP BY p.id, p.parent_name, p.email, p.phone
+        ORDER BY LOWER(COALESCE(NULLIF(TRIM(p.parent_name), ''), NULLIF(TRIM(p.email), ''), 'Parent'))
     """)
     parents = cursor.fetchall()
     cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
@@ -24384,10 +24467,17 @@ def new_owner_message():
     students = cursor.fetchall()
     conn.close()
 
-    parent_options = "".join([
-        f'<option value="{p[0]}" {"selected" if str(p[0]) == selected_parent_id else ""}>{escape(p[1] or p[2] or f"Parent #{p[0]}")} | {escape(p[2] or "")}</option>'
-        for p in parents
-    ]) or '<option value="">No parents found</option>'
+    parent_options = ""
+    for parent_id, parent_name, parent_email, parent_phone, linked_students in parents:
+        contact = parent_email or parent_phone or f"Parent #{parent_id}"
+        student_label = f" | Students: {linked_students}" if linked_students else ""
+        selected = "selected" if str(parent_id) == selected_parent_id else ""
+        parent_options += (
+            f'<option value="{parent_id}" {selected}>'
+            f'{escape(parent_name or contact)} | {escape(contact)}{escape(student_label)}'
+            f'</option>'
+        )
+    parent_options = parent_options or '<option value="">No parents found</option>'
     teacher_options = "".join([
         f'<option value="{escape(t)}">{escape(t)}</option>'
         for t in teachers
