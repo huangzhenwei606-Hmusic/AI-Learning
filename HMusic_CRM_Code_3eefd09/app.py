@@ -24043,6 +24043,24 @@ def new_owner_message():
     teachers = [row[0] for row in cursor.fetchall()]
     cursor.execute("SELECT name, COALESCE(teacher, '') FROM students ORDER BY name")
     students = cursor.fetchall()
+    cursor.execute("""
+        SELECT
+            COALESCE(s.name, ps.student_name),
+            p.id,
+            COALESCE(NULLIF(TRIM(p.parent_name), ''), NULLIF(TRIM(p.email), ''), 'Parent'),
+            COALESCE(p.email, ''),
+            COALESCE(p.phone, ''),
+            COALESCE(s.teacher, '')
+        FROM parent_students ps
+        JOIN parent_profiles p
+            ON p.id = ps.parent_id
+        LEFT JOIN students s
+            ON LOWER(TRIM(s.name)) = LOWER(TRIM(ps.student_name))
+        WHERE COALESCE(ps.active, 1) = 1
+          AND COALESCE(p.active, 1) = 1
+        ORDER BY LOWER(COALESCE(s.name, ps.student_name)), LOWER(COALESCE(p.parent_name, p.email, ''))
+    """)
+    student_parent_rows = cursor.fetchall()
     conn.close()
 
     parent_options = ""
@@ -24060,6 +24078,17 @@ def new_owner_message():
         f'<option value="{escape(t)}">{escape(t)}</option>'
         for t in teachers
     ]) or '<option value="">No teachers found</option>'
+    student_recipient_options = '<option value="">Choose a student to find parent</option>'
+    for student_name, parent_id, parent_name, parent_email, parent_phone, teacher_name in student_parent_rows:
+        contact = parent_email or parent_phone or f"Parent #{parent_id}"
+        selected = "selected" if student_name == selected_student_name else ""
+        student_recipient_options += (
+            f'<option value="{escape(student_name, quote=True)}" '
+            f'data-parent-id="{parent_id}" {selected}>'
+            f'{escape(student_name)} | Parent: {escape(parent_name or contact)} | {escape(contact)}'
+            f'{(" | Teacher: " + escape(teacher_name)) if teacher_name else ""}'
+            f'</option>'
+        )
     student_options = '<option value="">No student / general message</option>' + "".join([
         f'<option value="{escape(s[0], quote=True)}" {"selected" if s[0] == selected_student_name else ""}>{escape(s[0])} | Teacher: {escape(s[1] or "")}</option>'
         for s in students
@@ -24080,10 +24109,14 @@ def new_owner_message():
             .recipient-options {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 18px; }}
             .recipient-options label {{ border:1px solid #d1d5db; border-radius:10px; padding:12px; font-weight:800; }}
             .recipient-options input {{ width:auto; margin:0 6px 0 0; }}
+            .lookup-toggle {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:8px 0 14px; }}
+            .lookup-toggle label {{ display:flex; align-items:center; gap:8px; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; font-weight:800; }}
+            .lookup-toggle input {{ width:auto; margin:0; }}
             .subtle {{ color:#6b7280; font-size:13px; margin-top:-10px; margin-bottom:14px; }}
             @media (max-width:760px) {{
                 body {{ padding:16px; }}
                 .recipient-options {{ grid-template-columns:1fr; }}
+                .lookup-toggle {{ grid-template-columns:1fr; }}
                 .form-actions {{ display:grid; grid-template-columns:1fr 1fr; }}
                 .form-actions button, .form-actions a {{ text-align:center; }}
             }}
@@ -24095,17 +24128,51 @@ def new_owner_message():
                 const teacherBlock = document.getElementById("teacher-recipient-block");
                 const parentSelect = document.getElementById("parent-select");
                 const teacherSelect = document.getElementById("teacher-select");
+                const lookupBlock = document.getElementById("parent-lookup-block");
+                const studentBlock = document.getElementById("student-recipient-block");
                 if (mode === "teacher") {{
                     parentBlock.style.display = "none";
+                    lookupBlock.style.display = "none";
+                    studentBlock.style.display = "none";
                     teacherBlock.style.display = "block";
                     parentSelect.removeAttribute("required");
                     teacherSelect.setAttribute("required", "required");
                 }} else {{
-                    parentBlock.style.display = "block";
+                    lookupBlock.style.display = "block";
                     teacherBlock.style.display = "none";
-                    parentSelect.setAttribute("required", "required");
                     teacherSelect.removeAttribute("required");
+                    toggleParentLookup();
                 }}
+            }}
+            function toggleParentLookup() {{
+                const checked = document.querySelector("input[name='parent_lookup_mode']:checked");
+                const mode = checked ? checked.value : "parent";
+                const parentBlock = document.getElementById("parent-recipient-block");
+                const studentBlock = document.getElementById("student-recipient-block");
+                const parentSelect = document.getElementById("parent-select");
+                const studentRecipientSelect = document.getElementById("student-parent-select");
+                if (mode === "student") {{
+                    parentBlock.style.display = "none";
+                    studentBlock.style.display = "block";
+                    parentSelect.removeAttribute("required");
+                    studentRecipientSelect.setAttribute("required", "required");
+                    syncParentFromStudent();
+                }} else {{
+                    parentBlock.style.display = "block";
+                    studentBlock.style.display = "none";
+                    parentSelect.setAttribute("required", "required");
+                    studentRecipientSelect.removeAttribute("required");
+                }}
+            }}
+            function syncParentFromStudent() {{
+                const studentRecipientSelect = document.getElementById("student-parent-select");
+                const selected = studentRecipientSelect.options[studentRecipientSelect.selectedIndex];
+                const parentId = selected ? selected.dataset.parentId : "";
+                const studentName = studentRecipientSelect.value;
+                const parentSelect = document.getElementById("parent-select");
+                const studentSelect = document.getElementById("owner-student-select");
+                if (parentId) parentSelect.value = parentId;
+                if (studentName) studentSelect.value = studentName;
             }}
         </script>
     </head>
@@ -24119,9 +24186,23 @@ def new_owner_message():
                     <label><input type="radio" name="recipient_mode" value="teacher" onchange="toggleOwnerRecipient()">Teacher</label>
                 </div>
 
+                <div id="parent-lookup-block">
+                    Search recipient by:<br>
+                    <div class="lookup-toggle">
+                        <label><input type="radio" name="parent_lookup_mode" value="parent" checked onchange="toggleParentLookup()">Parent</label>
+                        <label><input type="radio" name="parent_lookup_mode" value="student" onchange="toggleParentLookup()">Student</label>
+                    </div>
+                </div>
+
                 <div id="parent-recipient-block">
                     Parent:<br>
                     <select id="parent-select" name="parent_id" required>{parent_options}</select>
+                </div>
+
+                <div id="student-recipient-block" style="display:none;">
+                    Student recipient:<br>
+                    <select id="student-parent-select" onchange="syncParentFromStudent()">{student_recipient_options}</select>
+                    <div class="subtle">Choose the student, and the matching parent will be selected automatically.</div>
                 </div>
 
                 <div id="teacher-recipient-block" style="display:none;">
@@ -24130,7 +24211,7 @@ def new_owner_message():
                 </div>
 
                 Student (optional):<br>
-                <select name="student_name">{student_options}</select>
+                <select id="owner-student-select" name="student_name">{student_options}</select>
 
                 Subject (optional):<br>
                 <input name="subject" value="{escape(selected_subject, quote=True)}" placeholder="Leave blank to auto-create subject">
