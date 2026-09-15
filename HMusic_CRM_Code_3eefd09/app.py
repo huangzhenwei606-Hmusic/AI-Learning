@@ -8957,7 +8957,8 @@ def calendar():
             /* event card */
             .ev{{border-radius:5px;padding:2px 4px 3px 5px;font-size:9px;margin-bottom:3px;
                  border:1px solid rgba(24,95,165,.14);border-left:3px solid transparent;line-height:1.05;
-                 cursor:grab;user-select:none;overflow:hidden;color:#111827}}
+                 cursor:grab;user-select:none;overflow:hidden;color:#0F172A;
+                 -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
             .ev-name{{font-weight:900;display:block;color:#111827;text-decoration:none;border-radius:3px;
@@ -8966,12 +8967,12 @@ def calendar():
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
             .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:1px}}
-            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:2px;font-size:9px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}}
+            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:2px;font-size:9px;line-height:1;color:#0F172A;font-weight:800;white-space:nowrap}}
             .calendar-time-chip{{display:inline-block;width:max-content;max-width:100%;
-                                 background:rgba(255,255,255,.86);color:#111827!important;font-weight:900;
-                                 border-radius:3px;padding:0 3px;
+                                 background:transparent;color:#0F172A!important;font-weight:900;
+                                 border-radius:0;padding:0;
                                  opacity:1!important;text-decoration:none!important}}
-            .ev-sub{{font-size:8.5px;line-height:1.05;color:#344054;display:block;
+            .ev-sub{{font-size:8.5px;line-height:1.05;color:#1F2937;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
             .ev-cancel-result{{font-size:8px;line-height:1.04;opacity:.78;display:block;margin-top:0;margin-bottom:0}}
             .ev .warn-pill,.ev .last-pill{{font-size:7.5px;padding:0 3px;line-height:1.05}}
@@ -9008,7 +9009,7 @@ def calendar():
                                                    text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .owner-status-form select,
             .ev.ev-early-cancel .owner-status-form button{{text-decoration:none}}
-            .ev.ev-early-cancel .calendar-time-chip{{background:#fff!important;color:var(--cancel-red)!important;
+            .ev.ev-early-cancel .calendar-time-chip{{background:transparent!important;color:var(--cancel-red)!important;
                                                      font-weight:900;text-decoration:line-through!important;
                                                      text-decoration-thickness:1.5px!important}}
             /* instrument colors */
@@ -12909,8 +12910,8 @@ def teacher_dashboard():
         --cancel-red:#B42318;--last-min-orange:#B54708;
     }
     .calendar-time-chip{display:inline-block;width:max-content;max-width:100%;
-                        background:rgba(255,255,255,.88);color:#111827!important;font-weight:900;
-                        border-radius:3px;padding:0 3px;
+                        background:transparent;color:#0F172A!important;font-weight:900;
+                        border-radius:0;padding:0;
                         opacity:1!important;text-decoration:none!important}
     .event-time-wrap{display:inline-block;margin-top:0}
     .sd-present  {background:var(--s-present)}
@@ -12920,12 +12921,12 @@ def teacher_dashboard():
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
     .sd-early-cancel{background:#98A2B3}
-    .calendar-event{border:1px solid rgba(24,95,165,.14);border-left:3px solid var(--blue);border-radius:5px;padding:2px 4px 3px 5px;color:#111827}
+    .calendar-event{border:1px solid rgba(24,95,165,.14);border-left:3px solid var(--blue);border-radius:5px;padding:2px 4px 3px 5px;color:#0F172A;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
     .calendar-event.early-cancel{color:var(--cancel-red)!important}
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
     .calendar-event.early-cancel .event-cancel-result{color:var(--cancel-red)!important;text-decoration:line-through;text-decoration-thickness:1.5px}
-    .calendar-event.early-cancel .calendar-time-chip{background:#fff!important;color:var(--cancel-red)!important;font-weight:900;text-decoration:line-through!important;text-decoration-thickness:1.5px!important}
+    .calendar-event.early-cancel .calendar-time-chip{background:transparent!important;color:var(--cancel-red)!important;font-weight:900;text-decoration:line-through!important;text-decoration-thickness:1.5px!important}
     .calendar-event.early-cancel .event-cancel-result{display:block;font-size:8.5px;margin:1px 0 0;font-weight:800}
     .calendar-event.early-cancel .event-status-form select,
     .calendar-event.early-cancel .event-status-form button{text-decoration:none}
@@ -12938,9 +12939,9 @@ def teacher_dashboard():
     .calendar-grid.multi-select-on .teacher-select-box{display:flex}
     .calendar-grid.multi-select-on .event-status-form{display:none}
     .event-top{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:1px}
-    .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:2px;font-size:9px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}
+    .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:2px;font-size:9px;line-height:1;color:#0F172A;font-weight:800;white-space:nowrap}
     .event-student{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827!important;font-size:10px!important;font-weight:900!important;line-height:1.05!important;margin:1px 0 0}
-    .event-line{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#344054!important;font-size:8.5px!important;line-height:1.05!important}
+    .event-line{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1F2937!important;font-size:8.5px!important;line-height:1.05!important}
     .event-status-form{flex:0 0 78px;margin:0!important;line-height:1;max-width:78px}
     .event-status-form button{display:none!important}
     .teacher-card-status{display:block;width:78px;max-width:78px;height:18px;line-height:1;
