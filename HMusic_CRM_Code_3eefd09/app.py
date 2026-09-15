@@ -17152,11 +17152,25 @@ def invoices():
             f'<a class="student-link" href="/parent_admin/{parent_id}">{escape(parent_label)}</a>'
             if parent_id else f'<span class="muted">{escape(parent_label)}</span>'
         )
+        has_sendable_parent_email = hmusic_is_real_email(parent_email)
+        parent_email_html = (
+            f'<div class="muted">{escape(str(parent_email or ""))}</div>'
+            if has_sendable_parent_email else
+            (
+                f'<div class="email-warning">No real email · <a href="/edit_parent_admin/{parent_id}">edit parent</a></div>'
+                if parent_id else '<div class="email-warning">No parent profile linked</div>'
+            )
+        )
         status_safe = escape(status_label(status))
         type_safe = escape(type_label(invoice_type))
         action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
+        elif not has_sendable_parent_email:
+            action_html += (
+                f'<a class="row-action reminder" href="/edit_parent_admin/{parent_id}">Add real email</a>'
+                if parent_id else '<span class="paid-text">No email</span>'
+            )
         else:
             action_html += f"""
             <form class="inline-action-form" method="POST" action="/send_invoice_payment_reminder/{invoice_id}" onsubmit="return confirm('Send payment reminder for invoice #{invoice_id}?');">
@@ -17184,7 +17198,7 @@ def invoices():
             </td>
             <td>
                 {parent_html}
-                <div class="muted">{escape(str(parent_email or ''))}</div>
+                {parent_email_html}
             </td>
             <td class="number">{charge_lessons:g}</td>
             <td class="amount">${hmusic_money(amount)}</td>
@@ -17237,6 +17251,8 @@ def invoices():
             tr:hover td {{ background:#fbfdff; }}
             .invoice-id,.student-link,.amount {{ font-weight:900; }}
             .muted {{ color:#667085; font-size:12px; margin-top:3px; font-weight:700; }}
+            .email-warning {{ color:#b45309; font-size:12px; margin-top:3px; font-weight:900; }}
+            .email-warning a {{ color:#92400e; text-decoration:underline; text-underline-offset:2px; }}
             .number,.amount {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }}
             .status {{ display:inline-flex; border-radius:999px; padding:6px 9px; font-size:12px; font-weight:900; white-space:nowrap; }}
             .status.unpaid {{ background:#fff7ed; color:#9a3412; }}
