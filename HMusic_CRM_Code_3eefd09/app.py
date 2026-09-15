@@ -8998,8 +8998,7 @@ def calendar():
             .calendar-status-select.sd-last-min{{color:var(--last-min-orange);background-color:#FFF3E0}}
             .calendar-status-select.sd-noshow{{color:#B42318;background-color:#FEE4E2}}
             .calendar-status-select.sd-cancelled,.calendar-status-select.sd-excused,.calendar-status-select.sd-early-cancel{{color:var(--cancel-red);background-color:#EEF0F3}}
-            .ev.ev-early-cancel{{background:#F1F3F6 !important;border-left-color:#98A2B3 !important;
-                                 color:var(--cancel-red) !important;box-shadow:none}}
+            .ev.ev-early-cancel{{color:var(--cancel-red) !important}}
             .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:var(--cancel-red);box-shadow:none;
                                                   text-decoration:line-through;text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .ev-name,
@@ -12922,7 +12921,7 @@ def teacher_dashboard():
     .sd-excused  {background:var(--s-excused)}
     .sd-early-cancel{background:#98A2B3}
     .calendar-event{border:1px solid rgba(24,95,165,.14);border-left:3px solid var(--blue);border-radius:5px;padding:2px 4px 3px 5px;color:#111827}
-    .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:var(--cancel-red)!important;box-shadow:none!important}
+    .calendar-event.early-cancel{color:var(--cancel-red)!important}
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
     .calendar-event.early-cancel .event-cancel-result{color:var(--cancel-red)!important;text-decoration:line-through;text-decoration-thickness:1.5px}
