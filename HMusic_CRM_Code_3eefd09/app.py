@@ -18837,12 +18837,8 @@ def parent_admin(parent_id):
     for s in linked_students:
         status = "Active" if s[3] == 1 else "Hidden"
         status_class = "good" if s[3] == 1 else "neutral"
-        profile_email = (s[6] or "").strip()
         current_parent_email = (parent[2] or "").strip()
-        child_contact = current_parent_email or (parent[3] or "Parent account")
-        profile_email_note = ""
-        if profile_email and current_parent_email and profile_email.lower() != current_parent_email.lower():
-            profile_email_note = f"<span class='contact-warning'>Profile primary: {escape(profile_email)}</span>"
+        child_contact = current_parent_email or (s[6] or "").strip() or (parent[3] or "Parent account")
         unlink_action = ""
         if s[3] == 1:
             unlink_action = f"""
@@ -18857,7 +18853,6 @@ def parent_admin(parent_id):
                 <div class="child-cell">
                     <a href="/student/{quote(str(s[1] or ''), safe='')}">{escape(str(s[1] or '-'))}</a>
                     <span>{escape(str(child_contact))}</span>
-                    {profile_email_note}
                 </div>
             </td>
             <td>{escape(str(s[5] or 'Unassigned'))}</td>
