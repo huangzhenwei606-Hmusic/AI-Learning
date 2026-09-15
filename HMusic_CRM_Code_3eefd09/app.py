@@ -12929,12 +12929,13 @@ def teacher_dashboard():
     .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:2px;font-size:9px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}
     .event-student{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827!important;font-size:10px!important;font-weight:900!important;line-height:1.05!important;margin:1px 0 0}
     .event-line{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#344054!important;font-size:8.5px!important;line-height:1.05!important}
-    .event-status-form{flex:0 0 90px;margin:0!important;line-height:1;max-width:90px}
+    .event-status-form{flex:0 0 78px;margin:0!important;line-height:1;max-width:78px}
     .event-status-form button{display:none!important}
-    .teacher-card-status{display:block;width:90px;max-width:90px;height:18px;line-height:1;
+    .teacher-card-status{display:block;width:78px;max-width:78px;height:18px;line-height:1;
                          border:1px solid transparent;border-radius:999px;
                          font-family:inherit;font-size:9px;font-weight:900;
-                         min-width:0;padding:0 20px 0 6px;cursor:pointer;
+                         min-width:0;padding:0 19px 0 5px;cursor:pointer;
+                         text-align:right;text-align-last:right;
                          text-overflow:ellipsis;color:#2563A6;background-color:#DCEEFF;
                          appearance:none;-webkit-appearance:none;
                          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none' stroke='%23475569' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
@@ -12944,7 +12945,7 @@ def teacher_dashboard():
     .teacher-card-status.sd-late{color:#B54708;background-color:#FFEAD5}
     .teacher-card-status.sd-noshow{color:#B42318;background-color:#FEE4E2}
     .teacher-card-status.sd-cancelled,.teacher-card-status.sd-excused,.teacher-card-status.sd-early-cancel{color:#475467;background-color:#EEF0F3}
-    .calendar-grid.month-view .event-status-form select.teacher-card-status{width:90px;max-width:90px;height:18px;border-radius:999px;font-size:9px;font-weight:900;padding:0 20px 0 6px}
+    .calendar-grid.month-view .event-status-form select.teacher-card-status{width:78px;max-width:78px;height:18px;border-radius:999px;font-size:9px;font-weight:900;padding:0 19px 0 5px}
     .teacher-multi-toggle{border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:8px 10px;font:inherit;font-weight:900;cursor:pointer}
     .teacher-multi-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
     .teacher-multi-bar{display:none;position:sticky;top:0;z-index:10;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:10px;border:1px solid #D9DEE8;border-radius:10px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08)}
