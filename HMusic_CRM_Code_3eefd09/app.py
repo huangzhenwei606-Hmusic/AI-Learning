@@ -8495,10 +8495,12 @@ def calendar():
         ), st.lessons_left, 0),
         COALESCE(s.is_group, 0),
         COALESCE(s.group_name, ''),
-        COALESCE(s.group_student_names, '')
+        COALESCE(s.group_student_names, ''),
+        COALESCE(l.location_name, s.location, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN students st    ON s.student_name    = st.name
+    LEFT JOIN studio_locations l ON l.id = s.location_id
     WHERE """ + where_sql + """
     ORDER BY s.lesson_date, s.lesson_time
     """, params)
@@ -8677,6 +8679,16 @@ def calendar():
             return '<span class="warn-pill">2 left</span>'
         return ""
 
+    def compact_location_room(location_name, room_name):
+        location_name = str(location_name or "").strip()
+        room_name = str(room_name or "").strip()
+        location_code = location_name.split()[0] if location_name else ""
+        if location_code and room_name:
+            return f"{location_code}/{room_name}"
+        if location_code:
+            return location_code
+        return room_name or "-"
+
     def open_slot_label(slot):
         start_label = format_display_time(slot[3])
         end_time = ""
@@ -8732,7 +8744,7 @@ def calendar():
                 early_cancel = event_status in ("excused_24h", "excused")
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
-                event_line = f"{event[5] or '-'} · {event[7] or course_name or 'Lesson'}"
+                event_line = f"{compact_location_room(event[17] if len(event) > 17 else '', event[5])} · {event[7] or course_name or 'Lesson'}"
                 event_cards += f"""
                 <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
@@ -8939,23 +8951,23 @@ def calendar():
             .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
             /* event card */
-            .ev{{border-radius:6px;padding:6px 7px 6px 8px;font-size:10px;margin-bottom:4px;
+            .ev{{border-radius:6px;padding:4px 5px 5px 6px;font-size:9.5px;margin-bottom:3px;
                  border:1px solid rgba(24,95,165,.14);border-left:3px solid transparent;line-height:1.1;
                  cursor:grab;user-select:none;overflow:hidden;color:#111827}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
             .ev-name{{font-weight:900;display:block;color:#111827;text-decoration:none;border-radius:3px;
                       width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis;
-                      font-size:13px;line-height:1.12;white-space:nowrap;margin:3px 0 1px}}
+                      font-size:11.5px;line-height:1.1;white-space:nowrap;margin:2px 0 1px}}
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
-            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:1px}}
-            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:11px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}}
+            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:5px;margin-bottom:1px}}
+            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:10px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}}
             .calendar-time-chip{{display:inline-block;width:max-content;max-width:100%;
                                  background:rgba(255,255,255,.86);color:#111827!important;font-weight:900;
-                                 border-radius:4px;padding:2px 5px;
+                                 border-radius:4px;padding:1px 4px;
                                  opacity:1!important;text-decoration:none!important}}
-            .ev-sub{{font-size:10.5px;line-height:1.12;color:#344054;display:block;
+            .ev-sub{{font-size:9.5px;line-height:1.1;color:#344054;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
             .ev-cancel-result{{font-size:8px;line-height:1.04;opacity:.78;display:block;margin-top:0;margin-bottom:0}}
             .ev .warn-pill,.ev .last-pill{{font-size:8px;padding:0 4px;line-height:1.1}}
@@ -8968,10 +8980,10 @@ def calendar():
                                      opacity:.96}}
             .owner-status-form{{flex:0 0 auto;margin:0;line-height:1;max-width:46%}}
             .owner-status-form button{{display:none}}
-            .calendar-status-select{{display:block;width:112px;max-width:100%;height:24px;line-height:1;
+            .calendar-status-select{{display:block;width:102px;max-width:100%;height:22px;line-height:1;
                                 border:1px solid transparent;border-radius:999px;
-                                font-family:inherit;font-size:11px;font-weight:900;
-                                min-width:0;padding:2px 20px 2px 8px;cursor:pointer;
+                                font-family:inherit;font-size:10px;font-weight:900;
+                                min-width:0;padding:1px 18px 1px 7px;cursor:pointer;
                                 text-overflow:ellipsis;color:#2563A6;background:#DCEEFF}}
             .calendar-status-select.sd-present{{color:#34750F;background:#E9F7DF}}
             .calendar-status-select.sd-scheduled{{color:#2563A6;background:#DCEEFF}}
@@ -12631,9 +12643,10 @@ def teacher_dashboard():
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
-        COALESCE(s.group_name, ''), COALESCE(s.group_student_names, '')
+        COALESCE(s.group_name, ''), COALESCE(s.group_student_names, ''), COALESCE(l.location_name, s.location, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON l.id = s.location_id
     WHERE s.teacher = ?
     AND s.lesson_date LIKE ?
     ORDER BY s.lesson_date, s.lesson_time
@@ -12645,9 +12658,10 @@ def teacher_dashboard():
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
-        COALESCE(s.group_name, ''), COALESCE(s.group_student_names, '')
+        COALESCE(s.group_name, ''), COALESCE(s.group_student_names, ''), COALESCE(l.location_name, s.location, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON l.id = s.location_id
     WHERE s.teacher = ?
     AND s.lesson_date >= ?
     AND s.lesson_date <= ?
@@ -12660,9 +12674,10 @@ def teacher_dashboard():
         s.id, s.lesson_date, s.lesson_time, s.student_name, s.classroom, s.status,
         COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.is_group, 0),
         COALESCE(s.group_size, 0), COALESCE(s.schedule_type, ''), COALESCE(c.display_color, ''),
-        COALESCE(s.group_name, ''), COALESCE(s.group_student_names, '')
+        COALESCE(s.group_name, ''), COALESCE(s.group_student_names, ''), COALESCE(l.location_name, s.location, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
+    LEFT JOIN studio_locations l ON l.id = s.location_id
     WHERE s.teacher = ?
     AND s.lesson_date = ?
     ORDER BY s.lesson_time
@@ -12835,6 +12850,16 @@ def teacher_dashboard():
     def teacher_time_range(time_text, duration):
         return format_lesson_time_range(time_text, duration)
 
+    def teacher_location_room_label(location_name, room_name):
+        location_name = str(location_name or "").strip()
+        room_name = str(room_name or "").strip()
+        location_code = location_name.split()[0] if location_name else ""
+        if location_code and room_name:
+            return f"{location_code}/{room_name}"
+        if location_code:
+            return location_code
+        return room_name or "-"
+
     def _t_status_dot(st):
         if st == "present":   return "sd-present"
         if st == "late":      return "sd-late"
@@ -12897,23 +12922,23 @@ def teacher_dashboard():
     .teacher-select-input{width:15px;height:15px;margin:0;accent-color:var(--blue)}
     .calendar-grid.multi-select-on .teacher-select-box{display:flex}
     .calendar-grid.multi-select-on .event-status-form{display:none}
-    .event-top{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:1px}
-    .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:11px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}
-    .event-student{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827!important;font-size:13px!important;font-weight:900!important;line-height:1.12!important;margin:3px 0 1px}
-    .event-line{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#344054!important;font-size:10.5px!important;line-height:1.12!important}
+    .event-top{display:flex;align-items:center;justify-content:space-between;gap:5px;margin-bottom:1px}
+    .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:10px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}
+    .event-student{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827!important;font-size:11.5px!important;font-weight:900!important;line-height:1.1!important;margin:2px 0 1px}
+    .event-line{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#344054!important;font-size:9.5px!important;line-height:1.1!important}
     .event-status-form{flex:0 0 auto;margin:0!important;line-height:1;max-width:46%}
     .event-status-form button{display:none!important}
-    .teacher-card-status{display:block;width:112px;max-width:100%;height:24px;line-height:1;
+    .teacher-card-status{display:block;width:102px;max-width:100%;height:22px;line-height:1;
                          border:1px solid transparent;border-radius:999px;
-                         font-family:inherit;font-size:11px;font-weight:900;
-                         min-width:0;padding:2px 20px 2px 8px;cursor:pointer;
+                         font-family:inherit;font-size:10px;font-weight:900;
+                         min-width:0;padding:1px 18px 1px 7px;cursor:pointer;
                          text-overflow:ellipsis;color:#2563A6;background:#DCEEFF}
     .teacher-card-status.sd-present{color:#34750F;background:#E9F7DF}
     .teacher-card-status.sd-scheduled{color:#2563A6;background:#DCEEFF}
     .teacher-card-status.sd-late{color:#B54708;background:#FFEAD5}
     .teacher-card-status.sd-noshow{color:#B42318;background:#FEE4E2}
     .teacher-card-status.sd-cancelled,.teacher-card-status.sd-excused,.teacher-card-status.sd-early-cancel{color:#475467;background:#EEF0F3}
-    .calendar-grid.month-view .event-status-form select.teacher-card-status{width:112px;height:24px;border-radius:999px;font-size:11px;font-weight:900;padding:2px 20px 2px 8px}
+    .calendar-grid.month-view .event-status-form select.teacher-card-status{width:102px;height:22px;border-radius:999px;font-size:10px;font-weight:900;padding:1px 18px 1px 7px}
     .teacher-multi-toggle{border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:8px 10px;font:inherit;font-weight:900;cursor:pointer}
     .teacher-multi-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
     .teacher-multi-bar{display:none;position:sticky;top:0;z-index:10;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:10px;border:1px solid #D9DEE8;border-radius:10px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08)}
@@ -12999,7 +13024,7 @@ def teacher_dashboard():
                 </form>
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(event_title)}</button>
-            <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
+            <div class="event-line">{escape(teacher_location_room_label(lesson[14] if len(lesson) > 14 else '', lesson[4]))} · {escape(lesson[10] or '')}</div>
             {cancel_result}
         </div>
         """
