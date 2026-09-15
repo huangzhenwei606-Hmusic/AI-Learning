@@ -49,7 +49,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("HMUSIC_COOKIE_SECURE", "1") != "0",
     PERMANENT_SESSION_LIFETIME=timedelta(days=int(os.environ.get("HMUSIC_PARENT_SESSION_DAYS", "180"))),
-    MAX_CONTENT_LENGTH=int(os.environ.get("HMUSIC_MAX_UPLOAD_MB", "10")) * 1024 * 1024,
+    MAX_CONTENT_LENGTH=int(os.environ.get("HMUSIC_MAX_UPLOAD_MB", "50")) * 1024 * 1024,
 )
 HMUSIC_DB_PATH = os.environ.get("HMUSIC_DB_PATH", "hmusic.db")
 HMUSIC_UPLOAD_DIR = os.environ.get("HMUSIC_UPLOAD_DIR", "message_uploads")
@@ -3861,7 +3861,7 @@ def hmusic_handle_exception(exc):
     if isinstance(exc, HTTPException):
         if exc.code == 413:
             max_mb = int(app.config.get("MAX_CONTENT_LENGTH", 10 * 1024 * 1024) / (1024 * 1024))
-            return f"<h1>Attachment is too large.</h1><p>Please upload a file under {max_mb} MB.</p><a href='/new_owner_message'>Back</a>", 413
+            return f"<h1>Attachment is too large.</h1><p>Please upload files under {max_mb} MB total.</p><a href='{escape(request.referrer or '/new_owner_message', quote=True)}'>Back</a>", 413
         if request.is_json or request.path in json_paths:
             return {"ok": False, "error": exc.description or exc.name or "Request failed"}, exc.code or 500
         return exc
@@ -24668,6 +24668,7 @@ def new_owner_message():
 
                 Attachments:<br>
                 <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
+                <div class="subtle">Maximum total upload size: 50 MB.</div>
 
                 <div class="form-actions">
                     <button type="submit">Send Message</button>
