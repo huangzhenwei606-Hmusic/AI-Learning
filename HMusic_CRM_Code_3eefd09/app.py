@@ -8493,7 +8493,9 @@ def calendar():
               e.id DESC
             LIMIT 1
         ), st.lessons_left, 0),
-        COALESCE(s.is_group, 0)
+        COALESCE(s.is_group, 0),
+        COALESCE(s.group_name, ''),
+        COALESCE(s.group_student_names, '')
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN students st    ON s.student_name    = st.name
@@ -8725,6 +8727,8 @@ def calendar():
                 warning = warning_pill(event[13], event[8])
                 course_color = course_calendar_color(event[10], course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
+                is_group_event = int(event[14] or 0) == 1
+                event_title = (event[15] or "Group lesson") if is_group_event else (event[3] or "")
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
                 early_cancel = event_status in ("excused_24h", "excused")
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
@@ -8743,7 +8747,7 @@ def calendar():
                       </span>
                       <span class="ev-icon-stack">{status_icons}</span>
                     </span>
-                    <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event[3] or ""))}</a>
+                    <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event_title or ""))}</a>
                     <span class="ev-sub">{escape(str(event_line))}</span>
                     {cancel_result}
                     {warning}
@@ -9184,6 +9188,15 @@ def calendar():
             .panel-field:focus{{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}}
             .panel-field::placeholder{{color:#98A2B3}}
             textarea.panel-field{{min-height:94px;resize:vertical;line-height:1.45}}
+            .owner-group-panel{{display:none}}
+            .owner-group-panel.show{{display:block}}
+            .owner-group-name{{font-size:20px;font-weight:900}}
+            .owner-group-list{{display:grid;gap:8px;margin-top:12px}}
+            .owner-group-row{{display:grid;grid-template-columns:minmax(0,1fr) 142px;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;background:#F8FAFC;padding:10px}}
+            .owner-group-child{{min-width:0}}
+            .owner-group-child b{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}}
+            .owner-group-child small{{display:block;color:var(--muted);font-weight:800;margin-top:2px}}
+            .owner-group-tag{{border-radius:999px;background:#EEF5FD;color:var(--blue);padding:6px 9px;font-size:11px;font-weight:900;text-align:center}}
             .panel-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}}
             .panel-toggle{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0}}
             .panel-toggle strong{{display:block;color:var(--text);font-size:15px}} .panel-toggle span{{display:block;color:var(--muted);font-size:12px;margin-top:2px}}
@@ -9582,6 +9595,11 @@ def calendar():
           <div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="panelRoom"></div></div>
           <div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="panelType"></div></div>
         </div>
+        <div class="panel-section owner-group-panel" id="panelGroupSection">
+          <h3>Group</h3>
+          <label><span class="detail-label">Group name</span><input class="panel-field owner-group-name" id="panelGroupName" placeholder="Group name"></label>
+          <div class="owner-group-list" id="panelGroupRoster"></div>
+        </div>
         <div class="panel-section"><h3>Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
           <button class="att-btn" data-status="no_show" onclick="setPanelStatus('no_show')">No show</button>
@@ -9767,11 +9785,54 @@ def calendar():
           return d;
         }});
     }}
+    function ownerGroupTitle(lesson) {{
+      return lesson && Number(lesson.is_group || 0)
+        ? (lesson.group_name || 'Group lesson')
+        : ((lesson && lesson.student) || 'Student');
+    }}
+    function renderOwnerGroupSection(lesson) {{
+      const isGroup = !!(lesson && Number(lesson.is_group || 0));
+      const section = document.getElementById('panelGroupSection');
+      const groupNameInput = document.getElementById('panelGroupName');
+      const rosterBox = document.getElementById('panelGroupRoster');
+      if (section) section.classList.toggle('show', isGroup);
+      if (!groupNameInput || !rosterBox) return;
+      groupNameInput.value = isGroup ? (lesson.group_name || '') : '';
+      groupNameInput.oninput = () => {{
+        if (!activePanelLesson) return;
+        activePanelLesson.group_name = groupNameInput.value;
+        const title = document.getElementById('panelStudent');
+        if (title) title.textContent = groupNameInput.value || 'Group lesson';
+      }};
+      rosterBox.innerHTML = '';
+      if (!isGroup) return;
+      const students = Array.isArray(lesson.group_students) && lesson.group_students.length
+        ? lesson.group_students
+        : String(lesson.group_student_names || lesson.student || '').split(',').map(name => ({{student_name:name.trim()}})).filter(item => item.student_name);
+      students.forEach(item => {{
+        const row = document.createElement('div');
+        row.className = 'owner-group-row';
+        const child = document.createElement('div');
+        child.className = 'owner-group-child';
+        const name = document.createElement('b');
+        name.textContent = item.student_name || 'Student';
+        const meta = document.createElement('small');
+        meta.textContent = item.parent_name ? ('Parent: ' + item.parent_name) : ('Rate: $' + Number(item.student_rate || 0).toFixed(2));
+        child.appendChild(name);
+        child.appendChild(meta);
+        const tag = document.createElement('div');
+        tag.className = 'owner-group-tag';
+        tag.textContent = item.attendance_status ? statusLabel(item.attendance_status) : 'Scheduled';
+        row.appendChild(child);
+        row.appendChild(tag);
+        rosterBox.appendChild(row);
+      }});
+    }}
     function openLessonPanel(scheduleId) {{
       fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{
         if (!d.ok) throw new Error(d.error || 'Lesson not found');
         activePanelLesson = d.lesson;
-        document.getElementById('panelStudent').textContent = d.lesson.student || 'Student';
+        document.getElementById('panelStudent').textContent = ownerGroupTitle(d.lesson);
         document.getElementById('panelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || '');
         document.getElementById('panelDate').textContent = d.lesson.date || '';
         document.getElementById('panelTime').textContent = d.lesson.time_range || d.lesson.time || '';
@@ -9786,6 +9847,7 @@ def calendar():
         document.getElementById('panelNewTime').value = inputTimeValue(d.lesson.time || '');
         document.getElementById('panelNewRoom').value = d.lesson.classroom || '';
         document.getElementById('panelReason').value = '';
+        renderOwnerGroupSection(d.lesson);
         fillPanelDetails(d.lesson);
         const detailsBilling = document.getElementById('panelDetailsBilling');
         if (detailsBilling) detailsBilling.open = true;
@@ -9818,7 +9880,8 @@ def calendar():
         custom_lesson_count:document.getElementById('panelDetailCustomCount').value,
         billing_basis:document.getElementById('panelBillingBasis').value,
         student_rate:document.getElementById('panelStudentRate').value,
-        billing_decision:document.getElementById('panelBillingDecision').value
+        billing_decision:document.getElementById('panelBillingDecision').value,
+        group_name:(document.getElementById('panelGroupName') || {{value:''}}).value
       }};
     }}
     function panelDetailsChanged() {{
@@ -9847,6 +9910,7 @@ def calendar():
         status:activePanelStatus,
         lesson_note:document.getElementById('panelLessonNote').value,
         homework:document.getElementById('panelHomework').value,
+        group_name:(document.getElementById('panelGroupName') || {{value:''}}).value,
         ...reminderValues,
         reminder_scope:panelRemindersChanged() ? document.getElementById('panelReminderScope').value : 'once',
         detail_scope:panelDetailsChanged() ? document.getElementById('panelDetailScope').value : 'once',
@@ -12893,7 +12957,7 @@ def teacher_dashboard():
         course_color = course_calendar_color(lesson[11], lesson[7], lesson[6], lesson[8])
         course_style = course_calendar_style(course_color)
         is_group_lesson = int(lesson[8] or 0) == 1
-        event_title = (lesson[12] or lesson[13] or lesson[3] or "-") if is_group_lesson else (lesson[3] or "-")
+        event_title = (lesson[12] or "Group lesson") if is_group_lesson else (lesson[3] or "-")
         return f"""
         <div class="calendar-event{event_class}"
              draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
@@ -13314,7 +13378,7 @@ def teacher_dashboard():
         function teacherPanelRoomPayload() {{ const select = document.getElementById('tPanelRoomSelect'); const option = select && select.selectedOptions ? select.selectedOptions[0] : null; const room = selectedTeacherPanelRoom(); const currentRoom = activeTeacherLesson || {{}}; return {{classroom: room ? room.room_name : ((select && select.value) ? select.value : (currentRoom.classroom || '')), room_id: room ? room.id : Number(option ? option.dataset.roomId || 0 : (currentRoom.room_id || 0)), location_id: room ? room.location_id : Number(option ? option.dataset.locationId || 0 : (currentRoom.location_id || 0)), location: room ? room.location_name : (option ? option.dataset.locationName || '' : (currentRoom.location || ''))}}; }}
         function syncTeacherPanelRoom() {{ const room = teacherPanelRoomPayload(); if (activeTeacherLesson) {{ teacherPanelRoomChanged = teacherPanelRoomChanged || String(activeTeacherLesson.classroom || '') !== String(room.classroom || '') || Number(activeTeacherLesson.room_id || 0) !== Number(room.room_id || 0); activeTeacherLesson.classroom = room.classroom; activeTeacherLesson.room_id = room.room_id; activeTeacherLesson.location_id = room.location_id; activeTeacherLesson.location = room.location; }} const label = room.location ? room.location + ' - ' + room.classroom : (room.classroom || '-'); const display = document.getElementById('tPanelRoom'); if (display) display.textContent = label; }}
         function selectedTeacherPanelCourse() {{ const select = document.getElementById('tPanelCourseType'); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
-        function teacherGroupTitle(lesson) {{ return (lesson && Number(lesson.is_group || 0)) ? (lesson.group_name || lesson.group_student_names || lesson.student || 'Group lesson') : ((lesson && lesson.student) || 'Student'); }}
+        function teacherGroupTitle(lesson) {{ return (lesson && Number(lesson.is_group || 0)) ? (lesson.group_name || 'Group lesson') : ((lesson && lesson.student) || 'Student'); }}
         function renderTeacherGroupRoster(lesson) {{
             const isGroup = !!(lesson && Number(lesson.is_group || 0));
             const section = document.getElementById('tPanelGroupSection');
@@ -13324,7 +13388,7 @@ def teacher_dashboard():
             if (section) section.classList.toggle('show', isGroup);
             if (wholeAttendance) wholeAttendance.style.display = isGroup ? 'none' : '';
             if (!groupNameInput || !rosterBox) return;
-            groupNameInput.value = isGroup ? teacherGroupTitle(lesson) : '';
+            groupNameInput.value = isGroup ? (lesson.group_name || '') : '';
             groupNameInput.oninput = () => {{ if (activeTeacherLesson) {{ activeTeacherLesson.group_name = groupNameInput.value; const title = document.getElementById('tPanelStudent'); if (title) title.textContent = groupNameInput.value || 'Group lesson'; }} }};
             rosterBox.innerHTML = '';
             if (!isGroup) return;
@@ -13369,7 +13433,7 @@ def teacher_dashboard():
         function teacherPayload() {{ const course = selectedTeacherPanelCourse(); const room = teacherPanelRoomPayload(); const isGroup = !!(activeTeacherLesson && Number(activeTeacherLesson.is_group || 0)); const payload = {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; if (isGroup) {{ payload.group_name = (document.getElementById('tPanelGroupName') || {{value:''}}).value; payload.group_attendance = collectTeacherGroupAttendance(); }} return payload; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
-        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); const payload = teacherPayload(); if (activeTeacherStatus === 'teacher_cancelled' && activeTeacherLesson.status !== 'teacher_cancelled') payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); return teacherLessonAction(payload).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (payload.group_name) {{ activeTeacherLesson.group_name = payload.group_name; document.getElementById('tPanelStudent').textContent = payload.group_name; repaintTeacherGroupTitle(activeTeacherLesson.id, payload.group_name); }} repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); const payload = teacherPayload(); if (activeTeacherStatus === 'teacher_cancelled' && activeTeacherLesson.status !== 'teacher_cancelled') payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); return teacherLessonAction(payload).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (Number(activeTeacherLesson.is_group || 0)) {{ activeTeacherLesson.group_name = payload.group_name || ''; const titleText = activeTeacherLesson.group_name || 'Group lesson'; document.getElementById('tPanelStudent').textContent = titleText; repaintTeacherGroupTitle(activeTeacherLesson.id, titleText); }} repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; const room = teacherPanelRoomPayload(); teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
@@ -15396,8 +15460,8 @@ def calendar_group_roster(cursor, schedule_id, row=None):
 
 def update_calendar_group_lesson(cursor, schedule_ids, group_name=None, attendance_items=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    clean_group_name = (group_name or "").strip()
-    if clean_group_name:
+    if group_name is not None:
+        clean_group_name = (group_name or "").strip()
         cursor.executemany(
             "UPDATE schedule SET group_name = ?, owner_calendar_updated_at = ? WHERE id = ?",
             [(clean_group_name, now, int(schedule_id)) for schedule_id in schedule_ids]
@@ -15659,6 +15723,7 @@ def calendar_lesson_action():
         teacher_following_ids = calendar_following_lesson_ids(cursor, row, schedule_id) if is_teacher and teacher_change_scope == "following" else []
         teacher_course_update = {}
         teacher_location_update = {}
+        group_name_present = "group_name" in data
         group_name_update = (data.get("group_name") or "").strip()
         group_attendance_items = data.get("group_attendance") or data.get("group_students")
         has_group_attendance_update = isinstance(group_attendance_items, list)
@@ -15720,12 +15785,12 @@ def calendar_lesson_action():
             conn = sqlite3.connect("hmusic.db")
             cursor = conn.cursor()
             row = calendar_lesson_row(cursor, schedule_id)
-        if int(row[18] or 0) and (group_name_update or has_group_attendance_update):
+        if int(row[18] or 0) and (group_name_present or has_group_attendance_update):
             group_name_ids = [int(schedule_id)] + (teacher_following_ids if is_teacher and teacher_change_scope == "following" else [])
             if is_owner and (data.get("detail_scope") or "once") == "following":
                 group_name_ids += calendar_following_lesson_ids(cursor, row, schedule_id)
             group_name_ids = list(dict.fromkeys(group_name_ids))
-            if group_name_update:
+            if group_name_present:
                 update_calendar_group_lesson(cursor, group_name_ids, group_name=group_name_update)
             if has_group_attendance_update:
                 update_calendar_group_lesson(cursor, [int(schedule_id)], attendance_items=group_attendance_items)
