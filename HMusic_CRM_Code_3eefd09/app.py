@@ -3441,6 +3441,9 @@ def hmusic_handle_exception(exc):
         "/teacher_multi_select_action",
     }
     if isinstance(exc, HTTPException):
+        if exc.code == 413:
+            max_mb = int(app.config.get("MAX_CONTENT_LENGTH", 10 * 1024 * 1024) / (1024 * 1024))
+            return f"<h1>Attachment is too large.</h1><p>Please upload a file under {max_mb} MB.</p><a href='/new_owner_message'>Back</a>", 413
         if request.is_json or request.path in json_paths:
             return {"ok": False, "error": exc.description or exc.name or "Request failed"}, exc.code or 500
         return exc
@@ -20852,7 +20855,7 @@ def hmusic_should_send_message_email_now(user_role, title):
     return user_role == "parent" and "message" in (title or "").lower()
 
 
-def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True):
+def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True, send_email_now=True):
     ensure_v29_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -20947,7 +20950,7 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
         related_type=related_type,
         related_id=related_id
     )
-    if email_queue_id and hmusic_should_send_message_email_now(user_role, title):
+    if send_email_now and email_queue_id and hmusic_should_send_message_email_now(user_role, title):
         try:
             send_queued_email_now(email_queue_id)
         except Exception:
@@ -23884,11 +23887,31 @@ def new_owner_message():
 
         if recipient_mode == "parent":
             parent_id_raw = request.form.get("parent_id")
+            student_lookup_name = (request.form.get("student_lookup_name") or "").strip()
             try:
                 parent_id = int(parent_id_raw)
             except (TypeError, ValueError):
+                parent_id = None
+
+            if not parent_id and student_lookup_name:
+                cursor.execute("""
+                    SELECT p.id
+                    FROM parent_students ps
+                    JOIN parent_profiles p ON p.id = ps.parent_id
+                    WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
+                      AND COALESCE(ps.active, 1) = 1
+                      AND COALESCE(p.active, 1) = 1
+                    ORDER BY p.id
+                    LIMIT 1
+                """, (student_lookup_name,))
+                parent_lookup = cursor.fetchone()
+                if parent_lookup:
+                    parent_id = parent_lookup[0]
+                    student_name = student_name or student_lookup_name
+
+            if not parent_id:
                 conn.close()
-                return "<h1>Please choose a parent.</h1><a href='/new_owner_message'>Back</a>"
+                return "<h1>Please choose a parent or student.</h1><a href='/new_owner_message'>Back</a>"
 
             cursor.execute("SELECT parent_name, email FROM parent_profiles WHERE id = ?", (parent_id,))
             parent = cursor.fetchone()
@@ -23914,7 +23937,8 @@ def new_owner_message():
                 str(parent_id),
                 "New message from H-Music",
                 body or "New attachment",
-                f"/message_thread/{thread_id}"
+                f"/message_thread/{thread_id}",
+                send_email_now=False
             )
             return redirect(f"/message_thread/{thread_id}")
 
@@ -24201,7 +24225,7 @@ def new_owner_message():
 
                 <div id="student-recipient-block" style="display:none;">
                     Student recipient:<br>
-                    <select id="student-parent-select" onchange="syncParentFromStudent()">{student_recipient_options}</select>
+                    <select id="student-parent-select" name="student_lookup_name" onchange="syncParentFromStudent()">{student_recipient_options}</select>
                     <div class="subtle">Choose the student, and the matching parent will be selected automatically.</div>
                 </div>
 
