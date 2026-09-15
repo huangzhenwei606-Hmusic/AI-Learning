@@ -19592,9 +19592,23 @@ def edit_parent_admin(parent_id):
 
     if request.method == "POST":
         parent_name = request.form.get("parent_name")
+        email = (request.form.get("email") or "").strip().lower()
         phone = request.form.get("phone")
         password = request.form.get("password")
         active = request.form.get("active") or "1"
+
+        if not email:
+            conn.close()
+            return "<h1>Email is required</h1><p><a href='javascript:history.back()'>Back</a></p>", 400
+
+        cursor.execute("""
+            SELECT id FROM parent_profiles
+            WHERE LOWER(email) = LOWER(?) AND id != ?
+        """, (email, parent_id))
+        duplicate_parent = cursor.fetchone()
+        if duplicate_parent:
+            conn.close()
+            return "<h1>Email already exists</h1><p>Another parent is already using this email.</p><p><a href='javascript:history.back()'>Back</a></p>", 400
 
         new_password_hash = hmusic_password_hash(password) if password else None
         password_sql = ""
@@ -19606,6 +19620,7 @@ def edit_parent_admin(parent_id):
         cursor.execute(f"""
         UPDATE parent_profiles
         SET parent_name = ?,
+            email = ?,
             phone = ?,
             {password_sql}
             active = ?,
@@ -19613,6 +19628,7 @@ def edit_parent_admin(parent_id):
         WHERE id = ?
         """, (
             parent_name,
+            email,
             phone,
             *password_values,
             int(active),
@@ -19658,7 +19674,7 @@ def edit_parent_admin(parent_id):
                 <input name="parent_name" value="{parent[1] or ''}">
 
                 Email:<br>
-                <input value="{parent[2] or ''}" disabled>
+                <input type="email" name="email" value="{parent[2] or ''}" required>
 
                 Phone:<br>
                 <input name="phone" value="{parent[3] or ''}">
