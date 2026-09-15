@@ -1404,14 +1404,14 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .calendar-grid {{ display:grid; grid-template-columns:repeat(7,minmax(132px,1fr)); gap:1px; background:var(--td-line); border:1px solid var(--td-line); border-radius:12px; overflow:auto; }}
             .calendar-day {{ min-height:220px; background:white; padding:3px; min-width:0; }}
             .calendar-grid.month-view .calendar-day {{ min-height:132px; }}
-            .calendar-grid.month-view .calendar-event {{ padding:2px 4px 1px; margin-bottom:2px; line-height:1; }}
+            .calendar-grid.month-view .calendar-event {{ padding:6px 7px 6px 8px; margin-bottom:4px; line-height:1.1; }}
             .calendar-grid.month-view .event-top,
             .calendar-grid.month-view .event-student,
             .calendar-grid.month-view .event-line,
             .calendar-grid.month-view .event-cancel-result {{ margin-bottom:0; }}
-            .calendar-grid.month-view .event-status-form {{ margin:1px 0 0; line-height:1; }}
+            .calendar-grid.month-view .event-status-form {{ margin:0; line-height:1; }}
             .calendar-grid.month-view .event-status-form select,
-            .calendar-grid.month-view .event-status-form button {{ display:block; height:14px; line-height:1; padding:0 3px; }}
+            .calendar-grid.month-view .event-status-form button {{ display:block; height:24px; line-height:1; padding:2px 8px; }}
             .calendar-grid.week-view .calendar-day {{ min-height:240px; }}
             .calendar-day.today {{ background:#fbfdff; }}
             .calendar-day-head {{ display:grid; grid-template-columns:1fr auto; gap:4px; align-items:center; min-height:15px; margin-bottom:3px; color:var(--td-muted); font-size:9.5px; }}
@@ -1430,7 +1430,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .event-line {{ overflow-wrap:anywhere; font-size:8.5px; color:#334155; line-height:1.04; margin-top:0; }}
             .event-status-form {{ display:grid; grid-template-columns:minmax(0,1fr) 28px; gap:2px; margin-top:2px; align-items:center; }}
             .event-status-form select, .event-status-form button {{ width:100%; min-width:0; height:17px; border:1px solid rgba(51,65,85,.28); border-radius:4px; background:rgba(255,255,255,.94); color:var(--td-text); font:inherit; font-size:8.5px; padding:0 3px; }}
-            .event-status-form button {{ color:white; background:var(--td-blue); border-color:var(--td-blue); font-weight:500; cursor:pointer; padding:0 3px; }}
+            .event-status-form button {{ color:var(--td-text); background:#E6F1FB; border-color:#B8CCE3; font-weight:500; cursor:pointer; padding:0 3px; }}
             .calendar-empty {{ color:var(--td-faint); font-size:11px; padding:4px 1px; }}
             @media (max-width:900px) {{
                 .td-shell {{ grid-template-columns:64px 1fr; }}
@@ -8722,7 +8722,6 @@ def calendar():
                 course_name = event[11] or event[8] or ""
                 dot_class = owner_status_dot(event_status)
                 status_label = owner_status_label(event_status)
-                status_icons = owner_status_icons(event_status)
                 time_range = owner_time_range(event[2], event[12])
                 warning = warning_pill(event[13], event[8])
                 course_color = course_calendar_color(event[10], course_name, event[12], event[14])
@@ -8741,22 +8740,18 @@ def calendar():
                      data-student="{escape(str(event[3] or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
                     <span class="ev-head">
-                      <span class="ev-time">
-                        <span class="ev-status-badge {dot_class}">{status_label}</span>
-                        <span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>
-                      </span>
-                      <span class="ev-icon-stack">{status_icons}</span>
+                      <span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>
+                      <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
+                          <input type="hidden" name="schedule_id" value="{event[0]}">
+                          <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
+                          <select name="status" class="calendar-status-select {dot_class}" aria-label="Attendance status" onchange="this.form.submit()">{owner_status_options(event_status)}</select>
+                          <button type="submit" aria-hidden="true" tabindex="-1">Save</button>
+                      </form>
                     </span>
                     <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event_title or ""))}</a>
                     <span class="ev-sub">{escape(str(event_line))}</span>
                     {cancel_result}
                     {warning}
-                    <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
-                        <input type="hidden" name="schedule_id" value="{event[0]}">
-                        <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
-                        <select name="status" aria-label="Attendance status">{owner_status_options(event_status)}</select>
-                        <button type="submit">Save</button>
-                    </form>
                 </div>
                 """
             for slot in slots_by_date.get(date_key, []):
@@ -8944,23 +8939,23 @@ def calendar():
             .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
             /* event card */
-            .ev{{border-radius:5px;padding:2px 4px 1px;font-size:9px;margin-bottom:2px;
-                 border-left:3px solid transparent;line-height:1;
-                 cursor:grab;user-select:none;overflow:hidden}}
+            .ev{{border-radius:6px;padding:6px 7px 6px 8px;font-size:10px;margin-bottom:4px;
+                 border:1px solid rgba(24,95,165,.14);border-left:3px solid transparent;line-height:1.1;
+                 cursor:grab;user-select:none;overflow:hidden;color:#111827}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
-            .ev-name{{font-weight:900;display:block;color:inherit;text-decoration:none;border-radius:3px;
+            .ev-name{{font-weight:900;display:block;color:#111827;text-decoration:none;border-radius:3px;
                       width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis;
-                      font-size:10px;line-height:1.04;white-space:nowrap;margin-bottom:0}}
+                      font-size:13px;line-height:1.12;white-space:nowrap;margin:3px 0 1px}}
             .ev-name:hover{{color:#155d9e;text-decoration:underline;text-underline-offset:2px}}
             .ev-name:focus-visible{{outline:2px solid #93c5fd;outline-offset:2px}}
-            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:3px;margin-bottom:0}}
-            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:8.5px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}}
+            .ev-head{{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:1px}}
+            .ev-time{{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:11px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}}
             .calendar-time-chip{{display:inline-block;width:max-content;max-width:100%;
                                  background:rgba(255,255,255,.86);color:#111827!important;font-weight:900;
-                                 border-radius:3px;padding:1px 2px;
+                                 border-radius:4px;padding:2px 5px;
                                  opacity:1!important;text-decoration:none!important}}
-            .ev-sub{{font-size:8.5px;line-height:1.04;opacity:.78;display:block;
+            .ev-sub{{font-size:10.5px;line-height:1.12;color:#344054;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
             .ev-cancel-result{{font-size:8px;line-height:1.04;opacity:.78;display:block;margin-top:0;margin-bottom:0}}
             .ev .warn-pill,.ev .last-pill{{font-size:8px;padding:0 4px;line-height:1.1}}
@@ -8971,25 +8966,18 @@ def calendar():
             .ev-status-badge:before{{content:"";width:5px;height:5px;border-radius:50%;
                                      background:currentColor;filter:brightness(0) invert(1);
                                      opacity:.96}}
-            .ev-icon-stack{{display:inline-flex;align-items:center;justify-content:flex-end;gap:2px;
-                            flex-wrap:wrap;max-width:40%}}
-            .ev-icon{{width:14px;height:14px;border-radius:999px;display:inline-flex;
-                      align-items:center;justify-content:center;border:1px solid currentColor;
-                      background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12);
-                      font-size:10px;line-height:1}}
-            .ev-icon i{{font-size:10px;line-height:1}}
-            .ev-icon-teacher{{color:#6941C6;background:#F4EBFF}}
-            .ev-icon-noshow{{color:#B42318;background:#FEE4E2}}
-            .ev-icon-lastmin{{color:#B54708;background:#FFEAD5}}
-            .ev-icon-cancelled{{color:#475467;background:#EEF2F7}}
-            .owner-status-form{{display:grid;grid-template-columns:minmax(0,1fr) 28px;
-                                gap:2px;margin:1px 0 0;align-items:center;line-height:1}}
-            .owner-status-form select,.owner-status-form button{{display:block;height:14px;line-height:1;border:1px solid rgba(0,0,0,.16);
-                                border-radius:4px;background:rgba(255,255,255,.92);
-                                font-family:inherit;font-size:8.5px;color:#1C1C1E;
-                                min-width:0;padding:0 3px}}
-            .owner-status-form button{{background:#185FA5;color:#fff;border-color:#185FA5;
-                                font-weight:800;cursor:pointer;padding:0 3px}}
+            .owner-status-form{{flex:0 0 auto;margin:0;line-height:1;max-width:46%}}
+            .owner-status-form button{{display:none}}
+            .calendar-status-select{{display:block;width:112px;max-width:100%;height:24px;line-height:1;
+                                border:1px solid transparent;border-radius:999px;
+                                font-family:inherit;font-size:11px;font-weight:900;
+                                min-width:0;padding:2px 20px 2px 8px;cursor:pointer;
+                                text-overflow:ellipsis;color:#2563A6;background:#DCEEFF}}
+            .calendar-status-select.sd-present{{color:#34750F;background:#E9F7DF}}
+            .calendar-status-select.sd-scheduled{{color:#2563A6;background:#DCEEFF}}
+            .calendar-status-select.sd-late{{color:#B54708;background:#FFEAD5}}
+            .calendar-status-select.sd-noshow{{color:#B42318;background:#FEE4E2}}
+            .calendar-status-select.sd-cancelled,.calendar-status-select.sd-excused,.calendar-status-select.sd-early-cancel{{color:#475467;background:#EEF0F3}}
             .ev.ev-early-cancel{{background:#F1F3F6 !important;border-left-color:#98A2B3 !important;
                                  color:#667085 !important;box-shadow:none}}
             .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:#667085;box-shadow:none;
@@ -12880,15 +12868,9 @@ def teacher_dashboard():
         --s-present:#639922;--s-scheduled:#378ADD;--s-late:#D99019;
         --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
     }
-    .t-status-badge{display:inline-flex;align-items:center;gap:3px;
-                    border-radius:999px;padding:1px 5px;font-size:8px;
-                    line-height:1;font-weight:900;color:#fff;
-                    box-shadow:0 1px 2px rgba(0,0,0,.18)}
-    .t-status-badge:before{content:"";width:5px;height:5px;border-radius:50%;
-                           background:currentColor;filter:brightness(0) invert(1)}
     .calendar-time-chip{display:inline-block;width:max-content;max-width:100%;
                         background:rgba(255,255,255,.88);color:#111827!important;font-weight:900;
-                        border-radius:3px;padding:0 2px;
+                        border-radius:4px;padding:2px 5px;
                         opacity:1!important;text-decoration:none!important}
     .event-time-wrap{display:inline-block;margin-top:0}
     .sd-present  {background:var(--s-present)}
@@ -12898,9 +12880,8 @@ def teacher_dashboard():
     .sd-cancelled{background:var(--s-cancelled)}
     .sd-excused  {background:var(--s-excused)}
     .sd-early-cancel{background:#98A2B3}
-    .calendar-event{border-left:4px solid var(--blue)}
+    .calendar-event{border:1px solid rgba(24,95,165,.14);border-left:3px solid var(--blue);border-radius:6px;padding:6px 7px 6px 8px;color:#111827}
     .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:#667085!important;box-shadow:none!important}
-    .calendar-event.early-cancel .t-status-badge{background:#E5E7EB;color:#667085;box-shadow:none;text-decoration:line-through;text-decoration-thickness:1.5px}
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
     .calendar-event.early-cancel .event-cancel-result{color:#667085!important;text-decoration:line-through;text-decoration-thickness:1.5px}
@@ -12916,6 +12897,23 @@ def teacher_dashboard():
     .teacher-select-input{width:15px;height:15px;margin:0;accent-color:var(--blue)}
     .calendar-grid.multi-select-on .teacher-select-box{display:flex}
     .calendar-grid.multi-select-on .event-status-form{display:none}
+    .event-top{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:1px}
+    .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:3px;font-size:11px;line-height:1;color:#475569;font-weight:500;white-space:nowrap}
+    .event-student{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827!important;font-size:13px!important;font-weight:900!important;line-height:1.12!important;margin:3px 0 1px}
+    .event-line{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#344054!important;font-size:10.5px!important;line-height:1.12!important}
+    .event-status-form{flex:0 0 auto;margin:0!important;line-height:1;max-width:46%}
+    .event-status-form button{display:none!important}
+    .teacher-card-status{display:block;width:112px;max-width:100%;height:24px;line-height:1;
+                         border:1px solid transparent;border-radius:999px;
+                         font-family:inherit;font-size:11px;font-weight:900;
+                         min-width:0;padding:2px 20px 2px 8px;cursor:pointer;
+                         text-overflow:ellipsis;color:#2563A6;background:#DCEEFF}
+    .teacher-card-status.sd-present{color:#34750F;background:#E9F7DF}
+    .teacher-card-status.sd-scheduled{color:#2563A6;background:#DCEEFF}
+    .teacher-card-status.sd-late{color:#B54708;background:#FFEAD5}
+    .teacher-card-status.sd-noshow{color:#B42318;background:#FEE4E2}
+    .teacher-card-status.sd-cancelled,.teacher-card-status.sd-excused,.teacher-card-status.sd-early-cancel{color:#475467;background:#EEF0F3}
+    .calendar-grid.month-view .event-status-form select.teacher-card-status{width:112px;height:24px;border-radius:999px;font-size:11px;font-weight:900;padding:2px 20px 2px 8px}
     .teacher-multi-toggle{border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:8px 10px;font:inherit;font-weight:900;cursor:pointer}
     .teacher-multi-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
     .teacher-multi-bar{display:none;position:sticky;top:0;z-index:10;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:10px;border:1px solid #D9DEE8;border-radius:10px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08)}
@@ -12991,21 +12989,18 @@ def teacher_dashboard():
                 <input type="checkbox" class="teacher-select-input" value="{lesson[0]}" onchange="teacherMultiUpdate()">
             </label>
             <div class="event-top">
-                <span class="event-time">
-                  <span class="t-status-badge {dot}" data-teacher-status-badge>{status_text}</span>
-                  <span class="event-time-wrap"><span class="calendar-time-chip">{time_range}</span></span>
-                </span>
+                <span class="event-time"><span class="calendar-time-chip">{time_range}</span></span>
+                <form method="POST" action="/update_lesson_status" class="event-status-form" data-teacher-status-form onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
+                    <input type="hidden" name="schedule_id" value="{lesson[0]}">
+                    <input type="hidden" name="return_to" value="{schedule_return_url}">
+                    <input type="hidden" name="ajax" value="1">
+                    <select name="status" class="teacher-card-status {dot}" aria-label="Attendance status">{status_options(lesson[5])}</select>
+                    <button type="submit" aria-hidden="true" tabindex="-1">Save</button>
+                </form>
             </div>
             <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(event_title)}</button>
             <div class="event-line">{escape(lesson[4] or '-')} · {escape(lesson[7] or '')}</div>
             {cancel_result}
-            <form method="POST" action="/update_lesson_status" class="event-status-form" data-teacher-status-form onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
-                <input type="hidden" name="schedule_id" value="{lesson[0]}">
-                <input type="hidden" name="return_to" value="{schedule_return_url}">
-                <input type="hidden" name="ajax" value="1">
-                <select name="status" aria-label="Attendance status">{status_options(lesson[5])}</select>
-                <button type="submit">Save</button>
-            </form>
         </div>
         """
 
@@ -13332,13 +13327,11 @@ def teacher_dashboard():
             document.querySelectorAll('.calendar-event[data-id]').forEach(card => {{
                 if (card.dataset.id !== String(scheduleId)) return;
                 card.classList.toggle('early-cancel', isEarlyCancel);
-                const badge = card.querySelector('[data-teacher-status-badge]');
-                if (badge) {{
-                    badge.textContent = teacherStatusLabel(st);
-                    badge.className = 't-status-badge ' + teacherStatusDotClass(st);
-                }}
                 const select = card.querySelector('select[name="status"]');
-                if (select) select.value = st;
+                if (select) {{
+                    select.value = st;
+                    select.className = 'teacher-card-status ' + teacherStatusDotClass(st);
+                }}
                 let cancelResult = card.querySelector('.event-cancel-result');
                 if (isEarlyCancel && !cancelResult) {{
                     cancelResult = document.createElement('div');
@@ -13360,6 +13353,13 @@ def teacher_dashboard():
         }}
         function bindTeacherStatusForms() {{
             document.querySelectorAll('.event-status-form[data-teacher-status-form]').forEach(form => {{
+                const statusSelectForAutoSave = form.querySelector('select[name="status"]');
+                if (statusSelectForAutoSave) {{
+                    statusSelectForAutoSave.addEventListener('change', () => {{
+                        if (form.requestSubmit) form.requestSubmit();
+                        else form.dispatchEvent(new Event('submit', {{cancelable:true, bubbles:true}}));
+                    }});
+                }}
                 form.addEventListener('submit', e => {{
                     e.preventDefault();
                     e.stopPropagation();
