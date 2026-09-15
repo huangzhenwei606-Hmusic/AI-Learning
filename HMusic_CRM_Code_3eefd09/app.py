@@ -10064,6 +10064,10 @@ def calendar():
         const customPrice = document.getElementById('popCustomStudentPrice');
         if (customPrice) customPrice.value = rate.toFixed(2);
       }}
+      let studentChargeText = `$${{studentCharge.toFixed(2)}}`;
+      if (isQuickGroupMode()) {{
+        studentChargeText = quickGroupChargeText(basisMethod, duration, rate);
+      }}
       const packageSelect = document.getElementById('popPackageType');
       const customCount = document.getElementById('popCustomLessonCount');
       const packageLabel = packageSelect ? packageSelect.options[packageSelect.selectedIndex].textContent : '10 lessons';
@@ -10072,9 +10076,33 @@ def calendar():
         : packageLabel;
       document.getElementById('popPriceSummary').innerHTML =
         `<strong>${{course.name || 'Course'}}</strong> · ${{duration}} min<br>` +
-        `Student charge: <strong>$${{studentCharge.toFixed(2)}}</strong><br>` +
+        `Student charge: <strong>${{studentChargeText}}</strong><br>` +
         `Billing: ${{billingLabel(billingDecision)}} · ${{countLabel}}<br>` +
         `Pricing basis: ${{basisMethod}}`;
+    }}
+    function quickGroupChargeText(basisMethod, duration, fallbackRate) {{
+      const defaultRate = Number((document.getElementById('popGroupDefaultRate') || {{value:fallbackRate || 0}}).value || fallbackRate || 0);
+      const defaultRule = (document.getElementById('popGroupDefaultBilling') || {{value:'existing_credits'}}).value;
+      const mode = (document.getElementById('popGroupBillingMode') || {{value:'per_student'}}).value;
+      const rows = Array.from(document.querySelectorAll('#popGroupBillingRows tr[data-student-key]'));
+      const charges = [];
+      if (mode === 'per_student' && rows.length) {{
+        rows.forEach(row => {{
+          const rule = (row.querySelector('[name="group_billing_rule"]') || {{value:defaultRule}}).value;
+          const rateInput = row.querySelector('[name="group_student_rate"]');
+          let rowRate = Number(rateInput ? rateInput.value : defaultRate);
+          if (!Number.isFinite(rowRate) || rowRate <= 0) rowRate = defaultRate;
+          charges.push(['makeup_credit','no_charge'].includes(rule) ? 0 : quickAmount(basisMethod, rowRate, duration));
+        }});
+      }}
+      if (!charges.length) {{
+        const baseRate = Number.isFinite(defaultRate) && defaultRate > 0 ? defaultRate : Number(fallbackRate || 0);
+        charges.push(['makeup_credit','no_charge'].includes(defaultRule) ? 0 : quickAmount(basisMethod, baseRate, duration));
+      }}
+      const uniqueAmounts = Array.from(new Set(charges.map(charge => Number(charge || 0).toFixed(2))));
+      if (uniqueAmounts.length <= 1) return `$${{uniqueAmounts[0] || '0.00'}}`;
+      const sortedCharges = charges.map(charge => Number(charge || 0)).sort((a, b) => a - b);
+      return `$${{sortedCharges[0].toFixed(2)}}-$${{sortedCharges[sortedCharges.length - 1].toFixed(2)}}`;
     }}
     function toggleOwnerDurationBox() {{
       const box = document.getElementById('popDurationBox');
@@ -10222,6 +10250,7 @@ def calendar():
           <td><input class="pop-inp group-rate" name="group_student_rate" type="number" step="0.01" min="0" value="${{rate}}" placeholder="0.00"></td>
         </tr>`;
       }}).join('');
+      updateQuickCourseSummary();
     }}
     function updateLessonKind() {{
       const kind = (document.querySelector('input[name=lesson_kind]:checked') || {{value:'regular'}}).value;
