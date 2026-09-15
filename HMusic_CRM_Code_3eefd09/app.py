@@ -8612,12 +8612,12 @@ def calendar():
             return "sd-present"
         if status in ("no_show", "no-show"):
             return "sd-noshow"
+        if status == "last_min_cancel":
+            return "sd-last-min"
         if status in ("excused_24h", "excused"):
             return "sd-early-cancel"
-        if status == "last_min_cancel" or status.startswith("cancel"):
+        if status == "teacher_cancelled" or status.startswith("cancel"):
             return "sd-cancelled"
-        if status == "teacher_cancelled":
-            return "sd-excused"
         return "sd-scheduled"
 
     def owner_status_label(status):
@@ -8741,7 +8741,10 @@ def calendar():
                 is_group_event = int(event[14] or 0) == 1
                 event_title = (event[15] or "Group lesson") if is_group_event else (event[3] or "")
                 student_edit_href = f"/edit_student/{quote(str(event[3] or ''))}"
-                early_cancel = event_status in ("excused_24h", "excused")
+                early_cancel = (
+                    event_status in ("excused_24h", "excused", "teacher_cancelled")
+                    or str(event_status or "").startswith("cancel")
+                )
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
                 event_line = f"{compact_location_room(event[17] if len(event) > 17 else '', event[5])} · {event[7] or course_name or 'Lesson'}"
@@ -8847,6 +8850,7 @@ def calendar():
                 --coral:#993C1D;--coral-bg:#FAECE7;
                 --s-present:#639922;--s-scheduled:#378ADD;--s-late:#D99019;
                 --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
+                --cancel-red:#B42318;--last-min-orange:#B54708;
                 --warn-bg:#FFF3E0;--warn-txt:#7D4E00;
                 --last-bg:#FFEBEB;--last-txt:#7D1F1F;
                 --line:#E5E5EA;--bg:#F5F5F7;--surface:#fff;
@@ -8991,21 +8995,23 @@ def calendar():
             .calendar-status-select.sd-present{{color:#34750F;background-color:#E9F7DF}}
             .calendar-status-select.sd-scheduled{{color:#2563A6;background-color:#DCEEFF}}
             .calendar-status-select.sd-late{{color:#B54708;background-color:#FFEAD5}}
+            .calendar-status-select.sd-last-min{{color:var(--last-min-orange);background-color:#FFF3E0}}
             .calendar-status-select.sd-noshow{{color:#B42318;background-color:#FEE4E2}}
-            .calendar-status-select.sd-cancelled,.calendar-status-select.sd-excused,.calendar-status-select.sd-early-cancel{{color:#475467;background-color:#EEF0F3}}
+            .calendar-status-select.sd-cancelled,.calendar-status-select.sd-excused,.calendar-status-select.sd-early-cancel{{color:var(--cancel-red);background-color:#EEF0F3}}
             .ev.ev-early-cancel{{background:#F1F3F6 !important;border-left-color:#98A2B3 !important;
-                                 color:#667085 !important;box-shadow:none}}
-            .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:#667085;box-shadow:none;
+                                 color:var(--cancel-red) !important;box-shadow:none}}
+            .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:var(--cancel-red);box-shadow:none;
                                                   text-decoration:line-through;text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .ev-name,
             .ev.ev-early-cancel .ev-time,
             .ev.ev-early-cancel .ev-sub,
-            .ev.ev-early-cancel .ev-cancel-result{{color:#667085 !important;text-decoration:line-through;
+            .ev.ev-early-cancel .ev-cancel-result{{color:var(--cancel-red) !important;text-decoration:line-through;
                                                    text-decoration-thickness:1.5px}}
             .ev.ev-early-cancel .owner-status-form select,
             .ev.ev-early-cancel .owner-status-form button{{text-decoration:none}}
-            .ev.ev-early-cancel .calendar-time-chip{{background:#fff!important;color:#111827!important;
-                                                     font-weight:900;text-decoration:none!important}}
+            .ev.ev-early-cancel .calendar-time-chip{{background:#fff!important;color:var(--cancel-red)!important;
+                                                     font-weight:900;text-decoration:line-through!important;
+                                                     text-decoration-thickness:1.5px!important}}
             /* instrument colors */
             .ic-piano{{background:var(--blue-bg);border-left-color:var(--blue);color:#0C447C}}
             .ic-guitar{{background:var(--green-bg);border-left-color:var(--green);color:#27500A}}
@@ -9744,8 +9750,9 @@ def calendar():
       if (st === 'present')   return 'sd-present';
       if (st === 'late') return 'sd-late';
       if (st === 'no_show' || st === 'no-show') return 'sd-noshow';
+      if (st === 'last_min_cancel') return 'sd-last-min';
       if (st === 'excused_24h' || st === 'excused') return 'sd-early-cancel';
-      if (st && st.startsWith('cancel')) return 'sd-cancelled';
+      if (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) return 'sd-cancelled';
       return 'sd-scheduled';
     }}
 
@@ -12867,8 +12874,9 @@ def teacher_dashboard():
         if st == "present":   return "sd-present"
         if st == "late":      return "sd-late"
         if st in ("no_show","no-show"): return "sd-noshow"
+        if st == "last_min_cancel": return "sd-last-min"
         if st in ("excused_24h","excused"): return "sd-early-cancel"
-        if st in ("last_min_cancel", "teacher_cancelled") or (st and st.startswith("cancel")): return "sd-cancelled"
+        if st == "teacher_cancelled" or (st and st.startswith("cancel")): return "sd-cancelled"
         return "sd-scheduled"
 
     def _t_status_label(st):
@@ -12880,6 +12888,10 @@ def teacher_dashboard():
             return "No show"
         if st in ("excused_24h", "excused"):
             return "Canceled > 24h"
+        if st == "last_min_cancel":
+            return "Last Min Cancel"
+        if st == "teacher_cancelled":
+            return "Teacher Cancel"
         if st and st.startswith("cancel"):
             return "Cancelled"
         return "Scheduled"
@@ -12895,6 +12907,7 @@ def teacher_dashboard():
         --coral:#993C1D;--coral-bg:#FAECE7;
         --s-present:#639922;--s-scheduled:#378ADD;--s-late:#D99019;
         --s-noshow:#E24B4A;--s-cancelled:#888780;--s-excused:#EF9F27;
+        --cancel-red:#B42318;--last-min-orange:#B54708;
     }
     .calendar-time-chip{display:inline-block;width:max-content;max-width:100%;
                         background:rgba(255,255,255,.88);color:#111827!important;font-weight:900;
@@ -12909,11 +12922,11 @@ def teacher_dashboard():
     .sd-excused  {background:var(--s-excused)}
     .sd-early-cancel{background:#98A2B3}
     .calendar-event{border:1px solid rgba(24,95,165,.14);border-left:3px solid var(--blue);border-radius:5px;padding:2px 4px 3px 5px;color:#111827}
-    .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:#667085!important;box-shadow:none!important}
+    .calendar-event.early-cancel{background:#F1F3F6!important;border-left-color:#98A2B3!important;border-color:#D0D5DD!important;color:var(--cancel-red)!important;box-shadow:none!important}
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
-    .calendar-event.early-cancel .event-cancel-result{color:#667085!important;text-decoration:line-through;text-decoration-thickness:1.5px}
-    .calendar-event.early-cancel .calendar-time-chip{background:#fff!important;color:#111827!important;font-weight:900;text-decoration:none!important}
+    .calendar-event.early-cancel .event-cancel-result{color:var(--cancel-red)!important;text-decoration:line-through;text-decoration-thickness:1.5px}
+    .calendar-event.early-cancel .calendar-time-chip{background:#fff!important;color:var(--cancel-red)!important;font-weight:900;text-decoration:line-through!important;text-decoration-thickness:1.5px!important}
     .calendar-event.early-cancel .event-cancel-result{display:block;font-size:8.5px;margin:1px 0 0;font-weight:800}
     .calendar-event.early-cancel .event-status-form select,
     .calendar-event.early-cancel .event-status-form button{text-decoration:none}
@@ -12943,8 +12956,9 @@ def teacher_dashboard():
     .teacher-card-status.sd-present{color:#34750F;background-color:#E9F7DF}
     .teacher-card-status.sd-scheduled{color:#2563A6;background-color:#DCEEFF}
     .teacher-card-status.sd-late{color:#B54708;background-color:#FFEAD5}
+    .teacher-card-status.sd-last-min{color:var(--last-min-orange);background-color:#FFF3E0}
     .teacher-card-status.sd-noshow{color:#B42318;background-color:#FEE4E2}
-    .teacher-card-status.sd-cancelled,.teacher-card-status.sd-excused,.teacher-card-status.sd-early-cancel{color:#475467;background-color:#EEF0F3}
+    .teacher-card-status.sd-cancelled,.teacher-card-status.sd-excused,.teacher-card-status.sd-early-cancel{color:var(--cancel-red);background-color:#EEF0F3}
     .calendar-grid.month-view .event-status-form select.teacher-card-status{width:78px;max-width:78px;height:18px;border-radius:999px;font-size:9px;font-weight:900;padding:0 19px 0 5px}
     .teacher-multi-toggle{border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:8px 10px;font:inherit;font-weight:900;cursor:pointer}
     .teacher-multi-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
@@ -13001,7 +13015,10 @@ def teacher_dashboard():
     def calendar_event(lesson):
         time_range = teacher_time_range(lesson[2], lesson[6])
         lesson_status = lesson[5] or "scheduled"
-        is_early_cancel = lesson_status in ("excused_24h", "excused")
+        is_early_cancel = (
+            lesson_status in ("excused_24h", "excused", "teacher_cancelled")
+            or str(lesson_status or "").startswith("cancel")
+        )
         event_class = " early-cancel" if is_early_cancel else ""
         cancel_result = '<div class="event-cancel-result">No credit deducted · No fee</div>' if is_early_cancel else ""
         dot = _t_status_dot(lesson_status)
@@ -13351,11 +13368,11 @@ def teacher_dashboard():
         let teacherPanelRoomChanged = false;
         let teacherGroupNameBaseline = '';
         function teacherStatusLabel(st) {{ return st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
-        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : st === 'teacher_cancelled' ? 'excused' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
-        function teacherStatusDotClass(st) {{ return st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'last_min_cancel' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
+        function teacherStatusClass(st) {{ return st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'early_cancel' : st === 'last_min_cancel' ? 'cancelled' : 'scheduled'; }}
+        function teacherStatusDotClass(st) {{ return st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : st === 'last_min_cancel' ? 'sd-last-min' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
         function repaintTeacherScheduleEvent(scheduleId, status) {{
             const st = status || 'scheduled';
-            const isEarlyCancel = st === 'excused_24h' || st === 'excused';
+            const isEarlyCancel = st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'));
             document.querySelectorAll('.calendar-event[data-id]').forEach(card => {{
                 if (card.dataset.id !== String(scheduleId)) return;
                 card.classList.toggle('early-cancel', isEarlyCancel);
