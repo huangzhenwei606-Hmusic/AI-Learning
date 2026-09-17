@@ -7667,6 +7667,24 @@ def calendar():
             return f"{start_label}-{format_display_time(end_time)}"
         return start_label
 
+    def owner_lesson_subtitle(course_name, duration, teacher_name, extra_text=""):
+        clean_course = str(course_name or "Lesson").strip() or "Lesson"
+        try:
+            duration_text = f"{int(float(duration or 0))} mins" if float(duration or 0) > 0 else ""
+        except (TypeError, ValueError):
+            duration_text = ""
+        teacher_text = str(teacher_name or "").strip()
+        parts = [clean_course]
+        if duration_text:
+            parts.append(f"for {duration_text}")
+        if teacher_text:
+            parts.append(f"with {teacher_text}")
+        subtitle = " ".join(parts)
+        extra_text = str(extra_text or "").strip()
+        if extra_text:
+            subtitle = f"{subtitle} · {extra_text}"
+        return subtitle
+
     course_legend_html = ""
     for course_name, duration, is_group, display_color in course_legend_rows:
         color = normalize_hex_color(display_color) or default_course_color(course_name, duration, is_group)
@@ -7724,6 +7742,10 @@ def calendar():
                     }.get(trial_form_status, "Form missing")
                     display_sub = f"{display_sub} · {trial_status_text}" if display_sub else trial_status_text
                 group_count = f" · {group_size} students" if is_group_event and group_size else ""
+                subtitle_extra = group_names if is_group_event and group_names else ""
+                if is_trial_hold:
+                    subtitle_extra = display_sub
+                lesson_subtitle = owner_lesson_subtitle(course_name or "Lesson", event[12], event[4], subtitle_extra)
                 warning = "" if (is_group_event or is_trial_hold) else warning
                 course_color = course_calendar_color(event[10], course_name, event[12], event[14])
                 course_style = course_calendar_style(course_color)
@@ -7755,7 +7777,7 @@ def calendar():
                     <span class="ev-head"><span class="ev-status-badge {dot_class}">{status_label}</span><span class="ev-icon-stack">{status_icons}</span></span>
                     {name_html}
                     <span class="ev-time">{time_range}</span>
-                    <span class="ev-sub">{escape(str(course_name or "Lesson"))}{group_count} · {escape(display_sub)}</span>
+                    <span class="ev-sub">{escape(lesson_subtitle)}{group_count}</span>
                     {group_attendance_hint}
                     {cancel_result}
                     {warning}
