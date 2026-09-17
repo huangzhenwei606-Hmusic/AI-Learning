@@ -19795,41 +19795,92 @@ def edit_parent_admin(parent_id):
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    error = ""
 
     if request.method == "POST":
-        parent_name = request.form.get("parent_name")
-        phone = request.form.get("phone")
+        parent_name = (request.form.get("parent_name") or "").strip()
+        email = hmusic_normalize_email(request.form.get("email"))
+        phone = (request.form.get("phone") or "").strip()
         password = request.form.get("password")
         active = request.form.get("active") or "1"
 
-        new_password_hash = hmusic_password_hash(password) if password else None
-        password_sql = ""
-        password_values = []
-        if new_password_hash:
-            password_sql = "password = '', password_hash = ?, must_change_password = 1,"
-            password_values.append(new_password_hash)
+        cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (parent_id,))
+        current_parent = cursor.fetchone()
+        current_email = hmusic_normalize_email(current_parent[0] if current_parent else "")
 
-        cursor.execute(f"""
-        UPDATE parent_profiles
-        SET parent_name = ?,
-            phone = ?,
-            {password_sql}
-            active = ?,
-            updated_at = ?
-        WHERE id = ?
-        """, (
-            parent_name,
-            phone,
-            *password_values,
-            int(active),
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            parent_id
-        ))
+        if not current_parent:
+            conn.close()
+            return "<h1>Parent not found</h1>"
+        if not email:
+            error = "Parent email is required because it is the parent login key."
+        else:
+            cursor.execute("""
+            SELECT id
+            FROM parent_profiles
+            WHERE LOWER(COALESCE(email, '')) = LOWER(?)
+            AND id != ?
+            LIMIT 1
+            """, (email, parent_id))
+            duplicate = cursor.fetchone()
+            if duplicate:
+                error = "That email is already used by another parent account."
 
-        conn.commit()
-        conn.close()
+        if not error:
+            new_password_hash = hmusic_password_hash(password) if password else None
+            password_sql = ""
+            password_values = []
+            if new_password_hash:
+                password_sql = "password = '', password_hash = ?, must_change_password = 1,"
+                password_values.append(new_password_hash)
 
-        return redirect(f"/parent_admin/{parent_id}")
+            cursor.execute(f"""
+            UPDATE parent_profiles
+            SET parent_name = ?,
+                email = ?,
+                phone = ?,
+                {password_sql}
+                active = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (
+                parent_name,
+                email,
+                phone,
+                *password_values,
+                int(active),
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                parent_id
+            ))
+
+            if hmusic_is_real_email(email):
+                cursor.execute("""
+                UPDATE students
+                SET parent_name = COALESCE(NULLIF(?, ''), parent_name),
+                    parent_email = ?
+                WHERE name IN (
+                    SELECT student_name
+                    FROM parent_students
+                    WHERE parent_id = ?
+                    AND active = 1
+                )
+                AND (
+                    parent_email IS NULL
+                    OR TRIM(parent_email) = ''
+                    OR LOWER(TRIM(parent_email)) = LOWER(?)
+                    OR LOWER(TRIM(parent_email)) LIKE '%@hmusic.local'
+                    OR TRIM(parent_email) NOT LIKE '%@%.%'
+                )
+                """, (
+                    parent_name,
+                    email,
+                    parent_id,
+                    current_email
+                ))
+
+            conn.commit()
+            conn.close()
+
+            return redirect(f"/parent_admin/{parent_id}")
 
     cursor.execute("""
     SELECT id, parent_name, email, phone, password, active
@@ -19844,6 +19895,7 @@ def edit_parent_admin(parent_id):
 
     active_selected = "selected" if parent[5] == 1 else ""
     inactive_selected = "selected" if parent[5] == 0 else ""
+    error_html = f"<div class=\"error\">{escape(error)}</div>" if error else ""
 
     return f"""
     <html>
@@ -19854,20 +19906,22 @@ def edit_parent_admin(parent_id):
             .container {{ background:white; padding:30px; border-radius:12px; max-width:680px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
             input, select {{ width:100%; padding:10px; margin:8px 0 18px; font-size:15px; }}
             button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; }}
+            .error {{ margin:0 0 18px; padding:12px 14px; border-radius:8px; background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; font-weight:bold; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>Edit Parent</h1>
+            {error_html}
             <form method="POST">
                 Parent Name:<br>
-                <input name="parent_name" value="{parent[1] or ''}">
+                <input name="parent_name" value="{escape(parent[1] or '', quote=True)}">
 
                 Email:<br>
-                <input value="{parent[2] or ''}" disabled>
+                <input name="email" type="email" value="{escape(parent[2] or '', quote=True)}" required>
 
                 Phone:<br>
-                <input name="phone" value="{parent[3] or ''}">
+                <input name="phone" value="{escape(parent[3] or '', quote=True)}">
 
                 New Temporary Password:<br>
                 <input name="password" placeholder="Leave blank to keep current password">
