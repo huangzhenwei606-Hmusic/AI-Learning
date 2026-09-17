@@ -8748,6 +8748,7 @@ def calendar():
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
                 event_line = f"{compact_location_room(event[17] if len(event) > 17 else '', event[5])} · {event[7] or course_name or 'Lesson'}"
+                teacher_line = f'<span class="ev-teacher">with {escape(str(event[4]).strip())}</span>' if event[4] and str(event[4]).strip() else ""
                 event_cards += f"""
                 <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
@@ -8765,6 +8766,7 @@ def calendar():
                     </span>
                     <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event_title or ""))}</a>
                     <span class="ev-sub">{escape(str(event_line))}</span>
+                    {teacher_line}
                     {cancel_result}
                     {warning}
                 </div>
@@ -8974,6 +8976,8 @@ def calendar():
                                  opacity:1!important;text-decoration:none!important}}
             .ev-sub{{font-size:8.5px;line-height:1.05;color:#1F2937;display:block;
                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+            .ev-teacher{{font-size:8.5px;line-height:1.05;color:#1F2937;display:block;
+                         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
             .ev-cancel-result{{font-size:8px;line-height:1.04;opacity:.78;display:block;margin-top:0;margin-bottom:0}}
             .ev .warn-pill,.ev .last-pill{{font-size:7.5px;padding:0 3px;line-height:1.05}}
             .ev-status-badge{{display:inline-flex;align-items:center;gap:2px;
