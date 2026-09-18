@@ -17153,8 +17153,14 @@ def invoices():
         where_clauses.append("""
         (
             LOWER(COALESCE(i.student_name, '')) LIKE ?
-            OR LOWER(COALESCE(pp.parent_name, '')) LIKE ?
-            OR LOWER(COALESCE(pp.email, '')) LIKE ?
+            OR EXISTS (
+                SELECT 1 FROM parent_students search_ps
+                JOIN parent_profiles search_pp ON search_pp.id = search_ps.parent_id
+                WHERE search_ps.student_name = i.student_name
+                  AND search_ps.active = 1
+                  AND (LOWER(COALESCE(search_pp.parent_name, '')) LIKE ?
+                       OR LOWER(COALESCE(search_pp.email, '')) LIKE ?)
+            )
             OR CAST(i.id AS TEXT) LIKE ?
         )
         """)
@@ -17164,6 +17170,15 @@ def invoices():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+
+    for column_name, column_sql in (
+        ("payment_reminder_sent_at", "payment_reminder_sent_at TEXT"),
+        ("payment_reminder_count", "payment_reminder_count INTEGER DEFAULT 0"),
+    ):
+        cursor.execute("PRAGMA table_info(invoices)")
+        if column_name not in {row[1] for row in cursor.fetchall()}:
+            cursor.execute(f"ALTER TABLE invoices ADD COLUMN {column_sql}")
+    conn.commit()
 
     cursor.execute(f"""
     SELECT
@@ -17175,39 +17190,47 @@ def invoices():
         COALESCE(i.invoice_type, 'invoice'),
         COALESCE(i.created_at, ''),
         COALESCE(i.payment_reminder_sent_at, ''),
-        COALESCE(i.payment_reminder_count, 0),
-        pp.id,
-        COALESCE(pp.parent_name, ''),
-        COALESCE(pp.email, '')
+        COALESCE(i.payment_reminder_count, 0)
     FROM invoices i
-    LEFT JOIN parent_students ps
-        ON ps.student_name = i.student_name
-        AND ps.active = 1
-        AND ps.id = (
-            SELECT ps2.id
-            FROM parent_students ps2
-            JOIN parent_profiles pp2 ON pp2.id = ps2.parent_id
-            WHERE ps2.student_name = i.student_name
-            AND ps2.active = 1
-            ORDER BY
-                CASE
-                    WHEN LOWER(TRIM(pp2.email)) = LOWER(TRIM(COALESCE((
-                        SELECT s2.parent_email FROM students s2 WHERE s2.name = i.student_name LIMIT 1
-                    ), ''))) AND TRIM(COALESCE(pp2.email, '')) != ''
-                         AND LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 0
-                    WHEN LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 1
-                    ELSE 2
-                END,
-                pp2.active DESC, ps2.id DESC
-            LIMIT 1
-        )
-    LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
     {where_sql}
     ORDER BY i.id DESC
     LIMIT 300
     """, params)
 
     invoice_rows = cursor.fetchall()
+    student_names = list({row[1] for row in invoice_rows if row[1]})
+    parents_by_student = {}
+    student_emails = {}
+    if student_names:
+        markers = ",".join("?" for _ in student_names)
+        cursor.execute(f"""
+            SELECT name, COALESCE(parent_email, '') FROM students
+            WHERE name IN ({markers})
+        """, student_names)
+        student_emails = {name: email.strip().lower() for name, email in cursor.fetchall()}
+        cursor.execute(f"""
+            SELECT ps.student_name, ps.id, pp.id,
+                   COALESCE(pp.parent_name, ''), COALESCE(pp.email, '')
+            FROM parent_students ps JOIN parent_profiles pp ON pp.id = ps.parent_id
+            WHERE ps.active = 1 AND COALESCE(pp.active, 1) = 1
+              AND ps.student_name IN ({markers})
+        """, student_names)
+        for student_name, link_id, parent_id, parent_name, parent_email in cursor.fetchall():
+            parents_by_student.setdefault(student_name, []).append(
+                (link_id, parent_id, parent_name, parent_email))
+
+    resolved_rows = []
+    for row in invoice_rows:
+        candidates = parents_by_student.get(row[1], [])
+        expected_email = student_emails.get(row[1], "")
+        candidates.sort(key=lambda parent: (
+            0 if hmusic_is_real_email(parent[3]) and parent[3].strip().lower() == expected_email
+            else 1 if hmusic_is_real_email(parent[3]) else 2,
+            -parent[0],
+        ))
+        parent = candidates[0] if candidates else None
+        resolved_rows.append((*row, parent[1], parent[2], parent[3]) if parent else (*row, None, "", ""))
+    invoice_rows = resolved_rows
 
     cursor.execute("""
     SELECT COALESCE(status, 'unpaid'), COUNT(*), COALESCE(SUM(amount), 0)
@@ -17335,7 +17358,7 @@ def invoices():
                 {parent_html}
                 {parent_email_html}
             </td>
-            <td class="number">{charge_lessons:g}</td>
+            <td class="number">{float(charge_lessons or 0):g}</td>
             <td class="amount">${hmusic_money(amount)}</td>
             <td><span class="status {status_class(status)}">{status_safe}</span></td>
             <td>{short_created(created_at)}</td>
