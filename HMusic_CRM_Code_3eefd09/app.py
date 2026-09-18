@@ -3251,6 +3251,26 @@ def _csv_import_ensure_parent(cursor, candidate, default_password_hash=None):
 
 
 def _csv_import_link_parent_student(cursor, parent_id, student_name):
+    cursor.execute("""
+        SELECT p.email, s.parent_email
+        FROM parent_profiles p
+        JOIN students s ON s.name = ?
+        WHERE p.id = ?
+    """, (student_name, parent_id))
+    parent_contact = cursor.fetchone()
+    if (parent_contact and not hmusic_is_real_email(parent_contact[0])
+            and hmusic_is_real_email(parent_contact[1])):
+        cursor.execute("""
+            SELECT 1
+            FROM parent_students ps
+            JOIN parent_profiles p ON p.id = ps.parent_id
+            WHERE ps.student_name = ?
+              AND ps.active = 1
+              AND LOWER(TRIM(p.email)) = LOWER(TRIM(?))
+            LIMIT 1
+        """, (student_name, parent_contact[1]))
+        if cursor.fetchone():
+            return False
     cursor.execute(
         "SELECT id FROM parent_students WHERE parent_id=? AND lower(student_name)=lower(?) LIMIT 1",
         (parent_id, student_name),
@@ -4925,9 +4945,16 @@ def edit_student(name):
         AND ps.active = 1
     WHERE p.email = ?
        OR ps.id IS NOT NULL
-    ORDER BY ps.id DESC, p.active DESC, p.id DESC
+    ORDER BY
+        CASE
+            WHEN LOWER(TRIM(p.email)) = LOWER(TRIM(?))
+                 AND TRIM(?) != '' AND LOWER(TRIM(p.email)) NOT LIKE '%@hmusic.local' THEN 0
+            WHEN LOWER(TRIM(p.email)) NOT LIKE '%@hmusic.local' THEN 1
+            ELSE 2
+        END,
+        p.active DESC, ps.id DESC, p.id DESC
     LIMIT 1
-    """, (student[0], student[3] or ""))
+    """, (student[0], student[3] or "", student[3] or "", student[3] or ""))
     family_workspace = cursor.fetchone()
     conn.close()
 
@@ -6904,9 +6931,19 @@ def edit_invoice(invoice_id):
         AND ps.id = (
             SELECT ps2.id
             FROM parent_students ps2
+            JOIN parent_profiles pp2 ON pp2.id = ps2.parent_id
             WHERE ps2.student_name = i.student_name
             AND ps2.active = 1
-            ORDER BY ps2.id DESC
+            ORDER BY
+                CASE
+                    WHEN LOWER(TRIM(pp2.email)) = LOWER(TRIM(COALESCE((
+                        SELECT s2.parent_email FROM students s2 WHERE s2.name = i.student_name LIMIT 1
+                    ), ''))) AND TRIM(COALESCE(pp2.email, '')) != ''
+                         AND LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 0
+                    WHEN LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 1
+                    ELSE 2
+                END,
+                pp2.active DESC, ps2.id DESC
             LIMIT 1
         )
     LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
@@ -7181,10 +7218,19 @@ def send_invoice_payment_reminder(invoice_id):
     SELECT p.id, COALESCE(p.email, '')
     FROM parent_profiles p
     JOIN parent_students ps ON ps.parent_id = p.id
-    WHERE ps.student_name = ?
+    LEFT JOIN students s ON LOWER(TRIM(s.name)) = LOWER(TRIM(ps.student_name))
+    WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
     AND ps.active = 1
-    AND p.active = 1
-    ORDER BY p.id
+    AND COALESCE(p.active, 1) = 1
+    ORDER BY
+        CASE
+            WHEN LOWER(TRIM(p.email)) = LOWER(TRIM(COALESCE(s.parent_email, '')))
+                 AND TRIM(COALESCE(s.parent_email, '')) != ''
+                 AND LOWER(TRIM(p.email)) NOT LIKE '%@hmusic.local' THEN 0
+            WHEN LOWER(TRIM(p.email)) NOT LIKE '%@hmusic.local' THEN 1
+            ELSE 2
+        END,
+        ps.id DESC
     LIMIT 1
     """, (student_name,))
     parent = cursor.fetchone()
@@ -17140,9 +17186,19 @@ def invoices():
         AND ps.id = (
             SELECT ps2.id
             FROM parent_students ps2
+            JOIN parent_profiles pp2 ON pp2.id = ps2.parent_id
             WHERE ps2.student_name = i.student_name
             AND ps2.active = 1
-            ORDER BY ps2.id DESC
+            ORDER BY
+                CASE
+                    WHEN LOWER(TRIM(pp2.email)) = LOWER(TRIM(COALESCE((
+                        SELECT s2.parent_email FROM students s2 WHERE s2.name = i.student_name LIMIT 1
+                    ), ''))) AND TRIM(COALESCE(pp2.email, '')) != ''
+                         AND LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 0
+                    WHEN LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 1
+                    ELSE 2
+                END,
+                pp2.active DESC, ps2.id DESC
             LIMIT 1
         )
     LEFT JOIN parent_profiles pp ON pp.id = ps.parent_id
@@ -17423,7 +17479,64 @@ def invoices():
     """
 
 
-@app.route("/parent_email_audit")
+def audit_parent_email_links(cursor, reconcile=False):
+    cursor.execute("""
+        SELECT s.name, COALESCE(s.parent_email, ''), COALESCE(s.parent_name, '')
+        FROM students s ORDER BY s.name
+    """)
+    students = cursor.fetchall()
+    issues = []
+    repaired = 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for student_name, email, parent_name in students:
+        if not hmusic_is_real_email(email):
+            continue
+        cursor.execute("""
+            SELECT id FROM parent_profiles
+            WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) AND COALESCE(active, 1) = 1
+        """, (email,))
+        matches = [row[0] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT pp.id, COALESCE(pp.email, '')
+            FROM parent_students ps JOIN parent_profiles pp ON pp.id = ps.parent_id
+            WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
+              AND COALESCE(ps.active, 1) = 1 AND COALESCE(pp.active, 1) = 1
+        """, (student_name,))
+        links = cursor.fetchall()
+        matched = len(matches) == 1 and any(parent_id == matches[0] for parent_id, _ in links)
+        placeholders = [parent_id for parent_id, linked_email in links
+                        if not hmusic_is_real_email(linked_email)]
+        if matched and not placeholders:
+            continue
+        if len(matches) != 1:
+            status = "No unique active account for student email"
+        elif not matched and any(hmusic_is_real_email(linked_email) for _, linked_email in links):
+            status = "Different real-email parent linked; review"
+        else:
+            status = "Ready to relink" if not matched else "Placeholder also linked"
+            if reconcile:
+                if not matched:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO parent_students
+                            (parent_id, student_name, relationship, active, created_at)
+                        VALUES (?, ?, 'Parent', 1, ?)
+                    """, (matches[0], student_name, now))
+                    cursor.execute("""
+                        UPDATE parent_students SET active = 1
+                        WHERE parent_id = ? AND LOWER(TRIM(student_name)) = LOWER(TRIM(?))
+                    """, (matches[0], student_name))
+                if placeholders:
+                    cursor.executemany("""
+                        UPDATE parent_students SET active = 0
+                        WHERE parent_id = ? AND LOWER(TRIM(student_name)) = LOWER(TRIM(?))
+                    """, [(parent_id, student_name) for parent_id in placeholders])
+                repaired += 1
+                continue
+        issues.append((student_name, email, parent_name, status))
+    return len(students), issues, repaired
+
+
+@app.route("/parent_email_audit", methods=["GET", "POST"])
 def parent_email_audit():
     if not require_owner():
         return redirect("/owner_login")
@@ -17432,6 +17545,10 @@ def parent_email_audit():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    is_reconcile = request.method == "POST" and request.form.get("action") == "reconcile"
+    total_students, link_issues, repaired = audit_parent_email_links(cursor, is_reconcile)
+    if is_reconcile:
+        conn.commit()
     cursor.execute("""
     SELECT
         s.name,
@@ -17444,7 +17561,6 @@ def parent_email_audit():
        OR LOWER(TRIM(COALESCE(s.parent_email, ''))) LIKE '%@hmusic.local'
        OR TRIM(COALESCE(s.parent_email, '')) NOT LIKE '%@%.%'
     ORDER BY s.name
-    LIMIT 300
     """)
     student_rows = cursor.fetchall()
 
@@ -17462,7 +17578,6 @@ def parent_email_audit():
     WHERE LOWER(TRIM(COALESCE(pp.email, ''))) LIKE '%@hmusic.local'
        OR TRIM(COALESCE(pp.email, '')) NOT LIKE '%@%.%'
     ORDER BY pp.id DESC
-    LIMIT 300
     """)
     parent_rows = cursor.fetchall()
     conn.close()
@@ -17502,6 +17617,19 @@ def parent_email_audit():
     if not parent_html:
         parent_html = "<tr><td colspan='6' class='empty'>No placeholder parent accounts found.</td></tr>"
 
+    link_html = "".join(f"""
+        <tr>
+            <td><a href="/student/{quote(str(name), safe='')}">{escape(str(name))}</a></td>
+            <td>{escape(str(parent_name or '-'))}</td>
+            <td>{escape(str(email))}</td>
+            <td><span class="status warn">{escape(status)}</span></td>
+        </tr>
+    """ for name, email, parent_name, status in link_issues)
+    if not link_html:
+        link_html = "<tr><td colspan='4' class='empty'>All students with real emails have matching active parent links.</td></tr>"
+    repair_notice = (f"<div class='note'>Repaired {repaired} student links.</div>"
+                     if is_reconcile else "")
+
     return f"""
     <html>
     <head>
@@ -17534,7 +17662,7 @@ def parent_email_audit():
             <div class="top">
                 <div>
                     <h1>Parent Email Audit</h1>
-                    <p>Find students or parent accounts that cannot receive email.</p>
+                    <p>Full scan of {total_students} students and their active parent links.</p>
                 </div>
                 <div>
                     <a class="button" href="/">Back to Home</a>
@@ -17542,6 +17670,19 @@ def parent_email_audit():
                 </div>
             </div>
             <div class="note">@hmusic.local is an internal placeholder for phone-only parent accounts. It should not receive email.</div>
+            {repair_notice}
+            <h2>Student and parent email mismatches ({len(link_issues)})</h2>
+            <p>Only an existing, unique account matching the student's email can be relinked automatically. Other real-email guardians and message history are preserved.</p>
+            <form method="POST" action="/parent_email_audit" style="margin:14px 0">
+                <input type="hidden" name="action" value="reconcile">
+                <button class="button primary" type="submit">Repair confirmed links</button>
+            </form>
+            <div class="panel table-wrap">
+                <table>
+                    <tr><th>Student</th><th>Parent</th><th>Student email</th><th>Status</th></tr>
+                    {link_html}
+                </table>
+            </div>
             <h2>Students to fix</h2>
             <div class="panel table-wrap">
                 <table>
@@ -24392,21 +24533,11 @@ def new_owner_message():
                 parent_id = None
 
             if not parent_id and student_lookup_name:
-                cursor.execute("""
-                    SELECT p.id
-                    FROM parent_students ps
-                    JOIN parent_profiles p ON p.id = ps.parent_id
-                    WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
-                      AND COALESCE(ps.active, 1) = 1
-                      AND COALESCE(p.active, 1) = 1
-                    ORDER BY p.id
-                    LIMIT 1
-                """, (student_lookup_name,))
-                parent_lookup = cursor.fetchone()
-                if parent_lookup:
-                    parent_id = parent_lookup[0]
+                parent_id = get_primary_parent_for_student(cursor, student_lookup_name)
+                if parent_id:
                     student_name = student_name or student_lookup_name
 
+            parent_id = prefer_real_parent_for_student(cursor, parent_id, student_name)
             if not parent_id:
                 conn.close()
                 return "<h1>Please choose a parent or student.</h1><a href='/new_owner_message'>Back</a>"
@@ -24543,6 +24674,11 @@ def new_owner_message():
         """, (parent_id, student_name))
     conn.commit()
 
+    if selected_parent_id.isdigit():
+        selected_parent_id = str(prefer_real_parent_for_student(
+            cursor, int(selected_parent_id), selected_student_name
+        ))
+
     cursor.execute("""
         SELECT
             p.id,
@@ -24583,6 +24719,13 @@ def new_owner_message():
         ORDER BY LOWER(COALESCE(s.name, ps.student_name)), LOWER(COALESCE(p.parent_name, p.email, ''))
     """)
     student_parent_rows = cursor.fetchall()
+    preferred_student_parents = {}
+    for row in student_parent_rows:
+        preferred_student_parents[row[0]] = get_primary_parent_for_student(cursor, row[0])
+    student_parent_rows = [
+        row for row in student_parent_rows
+        if row[1] == preferred_student_parents.get(row[0])
+    ]
     conn.close()
 
     parent_options = ""
@@ -25047,6 +25190,7 @@ def new_teacher_message():
             conn.close()
             return "<h1>Permission denied</h1>"
 
+        parent_id = prefer_real_parent_for_student(cursor, int(parent_id), student_name)
         subject = f"Teacher / Parent Message - {student_name}"
         thread_id = get_or_create_message_thread(
             subject,
@@ -25084,7 +25228,8 @@ def new_teacher_message():
     WHERE s.teacher = ?
     ORDER BY s.student_name
     """, (teacher_name,))
-    rows = cursor.fetchall()
+    rows = [row for row in cursor.fetchall()
+            if row[1] == get_primary_parent_for_student(cursor, row[0])]
     conn.close()
 
     options = "".join([f'<option value="{r[0]}|{r[1]}">{r[0]} | Parent: {r[2]}</option>' for r in rows])
@@ -41132,15 +41277,59 @@ def ensure_v321_schema():
 
 def get_primary_parent_for_student(cursor, student_name):
     cursor.execute("""
-    SELECT parent_id
-    FROM parent_students
-    WHERE student_name = ?
-    AND active = 1
-    ORDER BY id ASC
+    SELECT ps.parent_id
+    FROM parent_students ps
+    JOIN parent_profiles p ON p.id = ps.parent_id
+    LEFT JOIN students s ON LOWER(TRIM(s.name)) = LOWER(TRIM(ps.student_name))
+    WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
+    AND ps.active = 1
+    AND COALESCE(p.active, 1) = 1
+    ORDER BY
+        CASE
+            WHEN LOWER(TRIM(p.email)) = LOWER(TRIM(COALESCE(s.parent_email, '')))
+                 AND TRIM(COALESCE(s.parent_email, '')) != ''
+                 AND LOWER(TRIM(p.email)) NOT LIKE '%@hmusic.local' THEN 0
+            WHEN LOWER(TRIM(p.email)) NOT LIKE '%@hmusic.local' THEN 1
+            ELSE 2
+        END,
+        ps.id DESC
     LIMIT 1
     """, (student_name,))
     row = cursor.fetchone()
     return row[0] if row else None
+
+
+def prefer_real_parent_for_student(cursor, parent_id, student_name=None):
+    if not parent_id:
+        return parent_id
+    cursor.execute("SELECT email FROM parent_profiles WHERE id = ?", (parent_id,))
+    parent = cursor.fetchone()
+    if not parent or hmusic_is_real_email(parent[0]):
+        return parent_id
+    if not student_name:
+        cursor.execute("""
+            SELECT student_name FROM parent_students
+            WHERE parent_id = ? AND active = 1
+        """, (parent_id,))
+        linked_students = [row[0] for row in cursor.fetchall()]
+        if len(linked_students) != 1:
+            return parent_id
+        student_name = linked_students[0]
+    cursor.execute("""
+        SELECT p.id
+        FROM students s
+        JOIN parent_profiles p ON LOWER(TRIM(p.email)) = LOWER(TRIM(s.parent_email))
+        JOIN parent_students ps ON ps.parent_id = p.id AND ps.student_name = s.name
+        WHERE s.name = ? AND ps.active = 1 AND p.active = 1
+          AND EXISTS (
+              SELECT 1 FROM parent_students source_link
+              WHERE source_link.parent_id = ? AND source_link.student_name = s.name
+                AND source_link.active = 1
+          )
+        LIMIT 1
+    """, (student_name, parent_id))
+    matched = cursor.fetchone()
+    return matched[0] if matched else parent_id
 
 
 def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes=""):
@@ -43753,6 +43942,7 @@ def api_teacher_lookups():
             "label": f"{r[0]} | Parent: {r[2] or r[3] or r[1]}",
         }
         for r in cursor.fetchall()
+        if r[1] == get_primary_parent_for_student(cursor, r[0])
     ]
     cursor.execute("""
     SELECT id, name, COALESCE(duration, 30), COALESCE(is_group, 0)
