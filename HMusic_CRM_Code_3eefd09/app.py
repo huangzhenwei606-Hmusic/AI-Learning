@@ -17508,8 +17508,10 @@ def audit_parent_email_links(cursor, reconcile=False):
                         if not hmusic_is_real_email(linked_email)]
         if matched and not placeholders:
             continue
-        if len(matches) != 1:
-            status = "No unique active account for student email"
+        if not matches:
+            status = "No active account for student email"
+        elif len(matches) > 1:
+            status = "Multiple active accounts for student email; review"
         elif not matched and any(hmusic_is_real_email(linked_email) for _, linked_email in links):
             status = "Different real-email parent linked; review"
         else:
