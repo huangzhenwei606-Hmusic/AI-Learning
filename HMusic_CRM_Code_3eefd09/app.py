@@ -261,7 +261,9 @@ def enforce_csrf_token():
 
 @app.before_request
 def refresh_parent_session_lifetime():
-    if session.get("parent_id") is not None or session.get("parent_student_name") is not None:
+    if (session.get("parent_id") is not None
+            or session.get("parent_student_name") is not None
+            or session.get("user_role") == "teacher"):
         session.permanent = True
 
 
@@ -1303,7 +1305,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
     <html>
     <head>
         <title>Teacher Portal · {HSTUDIO_APP_NAME}</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
         <style>
             :root {{
@@ -1433,13 +1435,39 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
             .event-status-form button {{ color:var(--td-text); background:#E6F1FB; border-color:#B8CCE3; font-weight:500; cursor:pointer; padding:0 3px; }}
             .calendar-empty {{ color:var(--td-faint); font-size:11px; padding:4px 1px; }}
             @media (max-width:900px) {{
-                .td-shell {{ grid-template-columns:64px 1fr; }}
-                .td-brand span, .td-nav-item span, .td-nav-section, .td-new-badge, .nav-badge {{ display:none; }}
-                .td-nav-item {{ justify-content:center; padding:0; }}
-                .td-main {{ padding:16px; }}
+                .td-shell {{ display:flex; flex-direction:column; height:100dvh; min-height:0; }}
+                .td-topbar {{ flex:none; min-height:56px; padding:0 16px; }}
+                .td-role,.td-more {{ display:none; }}
+                .td-main {{ flex:1; height:auto; min-width:0; padding:16px 16px calc(88px + env(safe-area-inset-bottom)); overscroll-behavior:contain; }}
+                .td-sidebar {{ display:none; position:fixed; z-index:101; top:56px; right:0; bottom:0; width:min(320px,88vw); height:auto; border-left:1px solid var(--td-line); border-right:0; box-shadow:-16px 0 40px rgba(15,23,42,.16); }}
+                .td-shell.menu-open .td-sidebar {{ display:block; }}
+                .td-nav-item {{ min-height:46px; }}
+                .td-menu-scrim {{ display:none; position:fixed; z-index:100; inset:56px 0 0; background:rgba(15,23,42,.35); }}
+                .td-shell.menu-open .td-menu-scrim {{ display:block; }}
+                .td-menu-button {{ display:grid; place-items:center; width:40px; height:40px; border:0; border-radius:8px; background:var(--td-gray-soft); color:var(--td-text); font-size:22px; }}
+                .td-bottom-nav {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); position:fixed; z-index:99; bottom:0; left:0; right:0; min-height:64px; padding-bottom:env(safe-area-inset-bottom); background:#fff; border-top:1px solid var(--td-line); }}
+                .td-bottom-nav a {{ display:flex; flex-direction:column; justify-content:center; align-items:center; gap:2px; min-width:0; color:var(--td-muted); font-size:11px; }}
+                .td-bottom-nav a i {{ font-size:22px; }}
+                .td-bottom-nav a.active {{ color:var(--td-blue); font-weight:600; }}
                 .td-layout, .td-kpis {{ grid-template-columns:1fr; }}
-                .calendar-grid {{ grid-template-columns:1fr; }}
+                .calendar-grid {{ grid-template-columns:1fr; background:transparent; border:0; gap:10px; overflow:visible; }}
                 .calendar-day {{ min-height:auto; }}
+            }}
+            @media (min-width:901px) {{ .td-menu-button,.td-bottom-nav,.td-menu-scrim {{ display:none; }} }}
+            @media (max-width:600px) {{
+                .td-greeting {{ display:block; }}
+                .td-greeting span {{ display:block; margin-top:4px; }}
+                .td-kpis {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+                .td-kpi {{ min-height:88px; padding:12px; }}
+                .td-kpi:last-child {{ grid-column:1 / -1; }}
+                .td-lesson-row {{ grid-template-columns:48px minmax(0,1fr); }}
+                .td-lesson-row .td-status {{ grid-column:2; }}
+                .td-card {{ padding:14px; }}
+                .schedule-head {{ display:block; }}
+                .schedule-controls {{ margin-top:12px; }}
+                .schedule-controls > form {{ width:100%; }}
+                .schedule-controls input {{ flex:1; min-width:0; }}
+                .schedule-controls a,.schedule-controls button {{ min-height:40px; }}
             }}
         </style>
     </head>
@@ -1447,11 +1475,26 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
         <div class="td-shell">
             <header class="td-topbar">
                 <div class="td-brand"><span class="td-mark"><i class="ti ti-music"></i></span><span>{HSTUDIO_APP_NAME}</span></div>
-                <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> Teacher</span><span class="td-avatar">{escape(initials)}</span><span class="td-more">•••</span></div>
+                <div class="td-top-actions"><span class="td-role"><i class="ti ti-user"></i> Teacher</span><span class="td-avatar">{escape(initials)}</span><button class="td-menu-button" type="button" aria-label="Open menu" aria-expanded="false" onclick="toggleTeacherMenu()"><i class="ti ti-menu-2"></i></button></div>
             </header>
+            <div class="td-menu-scrim" onclick="toggleTeacherMenu(false)"></div>
             <aside class="td-sidebar">{hstudio_teacher_dark_nav(unread_messages, active, missing_homework_count)}</aside>
             <main class="td-main">{content_html}</main>
+            <nav class="td-bottom-nav" aria-label="Teacher navigation">
+                <a class="{'active' if active == 'home' else ''}" href="/teacher_dashboard"><i class="ti ti-home"></i><span>Today</span></a>
+                <a class="{'active' if active == 'schedule' else ''}" href="/teacher_dashboard?view=schedule&mode=week"><i class="ti ti-calendar-week"></i><span>Calendar</span></a>
+                <a class="{'active' if active == 'records' else ''}" href="/teacher_dashboard?view=records"><i class="ti ti-notes"></i><span>Records</span></a>
+                <a href="#" onclick="toggleTeacherMenu();return false" aria-label="More teacher tools"><i class="ti ti-menu-2"></i><span>More</span></a>
+            </nav>
         </div>
+        <script>
+            function toggleTeacherMenu(force) {{
+                const shell = document.querySelector('.td-shell');
+                const open = force === undefined ? !shell.classList.contains('menu-open') : force;
+                shell.classList.toggle('menu-open', open);
+                document.querySelector('.td-menu-button').setAttribute('aria-expanded', String(open));
+            }}
+        </script>
     </body>
     </html>
     """
@@ -13013,6 +13056,30 @@ def teacher_dashboard():
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
     .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-inline-link{margin-top:10px;border:0;background:transparent;color:var(--blue);font:inherit;font-size:13px;font-weight:900;padding:0;cursor:pointer}.teacher-duration-request{display:none;margin-top:10px;padding:12px;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC}.teacher-duration-request.show{display:block}.teacher-group-panel{display:none}.teacher-group-panel.show{display:block}.teacher-group-name{font-size:20px;font-weight:900}.teacher-group-list{display:grid;gap:8px;margin-top:12px}.teacher-group-row{display:grid;grid-template-columns:minmax(0,1fr) 148px;gap:10px;align-items:center;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC;padding:10px}.teacher-group-child{min-width:0}.teacher-group-child b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#172033}.teacher-group-child small{display:block;color:#667085;font-weight:800;margin-top:2px}.teacher-group-row select{min-height:40px}.panel-scope-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-scope-option{display:flex;gap:9px;align-items:flex-start;border:1px solid #D9DEE8;border-radius:8px;background:#fff;padding:10px 11px;cursor:pointer}.panel-scope-option.active{border-color:#B8CCE3;background:var(--blue-bg);box-shadow:inset 3px 0 0 var(--blue)}.panel-scope-option input{margin-top:2px;accent-color:var(--blue)}.panel-scope-option span{display:block;line-height:1.25}.panel-scope-option b{display:block;color:#172033;font-size:13px}.panel-scope-option small{display:block;color:#667085;font-size:11px;margin-top:3px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
+    @media(max-width:900px){
+      .calendar-day,.calendar-grid.month-view .calendar-day,.calendar-grid.week-view .calendar-day{min-height:0;border:1px solid var(--td-line);border-radius:8px;padding:10px;background:#fff}
+      .calendar-grid.month-view .calendar-day.no-lessons{display:none}
+      .calendar-day-head{font-size:13px;min-height:30px;margin-bottom:6px;border-bottom:1px solid var(--td-line)}
+      .calendar-day-head strong{font-size:14px}
+      .calendar-event,.calendar-grid.month-view .calendar-event{position:relative;padding:10px 12px;margin-bottom:6px;min-height:74px;border-radius:7px}
+      .event-top{align-items:flex-start;gap:8px}
+      .event-time,.calendar-time-chip{font-size:13px;line-height:1.25;white-space:normal}
+      .event-student{font-size:16px!important;line-height:1.3!important;white-space:normal;overflow-wrap:anywhere}
+      .event-line{font-size:12px!important;line-height:1.3!important;white-space:normal}
+      .event-status-form{flex-basis:100px;max-width:100px}
+      .event-status-form select.teacher-card-status,.calendar-grid.month-view .event-status-form select.teacher-card-status{width:100px;max-width:100px;height:30px;font-size:11px}
+      .teacher-add-overlay{padding:0;align-items:flex-end}
+      .teacher-add-modal{width:100%;max-height:calc(100dvh - env(safe-area-inset-top) - 16px);border-radius:8px 8px 0 0}
+      .teacher-add-head{padding:16px}.teacher-add-body{padding:16px 16px calc(20px + env(safe-area-inset-bottom))}
+      .teacher-add-head h2{font-size:20px}
+      .lesson-panel{width:100%;top:env(safe-area-inset-top);border-left:0}
+      .lesson-panel-head{padding:16px}.lesson-panel h2{font-size:22px}
+      .panel-cell,.panel-section{padding:14px 16px}
+      .panel-value{font-size:15px;overflow-wrap:anywhere}
+      .att-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .panel-footer{padding:12px 16px calc(12px + env(safe-area-inset-bottom))}
+      .teacher-rs-modal{width:min(360px,calc(100vw - 32px))}
+    }
     </style>
     """
 
@@ -13124,7 +13191,7 @@ def teacher_dashboard():
                 if not day_events:
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
-                <section class="calendar-day {'today' if day_key == today else ''}" data-date="{day_key}">
+                <section class="calendar-day {'today' if day_key == today else ''} {'has-lessons' if by_date.get(day_key) else 'no-lessons'}" data-date="{day_key}">
                     <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
                     {day_events}
                 </section>
@@ -13186,6 +13253,7 @@ def teacher_dashboard():
         owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
+        mobile_add_button = f'<button type="button" onclick="teacherAddOnDate(\'{today}\')"><i class="ti ti-plus"></i> Add lesson</button>' if teacher_perms.get("add_own_schedule") else ''
         teacher_schedule_return_url = request.full_path if request.query_string else "/teacher_dashboard?view=schedule"
         teacher_schedule_return_url_attr = escape(teacher_schedule_return_url, quote=True)
         content = f"""
@@ -13199,6 +13267,7 @@ def teacher_dashboard():
                         <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
                         <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
                     </div>
+                    {mobile_add_button}
                     <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" onclick="teacherMultiToggle()">Multi-Select</button>
                     {controls}
                 </div>
@@ -14100,6 +14169,11 @@ def teacher_missing_homework():
 def teacher_login():
     ensure_teacher_management_schema()
 
+    if request.method == "GET" and session.get("user_role") == "teacher":
+        if session.get("must_change_password"):
+            return redirect("/change_teacher_password")
+        return redirect("/teacher_dashboard")
+
     if request.method == "POST":
 
         username = request.form.get("username")
@@ -14129,6 +14203,7 @@ def teacher_login():
                 conn.commit()
             conn.close()
             session.clear()
+            session.permanent = True
             session["user_role"] = user[2]
             session["username"] = user[1]
             session["display_name"] = user[3]
