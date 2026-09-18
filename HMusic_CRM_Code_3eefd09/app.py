@@ -39809,19 +39809,19 @@ def enrollment_detail(enrollment_id):
                                 </label>
                                 <label>
                                     Tuition / Lesson
-                                    <input type="number" step="0.01" name="final_price" value="{confirmed_tuition}" required>
+                                    <input type="number" step="0.01" name="final_price" id="tuitionPerLesson" value="{confirmed_tuition}" required>
                                 </label>
                                 <label>
                                     Package Lessons
-                                    <input type="number" step="0.5" name="package_lessons" value="{confirmed_package_lessons}">
+                                    <input type="number" step="0.5" name="package_lessons" id="packageLessons" value="{confirmed_package_lessons}">
                                 </label>
                                 <label>
                                     Package Amount
-                                    <input type="number" step="0.01" name="package_amount" value="{confirmed_package_amount}">
+                                    <input type="number" step="0.01" name="package_amount" id="packageAmount" value="{confirmed_package_amount}">
                                 </label>
                             </div>
 
-                            <p class="help">For example: $60 per lesson x 7 lessons = $420 package. If Package Amount is different, invoices use the amount entered here.</p>
+                            <p class="help">Package Amount updates when tuition or lesson count changes. You can still enter a different amount for a custom package price.</p>
                             <div class="save-row">
                                 <button type="submit" class="save-button">Save tuition</button>
                                 <span class="muted">Last updated: {escape(str(e[25] or 'Not saved yet'))}</span>
@@ -39917,6 +39917,24 @@ def enrollment_detail(enrollment_id):
                 </details>
             </div>
         </main>
+        <script>
+            const tuitionPerLesson = document.getElementById('tuitionPerLesson');
+            const packageLessons = document.getElementById('packageLessons');
+            const packageAmount = document.getElementById('packageAmount');
+            function updatePackageAmount() {{
+                if (tuitionPerLesson.value === '' || packageLessons.value === '') {{
+                    packageAmount.value = '';
+                    return;
+                }}
+                const tuitionCents = Math.round(Number(tuitionPerLesson.value) * 100);
+                const lessons = Number(packageLessons.value);
+                if (Number.isFinite(tuitionCents) && Number.isFinite(lessons)) {{
+                    packageAmount.value = (Math.round(tuitionCents * lessons) / 100).toFixed(2);
+                }}
+            }}
+            tuitionPerLesson.addEventListener('input', updatePackageAmount);
+            packageLessons.addEventListener('input', updatePackageAmount);
+        </script>
     </body>
     </html>
     """
