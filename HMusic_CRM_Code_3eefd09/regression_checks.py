@@ -6,6 +6,7 @@ APP = Path(__file__).with_name("app.py")
 
 CHECKS = {
     "invoice reminder route": '"/send_invoice_payment_reminder/<int:invoice_id>"',
+    "invoice reminder GET recovery": 'return redirect("/invoices?reminder=not_sent")',
     "invoice reminder action": "Email reminder",
     "invoice edit route": '"/edit_invoice/<int:invoice_id>"',
     "invoice edit parent ranking uses local student join": "LEFT JOIN students s2 ON s2.name = ps2.student_name",

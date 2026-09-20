@@ -7173,10 +7173,13 @@ def edit_invoice(invoice_id):
     """
 
 
-@app.route("/send_invoice_payment_reminder/<int:invoice_id>", methods=["POST"])
+@app.route("/send_invoice_payment_reminder/<int:invoice_id>", methods=["GET", "POST"])
 def send_invoice_payment_reminder(invoice_id):
     if not require_owner():
         return redirect("/owner_login")
+
+    if request.method == "GET":
+        return redirect("/invoices?reminder=not_sent")
 
     ensure_v321_schema()
     ensure_v33_schema()
@@ -17297,6 +17300,7 @@ def invoices():
     if reminder_state:
         reminder_labels = {
             "sent": "Payment reminder email sent.",
+            "not_sent": "Payment reminder was not sent. Please try again from this page.",
             "failed": f"Payment reminder could not be sent. {reminder_message}",
             "paid": "Paid invoices do not need reminders.",
             "missing": "Invoice not found.",
