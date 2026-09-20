@@ -6901,20 +6901,6 @@ def delete_invoice(invoice_id):
     return redirect(f"/student/{quote(student_name)}#payments")
 
 
-@app.route("/invoice_edit_diagnostics/<int:invoice_id>")
-def invoice_edit_diagnostics(invoice_id):
-    if not require_owner():
-        return redirect("/owner_login")
-    try:
-        return edit_invoice(invoice_id)
-    except Exception as exc:
-        app.logger.exception("Invoice edit diagnostic failed for %s", invoice_id)
-        conn = sqlite3.connect("hmusic.db")
-        columns = [row[1] for row in conn.execute("PRAGMA table_info(invoices)")]
-        conn.close()
-        return Response(f"Invoice edit error: {escape(str(exc))}; columns: {escape(', '.join(columns))}", status=500)
-
-
 @app.route("/edit_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def edit_invoice(invoice_id):
     if not require_owner():
@@ -6949,13 +6935,13 @@ def edit_invoice(invoice_id):
             SELECT ps2.id
             FROM parent_students ps2
             JOIN parent_profiles pp2 ON pp2.id = ps2.parent_id
+            LEFT JOIN students s2 ON s2.name = ps2.student_name
             WHERE ps2.student_name = i.student_name
             AND ps2.active = 1
             ORDER BY
                 CASE
-                    WHEN LOWER(TRIM(pp2.email)) = LOWER(TRIM(COALESCE((
-                        SELECT s2.parent_email FROM students s2 WHERE s2.name = i.student_name LIMIT 1
-                    ), ''))) AND TRIM(COALESCE(pp2.email, '')) != ''
+                    WHEN LOWER(TRIM(pp2.email)) = LOWER(TRIM(COALESCE(s2.parent_email, '')))
+                         AND TRIM(COALESCE(pp2.email, '')) != ''
                          AND LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 0
                     WHEN LOWER(TRIM(pp2.email)) NOT LIKE '%@hmusic.local' THEN 1
                     ELSE 2

@@ -8,6 +8,7 @@ CHECKS = {
     "invoice reminder route": '"/send_invoice_payment_reminder/<int:invoice_id>"',
     "invoice reminder action": "Email reminder",
     "invoice edit route": '"/edit_invoice/<int:invoice_id>"',
+    "invoice edit parent ranking uses local student join": "LEFT JOIN students s2 ON s2.name = ps2.student_name",
     "invoice coverage schema migration": 'add_column_if_missing("invoices", "coverage_title", "coverage_title TEXT")',
     "invoice coverage class migration": 'add_column_if_missing("invoices", "coverage_class", "coverage_class TEXT")',
     "invoice coverage start migration": 'add_column_if_missing("invoices", "coverage_start", "coverage_start TEXT")',
