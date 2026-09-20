@@ -6901,6 +6901,17 @@ def delete_invoice(invoice_id):
     return redirect(f"/student/{quote(student_name)}#payments")
 
 
+@app.route("/invoice_edit_diagnostics/<int:invoice_id>")
+def invoice_edit_diagnostics(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    try:
+        return edit_invoice(invoice_id)
+    except Exception as exc:
+        app.logger.exception("Invoice edit diagnostic failed for %s", invoice_id)
+        return Response(f"Invoice edit error: {escape(str(exc))}", status=500)
+
+
 @app.route("/edit_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def edit_invoice(invoice_id):
     if not require_owner():
