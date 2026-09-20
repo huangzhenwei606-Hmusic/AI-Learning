@@ -5172,7 +5172,7 @@ def edit_student(name):
             </div>
             <div class="credit-stepper">
                 <button type="button" data-credit-step="-0.5" aria-label="Decrease credit">-</button>
-                <input type="number" step="0.5" min="0" name="lessons_left" value="{lessons_value}" form="{credit_form_id}" aria-label="{course_name} credits left">
+                <input type="number" step="0.5" name="lessons_left" value="{lessons_value}" form="{credit_form_id}" aria-label="{course_name} credits left">
                 <button type="button" data-credit-step="0.5" aria-label="Increase credit">+</button>
             </div>
             <div class="credit-row-actions">
@@ -5600,7 +5600,7 @@ def edit_student(name):
                     if (!input) return;
                     const current = parseFloat(input.value || '0') || 0;
                     const delta = parseFloat(button.dataset.creditStep || '0') || 0;
-                    const next = Math.max(0, current + delta);
+                    const next = current + delta;
                     input.value = Number.isInteger(next) ? String(next) : next.toFixed(1);
                 }});
             }});
@@ -19327,7 +19327,7 @@ def parent_admin(parent_id):
                 <td>
                     <div class="credit-stepper family-credit-stepper">
                         <button type="button" data-credit-step="-0.5" aria-label="Decrease credit">-</button>
-                        <input type="number" step="0.5" min="0" name="lessons_left" value="{float(lessons_left or 0):g}" form="{credit_form_id}" aria-label="{escape(str(course_name or 'Course'), quote=True)} credits left">
+                        <input type="number" step="0.5" name="lessons_left" value="{float(lessons_left or 0):g}" form="{credit_form_id}" aria-label="{escape(str(course_name or 'Course'), quote=True)} credits left">
                         <button type="button" data-credit-step="0.5" aria-label="Increase credit">+</button>
                     </div>
                 </td>
@@ -19835,7 +19835,7 @@ def parent_admin(parent_id):
                     if (!input) return;
                     const current = parseFloat(input.value || '0') || 0;
                     const delta = parseFloat(button.dataset.creditStep || '0') || 0;
-                    const next = Math.max(0, current + delta);
+                    const next = current + delta;
                     input.value = Number.isInteger(next) ? String(next) : next.toFixed(1);
                 }});
             }});
