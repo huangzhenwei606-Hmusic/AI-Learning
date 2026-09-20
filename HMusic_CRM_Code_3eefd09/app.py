@@ -2161,7 +2161,7 @@ def home():
     cursor.execute("""
     SELECT COUNT(*)
     FROM students
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     """)
     renewal_count = cursor.fetchone()[0]
 
@@ -2175,7 +2175,7 @@ def home():
     cursor.execute("""
     SELECT name, lessons_left
     FROM students
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     ORDER BY lessons_left ASC
     LIMIT 5
     """)
@@ -3614,7 +3614,7 @@ def students():
         return text if text else fallback
 
     teacher_names = sorted({clean(record.get("teacher"), "Unassigned") for record in records})
-    need_renewal = sum(1 for record in records if lesson_count(record.get("lessons_left")) <= 2)
+    need_renewal = sum(1 for record in records if lesson_count(record.get("lessons_left")) <= 1)
     zero_balance = sum(1 for record in records if lesson_count(record.get("lessons_left")) <= 0)
     active_teachers = len([teacher for teacher in teacher_names if teacher != "Unassigned"])
 
@@ -3634,8 +3634,8 @@ def students():
         active_value = str(record.get("active", "1")).strip().lower()
         is_inactive = raw_status.lower() == "inactive" or active_value in ("0", "false", "no", "inactive")
         status_label = "Inactive" if is_inactive else "Active"
-        balance_label = "no-lessons" if lessons_left <= 0 else ("low" if lessons_left <= 2 else "ok")
-        balance_text = "No lessons" if lessons_left <= 0 else ("Low" if lessons_left <= 2 else "OK")
+        balance_label = "no-lessons" if lessons_left <= 0 else ("low" if lessons_left <= 1 else "ok")
+        balance_text = "No lessons" if lessons_left <= 0 else ("Low" if lessons_left <= 1 else "OK")
         encoded_name = quote(name)
         search_blob = " ".join([name, teacher, parent_name, parent_email, parent_phone, str(lessons_left), status_label]).lower()
         parent_display = parent_name or "No parent"
@@ -4981,11 +4981,11 @@ def edit_student(name):
         else "Not scheduled"
     )
 
-    lesson_badge_class = "danger" if lessons_left <= 0 else "amber" if lessons_left <= 2 else "ok"
-    lesson_badge_text = "No lessons" if lessons_left <= 0 else "Low lessons" if lessons_left <= 2 else "Lessons available"
+    lesson_badge_class = "danger" if lessons_left <= 0 else "amber" if lessons_left <= 1 else "ok"
+    lesson_badge_text = "No lessons" if lessons_left <= 0 else "Low lessons" if lessons_left <= 1 else "Lessons available"
     course_credit_count = len(course_credit_rows)
     has_empty_course_credit = any(float(row[3] or 0) <= 0 for row in course_credit_rows)
-    has_low_course_credit = any(0 < float(row[3] or 0) <= 2 for row in course_credit_rows)
+    has_low_course_credit = any(0 < float(row[3] or 0) <= 1 for row in course_credit_rows)
     add_billing_href = (
         f"/create_enrollment_invoice/{course_credit_rows[0][0]}"
         if course_credit_rows else
@@ -6551,7 +6551,7 @@ def student_detail(name):
     lessons_left = lesson_count(student[4])
     course_credit_count = len(course_credit_rows)
     has_empty_course_credit = any(float(row[3] or 0) <= 0 for row in course_credit_rows)
-    has_low_course_credit = any(0 < float(row[3] or 0) <= 2 for row in course_credit_rows)
+    has_low_course_credit = any(0 < float(row[3] or 0) <= 1 for row in course_credit_rows)
     family_status_class = "ok" if parent_account else "danger"
     family_status_text = "Family workspace ready" if parent_account else "Family setup needed"
     next_lesson_label = "Not scheduled"
@@ -8281,7 +8281,7 @@ def overdue():
     cursor.execute("""
     SELECT name, lessons_left, parent_email
     FROM students
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     ORDER BY lessons_left ASC
     """)
 
@@ -9974,7 +9974,7 @@ def calendar():
         if (detailsBilling) detailsBilling.open = true;
         const bal = document.getElementById('panelBalance');
         const left = Number(d.lesson.lessons_left || 0);
-        bal.style.display = left <= 2 ? 'inline-flex' : 'none';
+        bal.style.display = left <= 1 ? 'inline-flex' : 'none';
         bal.textContent = left <= 0 ? '0 left' : left + ' left';
         paintPanelStatus(d.lesson.status || 'scheduled');
         document.getElementById('lessonScrim').classList.add('show');
@@ -21237,10 +21237,10 @@ def handle_child_os_request(parent_id, parent_name, student_name, request_text):
     action_label = "Dashboard"
 
     if intent == "balance_query":
-        key = "low_balance" if float(lessons_left or 0) <= 2 else "balance"
+        key = "low_balance" if float(lessons_left or 0) <= 1 else "balance"
         outcome = child_os_copy(response_lang, key, student=student_name, lessons_left=lessons_left)
         status = "executed"
-        action_href = "/parent_billing" if float(lessons_left or 0) <= 2 else "/parent_dashboard"
+        action_href = "/parent_billing" if float(lessons_left or 0) <= 1 else "/parent_dashboard"
         action_label = "Renew / Billing"
     elif intent == "lesson_reminder":
         if next_lesson:
@@ -29326,7 +29326,7 @@ def parent_dashboard():
         except Exception:
             next_lesson_pill = "Next"
 
-    renewal_copy = "Renew soon" if course_credit_total <= 2 else "Lessons available"
+    renewal_copy = "Renew soon" if course_credit_total <= 1 else "Lessons available"
     notes_preview = lesson_note_cards
 
     weekday_header = "".join(f"<div>{d}</div>" for d in ["S", "M", "T", "W", "T", "F", "S"])
@@ -32677,7 +32677,7 @@ def executive_dashboard():
     cursor.execute("""
     SELECT COUNT(*)
     FROM students
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     """)
     low_balance_count = cursor.fetchone()[0] or 0
 
@@ -32791,7 +32791,7 @@ def executive_dashboard():
     cursor.execute("""
     SELECT name, lessons_left, parent_email
     FROM students
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     ORDER BY lessons_left ASC
     LIMIT 10
     """)
@@ -34039,7 +34039,7 @@ def renewal_emails():
     cursor.execute("""
     SELECT name, parent_email, lessons_left
     FROM students
-    WHERE lessons_left <=2
+    WHERE lessons_left <= 1
     ORDER BY lessons_left ASC
     """)
 
@@ -34065,7 +34065,7 @@ def renewal_emails():
 
     return f"""
     <h1>Auto Renewal Email Queue</h1>
-    <p>Students with 2 or fewer lessons left.</p>
+    <p>Students with 1 or fewer lessons left.</p>
 
     <table border="1" cellpadding="8">
         <tr>
@@ -34091,7 +34091,7 @@ def renewal_package_count(lessons_left, package_size=10):
     if balance < 0:
         overage = abs(balance)
         return max(1, (overage + package_size - 1) // package_size)
-    if balance <= 2:
+    if balance <= 1:
         return 1
     return 0
 
@@ -39188,7 +39188,7 @@ def enrollments():
     cursor.execute("""
     SELECT COUNT(*)
     FROM enrollments
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     AND status = 'active'
     """)
     renewal_count = cursor.fetchone()[0]
@@ -40566,7 +40566,7 @@ def enrollment_renewals():
         lessons_left,
         status
     FROM enrollments
-    WHERE lessons_left <= 2
+    WHERE lessons_left <= 1
     AND status = 'active'
     ORDER BY lessons_left ASC, student_name ASC
     """)
@@ -40650,7 +40650,7 @@ def enrollment_renewals():
     <body>
         <div class="container">
             <h1>Enrollment Renewals</h1>
-            <p>Only active enrollments with 2 or fewer lessons left.</p>
+            <p>Only active enrollments with 1 or fewer lessons left.</p>
 
             <a class="button" href="/">Home</a>
             <a class="button" href="/enrollments">Enrollments</a>
@@ -41289,6 +41289,10 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
     add_column_if_missing("invoices", "package_options", "package_options TEXT")
     add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
+    add_column_if_missing("invoices", "coverage_title", "coverage_title TEXT")
+    add_column_if_missing("invoices", "coverage_class", "coverage_class TEXT")
+    add_column_if_missing("invoices", "coverage_start", "coverage_start TEXT")
+    add_column_if_missing("invoices", "coverage_note", "coverage_note TEXT")
     # Existing initial-tuition invoices already provisioned credit when enrollment was created.
     add_column_if_missing("invoices", "credits_applied", "credits_applied INTEGER DEFAULT 1")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
@@ -41501,11 +41505,11 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
         events.append({
             "parent_id": parent_id,
             "title": "AutoPay payment reminder",
-            "body": f"{student_name}'s package is set to AutoPay. H-Music will remind you again on the second-to-last lesson before the next package renews.",
+            "body": f"{student_name}'s package is set to AutoPay. H-Music will remind you again when one lesson remains before the next package renews.",
             "link": "/parent_billing"
         })
 
-    if auto_renew_enabled and lessons_left <= 2 and not e[6]:
+    if auto_renew_enabled and lessons_left <= 1 and not e[6]:
         cursor.execute("""
         UPDATE enrollments
         SET renewal_reminder_sent_at = ?,
