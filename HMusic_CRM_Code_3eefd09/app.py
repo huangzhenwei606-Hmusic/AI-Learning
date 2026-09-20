@@ -5116,7 +5116,7 @@ def edit_student(name):
             <select name="teacher_name" form="{quick_credit_form_id}" aria-label="Teacher">
                 {credit_teacher_options(student[1])}
             </select>
-            <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_credit_form_id}" aria-label="Credits left">
+            <input type="number" step="0.5" name="lessons_left" value="0" form="{quick_credit_form_id}" aria-label="Credits left">
             <button class="primary save-credit" type="submit" form="{quick_credit_form_id}">Add</button>
         </div>
     """
@@ -5745,7 +5745,7 @@ def quick_add_course_credit(name):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     final_price = float(pricing["student_charge_amount"] or 0)
     teacher_pay_amount = float(pricing["teacher_pay_amount"] or 0)
-    package_lessons = lessons_left_value
+    package_lessons = max(lessons_left_value, 0)
     package_amount = round(final_price * package_lessons, 2)
 
     cursor.execute("""
@@ -5764,11 +5764,9 @@ def quick_add_course_credit(name):
         cursor.execute("""
         UPDATE enrollments
         SET lessons_left = ?,
-            package_lessons = ?,
-            package_amount = ?,
             updated_at = ?
         WHERE id = ?
-        """, (lessons_left_value, package_lessons, package_amount, now, existing[0]))
+        """, (lessons_left_value, now, existing[0]))
     else:
         cursor.execute("""
         INSERT INTO enrollments (
@@ -19289,7 +19287,7 @@ def parent_admin(parent_id):
                         <select name="teacher_name" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} teacher">
                             {quick_teacher_options}
                         </select>
-                        <input type="number" step="0.5" min="0" name="lessons_left" value="0" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} credits left">
+                        <input type="number" step="0.5" name="lessons_left" value="0" form="{quick_form_id}" aria-label="{escape(str(student_name or 'Student'), quote=True)} credits left">
                         <button class="button compact primary save-credit" type="submit" form="{quick_form_id}">Save</button>
                     </div>
                 </td>
