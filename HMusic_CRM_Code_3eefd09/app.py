@@ -5635,10 +5635,13 @@ def edit_student(name):
     return response
 
 
-@app.route("/update_student_course_credit/<name>", methods=["POST"])
+@app.route("/update_student_course_credit/<name>", methods=["GET", "POST"])
 def update_student_course_credit(name):
     if not require_owner():
         return redirect("/owner_login")
+
+    if request.method == "GET":
+        return redirect(f"/edit_student/{quote(name)}#course-credit-editor")
 
     ensure_v321_schema()
 
