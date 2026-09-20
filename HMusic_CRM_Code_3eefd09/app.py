@@ -19496,7 +19496,7 @@ def parent_admin(parent_id):
         open_invoice_count = 0
         open_invoice_total = 0
 
-    return f"""
+    page_html = f"""
     <!doctype html>
     <html>
     <head>
@@ -19850,6 +19850,9 @@ def parent_admin(parent_id):
     </body>
     </html>
     """
+    response = make_response(page_html)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.route("/edit_parent_admin/<int:parent_id>", methods=["GET", "POST"])
