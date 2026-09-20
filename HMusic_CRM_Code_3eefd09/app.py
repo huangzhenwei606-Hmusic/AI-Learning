@@ -17727,6 +17727,17 @@ def parent_email_audit():
     </html>
     """
 
+def invoice_credit_to_grant(cursor, invoice_id, charge_lessons, invoice_type):
+    if invoice_type == "package_invoice":
+        return charge_lessons or 0
+    if invoice_type == "initial_tuition":
+        cursor.execute("SELECT COALESCE(credits_applied, 1) FROM invoices WHERE id = ?", (invoice_id,))
+        row = cursor.fetchone()
+        if row and row[0] == 0:
+            return charge_lessons or 0
+    return 0
+
+
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def pay_invoice(invoice_id):
     if not require_owner():
@@ -17736,6 +17747,8 @@ def pay_invoice(invoice_id):
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    if request.method == "POST":
+        cursor.execute("BEGIN IMMEDIATE")
 
     cursor.execute("""
     SELECT
@@ -17778,7 +17791,7 @@ def pay_invoice(invoice_id):
         student_name = invoice[1]
         amount = invoice[3]
         enrollment_id = invoice[7]
-        lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
+        lessons_added = invoice_credit_to_grant(cursor, invoice_id, invoice[2], invoice[5])
         course_type_name = ""
         teacher_name = ""
         if enrollment_id:
@@ -17837,7 +17850,7 @@ def pay_invoice(invoice_id):
 
         cursor.execute("""
         UPDATE invoices
-        SET status = ?
+        SET status = ?, credits_applied = 1
         WHERE id = ?
         """, ("paid", invoice_id))
 
@@ -23610,6 +23623,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    cursor.execute("BEGIN IMMEDIATE")
     cursor.execute("""
     SELECT
         id,
@@ -23637,7 +23651,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
 
     student_name = invoice[1]
     amount = invoice[3] or 0
-    lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
+    lessons_added = invoice_credit_to_grant(cursor, invoice_id, invoice[2], invoice[5])
     enrollment_id = invoice[7]
     checkout_session_id = checkout_session_id or invoice[8]
     payment_intent_id = payment_intent_id or invoice[9]
@@ -23695,6 +23709,7 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     cursor.execute("""
     UPDATE invoices
     SET status = 'paid',
+        credits_applied = 1,
         stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
         stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
         autopay_status = 'paid'
@@ -23872,6 +23887,7 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    cursor.execute("BEGIN IMMEDIATE")
     cursor.execute("""
     SELECT
         id,
@@ -23899,7 +23915,7 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
 
     student_name = invoice[1]
     amount = invoice[3] or 0
-    lessons_added = invoice[2] if invoice[5] == "package_invoice" else 0
+    lessons_added = invoice_credit_to_grant(cursor, invoice_id, invoice[2], invoice[5])
     enrollment_id = invoice[6]
     square_order_id = square_order_id or invoice[8]
     square_payment_id = square_payment_id or invoice[9]
@@ -23957,6 +23973,7 @@ def finalize_square_invoice_payment(invoice_id, square_payment_id=None, square_o
     cursor.execute("""
     UPDATE invoices
     SET status = 'paid',
+        credits_applied = 1,
         square_order_id = COALESCE(?, square_order_id),
         square_payment_id = COALESCE(?, square_payment_id),
         autopay_status = 'square_paid'
@@ -39463,7 +39480,7 @@ def add_enrollment():
             pricing["teacher_pay"],
             teacher_pay_amount,
 
-            package_lessons,
+            0 if package_amount > 0 else package_lessons,
             status,
             notes,
             start_date,
@@ -39485,7 +39502,8 @@ def add_enrollment():
                 cursor,
                 enrollment_id,
                 "initial_tuition",
-                "Initial tuition invoice created from new enrollment."
+                "Initial tuition invoice created from new enrollment.",
+                grant_credit_on_payment=True
             )
             parent_id = get_primary_parent_for_student(cursor, student_name)
             invoice_message_body = hmusic_enrollment_invoice_message_body(
@@ -41268,6 +41286,8 @@ def ensure_v321_schema():
     add_column_if_missing("invoices", "payment_methods", "payment_methods TEXT")
     add_column_if_missing("invoices", "package_options", "package_options TEXT")
     add_column_if_missing("invoices", "manual_payment_status", "manual_payment_status TEXT")
+    # Existing initial-tuition invoices already provisioned credit when enrollment was created.
+    add_column_if_missing("invoices", "credits_applied", "credits_applied INTEGER DEFAULT 1")
     add_column_if_missing("payments", "visible_to_parent", "visible_to_parent INTEGER DEFAULT 1")
     add_column_if_missing("schedule", "policy_waiver_applied", "policy_waiver_applied INTEGER DEFAULT 0")
     add_column_if_missing("schedule", "pending_fee_amount", "pending_fee_amount REAL DEFAULT 0")
@@ -41357,7 +41377,7 @@ def prefer_real_parent_for_student(cursor, parent_id, student_name=None):
     return matched[0] if matched else parent_id
 
 
-def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes=""):
+def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", grant_credit_on_payment=False):
     cursor.execute("""
     SELECT
         id,
@@ -41407,9 +41427,10 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes=""):
         created_at,
         enrollment_id,
         due_date,
-        notes
+        notes,
+        credits_applied
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         e[1],
         None,
@@ -41420,7 +41441,8 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes=""):
         now,
         enrollment_id,
         due_date,
-        notes
+        notes,
+        0 if grant_credit_on_payment else 1
     ))
 
     return cursor.lastrowid
