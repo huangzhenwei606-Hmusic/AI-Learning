@@ -6909,7 +6909,10 @@ def invoice_edit_diagnostics(invoice_id):
         return edit_invoice(invoice_id)
     except Exception as exc:
         app.logger.exception("Invoice edit diagnostic failed for %s", invoice_id)
-        return Response(f"Invoice edit error: {escape(str(exc))}", status=500)
+        conn = sqlite3.connect("hmusic.db")
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(invoices)")]
+        conn.close()
+        return Response(f"Invoice edit error: {escape(str(exc))}; columns: {escape(', '.join(columns))}", status=500)
 
 
 @app.route("/edit_invoice/<int:invoice_id>", methods=["GET", "POST"])
