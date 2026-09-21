@@ -11,8 +11,8 @@
 
 1. Gunicorn uses four request threads so one slow page does not block the
    owner website, teacher app, and parent app together.
-2. Workers time out after 60 seconds and recycle after roughly 1,000 requests
-   to recover from stuck work or gradual memory growth.
+2. Requests time out after 60 seconds. The single worker is not recycled on a
+   request counter because this disk-backed service has no standby worker.
 3. SQLite uses WAL mode, a 15-second lock wait, and normal synchronization for
    better read/write concurrency on the Render persistent disk.
 4. Schema preparation is serialized and cached once per process. Calendar no

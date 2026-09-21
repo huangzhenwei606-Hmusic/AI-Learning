@@ -4,7 +4,7 @@ services:
     runtime: python
     rootDir: HMusic_CRM_Code_3eefd09
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 100 --access-logfile - --error-logfile -
+    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
     healthCheckPath: /healthz
     envVars:
       - key: HMUSIC_DB_PATH
