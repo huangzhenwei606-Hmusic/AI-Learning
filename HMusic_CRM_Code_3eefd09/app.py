@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, Response, send_from_directory, abort, make_response
+from flask import Flask, request, redirect, session, Response, send_from_directory, abort, make_response, g
 import sqlite3
 import os
 import smtplib
@@ -11,6 +11,8 @@ import secrets
 import re
 import unicodedata
 import traceback
+import threading
+import time
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -63,6 +65,9 @@ DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
 _v17_schema_ready = False
+_calendar_lesson_panel_schema_ready = False
+_location_room_schema_ready = False
+_schema_init_lock = threading.RLock()
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
 _sqlite_connect = sqlite3._hmusic_original_connect
@@ -71,7 +76,11 @@ _sqlite_connect = sqlite3._hmusic_original_connect
 def hmusic_sqlite_connect(database, *args, **kwargs):
     if database == "hmusic.db":
         database = HMUSIC_DB_PATH
-    return _sqlite_connect(database, *args, **kwargs)
+    kwargs.setdefault("timeout", 15)
+    conn = _sqlite_connect(database, *args, **kwargs)
+    timeout_seconds = float(kwargs.get("timeout", 15))
+    conn.execute(f"PRAGMA busy_timeout = {max(1, int(timeout_seconds * 1000))}")
+    return conn
 
 
 sqlite3.connect = hmusic_sqlite_connect
@@ -81,6 +90,13 @@ OWNER_PASSWORD = "1234"
 
 @app.route("/healthz")
 def healthz():
+    response = make_response({"ok": True, "service": "hmusic-crm"}, 200)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/readyz")
+def readyz():
     try:
         conn = sqlite3.connect("hmusic.db", timeout=2)
         conn.execute("SELECT 1").fetchone()
@@ -91,6 +107,29 @@ def healthz():
     else:
         response = make_response({"ok": True, "service": "hmusic-crm"}, 200)
     response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.before_request
+def start_request_timer():
+    g.hmusic_request_started_at = time.perf_counter()
+
+
+@app.after_request
+def record_request_timing(response):
+    started_at = getattr(g, "hmusic_request_started_at", None)
+    if started_at is None:
+        return response
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+    if elapsed_ms >= 1500 and request.path not in ("/healthz", "/readyz"):
+        app.logger.warning(
+            "Slow request method=%s path=%s duration_ms=%.1f status=%s",
+            request.method,
+            request.path,
+            elapsed_ms,
+            response.status_code,
+        )
     return response
 
 
@@ -15301,6 +15340,9 @@ def update_lesson_status():
 # =========================
 
 def ensure_calendar_lesson_panel_schema():
+    global _calendar_lesson_panel_schema_ready
+    if _calendar_lesson_panel_schema_ready:
+        return
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -15428,6 +15470,7 @@ def ensure_calendar_lesson_panel_schema():
         pass
     conn.commit()
     conn.close()
+    _calendar_lesson_panel_schema_ready = True
 
 
 def calendar_status_label(status):
@@ -37176,6 +37219,9 @@ def request_course_duration():
 
 
 def ensure_location_room_schema():
+    global _location_room_schema_ready
+    if _location_room_schema_ready:
+        return
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -37259,6 +37305,7 @@ def ensure_location_room_schema():
 
     conn.commit()
     conn.close()
+    _location_room_schema_ready = True
 
 
 def get_course_type_tuition_tier(cursor, course_type_id, duration=None, class_size=None):
@@ -43134,20 +43181,27 @@ def ensure_production_schema():
     global _production_schema_ready
     if _production_schema_ready:
         return
-
-    ensure_base_schema()
-    ensure_teacher_management_schema()
-    ensure_v19_schema()
-    ensure_v26_schema()
-    ensure_v27_schema()
-    ensure_v29_schema()
-    ensure_v17_schema()
-    ensure_v321_schema()
-    ensure_v33_schema()
-    ensure_child_os_schema()
-    ensure_v145_schema()
-
-    _production_schema_ready = True
+    with _schema_init_lock:
+        if _production_schema_ready:
+            return
+        runtime_conn = sqlite3.connect("hmusic.db")
+        runtime_conn.execute("PRAGMA journal_mode = WAL")
+        runtime_conn.execute("PRAGMA synchronous = NORMAL")
+        runtime_conn.close()
+        ensure_base_schema()
+        ensure_teacher_management_schema()
+        ensure_v19_schema()
+        ensure_v26_schema()
+        ensure_v27_schema()
+        ensure_v29_schema()
+        ensure_v17_schema()
+        ensure_v321_schema()
+        ensure_v33_schema()
+        ensure_child_os_schema()
+        ensure_v145_schema()
+        ensure_calendar_lesson_panel_schema()
+        ensure_location_room_schema()
+        _production_schema_ready = True
 
 
 def ensure_backup_dir():
@@ -43544,6 +43598,7 @@ def prepare_database_for_request():
     public_paths = (
         "/static/",
         "/healthz",
+        "/readyz",
         "/favicon.ico",
         "/hmusic-icon",
         "/manifest.webmanifest",
