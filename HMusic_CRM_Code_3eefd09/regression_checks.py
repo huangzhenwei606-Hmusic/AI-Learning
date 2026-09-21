@@ -33,6 +33,8 @@ CHECKS = {
     "add enrollment student preselect": "selected_student_name = (request.args.get(\"student_name\") or \"\").strip()",
     "student course credit update route": '"/update_student_course_credit/<name>"',
     "quick add course credit route": '"/quick_add_course_credit/<name>"',
+    "quick add credit closes pricing read": "student = cursor.fetchone()\n    conn.close()",
+    "quick add credit uses isolated write": "Keep pricing/schema reads outside the write connection",
     "quick edit course credit route": '"/quick_edit_course_credit/<int:enrollment_id>"',
     "archive course credit route": '"/archive_course_credit/<int:enrollment_id>"',
     "archive course credit soft status": "SET status = 'archived'",

@@ -5786,14 +5786,13 @@ def quick_add_course_credit(name):
     LIMIT 1
     """, (name,))
     student = cursor.fetchone()
+    conn.close()
     if not student:
-        conn.close()
         return credit_redirect("credit_error")
 
     teacher_name = selected_teacher_name or student[1] or ""
     pricing = get_final_pricing(student[0], teacher_name, course_type_id_int)
     if not pricing:
-        conn.close()
         return credit_redirect("credit_error")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -5802,6 +5801,10 @@ def quick_add_course_credit(name):
     package_lessons = max(lessons_left_value, 0)
     package_amount = round(final_price * package_lessons, 2)
 
+    # Keep pricing/schema reads outside the write connection to avoid SQLite
+    # lock upgrades when the app is handling concurrent requests.
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
     cursor.execute("""
     SELECT id
     FROM enrollments
