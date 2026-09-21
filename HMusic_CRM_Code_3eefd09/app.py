@@ -66,6 +66,8 @@ DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
 _v17_schema_ready = False
+_v321_schema_ready = False
+_teacher_management_schema_ready = False
 _calendar_lesson_panel_schema_ready = False
 _location_room_schema_ready = False
 _schema_init_lock = threading.RLock()
@@ -974,6 +976,9 @@ def parent_app_icon():
 
 
 def ensure_teacher_management_schema():
+    global _teacher_management_schema_ready
+    if _teacher_management_schema_ready:
+        return
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -1065,6 +1070,7 @@ def ensure_teacher_management_schema():
 
     conn.commit()
     conn.close()
+    _teacher_management_schema_ready = True
 
 
 def teacher_login_username(teacher_name):
@@ -4859,14 +4865,6 @@ def edit_student(name):
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    for column_name, column_sql in [
-        ("status", "status TEXT DEFAULT 'Active'"),
-        ("program", "program TEXT DEFAULT 'Piano private lesson'"),
-        ("lesson_length", "lesson_length TEXT DEFAULT '30 minutes'"),
-        ("internal_note", "internal_note TEXT")
-    ]:
-        add_column_if_missing(cursor, "students", column_name, column_sql)
-    conn.commit()
 
     if request.method == "POST":
         first_name_input = (request.form.get("first_name") or "").strip()
@@ -41377,6 +41375,9 @@ def ensure_v211_schema():
 
 
 def ensure_v321_schema():
+    global _v321_schema_ready
+    if _v321_schema_ready:
+        return
     ensure_v211_schema()
     ensure_v29_schema()
 
@@ -41450,6 +41451,7 @@ def ensure_v321_schema():
 
     conn.commit()
     conn.close()
+    _v321_schema_ready = True
 
 
 def get_primary_parent_for_student(cursor, student_name):
@@ -43099,8 +43101,15 @@ def ensure_base_schema():
 
     cursor.execute("PRAGMA table_info(students)")
     student_columns = [row[1] for row in cursor.fetchall()]
-    if "parent_phone" not in student_columns:
-        cursor.execute("ALTER TABLE students ADD COLUMN parent_phone TEXT")
+    for column_name, column_sql in [
+        ("parent_phone", "parent_phone TEXT"),
+        ("status", "status TEXT DEFAULT 'Active'"),
+        ("program", "program TEXT DEFAULT 'Piano private lesson'"),
+        ("lesson_length", "lesson_length TEXT DEFAULT '30 minutes'"),
+        ("internal_note", "internal_note TEXT"),
+    ]:
+        if column_name not in student_columns:
+            cursor.execute(f"ALTER TABLE students ADD COLUMN {column_sql}")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS schedule (

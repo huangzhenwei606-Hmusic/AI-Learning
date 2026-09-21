@@ -95,6 +95,8 @@ CHECKS = {
     "startup database preparation": "def initialize_runtime_database():",
     "database busy recovery": 'response.headers["Retry-After"] = "2"',
     "request tracing": 'response.headers["X-Request-ID"]',
+    "v321 schema cached": "_v321_schema_ready = True",
+    "teacher schema cached": "_teacher_management_schema_ready = True",
 }
 
 
