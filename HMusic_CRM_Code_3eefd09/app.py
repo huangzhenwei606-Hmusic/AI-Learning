@@ -43526,6 +43526,7 @@ def owner_backup_download(filename):
 def prepare_database_for_request():
     public_paths = (
         "/static/",
+        "/healthz",
         "/favicon.ico",
         "/hmusic-icon",
         "/manifest.webmanifest",
