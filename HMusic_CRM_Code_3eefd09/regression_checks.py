@@ -97,6 +97,8 @@ CHECKS = {
     "request tracing": 'response.headers["X-Request-ID"]',
     "v321 schema cached": "_v321_schema_ready = True",
     "teacher schema cached": "_teacher_management_schema_ready = True",
+    "all schema helpers cached": "def hmusic_schema_once(func):",
+    "schema work runs during startup": "for schema_name in _runtime_schema_names:",
 }
 
 

@@ -14,6 +14,7 @@ import traceback
 import threading
 import time
 import uuid
+from functools import wraps
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -44583,10 +44584,76 @@ def api_teacher_add_schedule():
     return {"ok": True, "created": len(created_ids), "schedule_ids": created_ids}
 
 
+_schema_once_completed = set()
+_schema_once_lock = threading.RLock()
+
+
+def hmusic_schema_once(func):
+    """Serialize and cache legacy schema helpers that routes still call."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        cache_key = (func.__name__, repr(args), repr(sorted(kwargs.items())))
+        if cache_key in _schema_once_completed:
+            return None
+        with _schema_once_lock:
+            if cache_key in _schema_once_completed:
+                return None
+            result = func(*args, **kwargs)
+            _schema_once_completed.add(cache_key)
+            return result
+    return wrapped
+
+
+_runtime_schema_names = (
+    "ensure_base_schema",
+    "ensure_teacher_management_schema",
+    "ensure_teacher_permission_schema",
+    "ensure_teacher_time_off_schema",
+    "ensure_student_detail_schema",
+    "ensure_v17_schema",
+    "ensure_v18_schema",
+    "ensure_v18b_schema",
+    "ensure_v18c_schema",
+    "ensure_v19_schema",
+    "ensure_v21_schema",
+    "ensure_v211_schema",
+    "ensure_v25_schema",
+    "ensure_v252_schema",
+    "ensure_v26_schema",
+    "ensure_v27_schema",
+    "ensure_v28_schema",
+    "ensure_v282_schema",
+    "ensure_v29_schema",
+    "ensure_v321_schema",
+    "ensure_v33_schema",
+    "ensure_v145_schema",
+    "ensure_child_os_schema",
+    "ensure_parent_portal_feature_schema",
+    "ensure_billing_schema",
+    "ensure_message_template_schema",
+    "ensure_course_duration_request_schema",
+    "ensure_location_room_schema",
+    "ensure_calendar_lesson_panel_schema",
+    "ensure_teacher_mobile_app_schema",
+    "ensure_production_schema",
+)
+
+for _schema_name in _runtime_schema_names:
+    _schema_func = globals().get(_schema_name)
+    if _schema_func is not None:
+        globals()[_schema_name] = hmusic_schema_once(_schema_func)
+
+
 def initialize_runtime_database():
     """Finish schema work before Gunicorn starts accepting production traffic."""
     started_at = time.perf_counter()
     ensure_production_schema()
+    for schema_name in _runtime_schema_names:
+        if schema_name == "ensure_production_schema":
+            continue
+        schema_initializer = globals().get(schema_name)
+        if schema_initializer is not None:
+            schema_initializer()
     conn = sqlite3.connect("hmusic.db", timeout=15)
     conn.execute("SELECT 1").fetchone()
     conn.close()
