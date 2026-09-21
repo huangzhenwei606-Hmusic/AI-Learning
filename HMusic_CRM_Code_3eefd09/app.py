@@ -8757,20 +8757,8 @@ def calendar():
         return ""
 
     def owner_status_options(current_status):
-        options = [
-            ("scheduled", "Scheduled"),
-            ("present", "Present"),
-            ("no_show", "No Show"),
-            ("last_min_cancel", "Last Min Cancel"),
-            ("excused_24h", "Cancel > 24h"),
-            ("teacher_cancelled", "Teacher Cancel"),
-            ("makeup", "Makeup"),
-        ]
         current_status = current_status or "scheduled"
-        return "".join(
-            f'<option value="{value}" {"selected" if value == current_status else ""}>{label}</option>'
-            for value, label in options
-        )
+        return f'<option value="{escape(current_status)}">{escape(owner_status_label(current_status))}</option>'
 
     def warning_pill(lessons_left, package_type=""):
         if str(package_type or "").lower() == "unlimited":
@@ -8865,12 +8853,9 @@ def calendar():
                      data-teacher="{escape(str(event[4] or ''))}">
                     <span class="ev-head">
                       <span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>
-                      <form method="POST" action="/update_lesson_status" class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
-                          <input type="hidden" name="schedule_id" value="{event[0]}">
-                          <input type="hidden" name="return_to" value="/calendar?{urlencode({'month': selected_month, 'teacher': selected_teacher, 'student': selected_student, 'status_filter': selected_status})}">
-                          <select name="status" class="calendar-status-select {dot_class}" aria-label="Attendance status" onchange="this.form.submit()">{owner_status_options(event_status)}</select>
-                          <button type="submit" aria-hidden="true" tabindex="-1">Save</button>
-                      </form>
+                      <div class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
+                          <select class="calendar-status-select {dot_class}" data-schedule-id="{event[0]}" data-current-status="{escape(str(event_status))}" aria-label="Attendance status" onfocus="expandCalendarStatus(this)" onmousedown="expandCalendarStatus(this)" onchange="submitCalendarStatus(this)">{owner_status_options(event_status)}</select>
+                      </div>
                     </span>
                     <a class="ev-name" href="{student_edit_href}" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false" title="Edit student">{escape(str(event_title or ""))}</a>
                     <span class="ev-sub">{escape(str(event_line))}</span>
@@ -9866,6 +9851,49 @@ def calendar():
       if (st === 'excused_24h' || st === 'excused') return 'sd-early-cancel';
       if (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) return 'sd-cancelled';
       return 'sd-scheduled';
+    }}
+
+    const CALENDAR_STATUS_OPTIONS = [
+      ['scheduled', 'Scheduled'],
+      ['present', 'Present'],
+      ['no_show', 'No Show'],
+      ['last_min_cancel', 'Last Min Cancel'],
+      ['excused_24h', 'Cancel > 24h'],
+      ['teacher_cancelled', 'Teacher Cancel'],
+      ['makeup', 'Makeup']
+    ];
+    function expandCalendarStatus(select) {{
+      if (select.dataset.expanded === '1') return;
+      const current = select.dataset.currentStatus || select.value || 'scheduled';
+      select.replaceChildren(...CALENDAR_STATUS_OPTIONS.map(([value, label]) => {{
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === current;
+        return option;
+      }}));
+      select.dataset.expanded = '1';
+    }}
+    function submitCalendarStatus(select) {{
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = '/update_lesson_status';
+      form.hidden = true;
+      const fields = {{
+        _csrf_token: window.HMUSIC_CSRF_TOKEN || '',
+        schedule_id: select.dataset.scheduleId || '',
+        return_to: window.location.pathname + window.location.search,
+        status: select.value
+      }};
+      Object.entries(fields).forEach(([name, value]) => {{
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      }});
+      document.body.appendChild(form);
+      form.submit();
     }}
 
 
