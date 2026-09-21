@@ -21,6 +21,12 @@
    status. Every response also includes a `Server-Timing` header.
 6. Render probes `/healthz`, which does not compete for a database lock.
    `/readyz` is available for database-aware monitoring.
+7. Production startup prepares and verifies the database before Gunicorn opens
+   the service to traffic. Schema work is inherited by the preloaded worker.
+8. The Render build runs syntax and regression checks. A failed check prevents
+   the broken version from being deployed.
+9. Every response has an `X-Request-ID`. Database contention returns a 503 with
+   `Retry-After: 2` and a visible reference instead of a blank 500 page.
 
 ## Monitoring
 

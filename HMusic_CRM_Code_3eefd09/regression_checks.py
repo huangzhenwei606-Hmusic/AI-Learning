@@ -92,6 +92,9 @@ CHECKS = {
     "teacher mobile add schedule api": '"/api/teacher/add_schedule"',
     "teacher mobile message recipients": "message_recipients",
     "teacher mobile device token table": "teacher_device_tokens",
+    "startup database preparation": "def initialize_runtime_database():",
+    "database busy recovery": 'response.headers["Retry-After"] = "2"',
+    "request tracing": 'response.headers["X-Request-ID"]',
 }
 
 

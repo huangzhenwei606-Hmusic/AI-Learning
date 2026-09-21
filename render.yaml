@@ -3,8 +3,8 @@ services:
     name: hmusic-crm
     runtime: python
     rootDir: HMusic_CRM_Code_3eefd09
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
+    buildCommand: pip install -r requirements.txt && python -m py_compile app.py && python regression_checks.py
+    startCommand: gunicorn app:app --preload --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
     healthCheckPath: /healthz
     envVars:
       - key: HMUSIC_DB_PATH
@@ -13,6 +13,8 @@ services:
         value: /var/data/message_uploads
       - key: HMUSIC_SECRET_KEY
         generateValue: true
+      - key: HMUSIC_PREPARE_DB_ON_STARTUP
+        value: "1"
     disk:
       name: hmusic-data
       mountPath: /var/data

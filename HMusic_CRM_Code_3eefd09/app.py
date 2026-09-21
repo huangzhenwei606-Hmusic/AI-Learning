@@ -13,6 +13,7 @@ import unicodedata
 import traceback
 import threading
 import time
+import uuid
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from html import escape
@@ -113,6 +114,8 @@ def readyz():
 @app.before_request
 def start_request_timer():
     g.hmusic_request_started_at = time.perf_counter()
+    incoming_request_id = (request.headers.get("X-Request-ID") or "").strip()
+    g.hmusic_request_id = incoming_request_id[:100] or uuid.uuid4().hex[:12]
 
 
 @app.after_request
@@ -122,6 +125,7 @@ def record_request_timing(response):
         return response
     elapsed_ms = (time.perf_counter() - started_at) * 1000
     response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+    response.headers["X-Request-ID"] = getattr(g, "hmusic_request_id", "")
     if elapsed_ms >= 1500 and request.path not in ("/healthz", "/readyz"):
         app.logger.warning(
             "Slow request method=%s path=%s duration_ms=%.1f status=%s",
@@ -3564,6 +3568,40 @@ def hmusic_handle_exception(exc):
         if request.is_json or request.path in json_paths:
             return {"ok": False, "error": exc.description or exc.name or "Request failed"}, exc.code or 500
         return exc
+    request_id = getattr(g, "hmusic_request_id", uuid.uuid4().hex[:12])
+    if isinstance(exc, sqlite3.OperationalError) and any(
+        marker in str(exc).lower() for marker in ("locked", "busy")
+    ):
+        app.logger.warning(
+            "Database temporarily busy request_id=%s method=%s path=%s error=%s",
+            request_id,
+            request.method,
+            request.path,
+            exc,
+        )
+        if request.is_json or request.path in json_paths:
+            response = make_response({
+                "ok": False,
+                "error": "The database is temporarily busy. Please retry.",
+                "request_id": request_id,
+            }, 503)
+        else:
+            back_href = request.referrer or "/"
+            response = make_response(f"""
+            <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Please retry · H-Music CRM</title></head>
+            <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f7fb;color:#172033;padding:40px;">
+                <main style="max-width:620px;margin:8vh auto;background:white;border:1px solid #dfe3eb;border-radius:8px;padding:28px;">
+                    <h1 style="font-size:24px;margin-top:0;">Please try again</h1>
+                    <p>The system is finishing another update. Your request was not completed.</p>
+                    <p><a href="{escape(back_href, quote=True)}">Return and retry</a></p>
+                    <p style="color:#687386;font-size:13px;">Reference: {escape(request_id)}</p>
+                </main>
+            </body></html>
+            """, 503)
+        response.headers["Retry-After"] = "2"
+        response.headers["X-Request-ID"] = request_id
+        return response
     if request.path == "/owner_import_students_csv":
         app.logger.exception("Student CSV import request failed")
         return owner_import_students_error_page(exc), 500
@@ -3571,7 +3609,7 @@ def hmusic_handle_exception(exc):
         app.logger.exception("Unhandled JSON request error")
         return {"ok": False, "error": "Server error while saving. Please refresh and try again."}, 500
     app.logger.exception("Unhandled request error")
-    return "Internal Server Error", 500
+    return f"Internal Server Error · Reference {escape(request_id)}", 500
 
 
 @app.route("/owner_import_students_csv", methods=["GET", "POST"])
@@ -44534,3 +44572,20 @@ def api_teacher_add_schedule():
     if not teacher_linked:
         create_notification("owner", "owner", "Temporary schedule needs owner review", f"{teacher_name} created a temporary schedule for {student_name}.", "/calendar", related_type="teacher_student_setup", related_id=created_ids[0] if created_ids else 0)
     return {"ok": True, "created": len(created_ids), "schedule_ids": created_ids}
+
+
+def initialize_runtime_database():
+    """Finish schema work before Gunicorn starts accepting production traffic."""
+    started_at = time.perf_counter()
+    ensure_production_schema()
+    conn = sqlite3.connect("hmusic.db", timeout=15)
+    conn.execute("SELECT 1").fetchone()
+    conn.close()
+    app.logger.info(
+        "Runtime database ready in %.1f ms",
+        (time.perf_counter() - started_at) * 1000,
+    )
+
+
+if os.environ.get("HMUSIC_PREPARE_DB_ON_STARTUP") == "1":
+    initialize_runtime_database()
