@@ -8118,6 +8118,9 @@ def delete_payment(payment_id):
 
 @app.route("/generate_parent_email/<name>")
 def generate_parent_email(name):
+    if not require_owner():
+        return redirect("/owner_login")
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -8134,50 +8137,36 @@ def generate_parent_email(name):
 
     if not lesson:
         return f"""
-        <h1>No lesson found for {name}</h1>
-        <p><a href="/student/{name}">Back to Student</a></p>
+        <h1>No lesson found for {escape(name)}</h1>
+        <p><a href="/student/{quote(name, safe='')}">Back to Student</a></p>
         """
 
     visible_lesson_content = hmusic_parent_visible_lesson_note(lesson[1]) or "the lesson material"
+    performance = str(lesson[2] or "Made steady progress during the lesson.").strip()
+    homework = str(lesson[3] or "Please continue reviewing today's lesson material.").strip()
+    lesson_date = str(lesson[0] or "the latest lesson").strip()
+    email_text = f"""Dear Parent,
 
-    prompt = f"""
-You are a professional piano teacher.
+Here is a quick update from {name}'s lesson on {lesson_date}.
 
-Write a warm, professional parent update email based on this lesson.
+Today we worked on:
+{visible_lesson_content}
 
-Student: {name}
-Date: {lesson[0]}
-Lesson Content: {visible_lesson_content}
-Performance: {lesson[2]}
-Homework: {lesson[3]}
+Progress and performance:
+{performance}
 
-Requirements:
-- Warm and encouraging
-- Clear and concise
-- Mention what the student worked on
-- Mention performance
-- Mention homework
-- End with H-Music
-"""
+Homework:
+{homework}
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
-
-    email_text = response.choices[0].message.content
+Thank you,
+H-Music"""
 
     return f"""
-    <h1>Parent Email - {name}</h1>
+    <h1>Parent Email - {escape(name)}</h1>
 
-    <pre>{email_text}</pre>
+    <pre style="white-space:pre-wrap;">{escape(email_text)}</pre>
 
-    <p><a href="/student/{name}">Back to Student</a></p>
+    <p><a href="/student/{quote(name, safe='')}">Back to Student</a></p>
     """
 
 
