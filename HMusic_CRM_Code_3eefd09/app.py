@@ -79,6 +79,21 @@ OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "1234"
 
 
+@app.route("/healthz")
+def healthz():
+    try:
+        conn = sqlite3.connect("hmusic.db", timeout=2)
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+    except sqlite3.Error:
+        app.logger.exception("Health check could not read the database")
+        response = make_response({"ok": False, "service": "hmusic-crm"}, 503)
+    else:
+        response = make_response({"ok": True, "service": "hmusic-crm"}, 200)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 def hmusic_password_hash(password):
     return generate_password_hash(password or "", method="pbkdf2:sha256:260000", salt_length=16)
 
