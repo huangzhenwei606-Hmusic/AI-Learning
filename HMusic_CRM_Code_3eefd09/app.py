@@ -21676,6 +21676,30 @@ def safe_upload_filename(filename):
     return safe or "attachment"
 
 
+def get_message_upload_s3_config():
+    bucket = os.environ.get("HMUSIC_UPLOAD_S3_BUCKET") or os.environ.get("HMUSIC_BACKUP_S3_BUCKET")
+    if not bucket or boto3 is None:
+        return None
+    return {
+        "bucket": bucket,
+        "prefix": os.environ.get("HMUSIC_UPLOAD_S3_PREFIX", "hmusic-message-uploads").strip("/"),
+        "region": os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "us-east-1",
+        "endpoint_url": os.environ.get("HMUSIC_BACKUP_S3_ENDPOINT_URL") or None,
+    }
+
+
+def message_upload_s3_client(config):
+    return boto3.client(
+        "s3",
+        region_name=config["region"],
+        endpoint_url=config["endpoint_url"],
+    )
+
+
+def message_upload_s3_key(config, stored_filename):
+    return f'{config["prefix"]}/{stored_filename}' if config["prefix"] else stored_filename
+
+
 ALLOWED_UPLOAD_MIME_TYPES = {
     "image/jpeg",
     "image/png",
@@ -21694,7 +21718,9 @@ def save_message_attachments(message_id, files):
     if not files:
         return
 
-    os.makedirs(HMUSIC_UPLOAD_DIR, exist_ok=True)
+    s3_config = get_message_upload_s3_config()
+    if not s3_config:
+        os.makedirs(HMUSIC_UPLOAD_DIR, exist_ok=True)
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -21709,9 +21735,20 @@ def save_message_attachments(message_id, files):
         original_filename = file.filename
         safe_name = safe_upload_filename(original_filename)
         stored_filename = f"{message_id}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
-        file_path = os.path.join(HMUSIC_UPLOAD_DIR, stored_filename)
-        file.save(file_path)
-        file_size = os.path.getsize(file_path)
+        if s3_config:
+            file.stream.seek(0, os.SEEK_END)
+            file_size = file.stream.tell()
+            file.stream.seek(0)
+            message_upload_s3_client(s3_config).upload_fileobj(
+                file.stream,
+                s3_config["bucket"],
+                message_upload_s3_key(s3_config, stored_filename),
+                ExtraArgs={"ContentType": file.mimetype},
+            )
+        else:
+            file_path = os.path.join(HMUSIC_UPLOAD_DIR, stored_filename)
+            file.save(file_path)
+            file_size = os.path.getsize(file_path)
 
         cursor.execute("""
         INSERT INTO message_attachments (
@@ -25838,6 +25875,20 @@ def add_teacher_participant_to_thread(thread_id):
 def message_upload(filename):
     if not (require_owner() or require_parent() or require_teacher()):
         return redirect("/owner_login")
+    s3_config = get_message_upload_s3_config()
+    if s3_config:
+        client = message_upload_s3_client(s3_config)
+        key = message_upload_s3_key(s3_config, safe_upload_filename(filename))
+        try:
+            client.head_object(Bucket=s3_config["bucket"], Key=key)
+        except Exception:
+            app.logger.exception("Message attachment is not available in object storage: %s", filename)
+        else:
+            return redirect(client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": s3_config["bucket"], "Key": key},
+                ExpiresIn=300,
+            ))
     return send_from_directory(HMUSIC_UPLOAD_DIR, filename)
 
 
