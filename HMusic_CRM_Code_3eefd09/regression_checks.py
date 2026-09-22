@@ -9,6 +9,9 @@ CHECKS = {
     "invoice reminder GET recovery": 'return redirect("/invoices?reminder=not_sent")',
     "invoice reminder email fallback": "if not parent or not hmusic_is_real_email(parent[1]):",
     "invoice reminder notification isolation": "Invoice reminder in-app notification failed",
+    "invoice reminder delivery isolation": "Invoice reminder email delivery failed",
+    "invoice reminder error recovery": 'request.path.startswith("/send_invoice_payment_reminder/")',
+    "portable email suppression key": "email TEXT PRIMARY KEY,",
     "invoice reminder action": "Email reminder",
     "invoice edit route": '"/edit_invoice/<int:invoice_id>"',
     "invoice edit parent ranking uses local student join": "LEFT JOIN students s2 ON s2.name = ps2.student_name",
@@ -110,6 +113,7 @@ FORBIDDEN = {
     "course credit selector empty state": "No course selected",
     "old edit credit action": "Edit credit",
     "old add first course credit action": "Add first course credit",
+    "sqlite-only email collation": "COLLATE NOCASE",
 }
 
 STUDENT_DETAIL_FORBIDDEN = {

@@ -3646,6 +3646,21 @@ def hmusic_handle_exception(exc):
     if request.path == "/owner_import_students_csv":
         app.logger.exception("Student CSV import request failed")
         return owner_import_students_error_page(exc), 500
+    if request.path.startswith("/send_invoice_payment_reminder/"):
+        app.logger.exception(
+            "Invoice payment reminder request failed request_id=%s",
+            request_id,
+        )
+        return_to = (request.form.get("return_to") or "/invoices").strip()
+        if not return_to.startswith("/") or return_to.startswith("//"):
+            return_to = "/invoices"
+        if return_to == "/invoices":
+            return redirect(url_for(
+                "invoices",
+                reminder="failed",
+                message=f"Reminder could not be sent. Reference {request_id}",
+            ))
+        return redirect(return_to)
     if request.is_json or request.path in json_paths:
         app.logger.exception("Unhandled JSON request error")
         return {"ok": False, "error": "Server error while saving. Please refresh and try again."}, 500
@@ -7446,18 +7461,34 @@ def send_invoice_payment_reminder(invoice_id):
     conn.commit()
     conn.close()
 
-    sent, response = send_queued_email_now(queue_id)
+    try:
+        sent, response = send_queued_email_now(queue_id)
+    except Exception as exc:
+        app.logger.exception(
+            "Invoice reminder email delivery failed invoice_id=%s queue_id=%s",
+            invoice_id,
+            queue_id,
+        )
+        sent = False
+        response = f"Email delivery failed: {exc}"
 
-    conn = sqlite3.connect("hmusic.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-    UPDATE invoices
-    SET payment_reminder_count = ?,
-        payment_reminder_sent_at = CASE WHEN ? THEN ? ELSE payment_reminder_sent_at END
-    WHERE id = ?
-    """, (int(reminder_count or 0) + 1, 1 if sent else 0, now, invoice_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        UPDATE invoices
+        SET payment_reminder_count = ?,
+            payment_reminder_sent_at = CASE WHEN ? THEN ? ELSE payment_reminder_sent_at END
+        WHERE id = ?
+        """, (int(reminder_count or 0) + 1, 1 if sent else 0, now, invoice_id))
+        conn.commit()
+        conn.close()
+    except Exception:
+        app.logger.exception(
+            "Invoice reminder status update failed invoice_id=%s queue_id=%s",
+            invoice_id,
+            queue_id,
+        )
 
     try:
         create_notification(
@@ -21921,7 +21952,7 @@ def hmusic_normalize_email(email):
 def hmusic_ensure_email_suppression_schema(cursor):
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS email_suppression (
-        email TEXT PRIMARY KEY COLLATE NOCASE,
+        email TEXT PRIMARY KEY,
         reason TEXT,
         source TEXT,
         created_at TEXT
