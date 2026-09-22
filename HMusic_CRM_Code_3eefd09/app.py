@@ -1820,7 +1820,7 @@ def teacher_permissions_admin():
     ensure_teacher_permission_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE COALESCE(active, 1) = 1 AND TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teachers = [row[0] for row in cursor.fetchall()]
 
     selected_teacher = request.args.get("teacher") or (teachers[0] if teachers else "")
@@ -4843,7 +4843,7 @@ def add_student():
 
         return redirect(f"/student/{quote(name, safe='')}")
 
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teachers = cursor.fetchall()
     conn.close()
 
@@ -6486,7 +6486,7 @@ def student_detail(name):
     for row in cursor.fetchall():
         teacher_links.append((row[0], "Scheduled Lesson"))
 
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     all_teachers = cursor.fetchall()
     total_course_credits, course_credit_rows = hmusic_student_total_course_credits(cursor, student[0], student[4])
     teacher_has_access = (
@@ -8614,12 +8614,11 @@ def calendar():
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT teacher_name
+    SELECT DISTINCT TRIM(teacher_name) AS teacher_name
     FROM teachers
-    WHERE teacher_name IS NOT NULL
-    AND teacher_name != ''
+    WHERE TRIM(COALESCE(teacher_name, '')) != ''
     AND COALESCE(active, 1) = 1
-    ORDER BY teacher_name
+    ORDER BY TRIM(teacher_name)
     """)
     teacher_options_data = cursor.fetchall()
 
@@ -10980,28 +10979,11 @@ def add_schedule():
     cursor = conn.cursor()
 
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS teachers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        teacher_name TEXT UNIQUE,
-        hourly_rate REAL DEFAULT 30
-    )
-    """)
-
-    cursor.execute("""
     CREATE TABLE IF NOT EXISTS classrooms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_name TEXT UNIQUE
     )
     """)
-
-    cursor.executemany("""
-    INSERT OR IGNORE INTO teachers (teacher_name)
-    VALUES (?)
-    """, [
-        ("Zhenwei",),
-        ("Jason",),
-        ("Hyewon",)
-    ])
 
     cursor.executemany("""
     INSERT OR IGNORE INTO classrooms (room_name)
@@ -11698,9 +11680,10 @@ def add_schedule():
         teachers = [(session.get("teacher_name"),)]
     else:
         cursor.execute("""
-        SELECT teacher_name
+        SELECT DISTINCT TRIM(teacher_name)
         FROM teachers
-        ORDER BY teacher_name
+        WHERE TRIM(COALESCE(teacher_name, '')) != ''
+        ORDER BY TRIM(teacher_name)
         """)
         teachers = cursor.fetchall()
 
@@ -24959,7 +24942,7 @@ def new_owner_message():
         ORDER BY LOWER(COALESCE(NULLIF(TRIM(p.parent_name), ''), NULLIF(TRIM(p.email), ''), 'Parent'))
     """)
     parents = cursor.fetchall()
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teachers = [row[0] for row in cursor.fetchall()]
     cursor.execute("SELECT name, COALESCE(teacher, '') FROM students ORDER BY name")
     students = cursor.fetchall()
@@ -26506,7 +26489,7 @@ def parent_booking_request_review(request_id):
             )
         return redirect(f"/parent_booking_request_review/{request_id}")
 
-    cursor.execute("SELECT teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE COALESCE(active, 1) = 1 AND TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teachers = [row[0] for row in cursor.fetchall()]
     cursor.execute("""
     SELECT r.id, r.room_name, COALESCE(l.location_name, '')
@@ -27915,7 +27898,7 @@ def open_slots():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teacher_rows = cursor.fetchall()
     conn.close()
 
@@ -28133,7 +28116,7 @@ def add_open_slot():
         conn.close()
         return redirect(request.referrer or "/open_slots")
 
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teacher_rows = cursor.fetchall()
     cursor.execute("SELECT room_name FROM classrooms ORDER BY room_name")
     classroom_rows = cursor.fetchall()
@@ -28375,7 +28358,7 @@ def reschedule_request_detail(request_id):
 
     conn2 = sqlite3.connect("hmusic.db")
     cursor2 = conn2.cursor()
-    cursor2.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor2.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teacher_rows = cursor2.fetchall()
     conn2.close()
 
@@ -30495,7 +30478,7 @@ def parent_booking_request():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teachers = [row[0] for row in cursor.fetchall()]
     cursor.execute("""
     SELECT student_name, request_type, preferred_date, preferred_time, status, created_at
@@ -39781,7 +39764,7 @@ def add_enrollment():
     cursor.execute("SELECT name FROM students ORDER BY name")
     students = cursor.fetchall()
 
-    cursor.execute("SELECT teacher_name FROM teachers ORDER BY teacher_name")
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
     teachers = cursor.fetchall()
 
     cursor.execute("""
