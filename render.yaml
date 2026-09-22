@@ -7,15 +7,7 @@ services:
     startCommand: gunicorn app:app --preload --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
     healthCheckPath: /healthz
     envVars:
-      - key: HMUSIC_DB_PATH
-        value: /var/data/hmusic.db
-      - key: HMUSIC_UPLOAD_DIR
-        value: /var/data/message_uploads
       - key: HMUSIC_SECRET_KEY
         generateValue: true
       - key: HMUSIC_PREPARE_DB_ON_STARTUP
         value: "1"
-    disk:
-      name: hmusic-data
-      mountPath: /var/data
-      sizeGB: 1
