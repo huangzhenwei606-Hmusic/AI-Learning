@@ -1308,8 +1308,8 @@ def get_missing_homework_lessons(limit=None, teacher_name=None):
             COALESCE(l.schedule_id, 0) = s.id
             OR l.lesson_date = s.lesson_date
             OR (
-                l.lesson_date >= s.lesson_date
-                AND l.lesson_date <= date(s.lesson_date, '+14 days')
+                date(l.lesson_date) >= date(s.lesson_date)
+                AND date(l.lesson_date) <= date(s.lesson_date, '+14 days')
                 AND COALESCE(l.created_by, '') IN ('', 'teacher:' || COALESCE(s.teacher, ''))
             )
         )
@@ -1348,8 +1348,8 @@ def get_missing_homework_count(teacher_name=None):
             COALESCE(l.schedule_id, 0) = s.id
             OR l.lesson_date = s.lesson_date
             OR (
-                l.lesson_date >= s.lesson_date
-                AND l.lesson_date <= date(s.lesson_date, '+14 days')
+                date(l.lesson_date) >= date(s.lesson_date)
+                AND date(l.lesson_date) <= date(s.lesson_date, '+14 days')
                 AND COALESCE(l.created_by, '') IN ('', 'teacher:' || COALESCE(s.teacher, ''))
             )
         )
