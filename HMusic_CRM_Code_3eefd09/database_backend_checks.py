@@ -22,6 +22,9 @@ def main():
     assert _qmark_to_pyformat("SELECT name LIKE '%piano%' AND id = ?") == (
         "SELECT name LIKE '%%piano%%' AND id = %s"
     )
+    assert "BIGSERIAL PRIMARY KEY" in _translate_sql(
+        "CREATE TABLE sample (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+    )
     group_concat = _translate_sql(
         "SELECT COALESCE(GROUP_CONCAT(DISTINCT COALESCE(s.name, ps.student_name)), '')"
     )

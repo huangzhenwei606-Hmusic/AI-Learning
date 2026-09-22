@@ -50,6 +50,12 @@ def _qmark_to_pyformat(sql):
 def _translate_sql(sql):
     translated = _qmark_to_pyformat(sql)
     translated = re.sub(
+        r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b",
+        "BIGSERIAL PRIMARY KEY",
+        translated,
+        flags=re.IGNORECASE,
+    )
+    translated = re.sub(
         r"\bINSERT\s+OR\s+IGNORE\s+INTO\b",
         "INSERT INTO",
         translated,
