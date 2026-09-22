@@ -118,6 +118,37 @@ def readyz():
 
 
 @app.before_request
+def enforce_maintenance_window():
+    if os.environ.get("HMUSIC_MAINTENANCE_MODE", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    if request.path in ("/healthz", "/readyz"):
+        return None
+    response = make_response(
+        """
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>H-Music maintenance</title>
+          <style>
+            body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Arial, sans-serif; background: #f4f7fb; color: #152033; }
+            main { width: min(520px, calc(100% - 40px)); background: white; border: 1px solid #dbe3ee; padding: 32px; border-radius: 8px; }
+            h1 { margin: 0 0 12px; font-size: 28px; }
+            p { margin: 0; color: #5d697b; line-height: 1.6; }
+          </style>
+        </head>
+        <body><main><h1>We'll be right back</h1><p>H-Music is completing a short scheduled update. Please try again in a few minutes.</p></main></body>
+        </html>
+        """,
+        503,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Retry-After"] = "300"
+    return response
+
+
+@app.before_request
 def start_request_timer():
     g.hmusic_request_started_at = time.perf_counter()
     incoming_request_id = (request.headers.get("X-Request-ID") or "").strip()
