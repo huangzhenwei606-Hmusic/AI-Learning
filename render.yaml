@@ -3,7 +3,7 @@ services:
     name: hmusic-crm
     runtime: python
     rootDir: HMusic_CRM_Code_3eefd09
-    buildCommand: pip install -r requirements.txt && python -m py_compile app.py && python regression_checks.py
+    buildCommand: pip install -r requirements.txt && python -m py_compile app.py database_backend.py migrate_sqlite_to_postgres.py && python database_backend_checks.py && python regression_checks.py
     startCommand: gunicorn app:app --preload --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
     healthCheckPath: /healthz
     envVars:

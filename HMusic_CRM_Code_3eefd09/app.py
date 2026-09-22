@@ -40,6 +40,7 @@ except ImportError:
     boto3 = None
 
 from openai import OpenAI
+from database_backend import connect as hmusic_database_connect, using_postgres
 
 app = Flask(__name__)
 HMUSIC_SECRET_KEY = os.environ.get("HMUSIC_SECRET_KEY")
@@ -80,6 +81,8 @@ _sqlite_connect = sqlite3._hmusic_original_connect
 def hmusic_sqlite_connect(database, *args, **kwargs):
     if database == "hmusic.db":
         database = HMUSIC_DB_PATH
+    if using_postgres():
+        return hmusic_database_connect(database, _sqlite_connect, *args, **kwargs)
     kwargs.setdefault("timeout", 15)
     conn = _sqlite_connect(database, *args, **kwargs)
     timeout_seconds = float(kwargs.get("timeout", 15))
@@ -105,7 +108,7 @@ def readyz():
         conn = sqlite3.connect("hmusic.db", timeout=2)
         conn.execute("SELECT 1").fetchone()
         conn.close()
-    except sqlite3.Error:
+    except (sqlite3.Error, RuntimeError):
         app.logger.exception("Health check could not read the database")
         response = make_response({"ok": False, "service": "hmusic-crm"}, 503)
     else:
@@ -44593,6 +44596,9 @@ def hmusic_schema_once(func):
     @wraps(func)
     def wrapped(*args, **kwargs):
         cache_key = (func.__name__, repr(args), repr(sorted(kwargs.items())))
+        if using_postgres():
+            _schema_once_completed.add(cache_key)
+            return None
         if cache_key in _schema_once_completed:
             return None
         with _schema_once_lock:
@@ -44647,13 +44653,14 @@ for _schema_name in _runtime_schema_names:
 def initialize_runtime_database():
     """Finish schema work before Gunicorn starts accepting production traffic."""
     started_at = time.perf_counter()
-    ensure_production_schema()
-    for schema_name in _runtime_schema_names:
-        if schema_name == "ensure_production_schema":
-            continue
-        schema_initializer = globals().get(schema_name)
-        if schema_initializer is not None:
-            schema_initializer()
+    if not using_postgres():
+        ensure_production_schema()
+        for schema_name in _runtime_schema_names:
+            if schema_name == "ensure_production_schema":
+                continue
+            schema_initializer = globals().get(schema_name)
+            if schema_initializer is not None:
+                schema_initializer()
     conn = sqlite3.connect("hmusic.db", timeout=15)
     conn.execute("SELECT 1").fetchone()
     conn.close()

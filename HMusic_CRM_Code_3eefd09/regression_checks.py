@@ -99,6 +99,7 @@ CHECKS = {
     "teacher schema cached": "_teacher_management_schema_ready = True",
     "all schema helpers cached": "def hmusic_schema_once(func):",
     "schema work runs during startup": "for schema_name in _runtime_schema_names:",
+    "postgres backend feature flag": "from database_backend import connect as hmusic_database_connect, using_postgres",
 }
 
 

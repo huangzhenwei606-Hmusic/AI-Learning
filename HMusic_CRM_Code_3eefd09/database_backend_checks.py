@@ -1,0 +1,27 @@
+"""Build-time checks for SQL translated by the PostgreSQL compatibility layer."""
+
+from database_backend import _qmark_to_pyformat, _translate_sql
+
+
+def main():
+    assert _qmark_to_pyformat("SELECT '?' AS literal, ? AS value") == (
+        "SELECT '?' AS literal, %s AS value"
+    )
+    assert _translate_sql(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)"
+    ).endswith("ON CONFLICT DO NOTHING")
+    assert "ON CONFLICT (key) DO UPDATE" in _translate_sql(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"
+    )
+    assert _translate_sql(
+        "SELECT date(created_at) = date('now', 'localtime')"
+    ) == "SELECT (created_at)::date = CURRENT_DATE"
+    group_concat = _translate_sql(
+        "SELECT COALESCE(GROUP_CONCAT(DISTINCT COALESCE(s.name, ps.student_name)), '')"
+    )
+    assert "STRING_AGG(DISTINCT COALESCE(s.name, ps.student_name)::text, ',')" in group_concat
+    print("PostgreSQL compatibility checks passed.")
+
+
+if __name__ == "__main__":
+    main()
