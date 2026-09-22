@@ -16,6 +16,12 @@ def main():
     assert _translate_sql(
         "SELECT date(created_at) = date('now', 'localtime')"
     ) == "SELECT (created_at)::date = CURRENT_DATE"
+    assert _translate_sql(
+        "SELECT lesson_date <= date(schedule_date, '+14 days')"
+    ) == "SELECT lesson_date <= ((schedule_date)::date + 14)"
+    assert _qmark_to_pyformat("SELECT name LIKE '%piano%' AND id = ?") == (
+        "SELECT name LIKE '%%piano%%' AND id = %s"
+    )
     group_concat = _translate_sql(
         "SELECT COALESCE(GROUP_CONCAT(DISTINCT COALESCE(s.name, ps.student_name)), '')"
     )

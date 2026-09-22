@@ -72,7 +72,7 @@ def _translate_sql(sql):
 
     translated = re.sub(
         r"date\(\s*([\w.]+)\s*,\s*'\+([0-9]+) days'\s*\)",
-        r"((\1)::date + INTERVAL '\2 days')",
+        r"((\1)::date + \2)",
         translated,
         flags=re.IGNORECASE,
     )
