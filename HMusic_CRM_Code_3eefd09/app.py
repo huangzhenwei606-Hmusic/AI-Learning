@@ -22276,6 +22276,7 @@ def send_email_delivery(destination, title, body, link_url):
     smtp_user = os.environ.get("HMUSIC_SMTP_USER")
     smtp_password = os.environ.get("HMUSIC_SMTP_PASSWORD")
     from_email = os.environ.get("HMUSIC_FROM_EMAIL") or smtp_user
+    smtp_security = os.environ.get("HMUSIC_SMTP_SECURITY", "").strip().lower()
 
     if not smtp_host or not smtp_user or not smtp_password or not from_email:
         return False, "SMTP not configured. Add HMUSIC_SMTP_HOST, HMUSIC_SMTP_USER, HMUSIC_SMTP_PASSWORD, and HMUSIC_FROM_EMAIL."
@@ -22287,12 +22288,21 @@ def send_email_delivery(destination, title, body, link_url):
     footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
     message.set_content(f"{body or ''}{footer}")
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
+    if not smtp_security:
+        smtp_security = "ssl" if smtp_port == 465 else "starttls"
+    if smtp_security not in {"ssl", "starttls", "none"}:
+        return False, "SMTP security must be ssl, starttls, or none."
+
+    smtp_class = smtplib.SMTP_SSL if smtp_security == "ssl" else smtplib.SMTP
+    with smtp_class(smtp_host, smtp_port, timeout=30) as server:
+        if smtp_security == "starttls":
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
         server.login(smtp_user, smtp_password)
         server.send_message(message)
 
-    return True, "Email sent via SMTP."
+    return True, f"Email sent via SMTP ({smtp_security})."
 
 
 def smtp_config_status():
