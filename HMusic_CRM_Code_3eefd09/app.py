@@ -3869,6 +3869,7 @@ input, select { min-height:34px; border-radius:8px; padding:7px 10px; font-size:
 .students-table th:nth-child(5), .students-table td:nth-child(5) { width:13%; }
 .students-table th:nth-child(6), .students-table td:nth-child(6) { width:15%; }
 .student-primary-cell { border-left:3px solid var(--blue); padding-left:8px; }
+.student-row { content-visibility:auto; contain-intrinsic-size:46px; }
 .cell-primary { display:block; color:#111827; font-size:13px; font-weight:800; line-height:1.18; text-decoration:none; }
 .cell-secondary { display:block; color:var(--muted); font-size:11px; line-height:1.2; margin-top:2px; }
 .student-name:hover { color:var(--blue); }
@@ -8981,35 +8982,6 @@ def calendar():
             """
         calendar_html += "</tr>"
 
-    rows = ""
-    for item in schedules:
-        lesson_date = item[1]
-        lesson_time = item[2]
-        student_name = item[3]
-        teacher = item[4]
-        classroom = item[5]
-        weekday = item[6]
-        schedule_type = item[7]
-        package_type = item[8]
-        status = item[9]
-
-        rows += f"""
-        <tr>
-            <td>{lesson_date}</td>
-            <td>{weekday}</td>
-            <td>{lesson_time}</td>
-            <td>{student_name}</td>
-            <td>{teacher}</td>
-            <td>{classroom}</td>
-            <td>{schedule_type}</td>
-            <td>{package_type}</td>
-            <td>{status}</td>
-        </tr>
-        """
-
-    if not rows:
-        rows = "<tr><td colspan='9'>No lessons found for this filter.</td></tr>"
-
     prev_query = urlencode({
         "month": prev_month,
         "teacher": selected_teacher,
@@ -9137,7 +9109,8 @@ def calendar():
             .cal-table td{{vertical-align:top;height:96px;padding:2px 2px;
                            border-right:1px solid var(--line);
                            border-bottom:1px solid var(--line);
-                           background:var(--surface)}}
+                           background:var(--surface);content-visibility:auto;
+                           contain-intrinsic-size:96px}}
             .cal-table td:last-child{{border-right:none}}
             .cal-table td.muted-day{{background:#FAFAFA}}
             .cal-table td.today-cell{{background:#EEF5FD}}
@@ -15540,6 +15513,8 @@ def ensure_calendar_lesson_panel_schema():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_group_schedule_students_student ON group_schedule_students(student_name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_teacher_open_slots_date_time ON teacher_open_slots(slot_date, slot_time)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_teacher_open_slots_teacher_date_time ON teacher_open_slots(teacher, slot_date, slot_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrollments_calendar_lookup ON enrollments(student_name, course_type_name, teacher_name, id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_name_sort ON students(LOWER(name))")
     except sqlite3.Error:
         pass
     conn.commit()
@@ -43473,6 +43448,10 @@ def upload_backup_manifest_offsite(manifest, include_manifest=True):
 
 
 def create_hmusic_backup(label="manual"):
+    if using_postgres():
+        raise RuntimeError(
+            "SQLite file backups are disabled because production uses managed PostgreSQL backups."
+        )
     ensure_backup_dir()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_label = "".join(ch for ch in str(label or "manual") if ch.isalnum() or ch in ("-", "_")) or "manual"
@@ -43651,6 +43630,46 @@ def read_latest_backup_manifest():
 def owner_backup():
     if not require_owner():
         return redirect("/owner_login")
+
+    if using_postgres():
+        return """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Database Protection · H-Music CRM</title>
+            <style>
+                * { box-sizing:border-box; }
+                body { margin:0; background:#f6f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+                main { width:min(760px,calc(100% - 32px)); margin:48px auto; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:28px; }
+                h1 { margin:0 0 8px; font-size:28px; }
+                h2 { margin:24px 0 8px; font-size:18px; }
+                p { color:#5f6b7a; line-height:1.55; }
+                .status { display:flex; align-items:center; gap:10px; padding:14px; background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:8px; font-weight:800; }
+                .dot { width:10px; height:10px; border-radius:50%; background:#16a34a; }
+                .note { padding:14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; color:#1e3a5f; }
+                .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:24px; }
+                a { display:inline-flex; padding:10px 14px; border:1px solid #d1d5db; border-radius:8px; color:#1f6fb2; text-decoration:none; font-weight:800; }
+                a.primary { background:#1f6fb2; border-color:#1f6fb2; color:#fff; }
+            </style>
+        </head>
+        <body><main>
+            <h1>Database Protection</h1>
+            <p>Production data no longer uses a local SQLite file.</p>
+            <div class="status"><span class="dot"></span>Managed PostgreSQL is active</div>
+            <h2>How backups work</h2>
+            <p class="note">Database backups, retention, and recovery are managed by Render PostgreSQL. Message attachments are stored separately in S3. The old local SQLite backup and download controls are disabled because they do not contain production data.</p>
+            <h2>Recovery</h2>
+            <p>Use the Render PostgreSQL dashboard to review recovery options. Test restores should be performed into a separate database before changing production.</p>
+            <div class="actions">
+                <a class="primary" href="https://dashboard.render.com/" target="_blank" rel="noopener">Open Render Dashboard</a>
+                <a href="/executive_dashboard">Executive Dashboard</a>
+                <a href="/">Home</a>
+            </div>
+        </main></body>
+        </html>
+        """
 
     if request.method == "POST":
         create_hmusic_backup("manual")
