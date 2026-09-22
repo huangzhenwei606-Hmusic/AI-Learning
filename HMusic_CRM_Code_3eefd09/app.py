@@ -17851,14 +17851,57 @@ def parent_email_audit():
     """
 
 def invoice_credit_to_grant(cursor, invoice_id, charge_lessons, invoice_type):
-    if invoice_type == "package_invoice":
+    if invoice_type in {"package_invoice", "initial_tuition", "renewal_tuition"}:
         return charge_lessons or 0
-    if invoice_type == "initial_tuition":
-        cursor.execute("SELECT COALESCE(credits_applied, 1) FROM invoices WHERE id = ?", (invoice_id,))
-        row = cursor.fetchone()
-        if row and row[0] == 0:
-            return charge_lessons or 0
     return 0
+
+
+def repair_paid_invoice_credit(cursor, invoice):
+    invoice_id, student_name, charge_lessons, _, _, invoice_type, _, enrollment_id = invoice
+    lessons_to_grant = invoice_credit_to_grant(cursor, invoice_id, charge_lessons, invoice_type)
+    if not enrollment_id or not lessons_to_grant:
+        return 0
+
+    cursor.execute("""
+    SELECT COALESCE(lessons_left, 0)
+    FROM enrollments
+    WHERE id = ?
+    """, (enrollment_id,))
+    enrollment = cursor.fetchone()
+    if not enrollment or float(enrollment[0] or 0) > 0:
+        return 0
+
+    cursor.execute("""
+    SELECT id
+    FROM payments
+    WHERE enrollment_id = ?
+      AND notes = ?
+      AND COALESCE(lessons_added, 0) > 0
+    LIMIT 1
+    """, (enrollment_id, f"Invoice #{invoice_id} paid"))
+    if cursor.fetchone():
+        return 0
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    UPDATE enrollments
+    SET lessons_left = COALESCE(lessons_left, 0) + ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (lessons_to_grant, now, enrollment_id))
+    cursor.execute("""
+    UPDATE payments
+    SET lessons_added = ?
+    WHERE id = (
+        SELECT id
+        FROM payments
+        WHERE enrollment_id = ? AND notes = ?
+        ORDER BY id DESC
+        LIMIT 1
+    )
+    """, (lessons_to_grant, enrollment_id, f"Invoice #{invoice_id} paid"))
+    cursor.execute("UPDATE invoices SET credits_applied = 1 WHERE id = ?", (invoice_id,))
+    return lessons_to_grant
 
 
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
@@ -17894,10 +17937,18 @@ def pay_invoice(invoice_id):
         return "<h1>Invoice not found</h1>"
 
     if invoice[4] == "paid":
+        repaired_lessons = repair_paid_invoice_credit(cursor, invoice)
+        if repaired_lessons:
+            conn.commit()
         conn.close()
+        repair_note = (
+            f"<p>Missing course credit repaired: +{hmusic_number(repaired_lessons)} lesson(s).</p>"
+            if repaired_lessons else ""
+        )
         return f"""
         <h1>Invoice Already Paid</h1>
         <p>Invoice #{invoice_id} is already marked as paid.</p>
+        {repair_note}
         <p><a href="/invoices">Back to Invoices</a></p>
         """
 
