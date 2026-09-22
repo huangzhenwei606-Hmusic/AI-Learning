@@ -24,7 +24,7 @@ def _qmark_to_pyformat(sql):
     while index < len(sql):
         char = sql[index]
         if quote:
-            output.append(char)
+            output.append("%%" if char == "%" else char)
             if char == quote:
                 if index + 1 < len(sql) and sql[index + 1] == quote:
                     output.append(sql[index + 1])
@@ -36,6 +36,11 @@ def _qmark_to_pyformat(sql):
             output.append(char)
         elif char == "?":
             output.append("%s")
+        elif char == "%":
+            # psycopg parses percent signs even inside quoted SQL literals.
+            # SQLite statements use qmark parameters, so every original percent
+            # is literal and must be escaped for psycopg's pyformat parser.
+            output.append("%%")
         else:
             output.append(char)
         index += 1

@@ -43569,6 +43569,8 @@ def cleanup_old_backups(keep=30):
 def maybe_run_daily_backup():
     if os.environ.get("HMUSIC_DISABLE_AUTO_BACKUP") == "1":
         return
+    if using_postgres():
+        return
 
     ensure_backup_dir()
     today = date.today().isoformat()
