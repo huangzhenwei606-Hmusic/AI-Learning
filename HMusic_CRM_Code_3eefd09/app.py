@@ -7353,7 +7353,7 @@ def send_invoice_payment_reminder(invoice_id):
     JOIN parent_students ps ON ps.parent_id = p.id
     LEFT JOIN students s ON LOWER(TRIM(s.name)) = LOWER(TRIM(ps.student_name))
     WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
-    AND ps.active = 1
+    AND COALESCE(ps.active, 1) = 1
     AND COALESCE(p.active, 1) = 1
     ORDER BY
         CASE
@@ -7368,14 +7368,14 @@ def send_invoice_payment_reminder(invoice_id):
     """, (student_name,))
     parent = cursor.fetchone()
 
-    if not parent:
+    if not parent or not hmusic_is_real_email(parent[1]):
         cursor.execute("""
         SELECT p.id, COALESCE(p.email, '')
         FROM parent_profiles p
-        JOIN students s ON LOWER(COALESCE(s.parent_email, '')) = LOWER(COALESCE(p.email, ''))
-        WHERE s.name = ?
-        AND p.active = 1
-        ORDER BY p.id
+        JOIN students s ON LOWER(TRIM(COALESCE(s.parent_email, ''))) = LOWER(TRIM(COALESCE(p.email, '')))
+        WHERE LOWER(TRIM(s.name)) = LOWER(TRIM(?))
+        AND COALESCE(p.active, 1) = 1
+        ORDER BY p.id DESC
         LIMIT 1
         """, (student_name,))
         parent = cursor.fetchone()
@@ -7459,16 +7459,23 @@ def send_invoice_payment_reminder(invoice_id):
     conn.commit()
     conn.close()
 
-    create_notification(
-        "parent",
-        str(parent_id),
-        "H-Music payment reminder",
-        f"{student_name} has a tuition invoice ready for payment.",
-        f"/parent_invoice/{invoice_id}",
-        related_type="invoice_payment_reminder",
-        related_id=invoice_id,
-        queue_delivery=False
-    )
+    try:
+        create_notification(
+            "parent",
+            str(parent_id),
+            "H-Music payment reminder",
+            f"{student_name} has a tuition invoice ready for payment.",
+            f"/parent_invoice/{invoice_id}",
+            related_type="invoice_payment_reminder",
+            related_id=invoice_id,
+            queue_delivery=False
+        )
+    except Exception:
+        app.logger.exception(
+            "Invoice reminder in-app notification failed invoice_id=%s parent_id=%s",
+            invoice_id,
+            parent_id,
+        )
 
     if sent:
         return reminder_redirect("sent")
