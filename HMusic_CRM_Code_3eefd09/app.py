@@ -19299,12 +19299,21 @@ def parent_admin(parent_id):
     quick_credit_courses = cursor.fetchall()
 
     cursor.execute("""
-    SELECT teacher_name
+    SELECT TRIM(teacher_name)
     FROM teachers
     WHERE COALESCE(active, 1) = 1
-    ORDER BY teacher_name
+    AND TRIM(COALESCE(teacher_name, '')) != ''
+    ORDER BY LOWER(TRIM(teacher_name)), TRIM(teacher_name)
     """)
-    quick_credit_teachers = [row[0] for row in cursor.fetchall() if row[0]]
+    quick_credit_teachers = []
+    seen_quick_credit_teachers = set()
+    for row in cursor.fetchall():
+        teacher_name = str(row[0] or "").strip()
+        teacher_key = teacher_name.casefold()
+        if not teacher_name or teacher_key in seen_quick_credit_teachers:
+            continue
+        seen_quick_credit_teachers.add(teacher_key)
+        quick_credit_teachers.append(teacher_name)
 
     conn.close()
 

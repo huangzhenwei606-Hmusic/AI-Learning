@@ -57,6 +57,7 @@ CHECKS = {
     "family credit row forms": "family_credit_forms_html",
     "family quick credit form": "familyQuickCourseCreditForm",
     "family credit return target": "return_anchor",
+    "parent admin teacher selector dedupe": "seen_quick_credit_teachers",
     "student credit save action": "save-credit",
     "invoice enrollment binding": "name=\"enrollment_id\"",
     "student add billing uses enrollment invoice": 'f"/create_enrollment_invoice/{course_credit_rows[0][0]}"',
