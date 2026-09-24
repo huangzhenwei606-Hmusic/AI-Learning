@@ -209,6 +209,14 @@ def hmusic_clean_student_picker_value(value):
     return text
 
 
+def hmusic_name_key(value):
+    return str(value or "").strip().casefold()
+
+
+def hmusic_teacher_name_matches(stored_teacher, session_teacher):
+    return bool(hmusic_name_key(stored_teacher)) and hmusic_name_key(stored_teacher) == hmusic_name_key(session_teacher)
+
+
 def hmusic_now():
     if HMUSIC_TIMEZONE:
         return datetime.now(HMUSIC_TIMEZONE)
@@ -1994,7 +2002,7 @@ def teacher_dashboard_records_content(teacher_name):
     cursor.execute("""
     SELECT DISTINCT student_name
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND lesson_date = ?
     ORDER BY lesson_time, student_name
     """, (teacher_name, selected_date))
@@ -2003,7 +2011,11 @@ def teacher_dashboard_records_content(teacher_name):
     cursor.execute("""
     SELECT lesson_date, student_name, lesson_content, performance, homework
     FROM lessons
-    WHERE student_name IN (SELECT DISTINCT student_name FROM schedule WHERE teacher = ?)
+    WHERE student_name IN (
+        SELECT DISTINCT student_name
+        FROM schedule
+        WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
+    )
     ORDER BY lesson_date DESC, id DESC
     LIMIT 25
     """, (teacher_name,))
@@ -7529,7 +7541,7 @@ def teacher_lesson_notes():
     cursor.execute("""
     SELECT DISTINCT student_name
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND lesson_date = ?
     ORDER BY lesson_time, student_name
     """, (teacher_name, selected_date))
@@ -7550,7 +7562,7 @@ def teacher_lesson_notes():
         cursor.execute("""
         SELECT id, enrollment_id, course_type_id, course_type_name
         FROM schedule
-        WHERE teacher = ?
+        WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
         AND student_name = ?
         AND lesson_date = ?
         ORDER BY lesson_time, id
@@ -12996,7 +13008,7 @@ def teacher_dashboard():
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON l.id = s.location_id
-    WHERE s.teacher = ?
+    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
     AND s.lesson_date LIKE ?
     ORDER BY s.lesson_date, s.lesson_time
     """, (teacher_name, selected_month + "%"))
@@ -13011,7 +13023,7 @@ def teacher_dashboard():
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON l.id = s.location_id
-    WHERE s.teacher = ?
+    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
     AND s.lesson_date >= ?
     AND s.lesson_date <= ?
     ORDER BY s.lesson_date, s.lesson_time
@@ -13027,7 +13039,7 @@ def teacher_dashboard():
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON l.id = s.location_id
-    WHERE s.teacher = ?
+    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
     AND s.lesson_date = ?
     ORDER BY s.lesson_time
     """, (teacher_name, today))
@@ -13039,7 +13051,7 @@ def teacher_dashboard():
         COALESCE(SUM(teacher_pay_amount), 0),
         COUNT(*)
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND lesson_date >= ?
     AND lesson_date <= ?
     """, (teacher_name, month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")))
@@ -16222,7 +16234,7 @@ def calendar_lesson_detail(schedule_id):
     conn.close()
     if not row:
         return {"ok": False, "error": "Lesson not found"}, 404
-    if require_teacher() and not require_owner() and row[2] != session.get("teacher_name"):
+    if require_teacher() and not require_owner() and not hmusic_teacher_name_matches(row[2], session.get("teacher_name")):
         return {"ok": False, "error": "Permission denied"}, 403
     teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
     course_name = row[7] or row[8] or row[9] or "Lesson"
@@ -16275,7 +16287,7 @@ def calendar_lesson_action():
     is_owner = require_owner()
     is_teacher = require_teacher() and not is_owner
     teacher_name = session.get("teacher_name")
-    if is_teacher and row[2] != teacher_name:
+    if is_teacher and not hmusic_teacher_name_matches(row[2], teacher_name):
         conn.close()
         return {"ok": False, "error": "Permission denied"}, 403
 
@@ -21829,7 +21841,7 @@ def find_manual_open_slot(teacher, slot_date, slot_time, classroom=None):
     cursor.execute(f"""
     SELECT id
     FROM teacher_open_slots
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND slot_date = ?
     AND slot_time = ?
     {classroom_filter}
@@ -26616,7 +26628,7 @@ def new_teacher_message():
         cursor.execute("""
         SELECT id
         FROM schedule
-        WHERE teacher = ?
+        WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
         AND student_name = ?
         LIMIT 1
         """, (teacher_name, student_name))
@@ -26661,7 +26673,7 @@ def new_teacher_message():
         AND ps.active = 1
     JOIN parent_profiles p
         ON ps.parent_id = p.id
-    WHERE s.teacher = ?
+    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
     ORDER BY s.student_name
     """, (teacher_name,))
     rows = [row for row in cursor.fetchall()
@@ -27267,7 +27279,7 @@ def teacher_reschedule():
     cursor.execute("""
     SELECT id, lesson_date, lesson_time, student_name, classroom, status
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND lesson_date >= ?
     AND (status IS NULL OR status = '' OR status = 'scheduled')
     ORDER BY lesson_date, lesson_time
@@ -29284,7 +29296,7 @@ def add_open_slot():
         cursor.execute("""
         SELECT id, active, notes
         FROM teacher_open_slots
-        WHERE teacher = ?
+        WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
         AND slot_date = ?
         AND slot_time = ?
         AND classroom = ?
@@ -36636,7 +36648,7 @@ def teacher_sub_request():
     cursor.execute("""
     SELECT id, lesson_date, lesson_time, student_name, classroom
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND lesson_date >= ?
     ORDER BY lesson_date, lesson_time
     LIMIT 30
@@ -44741,7 +44753,7 @@ def payroll_teacher_detail(teacher_name):
         COALESCE(SUM(teacher_pay_units), 0),
         COUNT(id)
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND substr(lesson_date, 1, 7) = ?
     """, (teacher_name, month))
 
@@ -44764,7 +44776,7 @@ def payroll_teacher_detail(teacher_name):
         payroll_amount,
         profit_amount
     FROM schedule
-    WHERE teacher = ?
+    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND substr(lesson_date, 1, 7) = ?
     ORDER BY lesson_date, lesson_time
     """, (teacher_name, month))
@@ -45818,7 +45830,7 @@ def reschedule_schedule():
         return {"ok": False, "error": "Lesson not found"}, 404
 
     if require_teacher() and not require_owner():
-        if lesson[2] != session.get("teacher_name"):
+        if not hmusic_teacher_name_matches(lesson[2], session.get("teacher_name")):
             conn.close()
             return {"ok": False, "error": "Permission denied"}, 403
         if not teacher_has_permission(session.get("teacher_name"), "direct_reschedule"):
@@ -46082,7 +46094,7 @@ def teacher_api_schedule_rows(cursor, teacher_name, start_date, end_date):
     FROM schedule s
     LEFT JOIN students st ON st.name = s.student_name
     LEFT JOIN course_types c ON s.course_type_id = c.id
-    WHERE s.teacher = ?
+    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
       AND s.lesson_date >= ?
       AND s.lesson_date <= ?
     ORDER BY s.lesson_date, s.lesson_time, s.id
@@ -46213,7 +46225,7 @@ def api_teacher_lookups():
         AND ps.active = 1
     JOIN parent_profiles p
         ON p.id = ps.parent_id
-    WHERE s.teacher = ?
+    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
     ORDER BY s.student_name, p.parent_name
     """, (teacher_name,))
     message_recipients = [
@@ -46524,7 +46536,7 @@ def api_teacher_create_message():
         return {"ok": False, "error": "student_name and parent_id required"}, 400
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM schedule WHERE teacher = ? AND student_name = ? LIMIT 1", (teacher_name, student_name))
+    cursor.execute("SELECT 1 FROM schedule WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?)) AND student_name = ? LIMIT 1", (teacher_name, student_name))
     teaches_student = bool(cursor.fetchone())
     conn.close()
     if not teaches_student:
