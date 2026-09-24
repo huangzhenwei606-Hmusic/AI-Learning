@@ -20509,60 +20509,60 @@ def parent_admin(parent_id):
         <style>
             :root {{ --bg:#f5f7fb; --card:#fff; --text:#111827; --muted:#667085; --line:#e4e8f0; --blue:#1f6fb8; --blue-dark:#155d9e; --blue-soft:#e8f2ff; --green:#166534; --green-soft:#dcfce7; --red:#b42318; --red-soft:#fee2e2; }}
             * {{ box-sizing:border-box; }}
-            body {{ margin:0; background:var(--bg); color:var(--text); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+            body {{ margin:0; background:var(--bg); color:var(--text); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12px; }}
             a {{ color:inherit; text-decoration:none; }}
-            .topbar {{ height:60px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:20px; padding:0 28px; background:#fff; border-bottom:1px solid var(--line); }}
-            .brand {{ font-size:21px; font-weight:850; white-space:nowrap; }}
+            .topbar {{ height:52px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:16px; padding:0 20px; background:#fff; border-bottom:1px solid var(--line); }}
+            .brand {{ font-size:18px; font-weight:850; white-space:nowrap; }}
             .nav {{ display:flex; gap:8px; overflow:hidden; }}
-            .nav a {{ min-height:38px; display:inline-flex; align-items:center; padding:0 13px; border-radius:8px; color:var(--muted); font-size:14px; font-weight:800; white-space:nowrap; }}
+            .nav a {{ min-height:32px; display:inline-flex; align-items:center; padding:0 10px; border-radius:7px; color:var(--muted); font-size:12px; font-weight:800; white-space:nowrap; }}
             .nav a.active {{ background:var(--blue-soft); color:var(--blue-dark); }}
             .top-actions {{ display:flex; gap:8px; justify-content:flex-end; }}
-            .page {{ max-width:none; padding:18px 28px 34px; }}
-            .head {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:end; margin-bottom:12px; }}
+            .page {{ max-width:none; padding:12px 20px 24px; }}
+            .head {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:end; margin-bottom:8px; }}
             .crumbs {{ color:var(--muted); font-size:12px; font-weight:700; margin-bottom:5px; }}
             h1, h2, p {{ margin:0; }}
-            h1 {{ font-size:24px; line-height:1.12; font-weight:850; }}
-            h2 {{ font-size:15px; font-weight:850; }}
-            .subline {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; font-weight:700; align-items:center; }}
+            h1 {{ font-size:20px; line-height:1.12; font-weight:850; }}
+            h2 {{ font-size:13px; font-weight:850; }}
+            .subline {{ margin-top:5px; display:flex; flex-wrap:wrap; gap:6px; color:var(--muted); font-size:10px; font-weight:700; align-items:center; }}
             .tabs {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
-            .tab {{ min-height:32px; padding:0 11px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:#fff; font-size:12px; font-weight:850; }}
+            .tab {{ min-height:28px; padding:0 9px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:7px; color:var(--muted); background:#fff; font-size:10px; font-weight:850; }}
             .tab.active {{ background:var(--blue-soft); border-color:#bfdbfe; color:var(--blue-dark); }}
-            .layout {{ display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; align-items:start; }}
-            .crumbs {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--muted); font-size:12px; font-weight:850; }}
+            .layout {{ display:grid; grid-template-columns:270px minmax(0,1fr); gap:9px; align-items:start; }}
+            .crumbs {{ display:flex; align-items:center; gap:5px; flex-wrap:wrap; color:var(--muted); font-size:10px; font-weight:850; }}
             .crumbs a {{ color:var(--muted); text-decoration:none; }}
             .crumbs a:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
             .crumbs span {{ color:var(--muted); }}
             .crumbs .current {{ color:var(--muted); }}
             .panel {{ background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.05); overflow:hidden; }}
-            .panel-head {{ min-height:40px; padding:0 13px; border-bottom:1px solid var(--line); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; font-weight:700; }}
+            .panel-head {{ min-height:34px; padding:0 10px; border-bottom:1px solid var(--line); background:#f8fafc; display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:10px; font-weight:700; }}
             .panel-head h2 {{ color:var(--text); }}
-            .panel-body {{ padding:14px; }}
-            .parent-card {{ display:grid; grid-template-columns:42px minmax(0,1fr); gap:10px; align-items:center; padding-bottom:12px; border-bottom:1px solid var(--line); }}
-            .avatar {{ width:42px; height:42px; border-radius:9px; background:var(--blue); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:900; }}
-            .primary {{ color:var(--text); font-size:14px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-            .muted {{ color:var(--muted); font-size:12px; font-weight:650; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-            .metrics {{ margin-top:10px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
-            .metric {{ border:1px solid var(--line); border-radius:8px; padding:8px; min-width:0; }}
-            .metric span {{ display:block; color:var(--muted); font-size:11px; font-weight:850; }}
-            .metric strong {{ display:block; margin-top:3px; font-size:15px; font-weight:900; }}
-            .explain {{ margin-top:10px; padding:9px 10px; border-radius:8px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:12px; font-weight:750; line-height:1.35; }}
-            .stack {{ display:grid; gap:12px; }}
+            .panel-body {{ padding:10px; }}
+            .parent-card {{ display:grid; grid-template-columns:34px minmax(0,1fr); gap:8px; align-items:center; padding-bottom:9px; border-bottom:1px solid var(--line); }}
+            .avatar {{ width:34px; height:34px; border-radius:7px; background:var(--blue); color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:900; }}
+            .primary {{ color:var(--text); font-size:12px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .muted {{ color:var(--muted); font-size:10px; font-weight:650; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .metrics {{ margin-top:8px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }}
+            .metric {{ border:1px solid var(--line); border-radius:7px; padding:6px; min-width:0; }}
+            .metric span {{ display:block; color:var(--muted); font-size:9px; font-weight:850; }}
+            .metric strong {{ display:block; margin-top:2px; font-size:13px; font-weight:900; }}
+            .explain {{ margin-top:8px; padding:7px 8px; border-radius:7px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:10px; font-weight:750; line-height:1.3; }}
+            .stack {{ display:grid; gap:9px; }}
             .add-grid {{ display:grid; grid-template-columns:minmax(260px,1fr) 160px auto; gap:8px; align-items:end; }}
             .new-child-grid {{ display:grid; grid-template-columns:minmax(180px,1.2fr) minmax(150px,1fr) minmax(120px,.7fr) minmax(170px,1fr) 110px auto; gap:8px; align-items:end; }}
-            label {{ display:block; color:var(--muted); font-size:11px; font-weight:850; margin-bottom:4px; }}
-            select, input {{ width:100%; min-height:34px; border:1px solid #d9dee8; border-radius:8px; background:#fff; color:var(--text); padding:0 9px; font:inherit; font-size:12px; font-weight:700; }}
-            .button, button {{ min-height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); padding:0 11px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }}
+            label {{ display:block; color:var(--muted); font-size:9px; font-weight:850; margin-bottom:3px; }}
+            select, input {{ width:100%; min-height:29px; border:1px solid #d9dee8; border-radius:7px; background:#fff; color:var(--text); padding:0 8px; font:inherit; font-size:10px; font-weight:700; }}
+            .button, button {{ min-height:29px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--text); padding:0 9px; font:inherit; font-size:10px; font-weight:850; cursor:pointer; white-space:nowrap; }}
             .button.primary, button.primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
             .button.danger, button.danger {{ color:var(--red); border-color:#fecaca; background:#fff; }}
-            .button.compact {{ min-height:28px; padding:0 9px; font-size:11px; }}
+            .button.compact {{ min-height:24px; padding:0 7px; font-size:9px; }}
             .panel-head-actions {{ display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }}
             .row-actions {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }}
             .row-actions .inline-form button {{ min-height:28px; padding:0 9px; font-size:11px; }}
             .archive-credit {{ border-color:#fecaca; background:#fff; color:var(--red); }}
             .archive-credit:hover {{ background:var(--red-soft); }}
             .inline-form {{ display:inline; margin:0; }}
-            .hint-line {{ margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }}
-            .pill {{ display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:999px; background:#eef2f7; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; }}
+            .hint-line {{ margin-top:5px; display:flex; flex-wrap:wrap; gap:5px; align-items:center; color:var(--muted); font-size:9px; font-weight:700; }}
+            .pill {{ display:inline-flex; align-items:center; min-height:18px; padding:0 6px; border-radius:999px; background:#eef2f7; color:#475467; font-size:9px; font-weight:850; white-space:nowrap; }}
             .pill.good {{ background:var(--green-soft); color:var(--green); }}
             .pill.neutral {{ background:#eef2f7; color:#475467; }}
             .credit-groups {{ display:grid; gap:10px; padding:12px; }}
@@ -20592,36 +20592,36 @@ def parent_admin(parent_id):
             th, td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }}
             th {{ color:var(--muted); font-size:11px; font-weight:850; background:#fff; }}
             .family-student-list {{ display:grid; }}
-            .family-student-row {{ display:grid; grid-template-columns:minmax(175px,.75fr) minmax(240px,1.15fr) minmax(250px,1fr); grid-template-areas:"student guardians permissions" "student guardians manage"; column-gap:20px; row-gap:13px; align-items:start; padding:16px; border-bottom:1px solid var(--line); }}
+            .family-student-row {{ display:grid; grid-template-columns:minmax(160px,.7fr) minmax(220px,1.1fr) minmax(230px,1fr); grid-template-areas:"student guardians permissions" "student guardians manage"; column-gap:16px; row-gap:7px; align-items:start; padding:10px; border-bottom:1px solid var(--line); }}
             .family-student-row:last-child {{ border-bottom:0; }}
-            .student-summary {{ grid-area:student; border-left:3px solid var(--blue); padding-left:10px; min-width:0; }}
+            .student-summary {{ grid-area:student; border-left:2px solid var(--blue); padding-left:8px; min-width:0; }}
             .student-title-line {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-            .student-name {{ color:var(--text); font-size:15px; font-weight:900; }}
+            .student-name {{ color:var(--text); font-size:12px; font-weight:900; }}
             .student-name:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
-            .student-meta {{ display:flex; align-items:baseline; gap:6px; margin-top:7px; font-size:11px; }}
+            .student-meta {{ display:flex; align-items:baseline; gap:5px; margin-top:4px; font-size:9px; }}
             .student-meta span {{ color:var(--muted); }}
             .student-meta strong {{ color:var(--text); font-weight:850; }}
-            .student-contact {{ margin-top:8px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }}
+            .student-contact {{ margin-top:5px; color:var(--muted); font-size:9px; overflow-wrap:anywhere; }}
             .student-section {{ min-width:0; }}
             .guardians-section {{ grid-area:guardians; }}
             .permissions-section {{ grid-area:permissions; }}
             .manage-section {{ grid-area:manage; }}
-            .row-label {{ margin-bottom:8px; color:var(--muted); font-size:10px; font-weight:900; text-transform:uppercase; }}
-            .guardian-list {{ display:grid; gap:8px; }}
-            .guardian-item {{ display:grid; grid-template-columns:32px minmax(0,1fr); align-items:center; gap:4px 8px; }}
-            .guardian-avatar {{ width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:8px; background:var(--blue-soft); color:var(--blue-dark); font-size:10px; font-weight:900; }}
+            .row-label {{ margin-bottom:5px; color:var(--muted); font-size:8px; font-weight:900; text-transform:uppercase; }}
+            .guardian-list {{ display:grid; gap:5px; }}
+            .guardian-item {{ display:grid; grid-template-columns:26px minmax(0,1fr); align-items:center; gap:2px 6px; }}
+            .guardian-avatar {{ width:26px; height:26px; display:flex; align-items:center; justify-content:center; border-radius:6px; background:var(--blue-soft); color:var(--blue-dark); font-size:8px; font-weight:900; }}
             .guardian-copy {{ min-width:0; }}
-            .guardian-item a {{ display:block; color:var(--blue-dark); font-size:12px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+            .guardian-item a {{ display:block; color:var(--blue-dark); font-size:10px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
             .guardian-item a:hover {{ text-decoration:underline; text-underline-offset:2px; }}
-            .guardian-copy > span {{ display:block; color:var(--muted); font-size:10px; margin-top:2px; overflow-wrap:anywhere; }}
+            .guardian-copy > span {{ display:block; color:var(--muted); font-size:8px; margin-top:1px; overflow-wrap:anywhere; }}
             .guardian-meta {{ grid-column:2; display:flex; justify-content:flex-start; align-items:center; gap:4px; flex-wrap:wrap; }}
-            .guardian-relation {{ color:var(--muted); font-size:10px; font-weight:750; }}
-            .guardian-badge {{ display:inline-flex !important; min-height:18px; align-items:center; padding:0 6px; border-radius:999px; background:#eef2f7; color:#475467 !important; font-size:9px !important; font-weight:850; white-space:nowrap; }}
+            .guardian-relation {{ color:var(--muted); font-size:8px; font-weight:750; }}
+            .guardian-badge {{ display:inline-flex !important; min-height:15px; align-items:center; padding:0 5px; border-radius:999px; background:#eef2f7; color:#475467 !important; font-size:7px !important; font-weight:850; white-space:nowrap; }}
             .guardian-badge.current {{ background:var(--blue-soft); color:var(--blue-dark) !important; }}
             .access-pills {{ display:flex; gap:4px; flex-wrap:wrap; }}
-            .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
+            .access-pills span {{ min-height:17px; display:inline-flex; align-items:center; padding:0 6px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:8px; font-weight:800; }}
             .student-actions-primary, .student-actions-secondary {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }}
-            .student-actions-secondary {{ margin-top:7px; padding-top:7px; border-top:1px solid var(--line); }}
+            .student-actions-secondary {{ margin-top:5px; padding-top:5px; border-top:1px solid var(--line); }}
             .guardian-action {{ color:var(--blue-dark); border-color:#bfdbfe; background:#eff6ff; }}
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
             .activity-table {{ min-width:760px; }}
@@ -20633,6 +20633,11 @@ def parent_admin(parent_id):
                 .quick-credit-add {{ grid-template-columns:1fr; }}
                 .family-student-row {{ grid-template-columns:minmax(180px,.8fr) minmax(260px,1.2fr); grid-template-areas:"student guardians" "permissions manage"; gap:16px; }}
                 .manage-section {{ padding-top:2px; }}
+            }}
+            @media (min-width:1500px) {{
+                .family-student-row {{ grid-template-columns:minmax(155px,.7fr) minmax(260px,1.15fr) minmax(230px,.9fr) minmax(330px,1.25fr); grid-template-areas:"student guardians permissions manage"; column-gap:18px; align-items:center; }}
+                .row-label {{ margin-bottom:4px; }}
+                .student-actions-secondary {{ margin-top:4px; padding-top:4px; }}
             }}
             @media (max-width:620px) {{
                 .family-student-row {{ grid-template-columns:1fr; grid-template-areas:"student" "guardians" "permissions" "manage"; gap:14px; }}

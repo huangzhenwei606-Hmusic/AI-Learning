@@ -146,6 +146,7 @@ CHECKS = {
     "family workspace guardian account links": 'class="row-label">Shared guardians</div>',
     "family workspace child management layout": "family-student-row",
     "family workspace guardian initials": "guardian-avatar",
+    "family workspace dense wide layout": "@media (min-width:1500px)",
     "family workspace current guardian marker": "This account",
     "guardian invite approval route": '"/guardian_invites"',
     "guardian invite student binding": '("guardian_invites", "student_name", "student_name TEXT")',
