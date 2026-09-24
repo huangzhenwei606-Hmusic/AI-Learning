@@ -19254,9 +19254,87 @@ def parent_can_access_student(parent_id, student_name):
     return row is not None
 
 
+def ensure_postgres_guardian_billing_schema():
+    if not using_postgres():
+        return
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS guardian_invites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        guardian_name TEXT,
+        guardian_email TEXT,
+        guardian_phone TEXT,
+        relationship TEXT,
+        student_name TEXT,
+        owner_note TEXT,
+        status TEXT DEFAULT 'pending_owner_review',
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    for column_name, column_sql in [
+        ("is_primary_contact", "is_primary_contact INTEGER DEFAULT 0"),
+        ("can_view_schedule", "can_view_schedule INTEGER DEFAULT 1"),
+        ("can_manage_schedule", "can_manage_schedule INTEGER DEFAULT 1"),
+        ("can_view_learning", "can_view_learning INTEGER DEFAULT 1"),
+        ("can_view_billing", "can_view_billing INTEGER DEFAULT 1"),
+        ("can_pay", "can_pay INTEGER DEFAULT 1"),
+        ("can_message", "can_message INTEGER DEFAULT 1"),
+        ("receive_notifications", "receive_notifications INTEGER DEFAULT 1"),
+    ]:
+        cursor.execute(f"ALTER TABLE parent_students ADD COLUMN IF NOT EXISTS {column_sql}")
+    cursor.execute("ALTER TABLE guardian_invites ADD COLUMN IF NOT EXISTS student_name TEXT")
+    cursor.execute("ALTER TABLE guardian_invites ADD COLUMN IF NOT EXISTS owner_note TEXT")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_billing_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT UNIQUE,
+        billing_mode TEXT DEFAULT 'one_payer',
+        primary_parent_id INTEGER,
+        secondary_parent_id INTEGER,
+        primary_percent REAL DEFAULT 100,
+        secondary_percent REAL DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoice_allocations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER,
+        parent_id INTEGER,
+        amount REAL DEFAULT 0,
+        status TEXT DEFAULT 'unpaid',
+        payment_method TEXT,
+        manual_payment_status TEXT,
+        stripe_checkout_session_id TEXT,
+        stripe_payment_intent_id TEXT,
+        lock_token TEXT,
+        locked_at TEXT,
+        paid_at TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        UNIQUE(invoice_id, parent_id)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoice_allocations_invoice ON invoice_allocations(invoice_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoice_allocations_parent ON invoice_allocations(parent_id)")
+    conn.commit()
+    conn.close()
+
+
 def ensure_guardian_billing_schema():
     global _guardian_billing_schema_ready
     if _guardian_billing_schema_ready:
+        return
+
+    if using_postgres():
+        ensure_postgres_guardian_billing_schema()
+        _guardian_billing_schema_ready = True
         return
 
     ensure_v27_schema()
@@ -46562,7 +46640,6 @@ _runtime_schema_names = (
     "ensure_v145_schema",
     "ensure_child_os_schema",
     "ensure_parent_portal_feature_schema",
-    "ensure_guardian_billing_schema",
     "ensure_billing_schema",
     "ensure_message_template_schema",
     "ensure_course_duration_request_schema",
@@ -46589,6 +46666,7 @@ def initialize_runtime_database():
             schema_initializer = globals().get(schema_name)
             if schema_initializer is not None:
                 schema_initializer()
+    ensure_guardian_billing_schema()
     conn = sqlite3.connect("hmusic.db", timeout=15)
     conn.execute("SELECT 1").fetchone()
     conn.close()

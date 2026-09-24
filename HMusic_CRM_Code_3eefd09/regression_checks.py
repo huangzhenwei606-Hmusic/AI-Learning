@@ -144,6 +144,9 @@ CHECKS = {
     "guardian access owner route": '"/student_guardian_access/<path:student_name>"',
     "guardian invite approval route": '"/guardian_invites"',
     "guardian invite student binding": '("guardian_invites", "student_name", "student_name TEXT")',
+    "postgres guardian schema migration": "def ensure_postgres_guardian_billing_schema():",
+    "postgres guardian permission migration": "ALTER TABLE parent_students ADD COLUMN IF NOT EXISTS",
+    "guardian schema runs during startup": "ensure_guardian_billing_schema()\n    conn = sqlite3.connect(\"hmusic.db\", timeout=15)",
     "guardian permission schema": '"can_manage_schedule", "can_manage_schedule INTEGER DEFAULT 1"',
     "guardian billing visibility permission": 'parent_has_student_permission(parent_id, invoice[1], "view_billing")',
     "student billing rules table": "CREATE TABLE IF NOT EXISTS student_billing_rules",
@@ -214,6 +217,10 @@ def main():
         raise SystemExit(1)
     if '<div class="schedule-room">Room:' in parent_schedule_source or "lesson[5] or 'Room TBD'" in parent_schedule_source:
         print("Regression check failed. Parent schedule still exposes classroom or room details.")
+        raise SystemExit(1)
+    runtime_schema_source = source.split("_runtime_schema_names = (", 1)[1].split(")\n\nfor _schema_name", 1)[0]
+    if '"ensure_guardian_billing_schema"' in runtime_schema_source:
+        print("Regression check failed. PostgreSQL guardian migration is still wrapped as SQLite-only schema work.")
         raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 

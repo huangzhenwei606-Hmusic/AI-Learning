@@ -25,6 +25,9 @@ def main():
     assert "BIGSERIAL PRIMARY KEY" in _translate_sql(
         "CREATE TABLE sample (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
     )
+    assert _translate_sql(
+        "ALTER TABLE parent_students ADD COLUMN IF NOT EXISTS can_pay INTEGER DEFAULT 1"
+    ) == "ALTER TABLE parent_students ADD COLUMN IF NOT EXISTS can_pay INTEGER DEFAULT 1"
     group_concat = _translate_sql(
         "SELECT COALESCE(GROUP_CONCAT(DISTINCT COALESCE(s.name, ps.student_name)), '')"
     )
