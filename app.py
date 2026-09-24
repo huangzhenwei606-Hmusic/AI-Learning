@@ -1190,6 +1190,13 @@ def ensure_teacher_management_schema():
     migrate_legacy_passwords(cursor, "teachers", limit=5)
     migrate_legacy_passwords(cursor, "users", limit=5)
 
+    merge_duplicate_teacher_records(cursor)
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_teachers_normalized_name_unique
+    ON teachers (LOWER(TRIM(teacher_name)))
+    WHERE TRIM(COALESCE(teacher_name, '')) != ''
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1202,6 +1209,135 @@ def teacher_login_username(teacher_name):
 def sqlite_table_exists(cursor, table_name):
     cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,))
     return cursor.fetchone() is not None
+
+
+def merge_duplicate_teacher_records(cursor):
+    cursor.execute("""
+    SELECT
+        id,
+        teacher_name,
+        username,
+        password,
+        password_hash,
+        must_change_password,
+        hourly_rate,
+        email,
+        phone,
+        active,
+        notes,
+        created_at,
+        updated_at
+    FROM teachers
+    WHERE TRIM(COALESCE(teacher_name, '')) != ''
+    ORDER BY id
+    """)
+    grouped_rows = {}
+    for row in cursor.fetchall():
+        normalized_name = str(row[1] or "").strip().casefold()
+        grouped_rows.setdefault(normalized_name, []).append(row)
+
+    def record_score(row):
+        hourly_rate = row[6]
+        return (
+            5 * bool((row[2] or "").strip())
+            + 3 * bool((row[4] or "").strip())
+            + 4 * bool((row[7] or "").strip())
+            + 2 * bool((row[8] or "").strip())
+            + 2 * bool(hourly_rate is not None and float(hourly_rate) != 30)
+            + bool((row[10] or "").strip())
+        )
+
+    text_fields = {
+        "username": 2,
+        "password": 3,
+        "password_hash": 4,
+        "email": 7,
+        "phone": 8,
+        "notes": 10,
+        "created_at": 11,
+        "updated_at": 12,
+    }
+    reference_columns = [
+        ("students", "teacher"),
+        ("schedule", "teacher"),
+        ("teacher_open_slots", "teacher"),
+        ("teacher_course_rates", "teacher_name"),
+        ("teacher_rate_cards", "teacher_name"),
+        ("teacher_permissions", "teacher_name"),
+        ("teacher_time_off_requests", "teacher_name"),
+        ("enrollments", "teacher_name"),
+    ]
+
+    for duplicate_rows in grouped_rows.values():
+        if len(duplicate_rows) < 2:
+            continue
+
+        ranked_rows = sorted(duplicate_rows, key=lambda row: (-record_score(row), row[0]))
+        keep_row = ranked_rows[0]
+        keep_id = keep_row[0]
+        keep_name = (keep_row[1] or "").strip()
+        merged_values = {}
+        for field_name, field_index in text_fields.items():
+            merged_values[field_name] = next(
+                (row[field_index] for row in ranked_rows if (row[field_index] or "").strip()),
+                ""
+            )
+
+        hourly_rate = next(
+            (row[6] for row in ranked_rows if row[6] is not None and float(row[6]) != 30),
+            keep_row[6] if keep_row[6] is not None else 30
+        )
+        active = max(int(row[9] if row[9] is not None else 1) for row in duplicate_rows)
+        must_change_password = max(int(row[5] or 0) for row in duplicate_rows)
+
+        cursor.execute("""
+        UPDATE teachers
+        SET teacher_name = ?,
+            username = ?,
+            password = ?,
+            password_hash = ?,
+            must_change_password = ?,
+            hourly_rate = ?,
+            email = ?,
+            phone = ?,
+            active = ?,
+            notes = ?,
+            created_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """, (
+            keep_name,
+            merged_values["username"],
+            merged_values["password"],
+            merged_values["password_hash"],
+            must_change_password,
+            hourly_rate,
+            merged_values["email"],
+            merged_values["phone"],
+            active,
+            merged_values["notes"],
+            merged_values["created_at"],
+            merged_values["updated_at"],
+            keep_id,
+        ))
+
+        for duplicate_row in duplicate_rows:
+            duplicate_name = duplicate_row[1]
+            if duplicate_name == keep_name:
+                continue
+            for table_name, column_name in reference_columns:
+                if sqlite_table_exists(cursor, table_name):
+                    cursor.execute(
+                        f"UPDATE {table_name} SET {column_name} = ? WHERE {column_name} = ?",
+                        (keep_name, duplicate_name)
+                    )
+            cursor.execute(
+                "UPDATE users SET linked_teacher_name = ? WHERE linked_teacher_name = ?",
+                (keep_name, duplicate_name)
+            )
+
+        duplicate_ids = [row[0] for row in duplicate_rows if row[0] != keep_id]
+        cursor.executemany("DELETE FROM teachers WHERE id = ?", [(row_id,) for row_id in duplicate_ids])
 
 
 def update_teacher_name_references(cursor, old_name, new_name):
@@ -4506,8 +4642,16 @@ def teachers():
         ), 0)
     FROM teachers t
     LEFT JOIN users u
-        ON u.role = 'teacher'
-        AND u.linked_teacher_name = t.teacher_name
+        ON u.id = (
+            SELECT u2.id
+            FROM users u2
+            WHERE u2.role = 'teacher'
+            AND LOWER(TRIM(COALESCE(u2.linked_teacher_name, ''))) = LOWER(TRIM(t.teacher_name))
+            ORDER BY
+                CASE WHEN u2.username = t.username THEN 0 ELSE 1 END,
+                u2.id
+            LIMIT 1
+        )
     ORDER BY COALESCE(t.active, 1) DESC, t.teacher_name
     """)
     teacher_rows = cursor.fetchall()
@@ -4710,7 +4854,11 @@ def add_teacher():
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT 1 FROM teachers WHERE teacher_name = ?", (teacher_name,))
+            cursor.execute("""
+            SELECT 1
+            FROM teachers
+            WHERE LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))
+            """, (teacher_name,))
             if cursor.fetchone():
                 conn.close()
                 return render_add_teacher_form("A teacher with this name already exists. Please edit the existing teacher or use a different name.", request.form)
@@ -10260,12 +10408,17 @@ def add_schedule():
     """)
 
     cursor.executemany("""
-    INSERT OR IGNORE INTO teachers (teacher_name)
-    VALUES (?)
+    INSERT INTO teachers (teacher_name)
+    SELECT ?
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM teachers
+        WHERE LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))
+    )
     """, [
-        ("Zhenwei",),
-        ("Jason",),
-        ("Hyewon",)
+        ("Zhenwei", "Zhenwei"),
+        ("Jason", "Jason"),
+        ("Hyewon", "Hyewon")
     ])
 
     cursor.executemany("""
@@ -37673,6 +37826,116 @@ def course_color_options(current_color=None):
     return options
 
 
+def course_type_match_values(name, duration, is_group):
+    try:
+        duration_value = int(float(duration or 0))
+    except:
+        duration_value = 0
+    try:
+        group_value = int(is_group or 0)
+    except:
+        group_value = 0
+    return (str(name or "").strip().lower(), duration_value, 1 if group_value else 0)
+
+
+def find_active_course_type_match(cursor, name, duration, is_group, exclude_id=None):
+    course_name, duration_value, group_value = course_type_match_values(name, duration, is_group)
+    if not course_name or duration_value <= 0:
+        return None
+
+    params = [course_name, duration_value, group_value]
+    exclude_clause = ""
+    if exclude_id:
+        exclude_clause = "AND id != ?"
+        params.append(exclude_id)
+
+    cursor.execute(f"""
+    SELECT id
+    FROM course_types
+    WHERE active = 1
+    AND lower(trim(COALESCE(name, ''))) = ?
+    AND COALESCE(duration, 0) = ?
+    AND COALESCE(is_group, 0) = ?
+    {exclude_clause}
+    ORDER BY id
+    LIMIT 1
+    """, params)
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def merge_course_type_record(cursor, keep_id, duplicate_id):
+    if not keep_id or not duplicate_id or int(keep_id) == int(duplicate_id):
+        return
+
+    cursor.execute("""
+    SELECT name, duration, COALESCE(is_group, 0), COALESCE(display_color, '')
+    FROM course_types
+    WHERE id = ?
+    """, (keep_id,))
+    keep = cursor.fetchone()
+    if not keep:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    updates = [
+        ("schedule", "course_type_id"),
+        ("course_type_tuition_tiers", "course_type_id"),
+        ("teacher_course_rates", "course_type_id"),
+        ("student_course_rates", "course_type_id"),
+        ("enrollments", "course_type_id"),
+        ("course_duration_requests", "course_type_id"),
+    ]
+    for table_name, column_name in updates:
+        cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,))
+        if not cursor.fetchone():
+            continue
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name in columns:
+            cursor.execute(f"UPDATE {table_name} SET {column_name} = ? WHERE {column_name} = ?", (keep_id, duplicate_id))
+
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schedule'")
+    if cursor.fetchone():
+        cursor.execute("""
+        UPDATE schedule
+        SET course_type_name = ?,
+            duration = ?,
+            is_group = ?
+        WHERE course_type_id = ?
+        """, (keep[0], keep[1], keep[2], keep_id))
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'enrollments'")
+    if cursor.fetchone():
+        cursor.execute("""
+        UPDATE enrollments
+        SET course_type_name = ?,
+            duration = ?
+        WHERE course_type_id = ?
+        """, (keep[0], keep[1], keep_id))
+    cursor.execute("""
+    UPDATE course_types
+    SET active = 0,
+        updated_at = ?
+    WHERE id = ?
+    """, (now, duplicate_id))
+
+
+def merge_duplicate_course_types(cursor):
+    cursor.execute("""
+    SELECT id, name, duration, COALESCE(is_group, 0)
+    FROM course_types
+    WHERE active = 1
+    ORDER BY id
+    """)
+    seen = {}
+    for course_id, name, duration, is_group in cursor.fetchall():
+        key = course_type_match_values(name, duration, is_group)
+        if key[0] and key[1] > 0 and key in seen:
+            merge_course_type_record(cursor, seen[key], course_id)
+        else:
+            seen[key] = course_id
+
+
 def ensure_v18_schema():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -37820,6 +38083,20 @@ def ensure_v18_schema():
             SET display_color = ?
             WHERE id = ?
             """, (rule_color, course[0]))
+
+    merge_duplicate_course_types(cursor)
+    try:
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_course_types_active_unique
+        ON course_types (
+            lower(trim(COALESCE(name, ''))),
+            COALESCE(duration, 0),
+            COALESCE(is_group, 0)
+        )
+        WHERE active = 1
+        """)
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -38352,11 +38629,19 @@ def add_course_type():
         is_group = request.form.get("is_group")
         display_color = request.form.get("display_color")
         active = request.form.get("active")
+        active_value = int(active or 1)
+        is_group_value = int(is_group or 0)
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
+
+        if active_value == 1:
+            existing_course_id = find_active_course_type_match(cursor, name, duration, is_group_value)
+            if existing_course_id:
+                conn.close()
+                return redirect(f"/course_type_tuition_tiers/{existing_course_id}")
 
         cursor.execute("""
         INSERT INTO course_types (
@@ -38380,9 +38665,9 @@ def add_course_type():
             student_price,
             teacher_billing_method,
             teacher_pay,
-            int(is_group or 0),
-            display_color or default_course_color(name, duration, int(is_group or 0)),
-            int(active or 1),
+            is_group_value,
+            display_color or default_course_color(name, duration, is_group_value),
+            active_value,
             now,
             now
         ))
@@ -38765,6 +39050,16 @@ def edit_course_type(course_id):
         is_group = request.form.get("is_group")
         display_color = request.form.get("display_color")
         active = request.form.get("active")
+        active_value = int(active or 1)
+        is_group_value = int(is_group or 0)
+
+        if active_value == 1:
+            existing_course_id = find_active_course_type_match(cursor, name, duration, is_group_value, exclude_id=course_id)
+            if existing_course_id:
+                merge_course_type_record(cursor, existing_course_id, course_id)
+                conn.commit()
+                conn.close()
+                return redirect("/course_types")
 
         cursor.execute("""
         UPDATE course_types
@@ -38786,9 +39081,9 @@ def edit_course_type(course_id):
             student_price,
             teacher_billing_method,
             teacher_pay,
-            int(is_group or 0),
-            display_color or default_course_color(name, duration, int(is_group or 0)),
-            int(active or 1),
+            is_group_value,
+            display_color or default_course_color(name, duration, is_group_value),
+            active_value,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             course_id
         ))
