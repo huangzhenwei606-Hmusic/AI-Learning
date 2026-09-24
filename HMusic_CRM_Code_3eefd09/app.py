@@ -1383,7 +1383,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
     messages_item = item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge) if perms.get("message_parents") else ""
     room_availability_item = item("room_availability", "/room_availability", "ti-door", "Room Availability") if perms.get("view_room_availability") else ""
     add_schedule_item = item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
-    payroll_item = item("payroll", "/teacher_dashboard", "ti-coin", "Payroll Detail", '<span class="td-new-badge">New</span>') if perms.get("view_payroll") else ""
+    payroll_item = ""
     sub_item = item("sub", "/teacher_sub_request", "ti-replace", "Sub Request") if perms.get("sub_request") else ""
 
     return f"""
@@ -13046,21 +13046,6 @@ def teacher_dashboard():
     today_lessons = cursor.fetchall()
 
     cursor.execute("""
-    SELECT
-        COALESCE(SUM(payroll_amount), 0),
-        COALESCE(SUM(teacher_pay_amount), 0),
-        COUNT(*)
-    FROM schedule
-    WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
-    AND lesson_date >= ?
-    AND lesson_date <= ?
-    """, (teacher_name, month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")))
-    payroll_summary = cursor.fetchone()
-
-    cursor.execute("SELECT COALESCE(hourly_rate, 0) FROM teachers WHERE teacher_name=?", (teacher_name,))
-    rate_row = cursor.fetchone()
-    teacher_rate = rate_row[0] if rate_row else 0
-    cursor.execute("""
     CREATE TABLE IF NOT EXISTS classrooms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_name TEXT UNIQUE
@@ -13090,8 +13075,6 @@ def teacher_dashboard():
     conn.close()
 
     completed_count = len([lesson for lesson in lessons if lesson[5] == "present"])
-    actual_payroll = round(payroll_summary[0] or 0, 2)
-    projected_payroll = round(payroll_summary[1] or 0, 2)
     pending_count = unread_messages + missing_homework_count
     today_label = "No lessons scheduled today" if not today_lessons else f"{len(today_lessons)} lesson(s) today"
     homework_badge = hstudio_badge(missing_homework_count)
@@ -14178,7 +14161,6 @@ def teacher_dashboard():
     if not today_html:
         today_html = "<div class='td-empty'>No lessons scheduled today.</div>"
 
-    rate_display = f"{hstudio_money_whole(teacher_rate)} / lesson" if teacher_rate else "Course rule"
     note_student = today_lessons[0][3] if today_lessons else (lessons[0][3] if lessons else "")
     note_href = f"/add_lesson/{note_student}" if note_student else "/teacher_dashboard"
     content = f"""
@@ -14194,9 +14176,9 @@ def teacher_dashboard():
                 <div class="td-kpi-sub">Completed</div>
             </div>
             <div class="td-kpi">
-                <div class="td-kpi-label">Payroll This Month</div>
-                <div class="td-kpi-value">{hstudio_money_whole(actual_payroll)}</div>
-                <div class="td-kpi-sub">Projected {hstudio_money_whole(projected_payroll)}</div>
+                <div class="td-kpi-label">Scheduled This Month</div>
+                <div class="td-kpi-value">{len(lessons)}</div>
+                <div class="td-kpi-sub">All lesson statuses</div>
             </div>
             <div class="td-kpi">
                 <div class="td-kpi-label">Pending Items</div>
@@ -14223,11 +14205,9 @@ def teacher_dashboard():
                     <a class="td-action" href="/teacher_sub_request"><i class="ti ti-replace"></i>Request a Sub</a>
                 </section>
                 <section class="td-card">
-                    <h2>Payroll Summary · {month_start.strftime("%B")}</h2>
+                    <h2>Lesson Summary · {month_start.strftime("%B")}</h2>
                     <div class="td-pay-row"><span>Completed Lessons</span><strong>{completed_count}</strong></div>
-                    <div class="td-pay-row"><span>Lesson Rate</span><strong>{rate_display}</strong></div>
-                    <div class="td-pay-row"><span>Settled Payroll</span><strong class="green">{hstudio_money_whole(actual_payroll)} settled</strong></div>
-                    <div class="td-pay-row"><span>Projected Total</span><strong class="gold">{hstudio_money_whole(projected_payroll)}</strong></div>
+                    <div class="td-pay-row"><span>Scheduled Lessons</span><strong>{len(lessons)}</strong></div>
                 </section>
             </div>
         </div>
@@ -16091,6 +16071,30 @@ def calendar_group_roster(cursor, schedule_id, row=None):
     ]
 
 
+def teacher_safe_group_roster(group_roster):
+    return [
+        {
+            "id": int(item.get("id") or 0),
+            "student_name": item.get("student_name") or "",
+            "parent_name": item.get("parent_name") or "",
+            "attendance_status": item.get("attendance_status") or "scheduled",
+        }
+        for item in (group_roster or [])
+    ]
+
+
+def teacher_safe_lesson_status_result(result):
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or "Could not update lesson status"}
+    return {
+        "ok": True,
+        "student_name": result.get("student_name") or "",
+        "status": result.get("status") or "scheduled",
+        "charge_lessons": result.get("charge_lessons") or 0,
+        "waiver_applied": int(result.get("waiver_applied") or 0),
+    }
+
+
 def update_calendar_group_lesson(cursor, schedule_ids, group_name=None, attendance_items=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     if group_name is not None:
@@ -16236,7 +16240,10 @@ def calendar_lesson_detail(schedule_id):
         return {"ok": False, "error": "Lesson not found"}, 404
     if require_teacher() and not require_owner() and not hmusic_teacher_name_matches(row[2], session.get("teacher_name")):
         return {"ok": False, "error": "Permission denied"}, 403
-    teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if require_teacher() and not require_owner() else {}
+    is_teacher_view = require_teacher() and not require_owner()
+    teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if is_teacher_view else {}
+    if is_teacher_view:
+        group_roster = teacher_safe_group_roster(group_roster)
     course_name = row[7] or row[8] or row[9] or "Lesson"
     response = {
         "ok": True,
@@ -46272,7 +46279,7 @@ def api_teacher_lesson_detail(schedule_id):
     if not lesson:
         return {"ok": False, "error": "Lesson not found or permission denied"}, 404
     payload = teacher_api_schedule_payload(lesson)
-    payload["group_students"] = group_roster
+    payload["group_students"] = teacher_safe_group_roster(group_roster)
     return {"ok": True, "lesson": payload}
 
 
@@ -46298,7 +46305,7 @@ def api_teacher_lesson_status():
     result = apply_lesson_status(schedule_id, status, actor=f"teacher:{teacher_name}", reason=data.get("reason"))
     if result.get("ok") and status == "teacher_cancelled" and data.get("notify_parent"):
         hmusic_queue_teacher_cancel_parent_notice(int(schedule_id))
-    return result
+    return teacher_safe_lesson_status_result(result)
 
 
 @app.route("/api/teacher/lesson/bulk_status", methods=["POST"])
