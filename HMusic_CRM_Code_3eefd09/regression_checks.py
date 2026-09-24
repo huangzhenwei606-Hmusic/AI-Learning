@@ -84,6 +84,10 @@ CHECKS = {
     "teacher calendar schedule grid class": "schedule_grid_class",
     "teacher calendar inline status select": 'class="teacher-card-status {dot}"',
     "teacher calendar status autosave": "statusSelectForAutoSave.addEventListener('change'",
+    "teacher cancellation is one click": "function teacherCancelRequest() {{ if (!activeTeacherLesson || teacherPanelSaving) return;",
+    "teacher cancellation pending status": "teacher_cancel_pending_confirm",
+    "teacher cancellation pending label": "Cancel pending confirm",
+    "teacher cancellation owner queue": "request_type = 'teacher_cancel_lesson'",
     "owner calendar left-aligned time chip": '<span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>',
     "owner calendar inline status select": 'class="calendar-status-select {dot_class}"',
     "teacher mobile bootstrap api": '"/api/teacher/bootstrap"',
@@ -154,6 +158,14 @@ def main():
         print("Regression check failed. Student Profile has duplicated family management:")
         for name in student_detail_present:
             print(f"- {name}: {STUDENT_DETAIL_FORBIDDEN[name]}")
+        raise SystemExit(1)
+    try:
+        teacher_cancel_source = source.split("function teacherCancelRequest()", 1)[1].split("function teacherDeleteLesson()", 1)[0]
+    except IndexError:
+        print("Regression check failed. Could not locate teacher cancellation action.")
+        raise SystemExit(1)
+    if "confirm(" in teacher_cancel_source:
+        print("Regression check failed. Teacher cancellation still opens an extra confirmation choice.")
         raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 
