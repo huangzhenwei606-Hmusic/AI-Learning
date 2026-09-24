@@ -30346,13 +30346,15 @@ def parent_schedule():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute(f"""
-    SELECT id, student_name, lesson_date, lesson_time, teacher, classroom,
-           COALESCE(duration, 30), COALESCE(course_type_name, ''), COALESCE(status, 'scheduled')
-    FROM schedule
-    WHERE student_name IN ({placeholders})
-    AND lesson_date >= ?
-    AND (status IS NULL OR status = '' OR status IN ('scheduled', 'parent_cancel_pending_confirm'))
-    ORDER BY lesson_date, lesson_time
+    SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom,
+           COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.status, 'scheduled'),
+           COALESCE(NULLIF(TRIM(s.location), ''), NULLIF(TRIM(l.address), ''), '')
+    FROM schedule s
+    LEFT JOIN studio_locations l ON l.id = s.location_id
+    WHERE s.student_name IN ({placeholders})
+    AND s.lesson_date >= ?
+    AND (s.status IS NULL OR s.status = '' OR s.status IN ('scheduled', 'parent_cancel_pending_confirm'))
+    ORDER BY s.lesson_date, s.lesson_time
     LIMIT 16
     """, tuple(linked_names) + (today,))
     upcoming = cursor.fetchall()
@@ -30407,7 +30409,7 @@ def parent_schedule():
             <div class="schedule-next-body">
                 <div class="schedule-time">{escape(str(next_lesson[3] or 'Time TBD'))}</div>
                 <div class="schedule-meta">{escape(str(next_lesson[7] or 'Private Lesson'))} · {escape(str(next_lesson[4] or 'Teacher TBD'))}</div>
-                <div class="schedule-room">Room: {escape(str(next_lesson[5] or 'TBD'))}</div>
+                <div class="schedule-location">{escape(str(next_lesson[9] or ''))}</div>
                 {next_actions}
             </div>
         </section>
@@ -30435,7 +30437,7 @@ def parent_schedule():
             <div>
                 <b>{escape(str(lesson[2]))} · {escape(str(lesson[3] or 'Time TBD'))}</b>
                 <p>{escape(str(lesson[1]))} · {escape(str(lesson[7] or 'Lesson'))} · {escape(str(lesson[4] or 'Teacher TBD'))}</p>
-                <small>{escape(str(lesson[5] or 'Room TBD'))}</small>
+                <small>{escape(str(lesson[9] or ''))}</small>
             </div>
             <div class="mini-actions">
                 {lesson_actions}
@@ -30488,7 +30490,7 @@ def parent_schedule():
         .schedule-next-body {{ padding:13px; }}
         .schedule-time {{ font-size:17px; font-weight:900; margin-bottom:4px; }}
         .schedule-meta {{ color:#5f5b55; font-size:13px; font-weight:800; margin-bottom:6px; }}
-        .schedule-room {{ color:#716d67; font-size:11px; font-weight:750; margin-bottom:11px; }}
+        .schedule-location {{ color:#716d67; font-size:11px; font-weight:750; margin-bottom:11px; }}
         .primary-schedule-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
         .schedule-action {{ min-height:76px; border:1px solid #ddd9d2; border-radius:14px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; }}
         .schedule-action strong {{ font-size:16px; line-height:1.08; }}

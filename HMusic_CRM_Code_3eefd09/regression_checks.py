@@ -89,6 +89,9 @@ CHECKS = {
     "parent cancel pending label": "Cancel pending confirm",
     "parent cancel returns to schedule": 'return redirect("/parent_schedule?cancel=pending")',
     "parent cancel rejection restores schedule": "WHERE id = ? AND status = 'parent_cancel_pending_confirm'",
+    "parent schedule uses location only": "NULLIF(TRIM(s.location), ''), NULLIF(TRIM(l.address), '')",
+    "parent schedule next lesson location": "next_lesson[9]",
+    "parent schedule upcoming location": "lesson[9]",
     "owner calendar left-aligned time chip": '<span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>',
     "owner calendar inline status select": 'class="calendar-status-select {dot_class}"',
     "teacher mobile bootstrap api": '"/api/teacher/bootstrap"',
@@ -167,6 +170,9 @@ def main():
         raise SystemExit(1)
     if 'href="/parent_cancel?schedule_id=' in parent_schedule_source:
         print("Regression check failed. Parent cancellation still opens the intermediate choices page.")
+        raise SystemExit(1)
+    if '<div class="schedule-room">Room:' in parent_schedule_source or "lesson[5] or 'Room TBD'" in parent_schedule_source:
+        print("Regression check failed. Parent schedule still exposes classroom or room details.")
         raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 
