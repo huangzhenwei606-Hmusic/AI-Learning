@@ -19934,6 +19934,7 @@ def parent_admin(parent_id):
 
     ensure_v27_schema()
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -19982,6 +19983,24 @@ def parent_admin(parent_id):
     activities = cursor.fetchall()
 
     active_student_names = [row[1] for row in linked_students if row[3] == 1]
+    guardians_by_student = {}
+    if active_student_names:
+        guardian_placeholders = ",".join(["?"] * len(active_student_names))
+        cursor.execute(f"""
+        SELECT ps.student_name, p.id, COALESCE(p.parent_name, 'Parent'),
+               COALESCE(p.email, ''), COALESCE(ps.relationship, 'Parent'),
+               COALESCE(ps.is_primary_contact, 0)
+        FROM parent_students ps
+        JOIN parent_profiles p ON p.id = ps.parent_id
+        WHERE ps.student_name IN ({guardian_placeholders})
+          AND COALESCE(ps.active, 1) = 1
+          AND COALESCE(p.active, 1) = 1
+        ORDER BY ps.student_name, COALESCE(ps.is_primary_contact, 0) DESC,
+                 LOWER(COALESCE(p.parent_name, p.email, ''))
+        """, active_student_names)
+        for guardian in cursor.fetchall():
+            guardians_by_student.setdefault(guardian[0], []).append(guardian)
+
     family_invoice_records = []
     family_payment_records = []
     family_credit_records = []
@@ -20072,6 +20091,28 @@ def parent_admin(parent_id):
             </form>
             """
 
+        shared_guardians_html = ""
+        for guardian in guardians_by_student.get(s[1], []):
+            guardian_id, guardian_name, guardian_email, relationship, is_primary = guardian[1:]
+            badges = ""
+            if guardian_id == parent_id:
+                badges += '<span class="guardian-badge current">This account</span>'
+            if is_primary:
+                badges += '<span class="guardian-badge">Primary</span>'
+            shared_guardians_html += f"""
+                <div class="guardian-item">
+                    <div>
+                        <a href="/parent_admin/{guardian_id}">{escape(str(guardian_name or guardian_email or 'Parent'))}</a>
+                        <span>{escape(str(guardian_email or 'No email'))}</span>
+                    </div>
+                    <div class="guardian-meta">
+                        <span>{escape(str(relationship or 'Parent'))}</span>{badges}
+                    </div>
+                </div>
+            """
+        if not shared_guardians_html:
+            shared_guardians_html = '<span class="muted">No active guardian account</span>'
+
         linked_rows += f"""
         <tr>
             <td>
@@ -20082,6 +20123,7 @@ def parent_admin(parent_id):
             </td>
             <td>{escape(str(s[5] or 'Unassigned'))}</td>
             <td>{escape(str(s[2] or 'Parent'))}</td>
+            <td><div class="guardian-list">{shared_guardians_html}</div></td>
             <td>
                 <div class="access-pills">
                     <span>Schedule</span><span>Homework</span><span>Invoices</span><span>Messages</span>
@@ -20102,7 +20144,7 @@ def parent_admin(parent_id):
         """
 
     if not linked_rows:
-        linked_rows = "<tr><td colspan='6' class='empty'>No children are visible in this parent app yet.</td></tr>"
+        linked_rows = "<tr><td colspan='7' class='empty'>No children are visible in this parent app yet.</td></tr>"
 
     student_options = ""
     for s in available_students:
@@ -20542,6 +20584,16 @@ def parent_admin(parent_id):
             .child-cell a:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
             .child-cell span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
             .child-cell .contact-warning {{ color:#b45309; }}
+            .guardian-list {{ display:grid; gap:6px; min-width:210px; }}
+            .guardian-item {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding-bottom:6px; border-bottom:1px solid var(--line); }}
+            .guardian-item:last-child {{ padding-bottom:0; border-bottom:0; }}
+            .guardian-item a {{ color:var(--blue-dark); font-size:12px; font-weight:900; }}
+            .guardian-item a:hover {{ text-decoration:underline; text-underline-offset:2px; }}
+            .guardian-item > div > span {{ display:block; color:var(--muted); font-size:10px; margin-top:2px; }}
+            .guardian-meta {{ display:flex; justify-content:flex-end; align-items:center; gap:4px; flex-wrap:wrap; }}
+            .guardian-meta > span {{ margin:0; }}
+            .guardian-badge {{ display:inline-flex !important; min-height:18px; align-items:center; padding:0 6px; border-radius:999px; background:#eef2f7; color:#475467 !important; font-size:9px !important; font-weight:850; white-space:nowrap; }}
+            .guardian-badge.current {{ background:var(--blue-soft); color:var(--blue-dark) !important; }}
             .access-pills {{ display:flex; gap:4px; flex-wrap:wrap; }}
             .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
@@ -20704,6 +20756,7 @@ def parent_admin(parent_id):
                                     <th>Child</th>
                                     <th>Teacher</th>
                                     <th>Relationship</th>
+                                    <th>Shared guardians</th>
                                     <th>Parent app can see</th>
                                     <th>Status</th>
                                     <th>Action</th>
