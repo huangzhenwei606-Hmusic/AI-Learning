@@ -73,6 +73,7 @@ _teacher_management_schema_ready = False
 _calendar_lesson_panel_schema_ready = False
 _location_room_schema_ready = False
 _guardian_billing_schema_ready = False
+_event_room_booking_schema_ready = False
 _schema_init_lock = threading.RLock()
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
@@ -1382,6 +1383,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
 
     messages_item = item("messages", "/teacher_dashboard?view=messages", "ti-message", "Messages", message_badge) if perms.get("message_parents") else ""
     room_availability_item = item("room_availability", "/room_availability", "ti-door", "Room Availability") if perms.get("view_room_availability") else ""
+    event_room_booking_item = item("event_room_booking", "/event_room_booking", "ti-presentation", "Event Room Booking")
     add_schedule_item = item("add_schedule", "/teacher_dashboard?view=add_schedule", "ti-calendar-plus", "Add Schedule") if perms.get("add_own_schedule") else ""
     payroll_item = ""
     sub_item = item("sub", "/teacher_sub_request", "ti-replace", "Sub Request") if perms.get("sub_request") else ""
@@ -1391,6 +1393,7 @@ def hstudio_teacher_dark_nav(unread_messages=0, active="home", missing_homework_
         {item("home", "/teacher_dashboard", "ti-home", "Home")}
         {item("schedule", "/teacher_dashboard?view=schedule", "ti-calendar", "My Calendar")}
         {room_availability_item}
+        {event_room_booking_item}
         {messages_item}
         <div class="td-nav-section">Lessons</div>
         {item("records", "/teacher_dashboard?view=records", "ti-notes", "Lesson Records", homework_badge)}
@@ -1722,6 +1725,151 @@ def ensure_postgres_teacher_permission_schema():
     cursor.execute("ALTER TABLE teacher_permissions ADD COLUMN IF NOT EXISTS updated_at TEXT")
     conn.commit()
     conn.close()
+
+
+EVENT_ROOM_TYPES = {
+    "master_class": "Master Class",
+    "lecture_workshop": "Lecture / Workshop",
+    "teacher_exchange": "Teacher Exchange",
+    "theme_class": "Theme Class",
+    "student_recital": "Student Recital",
+    "teacher_recital": "Teacher Recital",
+}
+
+EVENT_ROOM_STATUSES = {
+    "pending": "Pending",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "cancelled": "Cancelled",
+    "completed": "Completed",
+}
+
+
+def ensure_event_room_booking_schema():
+    global _event_room_booking_schema_ready
+    if _event_room_booking_schema_ready:
+        return
+    with _schema_init_lock:
+        if _event_room_booking_schema_ready:
+            return
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS event_room_bookings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_name TEXT,
+            event_type TEXT,
+            title TEXT,
+            booking_date TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            expected_attendance INTEGER DEFAULT 0,
+            audience_type TEXT DEFAULT 'studio',
+            setup_requirements TEXT,
+            notes TEXT,
+            location_name TEXT DEFAULT 'Event Room',
+            status TEXT DEFAULT 'pending',
+            owner_note TEXT,
+            reviewed_at TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            studio_event_id INTEGER,
+            seed_key TEXT UNIQUE
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_event_room_booking_date ON event_room_bookings(booking_date, start_time, end_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_event_room_booking_teacher ON event_room_bookings(teacher_name, booking_date)")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for seed_key, booking_date in (
+            ("jason-piano-salon-2026-09-26", "2026-09-26"),
+            ("jason-piano-salon-2026-10-10", "2026-10-10"),
+        ):
+            cursor.execute("""
+            INSERT OR IGNORE INTO event_room_bookings (
+                teacher_name, event_type, title, booking_date, start_time, end_time,
+                expected_attendance, audience_type, location_name, status,
+                created_at, updated_at, reviewed_at, seed_key
+            )
+            VALUES (?, 'theme_class', 'Piano Salon & Class', ?, '18:30', '20:00',
+                    0, 'studio', 'Event Room', 'approved', ?, ?, ?, ?)
+            """, ("Jason", booking_date, now, now, now, seed_key))
+        conn.commit()
+        conn.close()
+        _event_room_booking_schema_ready = True
+
+
+def event_room_time_value(value):
+    try:
+        return datetime.strptime(str(value or "").strip(), "%H:%M").strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
+def event_room_booking_payload(values):
+    booking_date = str(values.get("booking_date") or "").strip()
+    start_time = event_room_time_value(values.get("start_time"))
+    end_time = event_room_time_value(values.get("end_time"))
+    event_type = str(values.get("event_type") or "").strip()
+    title = str(values.get("title") or "").strip()
+    try:
+        date_obj = datetime.strptime(booking_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError("Choose a valid event date.")
+    if date_obj.weekday() not in (5, 6):
+        raise ValueError("Event Room bookings are available on Saturday or Sunday only.")
+    if not start_time or not end_time or start_time < "18:00" or end_time > "20:30" or start_time >= end_time:
+        raise ValueError("Choose a time between 6:00 PM and 8:30 PM.")
+    if int(start_time[3:]) not in (0, 30) or int(end_time[3:]) not in (0, 30):
+        raise ValueError("Event Room bookings use 30-minute time blocks.")
+    if event_type not in EVENT_ROOM_TYPES:
+        raise ValueError("Choose a valid event type.")
+    if not title:
+        raise ValueError("Event title is required.")
+    try:
+        expected_attendance = max(0, min(500, int(values.get("expected_attendance") or 0)))
+    except (TypeError, ValueError):
+        raise ValueError("Expected attendance must be a number.")
+    audience_type = str(values.get("audience_type") or "studio").strip()
+    if audience_type not in ("internal", "studio", "families"):
+        audience_type = "studio"
+    return {
+        "booking_date": booking_date,
+        "start_time": start_time,
+        "end_time": end_time,
+        "event_type": event_type,
+        "title": title[:160],
+        "expected_attendance": expected_attendance,
+        "audience_type": audience_type,
+        "setup_requirements": str(values.get("setup_requirements") or "").strip()[:1000],
+        "notes": str(values.get("notes") or "").strip()[:2000],
+    }
+
+
+def event_room_booking_conflict(cursor, booking_date, start_time, end_time, exclude_id=None):
+    params = [booking_date, end_time, start_time]
+    exclude_sql = ""
+    if exclude_id:
+        exclude_sql = " AND id != ?"
+        params.append(int(exclude_id))
+    cursor.execute(f"""
+    SELECT id, teacher_name, title, start_time, end_time, status
+    FROM event_room_bookings
+    WHERE booking_date = ?
+    AND start_time < ?
+    AND end_time > ?
+    AND status IN ('pending', 'approved')
+    {exclude_sql}
+    ORDER BY start_time, id
+    LIMIT 1
+    """, tuple(params))
+    return cursor.fetchone()
+
+
+def event_room_display_time(value):
+    try:
+        return datetime.strptime(str(value or ""), "%H:%M").strftime("%-I:%M %p")
+    except ValueError:
+        return str(value or "")
 
 
 def get_teacher_permissions(teacher_name):
@@ -2387,6 +2535,13 @@ def home():
         pending_booking_requests = []
 
     try:
+        ensure_event_room_booking_schema()
+        cursor.execute("SELECT COUNT(*) FROM event_room_bookings WHERE status = 'pending'")
+        pending_event_room_count = cursor.fetchone()[0] or 0
+    except sqlite3.Error:
+        pending_event_room_count = 0
+
+    try:
         ensure_v321_schema()
         cursor.execute("""
         SELECT COUNT(*)
@@ -2931,6 +3086,10 @@ def home():
                         <strong>Locations & Rooms</strong>
                         <span>Manage teaching addresses and classrooms</span>
                     </a>
+                    <a class="primary-action" href="/owner_event_room_bookings">
+                        <strong>Event Room Bookings</strong>
+                        <span>Review requests and manage weekend events</span>
+                    </a>
                     <a class="primary-action" href="/messages">
                         <strong>Messages{message_badge}</strong>
                         <span>Parent and teacher communication</span>
@@ -2957,6 +3116,10 @@ def home():
                     <a class="attention-card {'alert' if pending_booking_count else ''}" href="/owner_booking_requests">
                         <div class="label">Booking Requests</div>
                         <div class="value">{pending_booking_count}</div>
+                    </a>
+                    <a class="attention-card {'alert' if pending_event_room_count else ''}" href="/owner_event_room_bookings">
+                        <div class="label">Event Room Requests</div>
+                        <div class="value">{pending_event_room_count}</div>
                     </a>
                     <a class="attention-card {'alert' if pending_cancel_count else ''}" href="/owner_cancel_requests">
                         <div class="label">Cancel Requests</div>
@@ -3006,6 +3169,7 @@ def home():
         <a href="/add_student">Add Student</a>
         <a href="/add_schedule">Add Schedule</a>
         <a href="/locations_rooms">Locations & Rooms</a>
+        <a href="/owner_event_room_bookings">Event Room Bookings</a>
         <a href="/calendar">Calendar</a>
         <a href="/calendar/today">Today</a>
         <a href="/students">Students</a>
@@ -12986,6 +13150,371 @@ def room_availability():
     </body>
     </html>
     """
+
+
+@app.route("/event_room_booking", methods=["GET", "POST"])
+def event_room_booking():
+    if not require_teacher():
+        return redirect("/teacher_login")
+
+    ensure_event_room_booking_schema()
+    teacher_name = session.get("teacher_name") or "Teacher"
+    message = ""
+    error = ""
+    today_obj = hmusic_today()
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "create").strip()
+        if action == "cancel":
+            booking_id = request.form.get("booking_id")
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+            UPDATE event_room_bookings
+            SET status = 'cancelled', updated_at = ?
+            WHERE id = ?
+            AND LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))
+            AND status = 'pending'
+            """, (datetime.now().strftime("%Y-%m-%d %H:%M"), booking_id, teacher_name))
+            changed = cursor.rowcount
+            conn.commit()
+            conn.close()
+            if changed:
+                create_notification(
+                    "owner", "owner", "Event Room request cancelled",
+                    f"{teacher_name} cancelled a pending Event Room request.",
+                    "/owner_event_room_bookings", related_type="event_room_booking", related_id=int(booking_id or 0),
+                )
+                return redirect("/event_room_booking?cancelled=1")
+            error = "Only your pending requests can be cancelled."
+        else:
+            try:
+                payload = event_room_booking_payload(request.form)
+                if payload["booking_date"] < today_obj.strftime("%Y-%m-%d"):
+                    raise ValueError("Choose an upcoming weekend date.")
+                conn = sqlite3.connect("hmusic.db")
+                cursor = conn.cursor()
+                conflict = event_room_booking_conflict(
+                    cursor, payload["booking_date"], payload["start_time"], payload["end_time"]
+                )
+                if conflict:
+                    conn.close()
+                    raise ValueError(
+                        f"That time overlaps {event_room_display_time(conflict[3])}–{event_room_display_time(conflict[4])}. Choose another time."
+                    )
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                cursor.execute("""
+                INSERT INTO event_room_bookings (
+                    teacher_name, event_type, title, booking_date, start_time, end_time,
+                    expected_attendance, audience_type, setup_requirements, notes,
+                    location_name, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Event Room', 'pending', ?, ?)
+                """, (
+                    teacher_name, payload["event_type"], payload["title"], payload["booking_date"],
+                    payload["start_time"], payload["end_time"], payload["expected_attendance"],
+                    payload["audience_type"], payload["setup_requirements"], payload["notes"], now, now,
+                ))
+                booking_id = cursor.lastrowid
+                conn.commit()
+                conn.close()
+                create_notification(
+                    "owner", "owner", "New Event Room booking request",
+                    f"{teacher_name} requested {payload['booking_date']} "
+                    f"{event_room_display_time(payload['start_time'])}–{event_room_display_time(payload['end_time'])} for {payload['title']}.",
+                    "/owner_event_room_bookings", related_type="event_room_booking", related_id=booking_id,
+                )
+                return redirect("/event_room_booking?sent=1")
+            except ValueError as exc:
+                error = str(exc)
+
+    if request.args.get("sent"):
+        message = "Booking request sent to owner."
+    elif request.args.get("cancelled"):
+        message = "Pending booking request cancelled."
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, teacher_name, event_type, title, booking_date, start_time, end_time,
+           expected_attendance, audience_type, setup_requirements, notes, status, owner_note
+    FROM event_room_bookings
+    WHERE booking_date >= ?
+    AND status IN ('pending', 'approved')
+    ORDER BY booking_date, start_time, id
+    LIMIT 80
+    """, (today_obj.strftime("%Y-%m-%d"),))
+    upcoming = cursor.fetchall()
+    cursor.execute("""
+    SELECT id, event_type, title, booking_date, start_time, end_time, status, owner_note
+    FROM event_room_bookings
+    WHERE LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))
+    ORDER BY booking_date DESC, start_time DESC, id DESC
+    LIMIT 30
+    """, (teacher_name,))
+    mine = cursor.fetchall()
+    conn.close()
+
+    weekend_dates = []
+    scan_date = today_obj
+    while len(weekend_dates) < 12:
+        if scan_date.weekday() in (5, 6):
+            weekend_dates.append(scan_date)
+        scan_date += timedelta(days=1)
+    booking_dates = {row[4] for row in upcoming}
+    weekend_buttons = "".join(
+        f'<button type="button" class="erb-day {"busy" if item.strftime("%Y-%m-%d") in booking_dates else ""}" '
+        f'onclick="chooseEventRoomDate(\'{item.strftime("%Y-%m-%d")}\')">'
+        f'<b>{item.strftime("%a")}</b><span>{item.strftime("%b")} {item.day}</span></button>'
+        for item in weekend_dates
+    )
+
+    booking_cards = ""
+    for row in upcoming:
+        status_class = "approved" if row[11] == "approved" else "pending"
+        booking_cards += f"""
+        <article class="erb-booking {status_class}">
+            <div><b>{escape(str(row[4]))}</b><span>{escape(event_room_display_time(row[5]))}–{escape(event_room_display_time(row[6]))}</span></div>
+            <div><strong>{escape(str(row[3] or 'Studio Event'))}</strong><span>{escape(str(row[1] or 'Teacher'))} · {escape(EVENT_ROOM_TYPES.get(row[2], row[2] or 'Event'))}</span></div>
+            <span class="erb-status">{escape(EVENT_ROOM_STATUSES.get(row[11], row[11] or 'Pending'))}</span>
+        </article>
+        """
+    booking_cards = booking_cards or '<div class="erb-empty">No upcoming Event Room bookings.</div>'
+
+    my_rows = ""
+    for row in mine:
+        cancel_action = ""
+        if row[6] == "pending":
+            cancel_action = f"""
+            <form method="POST"><input type="hidden" name="action" value="cancel"><input type="hidden" name="booking_id" value="{row[0]}">
+            <button class="erb-cancel" type="submit">Cancel request</button></form>
+            """
+        my_rows += f"""
+        <tr><td>{escape(str(row[3]))}<small>{escape(event_room_display_time(row[4]))}–{escape(event_room_display_time(row[5]))}</small></td>
+        <td>{escape(str(row[2] or ''))}<small>{escape(EVENT_ROOM_TYPES.get(row[1], row[1] or ''))}</small></td>
+        <td><span class="erb-table-status {escape(str(row[6] or ''))}">{escape(EVENT_ROOM_STATUSES.get(row[6], row[6] or ''))}</span><small>{escape(str(row[7] or ''))}</small></td>
+        <td>{cancel_action}</td></tr>
+        """
+    my_rows = my_rows or "<tr><td colspan='4'>No booking requests yet.</td></tr>"
+
+    default_date = weekend_dates[0].strftime("%Y-%m-%d")
+    event_type_options = "".join(f'<option value="{key}">{escape(label)}</option>' for key, label in EVENT_ROOM_TYPES.items())
+    notice_html = f'<div class="erb-notice">{escape(message)}</div>' if message else ""
+    error_html = f'<div class="erb-error">{escape(error)}</div>' if error else ""
+    page_html = f"""
+    <div class="erb-head"><div><h1>Event Room Booking</h1><p>Book weekend studio events from 6:00–8:30 PM.</p></div><a href="#my-event-room-bookings">My bookings</a></div>
+    {notice_html}{error_html}
+    <div class="erb-weekends">{weekend_buttons}</div>
+    <div class="erb-layout">
+        <section class="erb-card"><div class="erb-card-head"><h2>Upcoming bookings</h2><span>Event Room</span></div><div class="erb-list">{booking_cards}</div></section>
+        <section class="erb-card"><div class="erb-card-head"><h2>Request a time</h2><span>Owner approval required</span></div>
+            <form method="POST" class="erb-form">
+                <input type="hidden" name="action" value="create">
+                <label>Date<input id="erbBookingDate" type="date" name="booking_date" min="{today_obj.strftime('%Y-%m-%d')}" value="{escape(request.form.get('booking_date') or default_date)}" required></label>
+                <div class="erb-two"><label>Start<select name="start_time"><option value="18:00">6:00 PM</option><option value="18:30">6:30 PM</option><option value="19:00">7:00 PM</option><option value="19:30">7:30 PM</option><option value="20:00">8:00 PM</option></select></label>
+                <label>End<select name="end_time"><option value="18:30">6:30 PM</option><option value="19:00">7:00 PM</option><option value="19:30">7:30 PM</option><option value="20:00" selected>8:00 PM</option><option value="20:30">8:30 PM</option></select></label></div>
+                <label>Event type<select name="event_type">{event_type_options}</select></label>
+                <label>Title<input name="title" maxlength="160" value="{escape(request.form.get('title') or '', quote=True)}" placeholder="Example: Piano Salon & Class" required></label>
+                <div class="erb-two"><label>Expected attendance<input type="number" name="expected_attendance" min="0" max="500" value="{escape(request.form.get('expected_attendance') or '20', quote=True)}"></label>
+                <label>Audience<select name="audience_type"><option value="internal">Teachers only</option><option value="studio" selected>Studio students</option><option value="families">Students & families</option></select></label></div>
+                <label>Setup requirements<textarea name="setup_requirements" placeholder="Piano, chairs, projector, music stands…">{escape(request.form.get('setup_requirements') or '')}</textarea></label>
+                <label>Notes for owner<textarea name="notes" placeholder="Guest teacher, program, or other details">{escape(request.form.get('notes') or '')}</textarea></label>
+                <button class="erb-submit" type="submit">Submit booking request</button>
+            </form>
+        </section>
+    </div>
+    <section class="erb-card erb-my" id="my-event-room-bookings"><div class="erb-card-head"><h2>My bookings</h2><span>Latest 30</span></div><div class="erb-table-wrap"><table><tr><th>Date</th><th>Event</th><th>Status</th><th></th></tr>{my_rows}</table></div></section>
+    <style>
+      .erb-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}}.erb-head h1{{margin:0 0 5px;font-size:27px}}.erb-head p{{margin:0;color:var(--td-muted)}}.erb-head a{{border:1px solid var(--td-line);border-radius:7px;padding:9px 12px;color:var(--td-blue);font-weight:800}}
+      .erb-notice,.erb-error{{padding:11px 13px;border-radius:7px;margin-bottom:12px;font-weight:700}}.erb-notice{{background:var(--td-green-soft);color:var(--td-green)}}.erb-error{{background:#FEF3F2;color:#B42318;border:1px solid #FECDCA}}
+      .erb-weekends{{display:grid;grid-template-columns:repeat(6,minmax(74px,1fr));gap:7px;margin-bottom:14px}}.erb-day{{min-height:58px;border:1px solid var(--td-line);border-radius:7px;background:#fff;color:var(--td-text);text-align:left;padding:8px 10px;cursor:pointer}}.erb-day b,.erb-day span{{display:block}}.erb-day span{{color:var(--td-muted);font-size:12px;margin-top:3px}}.erb-day.busy{{box-shadow:inset 3px 0 0 var(--td-blue);background:var(--td-blue-soft)}}
+      .erb-layout{{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(330px,.85fr);gap:14px;align-items:start}}.erb-card{{background:#fff;border:1px solid var(--td-line);border-radius:8px;overflow:hidden}}.erb-card-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 17px;border-bottom:1px solid var(--td-line)}}.erb-card-head h2{{margin:0;font-size:17px}}.erb-card-head span{{font-size:12px;color:var(--td-muted)}}
+      .erb-list{{padding:6px 16px}}.erb-booking{{display:grid;grid-template-columns:128px minmax(0,1fr) auto;gap:14px;align-items:center;padding:13px 0;border-bottom:1px solid var(--td-line)}}.erb-booking:last-child{{border-bottom:0}}.erb-booking b,.erb-booking strong,.erb-booking span{{display:block}}.erb-booking div>span{{font-size:12px;color:var(--td-muted);margin-top:3px}}.erb-status,.erb-table-status{{display:inline-flex!important;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:900;background:#FFF4E5;color:#A15C07}}.erb-booking.approved .erb-status,.erb-table-status.approved{{background:var(--td-green-soft);color:var(--td-green)}}.erb-empty{{padding:22px 0;color:var(--td-muted)}}
+      .erb-form{{padding:16px}}.erb-form label{{display:block;color:var(--td-muted);font-size:12px;font-weight:800;margin-bottom:11px}}.erb-form input,.erb-form select,.erb-form textarea{{width:100%;margin-top:5px;border:1px solid var(--td-line);border-radius:7px;background:#fff;color:var(--td-text);padding:9px 10px;font:inherit}}.erb-form input,.erb-form select{{min-height:40px}}.erb-form textarea{{min-height:66px;resize:vertical}}.erb-two{{display:grid;grid-template-columns:1fr 1fr;gap:9px}}.erb-submit{{width:100%;min-height:44px;border:0;border-radius:7px;background:var(--td-blue);color:#fff;font-weight:900;cursor:pointer}}
+      .erb-my{{margin-top:14px}}.erb-table-wrap{{overflow:auto}}.erb-my table{{width:100%;border-collapse:collapse}}.erb-my th,.erb-my td{{padding:11px 14px;border-bottom:1px solid var(--td-line);text-align:left;vertical-align:top}}.erb-my th{{font-size:12px;color:var(--td-muted);background:#F8FAFC}}.erb-my td small{{display:block;color:var(--td-muted);margin-top:4px}}.erb-table-status.rejected,.erb-table-status.cancelled{{background:#FEE4E2;color:#B42318}}.erb-cancel{{border:1px solid #FECDCA;background:#fff;color:#B42318;border-radius:6px;padding:7px 9px;cursor:pointer}}
+      @media(max-width:900px){{.erb-weekends{{grid-template-columns:repeat(3,1fr)}}.erb-layout{{grid-template-columns:1fr}}}}@media(max-width:560px){{.erb-head{{display:block}}.erb-head a{{display:inline-block;margin-top:12px}}.erb-weekends{{grid-template-columns:repeat(2,1fr)}}.erb-booking{{grid-template-columns:1fr}}.erb-two{{grid-template-columns:1fr}}}}
+    </style>
+    <script>function chooseEventRoomDate(value){{const input=document.getElementById('erbBookingDate');if(input){{input.value=value;input.scrollIntoView({{behavior:'smooth',block:'center'}});}}}}</script>
+    """
+    return hstudio_teacher_dark_shell(
+        teacher_name,
+        get_unread_message_count("teacher", teacher_name),
+        page_html,
+        active="event_room_booking",
+        missing_homework_count=get_missing_homework_count(teacher_name),
+    )
+
+
+@app.route("/owner_event_room_bookings", methods=["GET", "POST"])
+def owner_event_room_bookings():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_event_room_booking_schema()
+    notice = ""
+    error = ""
+    notify_teacher = None
+    if request.method == "POST":
+        action = (request.form.get("action") or "create").strip()
+        try:
+            payload = event_room_booking_payload(request.form)
+            teacher_name = (request.form.get("teacher_name") or "").strip()
+            if not teacher_name:
+                raise ValueError("Teacher or host is required.")
+            status = (request.form.get("status") or "approved").strip()
+            if status not in EVENT_ROOM_STATUSES:
+                status = "approved"
+            booking_id = request.form.get("booking_id")
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            if status in ("pending", "approved"):
+                conflict = event_room_booking_conflict(
+                    cursor, payload["booking_date"], payload["start_time"], payload["end_time"],
+                    exclude_id=booking_id if action == "update" else None,
+                )
+                if conflict:
+                    conn.close()
+                    raise ValueError(
+                        f"Conflict with {conflict[1]}: {conflict[2]} "
+                        f"({event_room_display_time(conflict[3])}–{event_room_display_time(conflict[4])})."
+                    )
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            owner_note = (request.form.get("owner_note") or "").strip()[:1000]
+            if action == "update":
+                cursor.execute("""
+                SELECT status FROM event_room_bookings WHERE id = ?
+                """, (booking_id,))
+                previous = cursor.fetchone()
+                if not previous:
+                    conn.close()
+                    raise ValueError("Booking not found.")
+                cursor.execute("""
+                UPDATE event_room_bookings
+                SET teacher_name = ?, event_type = ?, title = ?, booking_date = ?,
+                    start_time = ?, end_time = ?, expected_attendance = ?, audience_type = ?,
+                    setup_requirements = ?, notes = ?, status = ?, owner_note = ?,
+                    reviewed_at = ?, updated_at = ?
+                WHERE id = ?
+                """, (
+                    teacher_name, payload["event_type"], payload["title"], payload["booking_date"],
+                    payload["start_time"], payload["end_time"], payload["expected_attendance"],
+                    payload["audience_type"], payload["setup_requirements"], payload["notes"],
+                    status, owner_note, now, now, booking_id,
+                ))
+                notice = "Booking updated."
+                if previous[0] != status:
+                    notify_teacher = (teacher_name, status, payload["title"], int(booking_id))
+            else:
+                cursor.execute("""
+                INSERT INTO event_room_bookings (
+                    teacher_name, event_type, title, booking_date, start_time, end_time,
+                    expected_attendance, audience_type, setup_requirements, notes,
+                    location_name, status, owner_note, reviewed_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Event Room', ?, ?, ?, ?, ?)
+                """, (
+                    teacher_name, payload["event_type"], payload["title"], payload["booking_date"],
+                    payload["start_time"], payload["end_time"], payload["expected_attendance"],
+                    payload["audience_type"], payload["setup_requirements"], payload["notes"],
+                    status, owner_note, now, now, now,
+                ))
+                booking_id = cursor.lastrowid
+                notice = "Booking created."
+                notify_teacher = (teacher_name, status, payload["title"], booking_id)
+            conn.commit()
+            conn.close()
+            if notify_teacher:
+                create_notification(
+                    "teacher", notify_teacher[0],
+                    f"Event Room booking {EVENT_ROOM_STATUSES.get(notify_teacher[1], notify_teacher[1]).lower()}",
+                    f"{notify_teacher[2]} is now {EVENT_ROOM_STATUSES.get(notify_teacher[1], notify_teacher[1]).lower()}.",
+                    "/event_room_booking", related_type="event_room_booking", related_id=notify_teacher[3],
+                )
+        except ValueError as exc:
+            error = str(exc)
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, teacher_name, event_type, title, booking_date, start_time, end_time,
+           expected_attendance, audience_type, setup_requirements, notes, status,
+           owner_note, created_at
+    FROM event_room_bookings
+    ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+             booking_date DESC, start_time, id DESC
+    LIMIT 100
+    """)
+    rows = cursor.fetchall()
+    cursor.execute("SELECT teacher_name FROM teachers WHERE COALESCE(active, 1) = 1 ORDER BY teacher_name")
+    teachers = [row[0] for row in cursor.fetchall() if row[0]]
+    conn.close()
+
+    teacher_options = "".join(f'<option value="{escape(str(name), quote=True)}">{escape(str(name))}</option>' for name in teachers)
+    event_type_options = "".join(f'<option value="{key}">{escape(label)}</option>' for key, label in EVENT_ROOM_TYPES.items())
+    status_options = "".join(
+        f'<option value="{key}" {"selected" if key == "approved" else ""}>{escape(label)}</option>'
+        for key, label in EVENT_ROOM_STATUSES.items()
+    )
+    audience_options = '<option value="internal">Teachers only</option><option value="studio">Studio students</option><option value="families">Students & families</option>'
+
+    booking_rows = ""
+    for row in rows:
+        type_opts = "".join(f'<option value="{key}" {"selected" if key == row[2] else ""}>{escape(label)}</option>' for key, label in EVENT_ROOM_TYPES.items())
+        state_opts = "".join(f'<option value="{key}" {"selected" if key == row[11] else ""}>{escape(label)}</option>' for key, label in EVENT_ROOM_STATUSES.items())
+        audience_opts = "".join(
+            f'<option value="{key}" {"selected" if key == row[8] else ""}>{label}</option>'
+            for key, label in (("internal", "Teachers only"), ("studio", "Studio students"), ("families", "Students & families"))
+        )
+        booking_rows += f"""
+        <details class="oerb-row" {"open" if row[11] == "pending" else ""}>
+          <summary><span><b>{escape(str(row[4]))} · {escape(event_room_display_time(row[5]))}–{escape(event_room_display_time(row[6]))}</b><small>{escape(str(row[3] or ''))} · {escape(str(row[1] or ''))}</small></span><em class="{escape(str(row[11] or ''))}">{escape(EVENT_ROOM_STATUSES.get(row[11], row[11] or ''))}</em></summary>
+          <form method="POST" class="oerb-edit">
+            <input type="hidden" name="action" value="update"><input type="hidden" name="booking_id" value="{row[0]}">
+            <label>Teacher / host<input name="teacher_name" value="{escape(str(row[1] or ''), quote=True)}" list="oerbTeachers" required></label>
+            <label>Event type<select name="event_type">{type_opts}</select></label>
+            <label class="wide">Title<input name="title" value="{escape(str(row[3] or ''), quote=True)}" required></label>
+            <label>Date<input type="date" name="booking_date" value="{escape(str(row[4] or ''), quote=True)}" required></label>
+            <label>Start<input type="time" name="start_time" step="1800" value="{escape(str(row[5] or ''), quote=True)}" required></label>
+            <label>End<input type="time" name="end_time" step="1800" value="{escape(str(row[6] or ''), quote=True)}" required></label>
+            <label>Attendance<input type="number" name="expected_attendance" min="0" max="500" value="{int(row[7] or 0)}"></label>
+            <label>Audience<select name="audience_type">{audience_opts}</select></label>
+            <label>Status<select name="status">{state_opts}</select></label>
+            <label class="wide">Setup<textarea name="setup_requirements">{escape(str(row[9] or ''))}</textarea></label>
+            <label class="wide">Event notes<textarea name="notes">{escape(str(row[10] or ''))}</textarea></label>
+            <label class="wide">Owner note<textarea name="owner_note">{escape(str(row[12] or ''))}</textarea></label>
+            <div class="wide"><button type="submit">Save booking</button></div>
+          </form>
+        </details>
+        """
+    booking_rows = booking_rows or '<div class="oerb-empty">No Event Room bookings yet.</div>'
+    notice_html = f'<div class="oerb-notice">{escape(notice)}</div>' if notice else ""
+    error_html = f'<div class="oerb-error">{escape(error)}</div>' if error else ""
+    default_date = (hmusic_today() + timedelta(days=(5 - hmusic_today().weekday()) % 7)).strftime("%Y-%m-%d")
+
+    return f"""
+    <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Event Room Bookings</title>
+    <style>
+      *{{box-sizing:border-box}}body{{margin:0;background:#F5F7FA;color:#172033;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}a{{color:#185FA5;text-decoration:none}}.oerb-wrap{{max-width:1180px;margin:auto;padding:24px}}.oerb-head{{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:18px}}.oerb-head h1{{margin:0 0 5px}}.oerb-head p{{margin:0;color:#667085}}.oerb-back{{border:1px solid #D7DEE8;background:#fff;border-radius:7px;padding:9px 12px;font-weight:800}}
+      .oerb-notice,.oerb-error{{padding:11px 13px;border-radius:7px;margin-bottom:12px;font-weight:700}}.oerb-notice{{background:#EAF7F0;color:#1E7A50}}.oerb-error{{background:#FEF3F2;color:#B42318;border:1px solid #FECDCA}}.oerb-card{{background:#fff;border:1px solid #DFE5EC;border-radius:8px;margin-bottom:16px;overflow:hidden}}.oerb-card-head{{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:15px 17px;border-bottom:1px solid #E5E9EF}}.oerb-card-head h2{{font-size:18px;margin:0}}.oerb-card-head span{{color:#667085;font-size:12px}}
+      .oerb-create,.oerb-edit{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;padding:16px}}label{{display:block;color:#667085;font-size:12px;font-weight:800}}input,select,textarea{{width:100%;margin-top:5px;border:1px solid #D7DEE8;border-radius:7px;background:#fff;color:#172033;padding:9px 10px;font:inherit}}input,select{{min-height:40px}}textarea{{min-height:65px;resize:vertical}}.wide{{grid-column:1/-1}}button{{min-height:40px;border:0;border-radius:7px;background:#185FA5;color:#fff;padding:0 14px;font-weight:900;cursor:pointer}}
+      .oerb-row{{border-bottom:1px solid #E5E9EF}}.oerb-row:last-child{{border-bottom:0}}.oerb-row summary{{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 17px;cursor:pointer;list-style:none}}.oerb-row summary::-webkit-details-marker{{display:none}}.oerb-row summary b,.oerb-row summary small{{display:block}}.oerb-row summary small{{color:#667085;margin-top:4px}}.oerb-row summary em{{font-style:normal;border-radius:999px;padding:5px 8px;background:#FFF4E5;color:#A15C07;font-size:11px;font-weight:900}}.oerb-row summary em.approved{{background:#EAF7F0;color:#1E7A50}}.oerb-row summary em.rejected,.oerb-row summary em.cancelled{{background:#FEE4E2;color:#B42318}}.oerb-edit{{border-top:1px solid #E5E9EF;background:#FAFBFC}}.oerb-empty{{padding:24px;color:#667085}}
+      @media(max-width:760px){{.oerb-wrap{{padding:16px 12px}}.oerb-head{{display:block}}.oerb-back{{display:inline-block;margin-top:12px}}.oerb-create,.oerb-edit{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.oerb-row summary{{align-items:flex-start}}}}
+    </style></head><body><main class="oerb-wrap">
+      <div class="oerb-head"><div><h1>Event Room Bookings</h1><p>Review teacher requests and manage weekend studio events.</p></div><a class="oerb-back" href="/">Owner Dashboard</a></div>
+      {notice_html}{error_html}
+      <datalist id="oerbTeachers">{teacher_options}</datalist>
+      <section class="oerb-card"><div class="oerb-card-head"><h2>Create booking</h2><span>Owner-created bookings are approved by default</span></div>
+        <form method="POST" class="oerb-create"><input type="hidden" name="action" value="create">
+          <label>Teacher / host<input name="teacher_name" list="oerbTeachers" required></label><label>Event type<select name="event_type">{event_type_options}</select></label><label>Status<select name="status">{status_options}</select></label>
+          <label class="wide">Title<input name="title" placeholder="Piano Salon & Class" required></label><label>Date<input type="date" name="booking_date" value="{default_date}" required></label><label>Start<input type="time" name="start_time" step="1800" value="18:30" required></label><label>End<input type="time" name="end_time" step="1800" value="20:00" required></label>
+          <label>Attendance<input type="number" name="expected_attendance" min="0" max="500" value="20"></label><label>Audience<select name="audience_type">{audience_options}</select></label><label>Owner note<input name="owner_note"></label>
+          <label class="wide">Setup requirements<textarea name="setup_requirements"></textarea></label><label class="wide">Event notes<textarea name="notes"></textarea></label><div class="wide"><button type="submit">Create booking</button></div>
+        </form>
+      </section>
+      <section class="oerb-card"><div class="oerb-card-head"><h2>Manage bookings</h2><span>Pending requests appear first</span></div>{booking_rows}</section>
+    </main></body></html>
+    """
+
 
 @app.route("/teacher_dashboard")
 def teacher_dashboard():
@@ -47061,6 +47590,7 @@ def initialize_runtime_database():
             schema_initializer = globals().get(schema_name)
             if schema_initializer is not None:
                 schema_initializer()
+    ensure_event_room_booking_schema()
     ensure_guardian_billing_schema()
     conn = sqlite3.connect("hmusic.db", timeout=15)
     conn.execute("SELECT 1").fetchone()
