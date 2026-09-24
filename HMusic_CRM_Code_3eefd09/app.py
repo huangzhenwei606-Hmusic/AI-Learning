@@ -1610,6 +1610,7 @@ def hstudio_teacher_dark_shell(teacher_name, unread_messages, content_html, acti
 
 TEACHER_PERMISSION_DEFAULTS = {
     "attendance": 1,
+    "manage_group_roster": 1,
     "lesson_notes": 1,
     "private_notes": 1,
     "homework": 1,
@@ -1631,6 +1632,7 @@ TEACHER_PERMISSION_DEFAULTS = {
 
 TEACHER_PERMISSION_LABELS = [
     ("attendance", "Attendance", "Mark Present, Late, No show, Excused."),
+    ("manage_group_roster", "Manage group roster", "Add or remove students from the teacher's own group lessons."),
     ("lesson_notes", "Lesson note", "Write parent-visible lesson notes."),
     ("private_notes", "Private note", "Write notes only teacher and owner can see."),
     ("homework", "Homework", "Assign homework and send practice reminders."),
@@ -13117,6 +13119,14 @@ def teacher_dashboard():
         f'<option value="{escape(hmusic_student_parent_label(r[0], r[1]), quote=True)}"></option>'
         for r in teacher_calendar_students
     )
+    teacher_calendar_student_payload = json.dumps([
+        {
+            "name": r[0] or "",
+            "parent_name": r[1] or "",
+            "label": hmusic_student_parent_label(r[0], r[1]),
+        }
+        for r in teacher_calendar_students
+    ])
 
     def status_label(status):
         raw = (status or "").strip().lower()
@@ -13348,7 +13358,7 @@ def teacher_dashboard():
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
     .panel-status{display:inline-flex;align-items:center;border-radius:999px;padding:5px 11px;background:var(--s-scheduled);color:#fff;font-weight:900;font-size:12px;line-height:1;margin-bottom:10px}.panel-status.scheduled{background:var(--s-scheduled)}.panel-status.present{background:var(--s-present)}.panel-status.late{background:#D99019}.panel-status.no_show{background:var(--s-noshow)}.panel-status.excused{background:var(--s-excused)}.panel-status.early_cancel{background:#98A2B3}.panel-status.cancelled{background:var(--s-cancelled)}
     .lesson-panel h2{font-size:26px;margin:0 0 6px;color:#172033}.panel-sub{font-size:15px;color:#667085;font-weight:700}.panel-grid{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E5E7EB;background:#fff}.panel-cell{padding:15px 28px;border-right:1px solid #E5E7EB;border-bottom:1px solid #E5E7EB}.panel-cell:nth-child(2n){border-right:0}.panel-label{display:block;color:#667085;font-size:12px;text-transform:uppercase;font-weight:900;margin-bottom:6px;letter-spacing:0}.panel-value{font-size:18px;font-weight:900;color:#172033}
-    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-inline-link{margin-top:10px;border:0;background:transparent;color:var(--blue);font:inherit;font-size:13px;font-weight:900;padding:0;cursor:pointer}.teacher-duration-request{display:none;margin-top:10px;padding:12px;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC}.teacher-duration-request.show{display:block}.teacher-group-panel{display:none}.teacher-group-panel.show{display:block}.teacher-group-name{font-size:20px;font-weight:900}.teacher-group-list{display:grid;gap:8px;margin-top:12px}.teacher-group-row{display:grid;grid-template-columns:minmax(0,1fr) 148px;gap:10px;align-items:center;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC;padding:10px}.teacher-group-child{min-width:0}.teacher-group-child b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#172033}.teacher-group-child small{display:block;color:#667085;font-weight:800;margin-top:2px}.teacher-group-row select{min-height:40px}.panel-scope-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-scope-option{display:flex;gap:9px;align-items:flex-start;border:1px solid #D9DEE8;border-radius:8px;background:#fff;padding:10px 11px;cursor:pointer}.panel-scope-option.active{border-color:#B8CCE3;background:var(--blue-bg);box-shadow:inset 3px 0 0 var(--blue)}.panel-scope-option input{margin-top:2px;accent-color:var(--blue)}.panel-scope-option span{display:block;line-height:1.25}.panel-scope-option b{display:block;color:#172033;font-size:13px}.panel-scope-option small{display:block;color:#667085;font-size:11px;margin-top:3px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
+    .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-inline-link{margin-top:10px;border:0;background:transparent;color:var(--blue);font:inherit;font-size:13px;font-weight:900;padding:0;cursor:pointer}.teacher-duration-request{display:none;margin-top:10px;padding:12px;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC}.teacher-duration-request.show{display:block}.teacher-group-panel{display:none}.teacher-group-panel.show{display:block}.teacher-group-name{font-size:20px;font-weight:900}.teacher-group-list{display:grid;gap:8px;margin-top:12px}.teacher-group-row{display:grid;grid-template-columns:minmax(0,1fr) 128px 36px;gap:8px;align-items:center;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC;padding:10px}.teacher-group-child{min-width:0}.teacher-group-child b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#172033}.teacher-group-child small{display:block;color:#667085;font-weight:800;margin-top:2px}.teacher-group-row select{min-height:40px}.teacher-group-remove{width:36px;height:36px;border:1px solid #F2C7C7;border-radius:8px;background:#fff;color:#B42318;cursor:pointer;font-size:17px}.teacher-group-remove:hover{background:#FEF3F2}.teacher-group-add{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:10px}.teacher-group-add button{min-width:44px;border:0;border-radius:8px;background:var(--blue);color:#fff;font:inherit;font-weight:900;padding:0 13px;cursor:pointer}.teacher-group-help{display:block;margin-top:8px;color:#667085;font-size:11px;line-height:1.4}.panel-scope-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-scope-option{display:flex;gap:9px;align-items:flex-start;border:1px solid #D9DEE8;border-radius:8px;background:#fff;padding:10px 11px;cursor:pointer}.panel-scope-option.active{border-color:#B8CCE3;background:var(--blue-bg);box-shadow:inset 3px 0 0 var(--blue)}.panel-scope-option input{margin-top:2px;accent-color:var(--blue)}.panel-scope-option span{display:block;line-height:1.25}.panel-scope-option b{display:block;color:#172033;font-size:13px}.panel-scope-option small{display:block;color:#667085;font-size:11px;margin-top:3px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
     @media(max-width:900px){
       .calendar-day,.calendar-grid.month-view .calendar-day,.calendar-grid.week-view .calendar-day{min-height:0;border:1px solid var(--td-line);border-radius:8px;padding:10px;background:#fff}
@@ -13539,6 +13549,7 @@ def teacher_dashboard():
         direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
         direct_cancel = bool(teacher_perms.get("direct_cancel"))
         delete_allowed = bool(teacher_perms.get("delete_lessons"))
+        manage_group_roster = bool(teacher_perms.get("manage_group_roster"))
         sub_allowed = bool(teacher_perms.get("sub_request"))
         reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
         reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
@@ -13550,6 +13561,7 @@ def teacher_dashboard():
         mobile_add_button = f'<button type="button" onclick="teacherAddOnDate(\'{today}\')"><i class="ti ti-plus"></i> Add lesson</button>' if teacher_perms.get("add_own_schedule") else ''
         teacher_schedule_return_url = request.full_path if request.query_string else "/teacher_dashboard?view=schedule"
         teacher_schedule_return_url_attr = escape(teacher_schedule_return_url, quote=True)
+        teacher_group_add_html = '<div class="teacher-group-add"><input class="panel-field" id="tPanelGroupStudentInput" list="teacherInlineStudentList" placeholder="Search student" autocomplete="off" onkeydown="if(event.key === \'Enter\'){event.preventDefault();teacherAddGroupStudent();}"><button type="button" onclick="teacherAddGroupStudent()" title="Add student"><i class="ti ti-user-plus"></i> Add</button></div><small class="teacher-group-help">Roster changes follow the selected lesson scope below. Billing remains owner-managed.</small>' if manage_group_roster else ''
         content = f"""
             <div class="schedule-head">
                 <div class="schedule-title">
@@ -13691,7 +13703,7 @@ def teacher_dashboard():
             <div class="panel-grid"><div class="panel-cell"><span class="panel-label">Date</span><div class="panel-value" id="tPanelDate"></div></div><div class="panel-cell"><span class="panel-label">Time</span><div class="panel-value" id="tPanelTime"></div></div><div class="panel-cell"><span class="panel-label">Room</span><div class="panel-value" id="tPanelRoom"></div></div><div class="panel-cell"><span class="panel-label">Type</span><div class="panel-value" id="tPanelType"></div></div></div>
             <div class="panel-section"><h3>Location & room</h3><select class="panel-field" id="tPanelRoomSelect" onchange="syncTeacherPanelRoom()">{teacher_calendar_room_options}</select></div>
             <div class="panel-section"><h3>Course & duration</h3><select class="panel-field" id="tPanelCourseType" onchange="syncTeacherPanelCourse()">{teacher_calendar_course_options}</select><button class="teacher-course-duration-action" type="button" onclick="toggleTeacherQuickDuration('tPanelDurationRequest', 'tPanelCourseType', 'tPanelRequestedFormat')">+ Add a new duration to this course</button><div class="teacher-duration-quick" id="tPanelDurationRequest"><div class="panel-row"><input class="panel-field" type="number" id="tPanelRequestedDuration" min="15" max="240" step="5" placeholder="New duration"><select class="panel-field" id="tPanelRequestedFormat"><option value="private">Private</option><option value="group">Group</option></select></div><button class="panel-action" style="margin-top:10px;width:100%;min-height:44px" type="button" onclick="teacherAddCourseDuration('tPanelCourseType', 'tPanelRequestedDuration', 'tPanelRequestedFormat')">Add to course catalog</button></div></div>
-            <div class="panel-section teacher-group-panel" id="tPanelGroupSection"><h3>Group</h3><input class="panel-field teacher-group-name" id="tPanelGroupName" placeholder="Group name"><div class="teacher-group-list" id="tPanelGroupRoster"></div></div>
+            <div class="panel-section teacher-group-panel" id="tPanelGroupSection"><h3>Group</h3><input class="panel-field teacher-group-name" id="tPanelGroupName" placeholder="Group name"><div class="teacher-group-list" id="tPanelGroupRoster"></div>{teacher_group_add_html}</div>
         <div class="panel-section" id="tPanelWholeAttendanceSection"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
@@ -13723,9 +13735,11 @@ def teacher_dashboard():
         const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
         const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         const TEACHER_CAN_DELETE = {str(delete_allowed).lower()};
+        const TEACHER_CAN_MANAGE_GROUP_ROSTER = {str(manage_group_roster).lower()};
         const TEACHER_CAN_ADD_SCHEDULE = {str(bool(teacher_perms.get("add_own_schedule"))).lower()};
         const TEACHER_ROOMS = {teacher_calendar_room_payload};
         const TEACHER_COURSES = {teacher_calendar_course_payload};
+        const TEACHER_STUDENTS = {teacher_calendar_student_payload};
         let activeTeacherLesson = null;
         let activeTeacherStatus = 'scheduled';
         let teacherRescheduleScope = 'once';
@@ -13734,6 +13748,7 @@ def teacher_dashboard():
         let teacherPanelCourseChanged = false;
         let teacherPanelRoomChanged = false;
         let teacherGroupNameBaseline = '';
+        let teacherGroupRosterDirty = false;
         function teacherStatusLabel(st) {{ return st === 'parent_cancel_pending_confirm' ? 'Cancel pending confirm' : st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'late' : st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'early_cancel' : st === 'last_min_cancel' ? 'cancelled' : 'scheduled'; }}
         function teacherStatusDotClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'sd-late' : st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : st === 'last_min_cancel' ? 'sd-last-min' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
@@ -13847,6 +13862,7 @@ def teacher_dashboard():
                 const select = document.createElement('select');
                 select.className = 'panel-field teacher-group-attendance';
                 select.dataset.studentName = item.student_name || '';
+                select.dataset.parentName = item.parent_name || '';
                 select.setAttribute('aria-label', (item.student_name || 'Student') + ' attendance');
                 [['scheduled','Scheduled'],['present','Present'],['no_show','No show'],['last_min_cancel','Last min'],['excused_24h','Cancel >24h'],['teacher_cancelled','Teacher cancel']].forEach(([value,label]) => {{
                     const option = document.createElement('option');
@@ -13857,23 +13873,58 @@ def teacher_dashboard():
                 }});
                 row.appendChild(child);
                 row.appendChild(select);
+                if (TEACHER_CAN_MANAGE_GROUP_ROSTER) {{
+                    const remove = document.createElement('button');
+                    remove.type = 'button';
+                    remove.className = 'teacher-group-remove';
+                    remove.dataset.studentName = item.student_name || '';
+                    remove.title = 'Remove student';
+                    remove.setAttribute('aria-label', 'Remove ' + (item.student_name || 'student'));
+                    remove.innerHTML = '<i class="ti ti-trash"></i>';
+                    remove.onclick = () => teacherRemoveGroupStudent(remove.dataset.studentName);
+                    row.appendChild(remove);
+                }} else {{
+                    row.style.gridTemplateColumns = 'minmax(0,1fr) 128px';
+                }}
                 rosterBox.appendChild(row);
             }});
         }}
-        function collectTeacherGroupAttendance() {{
-            return Array.from(document.querySelectorAll('#tPanelGroupRoster .teacher-group-attendance')).map(select => ({{student_name: select.dataset.studentName || '', attendance_status: select.value || 'scheduled'}})).filter(item => item.student_name);
+        function collectTeacherGroupRoster() {{
+            return Array.from(document.querySelectorAll('#tPanelGroupRoster .teacher-group-attendance')).map(select => ({{student_name: select.dataset.studentName || '', parent_name: select.dataset.parentName || '', attendance_status: select.value || 'scheduled'}})).filter(item => item.student_name);
+        }}
+        function teacherAddGroupStudent() {{
+            if (!TEACHER_CAN_MANAGE_GROUP_ROSTER || !activeTeacherLesson || !Number(activeTeacherLesson.is_group || 0)) return;
+            const input = document.getElementById('tPanelGroupStudentInput');
+            const raw = String(input ? input.value || '' : '').trim();
+            const student = TEACHER_STUDENTS.find(item => String(item.name || '').toLowerCase() === raw.toLowerCase() || String(item.label || '').toLowerCase() === raw.toLowerCase());
+            if (!student) {{ alert('Choose an existing student from the list.'); if (input) input.focus(); return; }}
+            const roster = collectTeacherGroupRoster();
+            if (roster.some(item => String(item.student_name || '').toLowerCase() === String(student.name || '').toLowerCase())) {{ alert('This student is already in the group.'); return; }}
+            roster.push({{student_name:student.name, parent_name:student.parent_name || '', attendance_status:'scheduled'}});
+            activeTeacherLesson.group_students = roster;
+            renderTeacherGroupRoster(activeTeacherLesson);
+            teacherGroupRosterDirty = true;
+            if (input) input.value = '';
+        }}
+        function teacherRemoveGroupStudent(studentName) {{
+            if (!TEACHER_CAN_MANAGE_GROUP_ROSTER || !activeTeacherLesson || !Number(activeTeacherLesson.is_group || 0)) return;
+            const roster = collectTeacherGroupRoster();
+            if (roster.length <= 2) {{ alert('A group lesson must keep at least two students.'); return; }}
+            activeTeacherLesson.group_students = roster.filter(item => String(item.student_name || '').toLowerCase() !== String(studentName || '').toLowerCase());
+            renderTeacherGroupRoster(activeTeacherLesson);
+            teacherGroupRosterDirty = true;
         }}
         function syncTeacherPanelCourse() {{ const course = selectedTeacherPanelCourse(); if (!course) return; if (activeTeacherLesson) {{ teacherPanelCourseChanged = teacherPanelCourseChanged || Number(activeTeacherLesson.course_type_id || 0) !== Number(course.id || 0); activeTeacherLesson.course_type_id = course.id; activeTeacherLesson.course_name = course.name; activeTeacherLesson.duration = course.duration; activeTeacherLesson.is_group = course.is_group; }} document.getElementById('tPanelCourse').textContent = (course.name || 'Lesson') + ' · ' + ((activeTeacherLesson && activeTeacherLesson.teacher) || ''); document.getElementById('tPanelType').textContent = course.is_group ? 'Group lesson' : 'Private lesson'; if (typeof renderTeacherGroupRoster === 'function' && activeTeacherLesson) renderTeacherGroupRoster(activeTeacherLesson); }}
         function teacherSelectedCourse(selectId) {{ const select = document.getElementById(selectId); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
         function toggleTeacherQuickDuration(boxId, courseSelectId, formatId) {{ const box = document.getElementById(boxId); if (!box) return; box.classList.toggle('show'); const course = teacherSelectedCourse(courseSelectId); const format = document.getElementById(formatId); if (course && format) format.value = course.is_group ? 'group' : 'private'; }}
         function teacherAddCourseDuration(courseSelectId, durationInputId, formatId) {{ const course = teacherSelectedCourse(courseSelectId); const durationInput = document.getElementById(durationInputId); const duration = Number(durationInput ? durationInput.value : 0); const lessonFormat = (document.getElementById(formatId) || {{value:'private'}}).value; if (!course || !duration) {{ alert('Choose a course and enter the new duration.'); if (durationInput) durationInput.focus(); return; }} fetch('/add_course_duration_quick', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify({{course_type_id:course.id, duration:duration, lesson_format:lessonFormat}})}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Server returned an unreadable response.'}})); if (!r.ok || !d.ok) throw new Error(d.error || 'Could not add duration.'); teacherPanelToast('Added ' + (d.label || 'new duration') + '.'); setTimeout(() => location.reload(), 800); }}).catch(e => alert(e.message)); }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const text = await r.text(); let d = null; try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }} catch (_) {{ const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html'); d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh this page, then log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}}; }} if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
-        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; teacherPanelRoomChanged = false; document.getElementById('tPanelStudent').textContent = teacherGroupTitle(d.lesson); document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.location ? d.lesson.location + ' - ' + (d.lesson.classroom || '') : (d.lesson.classroom || '-'); document.getElementById('tPanelType').textContent = d.lesson.is_group ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const roomSelect = document.getElementById('tPanelRoomSelect'); if (roomSelect) {{ let matched = false; Array.from(roomSelect.options).forEach(opt => {{ const byId = Number(d.lesson.room_id || 0) && Number(opt.dataset.roomId || 0) === Number(d.lesson.room_id || 0); const byName = !matched && opt.value === (d.lesson.classroom || ''); if (!matched && (byId || byName)) {{ opt.selected = true; matched = true; }} }}); if (!matched && d.lesson.classroom) {{ const opt = document.createElement('option'); opt.value = d.lesson.classroom || ''; opt.textContent = d.lesson.location ? d.lesson.location + ' - ' + d.lesson.classroom : d.lesson.classroom; opt.dataset.roomId = d.lesson.room_id || ''; opt.dataset.locationId = d.lesson.location_id || ''; opt.dataset.locationName = d.lesson.location || ''; roomSelect.insertBefore(opt, roomSelect.firstChild); opt.selected = true; }} }} const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); renderTeacherGroupRoster(d.lesson); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
+        function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; teacherPanelRoomChanged = false; teacherGroupRosterDirty = false; document.getElementById('tPanelStudent').textContent = teacherGroupTitle(d.lesson); document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.location ? d.lesson.location + ' - ' + (d.lesson.classroom || '') : (d.lesson.classroom || '-'); document.getElementById('tPanelType').textContent = d.lesson.is_group ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const roomSelect = document.getElementById('tPanelRoomSelect'); if (roomSelect) {{ let matched = false; Array.from(roomSelect.options).forEach(opt => {{ const byId = Number(d.lesson.room_id || 0) && Number(opt.dataset.roomId || 0) === Number(d.lesson.room_id || 0); const byName = !matched && opt.value === (d.lesson.classroom || ''); if (!matched && (byId || byName)) {{ opt.selected = true; matched = true; }} }}); if (!matched && d.lesson.classroom) {{ const opt = document.createElement('option'); opt.value = d.lesson.classroom || ''; opt.textContent = d.lesson.location ? d.lesson.location + ' - ' + d.lesson.classroom : d.lesson.classroom; opt.dataset.roomId = d.lesson.room_id || ''; opt.dataset.locationId = d.lesson.location_id || ''; opt.dataset.locationName = d.lesson.location || ''; roomSelect.insertBefore(opt, roomSelect.firstChild); opt.selected = true; }} }} const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); renderTeacherGroupRoster(d.lesson); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
-        function teacherPayload() {{ const course = selectedTeacherPanelCourse(); const room = teacherPanelRoomPayload(); const isGroup = !!(activeTeacherLesson && Number(activeTeacherLesson.is_group || 0)); const payload = {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; if (isGroup) {{ payload.group_name = (document.getElementById('tPanelGroupName') || {{value:''}}).value; if (String(payload.group_name || '') !== String(teacherGroupNameBaseline || '')) payload.change_scope = 'following'; payload.group_attendance = collectTeacherGroupAttendance(); }} return payload; }}
+        function teacherPayload() {{ const course = selectedTeacherPanelCourse(); const room = teacherPanelRoomPayload(); const isGroup = !!(activeTeacherLesson && Number(activeTeacherLesson.is_group || 0)); const payload = {{action:'save', schedule_id:activeTeacherLesson.id, change_scope:teacherRescheduleScope, status:activeTeacherStatus, course_type_id:course ? course.id : (activeTeacherLesson.course_type_id || ''), duration:course ? course.duration : (activeTeacherLesson.duration || 30), lesson_format:(course && course.is_group) ? 'group' : 'private', location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom, lesson_note:document.getElementById('tPanelLessonNote').value, private_note:document.getElementById('tPanelPrivateNote').value, homework:document.getElementById('tPanelHomework').value, practice_reminder_enabled:document.getElementById('tPanelPracticeReminder').checked}}; if (isGroup) {{ payload.group_name = (document.getElementById('tPanelGroupName') || {{value:''}}).value; if (String(payload.group_name || '') !== String(teacherGroupNameBaseline || '')) payload.group_name_scope = 'following'; if (TEACHER_CAN_MANAGE_GROUP_ROSTER && teacherGroupRosterDirty) payload.group_roster = collectTeacherGroupRoster(); else payload.group_attendance = collectTeacherGroupRoster(); }} return payload; }}
         function teacherPanelTimeChanged() {{ if (!activeTeacherLesson) return false; const newDate = document.getElementById('tPanelNewDate').value || ''; const newTime = document.getElementById('tPanelNewTime').value || ''; const oldDate = activeTeacherLesson.date || ''; const oldTime = teacherInputTime(activeTeacherLesson.time || ''); return newDate !== oldDate || newTime !== oldTime; }}
         function setTeacherSaveBusy(isBusy) {{ teacherPanelSaving = isBusy; const btn = document.getElementById('tPanelSaveButton'); if (btn) {{ btn.disabled = isBusy; btn.textContent = isBusy ? 'Saving...' : 'Save changes'; }} }}
-        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); const payload = teacherPayload(); if (activeTeacherStatus === 'teacher_cancelled' && activeTeacherLesson.status !== 'teacher_cancelled') payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); return teacherLessonAction(payload).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; if (Number(activeTeacherLesson.is_group || 0)) {{ activeTeacherLesson.group_name = payload.group_name || ''; const titleText = activeTeacherLesson.group_name || 'Group lesson'; document.getElementById('tPanelStudent').textContent = titleText; repaintTeacherGroupTitle(activeTeacherLesson.id, titleText); }} repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
+        function saveTeacherLessonPanel(quiet, includeTimeChange) {{ if (!activeTeacherLesson || teacherPanelSaving) return Promise.resolve(); setTeacherSaveBusy(true); const shouldMove = !!includeTimeChange && teacherPanelTimeChanged(); const room = teacherPanelRoomPayload(); const payload = teacherPayload(); if (activeTeacherStatus === 'teacher_cancelled' && activeTeacherLesson.status !== 'teacher_cancelled') payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); return teacherLessonAction(payload).then(d => {{ activeTeacherLesson.status = activeTeacherStatus; teacherGroupRosterDirty = false; if (Number(activeTeacherLesson.is_group || 0)) {{ activeTeacherLesson.group_name = payload.group_name || ''; teacherGroupNameBaseline = activeTeacherLesson.group_name; const titleText = activeTeacherLesson.group_name || 'Group lesson'; document.getElementById('tPanelStudent').textContent = titleText; repaintTeacherGroupTitle(activeTeacherLesson.id, titleText); }} repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherStatus); if (!shouldMove) {{ if (!quiet) teacherPanelToast(d.message || 'Saved.'); if (teacherRescheduleScope === 'following' || teacherPanelCourseChanged || teacherPanelRoomChanged) setTimeout(() => location.reload(), 700); return d; }} return teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(moveData => {{ if (!quiet) teacherPanelToast(moveData.message || 'Lesson moved.'); if (TEACHER_CAN_DIRECT_RESCHEDULE) setTimeout(() => location.reload(), 700); return moveData; }}); }}).catch(e => {{ teacherPanelToast(e.message); if (!quiet) alert(e.message); throw e; }}).finally(() => setTeacherSaveBusy(false)); }}
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; const room = teacherPanelRoomPayload(); teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
@@ -16141,6 +16192,146 @@ def update_calendar_group_lesson(cursor, schedule_ids, group_name=None, attendan
     return updated
 
 
+def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_schedule_id=None):
+    if not isinstance(roster_items, list):
+        raise ValueError("Group roster must be a list.")
+
+    normalized = []
+    seen = set()
+    missing = []
+    for item in roster_items[:50]:
+        if not isinstance(item, dict):
+            continue
+        requested_name = hmusic_clean_student_picker_value(item.get("student_name") or "")
+        if not requested_name:
+            continue
+        cursor.execute("""
+        SELECT name, COALESCE(parent_name, '')
+        FROM students
+        WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+        LIMIT 1
+        """, (requested_name,))
+        student = cursor.fetchone()
+        if not student:
+            missing.append(requested_name)
+            continue
+        canonical_name = student[0] or requested_name
+        key = hmusic_name_key(canonical_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        status = (item.get("attendance_status") or item.get("status") or "scheduled").strip()
+        if status not in CALENDAR_GROUP_ATTENDANCE_STATUSES:
+            status = "scheduled"
+        normalized.append({
+            "student_name": canonical_name,
+            "parent_name": student[1] or "",
+            "attendance_status": status,
+        })
+
+    if missing:
+        raise ValueError("Student not found: " + ", ".join(missing[:5]))
+    if len(normalized) < 2:
+        raise ValueError("A group lesson must have at least two students.")
+
+    target_keys = {hmusic_name_key(item["student_name"]) for item in normalized}
+    added = set()
+    removed = set()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    valid_schedule_ids = list(dict.fromkeys(int(schedule_id) for schedule_id in schedule_ids if schedule_id))
+    for schedule_id in valid_schedule_ids:
+        cursor.execute("""
+        SELECT id, COALESCE(student_name, ''), COALESCE(attendance_status, 'scheduled')
+        FROM group_schedule_students
+        WHERE schedule_id = ?
+        ORDER BY id
+        """, (schedule_id,))
+        stored_rows = cursor.fetchall()
+        stored_by_key = {hmusic_name_key(row[1]): row for row in stored_rows if hmusic_name_key(row[1])}
+        logical_before = calendar_group_roster(cursor, schedule_id, calendar_lesson_row(cursor, schedule_id))
+        before_names = {hmusic_name_key(item.get("student_name")): item.get("student_name") for item in logical_before if hmusic_name_key(item.get("student_name"))}
+        for key, name in before_names.items():
+            if key not in target_keys:
+                removed.add(name)
+        for item in normalized:
+            key = hmusic_name_key(item["student_name"])
+            if key not in before_names:
+                added.add(item["student_name"])
+
+        for key, row in stored_by_key.items():
+            if key not in target_keys:
+                cursor.execute("DELETE FROM group_schedule_students WHERE id = ?", (row[0],))
+
+        cursor.execute("""
+        SELECT COALESCE(student_charge_amount, 0), COALESCE(billing_decision, 'existing_credits')
+        FROM schedule
+        WHERE id = ?
+        """, (schedule_id,))
+        schedule_financials = cursor.fetchone() or (0, "existing_credits")
+        default_rate = max(0, float(schedule_financials[0] or 0))
+        default_rule = (schedule_financials[1] or "existing_credits").strip()
+        if default_rule == "new_package":
+            default_rule = "existing_credits"
+        if default_rule == "trial_free":
+            default_rule = "no_charge"
+        if default_rule not in {"existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge"}:
+            default_rule = "existing_credits"
+        if default_rule in {"makeup_credit", "no_charge"}:
+            default_rate = 0
+        billing_status = {
+            "existing_credits": "deduct_from_package",
+            "invoice_later": "needs_invoice",
+            "auto_invoice_per_lesson": "needs_invoice",
+            "makeup_credit": "use_makeup_credit",
+            "no_charge": "no_charge",
+        }.get(default_rule, "planned")
+
+        for item in normalized:
+            key = hmusic_name_key(item["student_name"])
+            existing = stored_by_key.get(key)
+            apply_attendance = int(schedule_id) == int(attendance_schedule_id or schedule_id)
+            status = item["attendance_status"] if apply_attendance else (existing[2] if existing else "scheduled")
+            if existing:
+                cursor.execute("""
+                UPDATE group_schedule_students
+                SET student_name = ?, parent_name = ?, attendance_status = ?, updated_at = ?
+                WHERE id = ?
+                """, (item["student_name"], item["parent_name"], status, now, existing[0]))
+            else:
+                cursor.execute("""
+                INSERT INTO group_schedule_students (
+                    schedule_id, student_name, parent_name, credit_units, student_rate,
+                    billing_rule, billing_status, attendance_status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                """, (
+                    schedule_id,
+                    item["student_name"],
+                    item["parent_name"],
+                    default_rate,
+                    default_rule,
+                    billing_status,
+                    status,
+                    now,
+                    now,
+                ))
+
+        names = [item["student_name"] for item in normalized]
+        cursor.execute("""
+        UPDATE schedule
+        SET student_name = ?, group_size = ?, group_student_names = ?, owner_calendar_updated_at = ?
+        WHERE id = ?
+        """, (names[0], len(names), ", ".join(names), now, schedule_id))
+
+    return {
+        "added": sorted(added, key=str.casefold),
+        "removed": sorted(removed, key=str.casefold),
+        "student_names": [item["student_name"] for item in normalized],
+        "student_count": len(normalized),
+        "schedule_count": len(valid_schedule_ids),
+    }
+
+
 def calendar_following_lesson_ids(cursor, row, schedule_id):
     if not row:
         return []
@@ -16361,17 +16552,25 @@ def calendar_lesson_action():
         teacher_change_scope = (data.get("change_scope") or data.get("scope") or "once").strip()
         teacher_change_scope = teacher_change_scope if teacher_change_scope in {"once", "following"} else "once"
         teacher_following_ids = calendar_following_lesson_ids(cursor, row, schedule_id) if is_teacher and teacher_change_scope == "following" else []
+        group_name_scope = (data.get("group_name_scope") or teacher_change_scope).strip()
+        teacher_group_name_following_ids = calendar_following_lesson_ids(cursor, row, schedule_id) if is_teacher and group_name_scope == "following" else []
         teacher_course_update = {}
         teacher_location_update = {}
         group_name_present = "group_name" in data
         group_name_update = (data.get("group_name") or "").strip()
         group_attendance_items = data.get("group_attendance") or data.get("group_students")
         has_group_attendance_update = isinstance(group_attendance_items, list)
+        group_roster_items = data.get("group_roster")
+        has_group_roster_update = isinstance(group_roster_items, list)
+        roster_change_summary = None
 
         if not is_owner:
-            if (status != row[6] or has_group_attendance_update) and not teacher_permissions.get("attendance"):
+            if (status != row[6] or has_group_attendance_update or has_group_roster_update) and not teacher_permissions.get("attendance"):
                 conn.close()
                 return {"ok": False, "error": "Attendance permission is not enabled."}, 403
+            if has_group_roster_update and not teacher_permissions.get("manage_group_roster"):
+                conn.close()
+                return {"ok": False, "error": "Group roster permission is not enabled."}, 403
             if lesson_note and not teacher_permissions.get("lesson_notes"):
                 conn.close()
                 return {"ok": False, "error": "Lesson note permission is not enabled."}, 403
@@ -16425,14 +16624,29 @@ def calendar_lesson_action():
             conn = sqlite3.connect("hmusic.db")
             cursor = conn.cursor()
             row = calendar_lesson_row(cursor, schedule_id)
-        if int(row[18] or 0) and (group_name_present or has_group_attendance_update):
-            group_name_ids = [int(schedule_id)] + (teacher_following_ids if is_teacher and teacher_change_scope == "following" else [])
+        if has_group_roster_update and not int(row[18] or 0):
+            conn.close()
+            return {"ok": False, "error": "Roster changes are only available for group lessons."}, 400
+        if int(row[18] or 0) and (group_name_present or has_group_attendance_update or has_group_roster_update):
+            group_update_ids = [int(schedule_id)] + (teacher_following_ids if is_teacher else [])
             if is_owner and (data.get("detail_scope") or "once") == "following":
-                group_name_ids += calendar_following_lesson_ids(cursor, row, schedule_id)
-            group_name_ids = list(dict.fromkeys(group_name_ids))
+                group_update_ids += calendar_following_lesson_ids(cursor, row, schedule_id)
+            group_update_ids = list(dict.fromkeys(group_update_ids))
             if group_name_present:
-                update_calendar_group_lesson(cursor, group_name_ids, group_name=group_name_update)
-            if has_group_attendance_update:
+                group_name_ids = [int(schedule_id)] + (teacher_group_name_following_ids if is_teacher else group_update_ids[1:])
+                update_calendar_group_lesson(cursor, list(dict.fromkeys(group_name_ids)), group_name=group_name_update)
+            if has_group_roster_update:
+                try:
+                    roster_change_summary = sync_calendar_group_roster(
+                        cursor,
+                        group_update_ids,
+                        group_roster_items,
+                        attendance_schedule_id=int(schedule_id),
+                    )
+                except ValueError as exc:
+                    conn.close()
+                    return {"ok": False, "error": str(exc)}, 400
+            elif has_group_attendance_update:
                 update_calendar_group_lesson(cursor, [int(schedule_id)], attendance_items=group_attendance_items)
 
         if is_owner:
@@ -16728,6 +16942,8 @@ def calendar_lesson_action():
                 *update_ids
             ))
         effective_student_name = detail_update.get("student_name") if detail_update else row[1]
+        if roster_change_summary and roster_change_summary.get("student_names"):
+            effective_student_name = roster_change_summary["student_names"][0]
         effective_teacher_name = detail_update.get("teacher") if detail_update else row[2]
         effective_lesson_date = detail_update.get("lesson_date") if detail_update else row[3]
         effective_lesson_time = detail_update.get("lesson_time") if detail_update else row[4]
@@ -16738,6 +16954,24 @@ def calendar_lesson_action():
                 upsert_calendar_lesson_record(cursor, following_id, effective_student_name, lesson_note, homework, private_note, actor)
         conn.commit()
         conn.close()
+        if is_teacher and roster_change_summary and (roster_change_summary["added"] or roster_change_summary["removed"]):
+            changes = []
+            if roster_change_summary["added"]:
+                changes.append("added " + ", ".join(roster_change_summary["added"]))
+            if roster_change_summary["removed"]:
+                changes.append("removed " + ", ".join(roster_change_summary["removed"]))
+            try:
+                create_notification(
+                    "owner",
+                    "owner",
+                    "Group roster updated",
+                    f"{teacher_name} {'; '.join(changes)} for {row[28] or 'a group lesson'} ({row[3]} {row[4]}).",
+                    "/calendar",
+                    related_type="teacher_group_roster",
+                    related_id=int(schedule_id),
+                )
+            except Exception:
+                app.logger.exception("Group roster saved, but owner notification failed")
         queued = 0
         notice_warning = ""
         try:
@@ -46363,6 +46597,7 @@ def api_teacher_lesson_save():
     homework = (data.get("homework") or "").strip()
     group_name = (data.get("group_name") or "").strip()
     group_attendance = data.get("group_attendance") or data.get("group_students")
+    group_roster = data.get("group_roster")
     perms = get_teacher_permissions(teacher_name)
     if lesson_note and not perms.get("lesson_notes"):
         return {"ok": False, "error": "Lesson note permission is not enabled"}, 403
@@ -46370,34 +46605,74 @@ def api_teacher_lesson_save():
         return {"ok": False, "error": "Private note permission is not enabled"}, 403
     if homework and not perms.get("homework"):
         return {"ok": False, "error": "Homework permission is not enabled"}, 403
-    if isinstance(group_attendance, list) and not perms.get("attendance"):
+    if (isinstance(group_attendance, list) or isinstance(group_roster, list)) and not perms.get("attendance"):
         return {"ok": False, "error": "Attendance permission is not enabled"}, 403
+    if isinstance(group_roster, list) and not perms.get("manage_group_roster"):
+        return {"ok": False, "error": "Group roster permission is not enabled"}, 403
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT id, student_name, COALESCE(is_group, 0) FROM schedule WHERE id = ? AND teacher = ?", (schedule_id, teacher_name))
-    row = cursor.fetchone()
-    if not row:
+    calendar_row = calendar_lesson_row(cursor, schedule_id)
+    if not calendar_row or not hmusic_teacher_name_matches(calendar_row[2], teacher_name):
         conn.close()
         return {"ok": False, "error": "Lesson not found or permission denied"}, 404
+    row = (calendar_row[0], calendar_row[1], calendar_row[18])
     cursor.execute("""
     UPDATE schedule
     SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
-    WHERE id = ? AND teacher = ?
+    WHERE id = ? AND LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     """, (lesson_note, private_note, homework, 1 if data.get("practice_reminder_enabled") else 0, schedule_id, teacher_name))
-    if int(row[2] or 0) and (group_name or isinstance(group_attendance, list)):
+    roster_change_summary = None
+    if isinstance(group_roster, list) and not int(row[2] or 0):
+        conn.close()
+        return {"ok": False, "error": "Roster changes are only available for group lessons"}, 400
+    if int(row[2] or 0) and (group_name or isinstance(group_attendance, list) or isinstance(group_roster, list)):
+        roster_scope = (data.get("roster_scope") or data.get("change_scope") or "once").strip()
+        roster_schedule_ids = [int(schedule_id)]
+        if roster_scope == "following":
+            roster_schedule_ids += calendar_following_lesson_ids(cursor, calendar_row, schedule_id)
         update_calendar_group_lesson(
             cursor,
-            [int(schedule_id)],
+            roster_schedule_ids,
             group_name=group_name if group_name else None,
-            attendance_items=group_attendance if isinstance(group_attendance, list) else None,
+            attendance_items=group_attendance if isinstance(group_attendance, list) and not isinstance(group_roster, list) else None,
         )
-    upsert_calendar_lesson_record(cursor, int(schedule_id), row[1], lesson_note, homework, private_note, f"teacher:{teacher_name}")
+        if isinstance(group_roster, list):
+            try:
+                roster_change_summary = sync_calendar_group_roster(
+                    cursor,
+                    roster_schedule_ids,
+                    group_roster,
+                    attendance_schedule_id=int(schedule_id),
+                )
+            except ValueError as exc:
+                conn.close()
+                return {"ok": False, "error": str(exc)}, 400
+    effective_student_name = roster_change_summary["student_names"][0] if roster_change_summary and roster_change_summary.get("student_names") else row[1]
+    upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, f"teacher:{teacher_name}")
     conn.commit()
     conn.close()
+    if roster_change_summary and (roster_change_summary["added"] or roster_change_summary["removed"]):
+        changes = []
+        if roster_change_summary["added"]:
+            changes.append("added " + ", ".join(roster_change_summary["added"]))
+        if roster_change_summary["removed"]:
+            changes.append("removed " + ", ".join(roster_change_summary["removed"]))
+        try:
+            create_notification(
+                "owner",
+                "owner",
+                "Group roster updated",
+                f"{teacher_name} {'; '.join(changes)} for {calendar_row[28] or 'a group lesson'} ({calendar_row[3]} {calendar_row[4]}).",
+                "/calendar",
+                related_type="teacher_group_roster",
+                related_id=int(schedule_id),
+            )
+        except Exception:
+            app.logger.exception("Group roster saved, but owner notification failed")
     notices = 0
     if homework and (data.get("send_homework_now") or data.get("practice_reminder_enabled")):
-        notices = calendar_queue_parent_notice(row[1], hmusic_practice_reminder_title(row[1]), hmusic_practice_reminder_body(row[1], homework), "homework_assignment", int(schedule_id))
-    return {"ok": True, "message": "Lesson saved", "parent_notices": notices}
+        notices = calendar_queue_parent_notice(effective_student_name, hmusic_practice_reminder_title(effective_student_name), hmusic_practice_reminder_body(effective_student_name, homework), "homework_assignment", int(schedule_id))
+    return {"ok": True, "message": "Lesson saved", "parent_notices": notices, "roster_changes": roster_change_summary}
 
 
 @app.route("/api/teacher/open_slots")
