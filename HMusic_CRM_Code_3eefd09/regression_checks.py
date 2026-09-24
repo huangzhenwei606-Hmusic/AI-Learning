@@ -103,6 +103,8 @@ CHECKS = {
     "parent schedule mobile actions stack": "@media (max-width:620px)",
     "parent schedule avoids duplicate next lesson": "remaining_upcoming = upcoming[1:] if next_lesson else upcoming",
     "parent dashboard no duplicate next status pill": '<div class="next-strip"><span>Next Lesson</span></div>',
+    "parent dashboard next status matches calendar data": "next_lesson_status = escape(hmusic_policy_status_label(next_lesson[6] or \"scheduled\"))",
+    "parent dashboard next status has dedicated row": 'class="next-status-row"',
     "parent dashboard calendar dates clickable": "showParentCalendarDay",
     "parent dashboard calendar lesson detail": 'id="calendarDayDetail"',
     "parent dashboard validates pending request state": "SELECT 1 FROM lesson_change_requests lcr",

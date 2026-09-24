@@ -29897,6 +29897,7 @@ def parent_dashboard():
     next_lesson_teacher = escape(str(student[1] or "Teacher TBD"))
     next_lesson_address = ""
     next_lesson_course = "Lesson"
+    next_lesson_status = ""
     if upcoming_lessons:
         next_lesson = upcoming_lessons[0]
         next_time_range = format_lesson_time_range(next_lesson[1], next_lesson[5])
@@ -29905,6 +29906,16 @@ def parent_dashboard():
         next_lesson_teacher = escape(str(next_lesson[2] or "Teacher TBD"))
         next_lesson_address = escape(str(next_lesson[10] or next_lesson[4] or "Address TBD"))
         next_lesson_course = escape(str(next_lesson[8] or "Lesson"))
+        next_lesson_status = escape(hmusic_policy_status_label(next_lesson[6] or "scheduled"))
+
+    next_lesson_status_html = ""
+    if next_lesson_status:
+        next_lesson_status_class = " pending" if next_lesson_status == "Cancel pending confirm" else ""
+        next_lesson_status_html = f'''
+                    <div class="next-status-row">
+                        <span class="next-status-label">Status</span>
+                        <span class="next-status{next_lesson_status_class}">{next_lesson_status}</span>
+                    </div>'''
 
     renewal_copy = "Renew soon" if course_credit_total <= 1 else "Lessons available"
     notes_preview = lesson_note_cards
@@ -29986,6 +29997,10 @@ def parent_dashboard():
             .next-meta {{ display:flex; flex-wrap:wrap; gap:6px 10px; color:#6f6b65; font-size:11px; font-weight:750; }}
             .next-meta span {{ display:inline-flex; align-items:center; gap:4px; }}
             .next-address {{ display:block; color:#5f5b55; font-size:11px; font-weight:750; line-height:1.35; margin-top:8px; }}
+            .next-status-row {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; padding-top:9px; border-top:1px solid #ece8e1; }}
+            .next-status-label {{ color:#77736d; font-size:10px; font-weight:800; text-transform:uppercase; }}
+            .next-status {{ border-radius:999px; padding:4px 8px; background:#eef6ff; color:#1d65ad; font-size:9px; font-weight:900; white-space:nowrap; }}
+            .next-status.pending {{ background:#fff0d5; color:#8a5700; }}
             .section-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
             .section-head h2 {{ margin:0; font-size:13px; line-height:1; text-transform:uppercase; letter-spacing:0; color:#3e3e3e; }}
             .section-head a {{ color:#2467b2; font-weight:800; font-size:12px; }}
@@ -30063,6 +30078,7 @@ def parent_dashboard():
                     <div class="next-line"><div class="next-date">{next_lesson_day}</div><div class="next-time">{next_lesson_time}</div></div>
                     <div class="next-meta"><span>Course: {next_lesson_course}</span><span>Teacher: {next_lesson_teacher}</span></div>
                     <div class="next-address">Address: {next_lesson_address}</div>
+                    {next_lesson_status_html}
                 </div>
             </section>
             {mini_calendar}
