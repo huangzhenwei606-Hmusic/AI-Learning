@@ -133,6 +133,10 @@ CHECKS = {
     "teacher mobile add schedule api": '"/api/teacher/add_schedule"',
     "teacher mobile message recipients": "message_recipients",
     "teacher mobile device token table": "teacher_device_tokens",
+    "teacher financial permissions forced off": 'perms["view_payroll"] = 0\n    perms["view_billing"] = 0',
+    "teacher dashboard uses nonfinancial summary": "Lesson Summary · {month_start.strftime(\"%B\")}",
+    "teacher group roster financial redaction": "def teacher_safe_group_roster(group_roster):",
+    "teacher status financial redaction": "return teacher_safe_lesson_status_result(result)",
     "startup database preparation": "def initialize_runtime_database():",
     "database busy recovery": 'response.headers["Retry-After"] = "2"',
     "request tracing": 'response.headers["X-Request-ID"]',
@@ -176,6 +180,12 @@ FORBIDDEN = {
     "sqlite-only email collation": "COLLATE NOCASE",
     "trial paypal option": 'name="payment_method" value="PayPal"',
     "invoice card checkout option": 'method=card',
+    "teacher payroll summary": "Payroll Summary ·",
+    "teacher payroll KPI": "Payroll This Month",
+    "teacher settled payroll": "Settled Payroll",
+    "teacher projected payroll": "Projected Total",
+    "teacher lesson rate row": "<span>Lesson Rate</span>",
+    "teacher group credit fallback": "('Credit: ' + (item.credit_units || 1))",
 }
 
 STUDENT_DETAIL_FORBIDDEN = {

@@ -1621,7 +1621,7 @@ TEACHER_PERMISSION_DEFAULTS = {
     "direct_reschedule": 1,
     "direct_cancel": 1,
     "sub_request": 1,
-    "view_payroll": 1,
+    "view_payroll": 0,
     "view_billing": 0,
     "delete_lessons": 1,
     "edit_student_profile": 0,
@@ -1642,8 +1642,6 @@ TEACHER_PERMISSION_LABELS = [
     ("direct_reschedule", "Direct reschedule", "Move the teacher's own lessons without owner approval."),
     ("direct_cancel", "Direct cancel", "Cancel the teacher's own lessons without owner approval."),
     ("sub_request", "Sub request", "Request substitute coverage."),
-    ("view_payroll", "View payroll", "See teacher payroll summary."),
-    ("view_billing", "Billing visibility", "See student billing details. Recommended off."),
     ("delete_lessons", "Delete lessons", "Delete the teacher's own lessons."),
     ("edit_student_profile", "Edit student profile", "Edit full student profile. Recommended off."),
     ("view_other_teachers", "Other teachers calendars", "See schedules owned by other teachers. Recommended off."),
@@ -1668,7 +1666,7 @@ def ensure_teacher_permission_schema():
         direct_reschedule INTEGER DEFAULT 1,
         direct_cancel INTEGER DEFAULT 0,
         sub_request INTEGER DEFAULT 1,
-        view_payroll INTEGER DEFAULT 1,
+        view_payroll INTEGER DEFAULT 0,
         view_billing INTEGER DEFAULT 0,
         delete_lessons INTEGER DEFAULT 0,
         edit_student_profile INTEGER DEFAULT 0,
@@ -1728,6 +1726,8 @@ def get_teacher_permissions(teacher_name):
                     perms[column] = 60
             else:
                 perms[column] = 1 if value else 0
+    perms["view_payroll"] = 0
+    perms["view_billing"] = 0
     return perms
 
 
@@ -13841,7 +13841,7 @@ def teacher_dashboard():
                 const name = document.createElement('b');
                 name.textContent = item.student_name || 'Student';
                 const meta = document.createElement('small');
-                meta.textContent = item.parent_name ? ('Parent: ' + item.parent_name) : ('Credit: ' + (item.credit_units || 1));
+                meta.textContent = item.parent_name ? ('Parent: ' + item.parent_name) : 'Student';
                 child.appendChild(name);
                 child.appendChild(meta);
                 const select = document.createElement('select');
