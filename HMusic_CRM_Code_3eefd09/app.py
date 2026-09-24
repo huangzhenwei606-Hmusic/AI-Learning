@@ -14924,6 +14924,7 @@ def parent_cancel():
 
     if request.method == "POST":
         schedule_id = request.form.get("schedule_id")
+        action = (request.form.get("action") or "request").strip()
         reason = (request.form.get("reason") or "Parent selected Cancel class in the parent app.").strip()
 
         conn = sqlite3.connect("hmusic.db")
@@ -14957,6 +14958,63 @@ def parent_cancel():
         LIMIT 1
         """, (schedule_id, parent_id))
         existing_request = cursor.fetchone()
+
+        if action == "undo":
+            if not existing_request:
+                conn.close()
+                return redirect("/parent_schedule?cancel=already_reviewed")
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            request_id = existing_request[0]
+            cursor.execute("""
+            UPDATE lesson_change_requests
+            SET status = 'withdrawn',
+                owner_decision = 'withdrawn_by_parent',
+                updated_at = ?
+            WHERE id = ?
+              AND status IN ('pending', 'pending_owner_review')
+            """, (now, request_id))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                conn.close()
+                return redirect("/parent_schedule?cancel=already_reviewed")
+
+            cursor.execute("""
+            UPDATE schedule
+            SET status = 'scheduled'
+            WHERE id = ? AND status = 'parent_cancel_pending_confirm'
+            """, (schedule_id,))
+            conn.commit()
+            conn.close()
+
+            log_parent_activity(
+                parent_id,
+                student_name,
+                "cancel_request_withdrawn",
+                f"Parent withdrew cancellation request for lesson #{schedule_id}.",
+                schedule_id
+            )
+            create_notification(
+                "owner",
+                "owner",
+                "Cancellation request withdrawn",
+                f"{student_name} withdrew the cancellation request for {lesson[1]} {lesson[2]}.",
+                f"/lesson_change_request/{request_id}",
+                related_type="lesson_change_request",
+                related_id=request_id
+            )
+            if lesson[3]:
+                create_notification(
+                    "teacher",
+                    lesson[3],
+                    "Cancellation request withdrawn",
+                    f"{student_name} withdrew the cancellation request for {lesson[1]} {lesson[2]}. The lesson remains scheduled.",
+                    "/teacher_messages",
+                    related_type="lesson_change_request",
+                    related_id=request_id
+                )
+            return redirect("/parent_schedule?cancel=withdrawn")
+
         if existing_request:
             cursor.execute("UPDATE schedule SET status = 'parent_cancel_pending_confirm' WHERE id = ?", (schedule_id,))
             conn.commit()
@@ -30392,7 +30450,16 @@ def parent_schedule():
     if next_lesson:
         next_cancel_pending = next_lesson[8] == "parent_cancel_pending_confirm"
         if next_cancel_pending:
-            next_actions = '<div class="cancel-pending-state">Cancel pending confirm</div>'
+            next_actions = f'''
+                <div class="cancel-pending-actions">
+                    <div class="cancel-pending-state">Cancel pending confirm</div>
+                    <form class="undo-cancel-form" method="POST" action="/parent_cancel">
+                        <input type="hidden" name="schedule_id" value="{next_lesson[0]}">
+                        <input type="hidden" name="action" value="undo">
+                        <button class="undo-cancel-button" type="submit">Undo cancellation</button>
+                    </form>
+                </div>
+            '''
         else:
             next_actions = f"""
                 <div class="primary-schedule-actions">
@@ -30423,7 +30490,14 @@ def parent_schedule():
     for lesson in upcoming:
         cancel_pending = lesson[8] == "parent_cancel_pending_confirm"
         if cancel_pending:
-            lesson_actions = '<span class="cancel-pending-state compact">Cancel pending confirm</span>'
+            lesson_actions = f'''
+                <span class="cancel-pending-state compact">Cancel pending confirm</span>
+                <form class="undo-cancel-form" method="POST" action="/parent_cancel">
+                    <input type="hidden" name="schedule_id" value="{lesson[0]}">
+                    <input type="hidden" name="action" value="undo">
+                    <button class="undo-cancel-button compact" type="submit">Undo cancellation</button>
+                </form>
+            '''
         else:
             lesson_actions = f"""
                 <a href="/parent_reschedule?schedule_id={lesson[0]}">Reschedule</a>
@@ -30462,7 +30536,11 @@ def parent_schedule():
             row[6],
         ))
     for row in cancel_requests:
-        cancel_request_status = "Cancel pending confirm" if row[4] in ("pending", "pending_owner_review") else row[4]
+        cancel_request_status = {
+            "pending": "Cancel pending confirm",
+            "pending_owner_review": "Cancel pending confirm",
+            "withdrawn": "Cancellation withdrawn",
+        }.get(row[4], row[4])
         recent_items.append((
             "Cancel",
             row[0],
@@ -30481,6 +30559,8 @@ def parent_schedule():
 
     sent = "<section class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and follow up before anything changes on the calendar.</p></section>" if request.args.get("sent") == "1" else ""
     cancel_pending_notice = "<section class='app-card'><span class='pill warn'>Cancel pending confirm</span><p>The class stays on the schedule until the owner confirms the cancellation.</p></section>" if request.args.get("cancel") == "pending" else ""
+    cancel_withdrawn_notice = "<section class='app-card'><span class='pill good'>Cancellation withdrawn</span><p>The lesson remains scheduled.</p></section>" if request.args.get("cancel") == "withdrawn" else ""
+    cancel_already_reviewed_notice = "<section class='app-card'><span class='pill warn'>Cancellation already reviewed</span><p>This request can no longer be withdrawn.</p></section>" if request.args.get("cancel") == "already_reviewed" else ""
     notes_required = "<section class='app-card'><span class='pill warn'>Notes required</span><p>Please describe what needs to change.</p></section>" if request.args.get("notes_required") == "1" else ""
 
     body = f"""
@@ -30501,6 +30581,10 @@ def parent_schedule():
         .schedule-cancel-form .schedule-action {{ width:100%; text-align:left; font:inherit; cursor:pointer; }}
         .cancel-pending-state {{ display:flex; align-items:center; justify-content:center; min-height:58px; border:1px solid #f2c879; border-radius:12px; background:#fff8e8; color:#8a5700; font-size:13px; font-weight:900; }}
         .cancel-pending-state.compact {{ min-height:0; padding:7px 9px; border-radius:999px; font-size:11px; white-space:nowrap; }}
+        .cancel-pending-actions {{ display:grid; grid-template-columns:1fr auto; gap:9px; align-items:stretch; }}
+        .undo-cancel-form {{ margin:0; padding:0; border:0; background:transparent; }}
+        .undo-cancel-button {{ height:100%; border:1px solid #bcd8f5; border-radius:12px; background:#eef6ff; color:#1d65ad; padding:10px 13px; font:inherit; font-size:12px; font-weight:900; white-space:nowrap; cursor:pointer; }}
+        .undo-cancel-button.compact {{ border-radius:999px; padding:6px 8px; font-size:11px; }}
         .policy-mini {{ display:grid; gap:0; padding:9px 12px; }}
         .policy-mini div {{ display:grid; grid-template-columns:66px 1fr; gap:7px; padding:6px 0; border-top:1px solid #eee9e2; font-size:11px; font-weight:700; color:#716d67; line-height:1.22; }}
         .policy-mini div:first-child {{ border-top:0; }}
@@ -30522,6 +30606,7 @@ def parent_schedule():
         .note-panel {{ border-color:#bcd8f5; background:#f8fbff; }}
         @media (max-width:430px) {{
             .primary-schedule-actions {{ grid-template-columns:1fr; }}
+            .cancel-pending-actions {{ grid-template-columns:1fr; }}
             .schedule-row {{ grid-template-columns:1fr; }}
             .mini-actions {{ justify-content:flex-start; }}
         }}
@@ -30530,6 +30615,8 @@ def parent_schedule():
     <p class="muted">Cancel, reschedule, book, makeup, or send a schedule note for multiple lessons.</p>
     {sent}
     {cancel_pending_notice}
+    {cancel_withdrawn_notice}
+    {cancel_already_reviewed_notice}
     {notes_required}
     <div class="section-head"><h2>Next Lesson</h2></div>
     {next_card}
