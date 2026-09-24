@@ -1702,6 +1702,28 @@ def ensure_teacher_permission_schema():
     conn.close()
 
 
+def ensure_postgres_teacher_permission_schema():
+    if not using_postgres():
+        return
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_permissions (
+        teacher_name TEXT PRIMARY KEY
+    )
+    """)
+    for key, default in TEACHER_PERMISSION_DEFAULTS.items():
+        cursor.execute(
+            f"ALTER TABLE teacher_permissions ADD COLUMN IF NOT EXISTS {key} INTEGER DEFAULT {int(default)}"
+        )
+    cursor.execute("ALTER TABLE teacher_permissions ADD COLUMN IF NOT EXISTS lesson_reminder_minutes INTEGER DEFAULT 60")
+    cursor.execute("ALTER TABLE teacher_permissions ADD COLUMN IF NOT EXISTS created_at TEXT")
+    cursor.execute("ALTER TABLE teacher_permissions ADD COLUMN IF NOT EXISTS updated_at TEXT")
+    conn.commit()
+    conn.close()
+
+
 def get_teacher_permissions(teacher_name):
     ensure_teacher_permission_schema()
     perms = dict(TEACHER_PERMISSION_DEFAULTS)
@@ -47029,7 +47051,9 @@ for _schema_name in _runtime_schema_names:
 def initialize_runtime_database():
     """Finish schema work before Gunicorn starts accepting production traffic."""
     started_at = time.perf_counter()
-    if not using_postgres():
+    if using_postgres():
+        ensure_postgres_teacher_permission_schema()
+    else:
         ensure_production_schema()
         for schema_name in _runtime_schema_names:
             if schema_name == "ensure_production_schema":
