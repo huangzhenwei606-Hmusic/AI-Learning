@@ -148,6 +148,8 @@ CHECKS = {
     "event room booking schema": "CREATE TABLE IF NOT EXISTS event_room_bookings",
     "event room weekend validation": "Event Room bookings are available on Saturday or Sunday only.",
     "event room overlap protection": "def event_room_booking_conflict",
+    "event room teacher calendar sync": "def calendar_event_room(booking)",
+    "event room public teacher details": 'class="erb-booking-detail"',
     "event room startup schema": "ensure_event_room_booking_schema()\n    ensure_guardian_billing_schema()",
     "jason september event room seed": '"jason-piano-salon-2026-09-26"',
     "jason october event room seed": '"jason-piano-salon-2026-10-10"',

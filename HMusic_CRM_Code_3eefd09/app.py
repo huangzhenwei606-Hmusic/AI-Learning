@@ -13269,15 +13269,31 @@ def event_room_booking():
         for item in weekend_dates
     )
 
+    audience_labels = {
+        "internal": "Teachers only",
+        "studio": "Studio students",
+        "families": "Students & families",
+    }
     booking_cards = ""
     for row in upcoming:
         status_class = "approved" if row[11] == "approved" else "pending"
+        attendance = f"{int(row[7] or 0)} expected" if row[7] else "Attendance not set"
+        setup = escape(str(row[9] or "No setup requirements provided."))
+        event_notes = escape(str(row[10] or "No additional event details provided."))
         booking_cards += f"""
-        <article class="erb-booking {status_class}">
-            <div><b>{escape(str(row[4]))}</b><span>{escape(event_room_display_time(row[5]))}–{escape(event_room_display_time(row[6]))}</span></div>
-            <div><strong>{escape(str(row[3] or 'Studio Event'))}</strong><span>{escape(str(row[1] or 'Teacher'))} · {escape(EVENT_ROOM_TYPES.get(row[2], row[2] or 'Event'))}</span></div>
-            <span class="erb-status">{escape(EVENT_ROOM_STATUSES.get(row[11], row[11] or 'Pending'))}</span>
-        </article>
+        <details class="erb-booking {status_class}" id="booking-{row[0]}">
+            <summary>
+                <div><b>{escape(str(row[4]))}</b><span>{escape(event_room_display_time(row[5]))}–{escape(event_room_display_time(row[6]))}</span></div>
+                <div><strong>{escape(str(row[3] or 'Studio Event'))}</strong><span>{escape(str(row[1] or 'Teacher'))} · {escape(EVENT_ROOM_TYPES.get(row[2], row[2] or 'Event'))}</span></div>
+                <span class="erb-status">{escape(EVENT_ROOM_STATUSES.get(row[11], row[11] or 'Pending'))}</span>
+            </summary>
+            <div class="erb-booking-detail">
+                <div><b>Audience</b><span>{escape(audience_labels.get(row[8], row[8] or 'Studio students'))}</span></div>
+                <div><b>Attendance</b><span>{attendance}</span></div>
+                <div><b>Setup</b><span>{setup}</span></div>
+                <div><b>Event details</b><span>{event_notes}</span></div>
+            </div>
+        </details>
         """
     booking_cards = booking_cards or '<div class="erb-empty">No upcoming Event Room bookings.</div>'
 
@@ -13329,12 +13345,15 @@ def event_room_booking():
       .erb-notice,.erb-error{{padding:11px 13px;border-radius:7px;margin-bottom:12px;font-weight:700}}.erb-notice{{background:var(--td-green-soft);color:var(--td-green)}}.erb-error{{background:#FEF3F2;color:#B42318;border:1px solid #FECDCA}}
       .erb-weekends{{display:grid;grid-template-columns:repeat(6,minmax(74px,1fr));gap:7px;margin-bottom:14px}}.erb-day{{min-height:58px;border:1px solid var(--td-line);border-radius:7px;background:#fff;color:var(--td-text);text-align:left;padding:8px 10px;cursor:pointer}}.erb-day b,.erb-day span{{display:block}}.erb-day span{{color:var(--td-muted);font-size:12px;margin-top:3px}}.erb-day.busy{{box-shadow:inset 3px 0 0 var(--td-blue);background:var(--td-blue-soft)}}
       .erb-layout{{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(330px,.85fr);gap:14px;align-items:start}}.erb-card{{background:#fff;border:1px solid var(--td-line);border-radius:8px;overflow:hidden}}.erb-card-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 17px;border-bottom:1px solid var(--td-line)}}.erb-card-head h2{{margin:0;font-size:17px}}.erb-card-head span{{font-size:12px;color:var(--td-muted)}}
-      .erb-list{{padding:6px 16px}}.erb-booking{{display:grid;grid-template-columns:128px minmax(0,1fr) auto;gap:14px;align-items:center;padding:13px 0;border-bottom:1px solid var(--td-line)}}.erb-booking:last-child{{border-bottom:0}}.erb-booking b,.erb-booking strong,.erb-booking span{{display:block}}.erb-booking div>span{{font-size:12px;color:var(--td-muted);margin-top:3px}}.erb-status,.erb-table-status{{display:inline-flex!important;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:900;background:#FFF4E5;color:#A15C07}}.erb-booking.approved .erb-status,.erb-table-status.approved{{background:var(--td-green-soft);color:var(--td-green)}}.erb-empty{{padding:22px 0;color:var(--td-muted)}}
+      .erb-list{{padding:6px 16px}}.erb-booking{{border-bottom:1px solid var(--td-line)}}.erb-booking:last-child{{border-bottom:0}}.erb-booking summary{{display:grid;grid-template-columns:128px minmax(0,1fr) auto;gap:14px;align-items:center;padding:13px 0;cursor:pointer;list-style:none}}.erb-booking summary::-webkit-details-marker{{display:none}}.erb-booking b,.erb-booking strong,.erb-booking span{{display:block}}.erb-booking summary div>span{{font-size:12px;color:var(--td-muted);margin-top:3px}}.erb-status,.erb-table-status{{display:inline-flex!important;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:900;background:#FFF4E5;color:#A15C07}}.erb-booking.approved .erb-status,.erb-table-status.approved{{background:var(--td-green-soft);color:var(--td-green)}}.erb-booking-detail{{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin:0 0 13px 128px;padding:13px 14px;background:#F8FAFC;border:1px solid var(--td-line);border-radius:7px}}.erb-booking-detail b{{font-size:11px;text-transform:uppercase;color:var(--td-muted);margin-bottom:4px}}.erb-booking-detail span{{font-size:13px;line-height:1.4;white-space:pre-wrap}}.erb-empty{{padding:22px 0;color:var(--td-muted)}}
       .erb-form{{padding:16px}}.erb-form label{{display:block;color:var(--td-muted);font-size:12px;font-weight:800;margin-bottom:11px}}.erb-form input,.erb-form select,.erb-form textarea{{width:100%;margin-top:5px;border:1px solid var(--td-line);border-radius:7px;background:#fff;color:var(--td-text);padding:9px 10px;font:inherit}}.erb-form input,.erb-form select{{min-height:40px}}.erb-form textarea{{min-height:66px;resize:vertical}}.erb-two{{display:grid;grid-template-columns:1fr 1fr;gap:9px}}.erb-submit{{width:100%;min-height:44px;border:0;border-radius:7px;background:var(--td-blue);color:#fff;font-weight:900;cursor:pointer}}
       .erb-my{{margin-top:14px}}.erb-table-wrap{{overflow:auto}}.erb-my table{{width:100%;border-collapse:collapse}}.erb-my th,.erb-my td{{padding:11px 14px;border-bottom:1px solid var(--td-line);text-align:left;vertical-align:top}}.erb-my th{{font-size:12px;color:var(--td-muted);background:#F8FAFC}}.erb-my td small{{display:block;color:var(--td-muted);margin-top:4px}}.erb-table-status.rejected,.erb-table-status.cancelled{{background:#FEE4E2;color:#B42318}}.erb-cancel{{border:1px solid #FECDCA;background:#fff;color:#B42318;border-radius:6px;padding:7px 9px;cursor:pointer}}
-      @media(max-width:900px){{.erb-weekends{{grid-template-columns:repeat(3,1fr)}}.erb-layout{{grid-template-columns:1fr}}}}@media(max-width:560px){{.erb-head{{display:block}}.erb-head a{{display:inline-block;margin-top:12px}}.erb-weekends{{grid-template-columns:repeat(2,1fr)}}.erb-booking{{grid-template-columns:1fr}}.erb-two{{grid-template-columns:1fr}}}}
+      @media(max-width:900px){{.erb-weekends{{grid-template-columns:repeat(3,1fr)}}.erb-layout{{grid-template-columns:1fr}}}}@media(max-width:560px){{.erb-head{{display:block}}.erb-head a{{display:inline-block;margin-top:12px}}.erb-weekends{{grid-template-columns:repeat(2,1fr)}}.erb-booking summary{{grid-template-columns:1fr}}.erb-booking-detail{{grid-template-columns:1fr;margin-left:0}}.erb-two{{grid-template-columns:1fr}}}}
     </style>
-    <script>function chooseEventRoomDate(value){{const input=document.getElementById('erbBookingDate');if(input){{input.value=value;input.scrollIntoView({{behavior:'smooth',block:'center'}});}}}}</script>
+    <script>
+      function chooseEventRoomDate(value){{const input=document.getElementById('erbBookingDate');if(input){{input.value=value;input.scrollIntoView({{behavior:'smooth',block:'center'}});}}}}
+      document.addEventListener('DOMContentLoaded',function(){{if(location.hash){{const booking=document.querySelector(location.hash);if(booking&&booking.tagName==='DETAILS'){{booking.open=true;booking.scrollIntoView({{behavior:'smooth',block:'center'}});}}}}}});
+    </script>
     """
     return hstudio_teacher_dark_shell(
         teacher_name,
@@ -13526,6 +13545,7 @@ def teacher_dashboard():
     ensure_calendar_lesson_panel_schema()
     ensure_teacher_permission_schema()
     ensure_location_room_schema()
+    ensure_event_room_booking_schema()
 
     teacher_name = session.get("teacher_name")
     teacher_perms = get_teacher_permissions(teacher_name)
@@ -13582,6 +13602,29 @@ def teacher_dashboard():
     ORDER BY s.lesson_date, s.lesson_time
     """, (teacher_name, week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
     week_lessons = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, booking_date, start_time, end_time, title, event_type,
+           audience_type, expected_attendance, setup_requirements, notes, status
+    FROM event_room_bookings
+    WHERE LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))
+    AND booking_date LIKE ?
+    AND status = 'approved'
+    ORDER BY booking_date, start_time, id
+    """, (teacher_name, selected_month + "%"))
+    event_room_month_bookings = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT id, booking_date, start_time, end_time, title, event_type,
+           audience_type, expected_attendance, setup_requirements, notes, status
+    FROM event_room_bookings
+    WHERE LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))
+    AND booking_date >= ?
+    AND booking_date <= ?
+    AND status = 'approved'
+    ORDER BY booking_date, start_time, id
+    """, (teacher_name, week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
+    event_room_week_bookings = cursor.fetchall()
 
     cursor.execute("""
     SELECT
@@ -13824,6 +13867,9 @@ def teacher_dashboard():
     .sd-excused  {background:var(--s-excused)}
     .sd-early-cancel{background:#98A2B3}
     .calendar-event{border:1px solid rgba(24,95,165,.14);border-left:3px solid var(--blue);border-radius:5px;padding:2px 4px 3px 5px;color:#0F172A;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    .calendar-studio-event{display:block;text-decoration:none;background:#EAF7F0!important;border-color:#B9E1CC!important;border-left-color:#1E7A50!important;cursor:pointer!important}
+    .calendar-studio-event:hover{background:#DDF2E7!important}
+    .calendar-studio-event .studio-event-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 6px;background:#1E7A50;color:#fff;font-size:8px;font-weight:900;white-space:nowrap}
     .calendar-event.early-cancel{color:var(--cancel-red)!important}
     .calendar-event.early-cancel .event-student,
     .calendar-event.early-cancel .event-line,
@@ -13979,6 +14025,20 @@ def teacher_dashboard():
         </div>
         """
 
+    def calendar_event_room(booking):
+        type_label = EVENT_ROOM_TYPES.get(booking[5], booking[5] or "Studio Event")
+        return f"""
+        <a class="calendar-event calendar-studio-event" href="/event_room_booking#booking-{booking[0]}"
+           style="border-left-width:3px" title="Open Event Room booking details">
+            <div class="event-top">
+                <span class="event-time"><span class="calendar-time-chip">{escape(event_room_display_time(booking[2]))}–{escape(event_room_display_time(booking[3]))}</span></span>
+                <span class="studio-event-status">Studio Event</span>
+            </div>
+            <span class="event-student">{escape(str(booking[4] or 'Studio Event'))}</span>
+            <span class="event-line">Event Room · {escape(str(type_label))}</span>
+        </a>
+        """
+
     if view == "messages":
         content = teacher_dashboard_messages_content(teacher_name or "")
         return hstudio_teacher_dark_shell(
@@ -14038,15 +14098,19 @@ def teacher_dashboard():
             by_date = {}
             for lesson in lessons:
                 by_date.setdefault(lesson[1], []).append(lesson)
+            event_room_by_date = {}
+            for booking in event_room_month_bookings:
+                event_room_by_date.setdefault(booking[1], []).append(booking)
             day_columns = ""
             current_day = month_grid_start
             while current_day <= month_grid_end:
                 day_key = current_day.strftime("%Y-%m-%d")
                 day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+                day_events += "".join(calendar_event_room(booking) for booking in event_room_by_date.get(day_key, []))
                 if not day_events:
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
-                <section class="calendar-day {'today' if day_key == today else ''} {'has-lessons' if by_date.get(day_key) else 'no-lessons'}" data-date="{day_key}">
+                <section class="calendar-day {'today' if day_key == today else ''} {'has-lessons' if by_date.get(day_key) or event_room_by_date.get(day_key) else 'no-lessons'}" data-date="{day_key}">
                     <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
                     {day_events}
                 </section>
@@ -14068,11 +14132,15 @@ def teacher_dashboard():
             by_date = {}
             for lesson in week_lessons:
                 by_date.setdefault(lesson[1], []).append(lesson)
+            event_room_by_date = {}
+            for booking in event_room_week_bookings:
+                event_room_by_date.setdefault(booking[1], []).append(booking)
             day_columns = ""
             for offset in range(7):
                 current_day = week_start + timedelta(days=offset)
                 day_key = current_day.strftime("%Y-%m-%d")
                 day_events = "".join(calendar_event(lesson) for lesson in by_date.get(day_key, []))
+                day_events += "".join(calendar_event_room(booking) for booking in event_room_by_date.get(day_key, []))
                 if not day_events:
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
