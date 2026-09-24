@@ -72,6 +72,7 @@ _v321_schema_ready = False
 _teacher_management_schema_ready = False
 _calendar_lesson_panel_schema_ready = False
 _location_room_schema_ready = False
+_guardian_billing_schema_ready = False
 _schema_init_lock = threading.RLock()
 if not hasattr(sqlite3, "_hmusic_original_connect"):
     sqlite3._hmusic_original_connect = sqlite3.connect
@@ -7146,9 +7147,9 @@ def edit_invoice(invoice_id):
         new_coverage_class = (request.form.get("coverage_class") or "").strip()
         new_coverage_start = (request.form.get("coverage_start") or "").strip()
         new_coverage_note = (request.form.get("coverage_note") or "").strip()
-        method_order = ["ach", "zelle", "paypal"]
+        method_order = ["ach", "zelle"]
         selected_methods = [method for method in method_order if method in request.form.getlist("payment_methods")]
-        new_payment_methods = ",".join(selected_methods) or "ach,zelle,paypal"
+        new_payment_methods = ",".join(selected_methods) or "ach,zelle"
 
         if new_amount < 0:
             error = "Amount cannot be negative."
@@ -7198,7 +7199,8 @@ def edit_invoice(invoice_id):
 
     conn.close()
 
-    methods = {item.strip().lower() for item in (payment_methods or "ach,zelle,paypal").split(",") if item.strip()}
+    methods = {item.strip().lower() for item in (payment_methods or "ach,zelle").split(",") if item.strip()}
+    methods &= {"ach", "zelle"}
 
     def checked(method):
         return "checked" if method in methods else ""
@@ -7281,7 +7283,6 @@ def edit_invoice(invoice_id):
                             <div class="methods">
                                 <label class="method"><input type="checkbox" name="payment_methods" value="ach" {checked("ach")}> ACH</label>
                                 <label class="method"><input type="checkbox" name="payment_methods" value="zelle" {checked("zelle")}> Zelle</label>
-                                <label class="method"><input type="checkbox" name="payment_methods" value="paypal" {checked("paypal")}> PayPal</label>
                             </div>
                         </div>
                         <div>
@@ -15039,22 +15040,24 @@ def parent_cancel():
         if not parent_id or not parent_can_access_student(parent_id, lesson[0]):
             conn.close()
             return "<h1>Permission denied</h1>"
+        if not parent_has_student_permission(parent_id, lesson[0], "manage_schedule"):
+            conn.close()
+            return "<h1>This guardian has view-only schedule access.</h1>", 403
         student_name = lesson[0]
 
         cursor.execute("""
-        SELECT id
+        SELECT id, parent_id
         FROM lesson_change_requests
         WHERE schedule_id = ?
-          AND parent_id = ?
           AND request_type = 'cancel_lesson'
           AND status IN ('pending', 'pending_owner_review')
         ORDER BY id DESC
         LIMIT 1
-        """, (schedule_id, parent_id))
+        """, (schedule_id,))
         existing_request = cursor.fetchone()
 
         if action == "undo":
-            if not existing_request:
+            if not existing_request or int(existing_request[1] or 0) != int(parent_id):
                 conn.close()
                 return redirect("/parent_schedule?cancel=already_reviewed")
 
@@ -17097,7 +17100,7 @@ def create_package_invoice(name):
         discount_amount = money_value(request.form.get("discount_amount"), 0)
         amount_due = max(round(subtotal_amount - discount_amount, 2), 0)
         due_date = request.form.get("due_date") or default_due_date
-        payment_methods = ",".join(request.form.getlist("payment_methods")) or "ach,zelle,paypal"
+        payment_methods = ",".join(request.form.getlist("payment_methods")) or "ach,zelle"
         package_option_values = request.form.getlist("package_options")
         notes = (request.form.get("notes") or "").strip()
         package_options = []
@@ -17400,7 +17403,6 @@ def create_package_invoice(name):
                         <div class="methods">
                             <label class="method"><input type="checkbox" name="payment_methods" value="ach" checked> ACH / bank</label>
                             <label class="method"><input type="checkbox" name="payment_methods" value="zelle" checked> Zelle</label>
-                            <label class="method"><input type="checkbox" name="payment_methods" value="paypal" checked> PayPal</label>
                         </div>
                     </div>
                     <div class="span-2">
@@ -17479,7 +17481,7 @@ def create_pending_fee_invoice(ledger_id):
         subtotal_amount,
         payment_methods
     )
-    VALUES (?, NULL, 0, ?, 'unpaid', 'cancellation_fee', ?, ?, ?, ?, 'ach,zelle,paypal')
+    VALUES (?, NULL, 0, ?, 'unpaid', 'cancellation_fee', ?, ?, ?, ?, 'ach,zelle')
     """, (
         student_name,
         amount,
@@ -18208,6 +18210,7 @@ def pay_invoice(invoice_id):
         return redirect("/owner_login")
 
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -18234,6 +18237,18 @@ def pay_invoice(invoice_id):
         conn.close()
         return "<h1>Invoice not found</h1>"
 
+    sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[3], invoice[4])
+    cursor.execute("""
+    SELECT ia.id, ia.parent_id, COALESCE(p.parent_name, p.email, 'Parent'),
+           ia.amount, COALESCE(ia.status, 'unpaid'),
+           COALESCE(ia.payment_method, ''), COALESCE(ia.paid_at, '')
+    FROM invoice_allocations ia
+    LEFT JOIN parent_profiles p ON p.id = ia.parent_id
+    WHERE ia.invoice_id = ?
+    ORDER BY ia.id
+    """, (invoice_id,))
+    allocations = cursor.fetchall()
+
     if invoice[4] == "paid":
         repaired_lessons = repair_paid_invoice_credit(cursor, invoice)
         if repaired_lessons:
@@ -18251,6 +18266,38 @@ def pay_invoice(invoice_id):
         """
 
     if request.method == "POST":
+        action = request.form.get("action") or "confirm_full_invoice"
+        if action == "confirm_allocation":
+            try:
+                allocation_id = int(request.form.get("allocation_id") or 0)
+            except (TypeError, ValueError):
+                allocation_id = 0
+            cursor.execute("""
+            SELECT id FROM invoice_allocations
+            WHERE id = ? AND invoice_id = ?
+            """, (allocation_id, invoice_id))
+            if not cursor.fetchone():
+                conn.rollback()
+                conn.close()
+                return "<h1>Payment share not found</h1>", 404
+            result = record_invoice_allocation_paid(
+                cursor,
+                allocation_id,
+                request.form.get("payment_method") or "Zelle",
+                payment_date=request.form.get("payment_date") or None,
+                reference="Owner confirmed",
+            )
+            conn.commit()
+            conn.close()
+            if result.get("ok"):
+                return redirect(f"/pay_invoice/{invoice_id}?share_confirmed=1")
+            return f"<h1>Payment could not be confirmed</h1><p>{escape(result.get('error') or 'Unknown error')}</p>", 400
+
+        if allocations:
+            conn.rollback()
+            conn.close()
+            return redirect(f"/pay_invoice/{invoice_id}?confirm_each_share=1")
+
         payment_date = request.form.get("payment_date")
         payment_method = request.form.get("payment_method")
 
@@ -18363,6 +18410,55 @@ def pay_invoice(invoice_id):
         <p><a href="/student_ledger/{student_name}">View Student Ledger</a></p>
         """
 
+    allocation_rows = ""
+    for allocation_id, allocation_parent_id, parent_name, share_amount, share_status, method, paid_at in allocations:
+        confirm_button = ""
+        if share_status in ("pending_confirmation", "processing", "unpaid", "failed"):
+            confirm_button = f"""
+            <form method="POST" style="display:inline-flex;gap:8px;align-items:center;">
+                <input type="hidden" name="action" value="confirm_allocation">
+                <input type="hidden" name="allocation_id" value="{allocation_id}">
+                <input type="hidden" name="payment_method" value="Zelle">
+                <button type="submit">Confirm Zelle received</button>
+            </form>
+            """
+        allocation_rows += f"""
+        <tr>
+            <td>{escape(str(parent_name or 'Parent'))}</td>
+            <td>${hmusic_money(share_amount)}</td>
+            <td>{escape(str(share_status).replace('_', ' ').title())}</td>
+            <td>{escape(str(method or '-'))}</td>
+            <td>{escape(str(paid_at or '-'))}</td>
+            <td>{confirm_button or 'Complete'}</td>
+        </tr>
+        """
+
+    allocation_section = ""
+    payment_form = ""
+    if allocations:
+        allocation_section = f"""
+        <h2>Guardian payment shares</h2>
+        <p>Confirm each share separately. The invoice is paid and lesson credits are added only after every share is complete.</p>
+        <table border="1" cellpadding="8" cellspacing="0">
+            <tr><th>Guardian</th><th>Share</th><th>Status</th><th>Method</th><th>Paid</th><th>Action</th></tr>
+            {allocation_rows}
+        </table>
+        """
+    else:
+        payment_form = f"""
+        <form method="POST">
+            <input type="hidden" name="action" value="confirm_full_invoice">
+            Payment Date:<br>
+            <input type="date" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}"><br><br>
+
+            Payment Method:<br>
+            <input name="payment_method" value="Manual"><br><br>
+
+            <button type="submit">Confirm Payment</button>
+        </form>
+        """
+
+    conn.commit()
     conn.close()
 
     return f"""
@@ -18374,15 +18470,8 @@ def pay_invoice(invoice_id):
     <p>Type: {invoice[5]}</p>
     <p>Status: {invoice[4]}</p>
 
-    <form method="POST">
-        Payment Date:<br>
-        <input type="date" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}"><br><br>
-
-        Payment Method:<br>
-        <input name="payment_method" value="Manual"><br><br>
-
-        <button type="submit">Confirm Payment</button>
-    </form>
+    {allocation_section}
+    {payment_form}
 
     <p><a href="/invoices">Back to Invoices</a></p>
     """
@@ -19165,6 +19254,309 @@ def parent_can_access_student(parent_id, student_name):
     return row is not None
 
 
+def ensure_guardian_billing_schema():
+    global _guardian_billing_schema_ready
+    if _guardian_billing_schema_ready:
+        return
+
+    ensure_v27_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    for column_name, column_sql in [
+        ("is_primary_contact", "is_primary_contact INTEGER DEFAULT 0"),
+        ("can_view_schedule", "can_view_schedule INTEGER DEFAULT 1"),
+        ("can_manage_schedule", "can_manage_schedule INTEGER DEFAULT 1"),
+        ("can_view_learning", "can_view_learning INTEGER DEFAULT 1"),
+        ("can_view_billing", "can_view_billing INTEGER DEFAULT 1"),
+        ("can_pay", "can_pay INTEGER DEFAULT 1"),
+        ("can_message", "can_message INTEGER DEFAULT 1"),
+        ("receive_notifications", "receive_notifications INTEGER DEFAULT 1"),
+    ]:
+        add_column_if_missing(cursor, "parent_students", column_name, column_sql)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_billing_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_name TEXT UNIQUE,
+        billing_mode TEXT DEFAULT 'one_payer',
+        primary_parent_id INTEGER,
+        secondary_parent_id INTEGER,
+        primary_percent REAL DEFAULT 100,
+        secondary_percent REAL DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS invoice_allocations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER,
+        parent_id INTEGER,
+        amount REAL DEFAULT 0,
+        status TEXT DEFAULT 'unpaid',
+        payment_method TEXT,
+        manual_payment_status TEXT,
+        stripe_checkout_session_id TEXT,
+        stripe_payment_intent_id TEXT,
+        lock_token TEXT,
+        locked_at TEXT,
+        paid_at TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        UNIQUE(invoice_id, parent_id)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoice_allocations_invoice ON invoice_allocations(invoice_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoice_allocations_parent ON invoice_allocations(parent_id)")
+    conn.commit()
+    conn.close()
+    _guardian_billing_schema_ready = True
+
+
+PARENT_STUDENT_PERMISSION_COLUMNS = {
+    "view_schedule": "can_view_schedule",
+    "manage_schedule": "can_manage_schedule",
+    "view_learning": "can_view_learning",
+    "view_billing": "can_view_billing",
+    "pay": "can_pay",
+    "message": "can_message",
+    "notifications": "receive_notifications",
+}
+
+
+def parent_has_student_permission(parent_id, student_name, permission):
+    if not parent_id or not student_name:
+        return False
+    ensure_guardian_billing_schema()
+    column = PARENT_STUDENT_PERMISSION_COLUMNS.get(permission)
+    if not column:
+        return False
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute(f"""
+    SELECT COALESCE({column}, 1)
+    FROM parent_students
+    WHERE parent_id = ? AND student_name = ? AND COALESCE(active, 1) = 1
+    """, (parent_id, student_name))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row and row[0])
+
+
+def ensure_student_billing_rule(cursor, student_name):
+    cursor.execute("""
+    SELECT id, billing_mode, primary_parent_id, secondary_parent_id,
+           COALESCE(primary_percent, 100), COALESCE(secondary_percent, 0)
+    FROM student_billing_rules
+    WHERE student_name = ? AND COALESCE(active, 1) = 1
+    """, (student_name,))
+    rule = cursor.fetchone()
+    if rule:
+        return rule
+
+    cursor.execute("""
+    SELECT parent_id
+    FROM parent_students
+    WHERE student_name = ? AND COALESCE(active, 1) = 1
+    ORDER BY COALESCE(is_primary_contact, 0) DESC, id
+    """, (student_name,))
+    guardians = [row[0] for row in cursor.fetchall()]
+    if not guardians:
+        return None
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO student_billing_rules (
+        student_name, billing_mode, primary_parent_id, secondary_parent_id,
+        primary_percent, secondary_percent, active, created_at, updated_at
+    )
+    VALUES (?, 'one_payer', ?, NULL, 100, 0, 1, ?, ?)
+    ON CONFLICT(student_name) DO NOTHING
+    """, (student_name, guardians[0], now, now))
+    cursor.execute("""
+    SELECT id, billing_mode, primary_parent_id, secondary_parent_id,
+           COALESCE(primary_percent, 100), COALESCE(secondary_percent, 0)
+    FROM student_billing_rules
+    WHERE student_name = ? AND COALESCE(active, 1) = 1
+    """, (student_name,))
+    return cursor.fetchone()
+
+
+def sync_invoice_allocations(cursor, invoice_id, student_name, invoice_amount, invoice_status="unpaid"):
+    rule = ensure_student_billing_rule(cursor, student_name)
+    if not rule:
+        return []
+
+    cursor.execute("""
+    SELECT id, parent_id, amount, status, COALESCE(payment_method, ''),
+           COALESCE(manual_payment_status, '')
+    FROM invoice_allocations
+    WHERE invoice_id = ?
+    ORDER BY id
+    """, (invoice_id,))
+    existing = cursor.fetchall()
+    locked_statuses = {"pending_confirmation", "processing", "paid"}
+    if existing and any((row[3] or "unpaid") in locked_statuses for row in existing):
+        return existing
+
+    amount = round(float(invoice_amount or 0), 2)
+    mode = (rule[1] or "one_payer").strip().lower()
+    primary_parent_id = rule[2]
+    secondary_parent_id = rule[3]
+    targets = []
+    if mode == "split" and primary_parent_id and secondary_parent_id and primary_parent_id != secondary_parent_id:
+        primary_percent = max(0.0, min(100.0, float(rule[4] or 0)))
+        primary_amount = round(amount * primary_percent / 100.0, 2)
+        targets = [
+            (primary_parent_id, primary_amount),
+            (secondary_parent_id, round(amount - primary_amount, 2)),
+        ]
+    elif primary_parent_id:
+        targets = [(primary_parent_id, amount)]
+
+    if not targets:
+        return existing
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    target_parent_ids = [target[0] for target in targets]
+    if existing:
+        placeholders = ",".join(["?"] * len(target_parent_ids))
+        cursor.execute(
+            f"DELETE FROM invoice_allocations WHERE invoice_id = ? AND parent_id NOT IN ({placeholders})",
+            [invoice_id] + target_parent_ids,
+        )
+    for parent_id, allocation_amount in targets:
+        cursor.execute("""
+        INSERT INTO invoice_allocations (
+            invoice_id, parent_id, amount, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'unpaid', ?, ?)
+        ON CONFLICT(invoice_id, parent_id) DO UPDATE SET
+            amount = excluded.amount,
+            updated_at = excluded.updated_at
+        """, (invoice_id, parent_id, allocation_amount, now, now))
+
+    cursor.execute("""
+    SELECT id, parent_id, amount, status, COALESCE(payment_method, ''),
+           COALESCE(manual_payment_status, '')
+    FROM invoice_allocations
+    WHERE invoice_id = ?
+    ORDER BY id
+    """, (invoice_id,))
+    return cursor.fetchall()
+
+
+def refresh_invoice_status_from_allocations(cursor, invoice_id):
+    cursor.execute("SELECT status FROM invoice_allocations WHERE invoice_id = ?", (invoice_id,))
+    statuses = [(row[0] or "unpaid") for row in cursor.fetchall()]
+    if not statuses:
+        return "unpaid"
+    if all(status == "paid" for status in statuses):
+        status = "paid"
+    elif any(status == "paid" for status in statuses):
+        status = "partially_paid"
+    elif any(status in ("pending_confirmation", "processing") for status in statuses):
+        status = "payment_processing"
+    elif any(status == "failed" for status in statuses):
+        status = "payment_failed"
+    else:
+        status = "unpaid"
+    cursor.execute("UPDATE invoices SET status = ? WHERE id = ?", (status, invoice_id))
+    return status
+
+
+def record_invoice_allocation_paid(cursor, allocation_id, payment_method, payment_date=None, reference=""):
+    payment_date = payment_date or date.today().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    SELECT ia.id, ia.invoice_id, ia.parent_id, ia.amount, ia.status,
+           i.student_name, i.charge_lessons, i.invoice_type, i.enrollment_id,
+           COALESCE(i.credits_applied, 0)
+    FROM invoice_allocations ia
+    JOIN invoices i ON i.id = ia.invoice_id
+    WHERE ia.id = ?
+    """, (allocation_id,))
+    allocation = cursor.fetchone()
+    if not allocation:
+        return {"ok": False, "error": "Payment allocation not found."}
+    if allocation[4] == "paid":
+        return {"ok": True, "invoice_id": allocation[1], "already_paid": True}
+
+    invoice_id = allocation[1]
+    student_name = allocation[5]
+    enrollment_id = allocation[8]
+    course_type_name = ""
+    teacher_name = ""
+    if enrollment_id:
+        cursor.execute("SELECT COALESCE(course_type_name, ''), COALESCE(teacher_name, '') FROM enrollments WHERE id = ?", (enrollment_id,))
+        enrollment = cursor.fetchone()
+        if enrollment:
+            course_type_name, teacher_name = enrollment
+
+    cursor.execute("""
+    INSERT INTO payments (
+        student_name, amount, lessons_added, payment_method, payment_date,
+        enrollment_id, course_type_name, teacher_name, package_name, notes,
+        visible_to_parent
+    )
+    VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'Tuition Invoice Share', ?, 1)
+    """, (
+        student_name,
+        allocation[3],
+        payment_method,
+        payment_date,
+        enrollment_id,
+        course_type_name,
+        teacher_name,
+        f"Invoice #{invoice_id} share paid by parent #{allocation[2]}{(' · ' + reference) if reference else ''}",
+    ))
+    payment_id = cursor.lastrowid
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = 'paid', payment_method = ?, paid_at = ?, lock_token = NULL,
+        manual_payment_status = 'confirmed', updated_at = ?
+    WHERE id = ? AND status != 'paid'
+    """, (payment_method, now, now, allocation_id))
+    cursor.execute("""
+    INSERT INTO student_ledger (
+        student_name, entry_type, amount, description, related_invoice_id,
+        related_payment_id, related_schedule_id, created_at
+    )
+    VALUES (?, 'invoice_payment_share', ?, ?, ?, ?, NULL, ?)
+    """, (
+        student_name,
+        allocation[3],
+        f"Invoice #{invoice_id} payment share received",
+        invoice_id,
+        payment_id,
+        now,
+    ))
+
+    final_status = refresh_invoice_status_from_allocations(cursor, invoice_id)
+    lessons_added = 0
+    if final_status == "paid" and not allocation[9]:
+        lessons_added = invoice_credit_to_grant(cursor, invoice_id, allocation[6], allocation[7])
+        if lessons_added and enrollment_id:
+            cursor.execute("""
+            UPDATE enrollments
+            SET lessons_left = COALESCE(lessons_left, 0) + ?, updated_at = ?
+            WHERE id = ?
+            """, (lessons_added, now, enrollment_id))
+        cursor.execute("UPDATE invoices SET credits_applied = 1 WHERE id = ?", (invoice_id,))
+        cursor.execute("UPDATE payments SET lessons_added = ? WHERE id = ?", (lessons_added, payment_id))
+
+    return {
+        "ok": True,
+        "invoice_id": invoice_id,
+        "student_name": student_name,
+        "parent_id": allocation[2],
+        "amount": allocation[3],
+        "invoice_status": final_status,
+        "lessons_added": lessons_added,
+    }
+
+
 def log_parent_activity(parent_id, student_name, action_type, description, related_schedule_id=None):
     if not parent_id:
         return
@@ -19622,6 +20014,7 @@ def parent_admin(parent_id):
                 <div class="row-actions">
                     <a class="button compact primary" href="/new_owner_message?{urlencode({'parent_id': parent_id, 'student_name': s[1] or '', 'subject': 'Message about ' + str(s[1] or '')})}">Message</a>
                     <a class="button compact" href="/student/{quote(str(s[1] or ''), safe='')}">Profile</a>
+                    <a class="button compact" href="/student_guardian_access/{quote(str(s[1] or ''), safe='')}">Guardian access</a>
                     <a class="button compact" href="/edit_student/{quote(str(s[1] or ''), safe='')}">Edit</a>
                     <a class="button compact" href="#family-credits">Credits</a>
                     {unlink_action}
@@ -20541,6 +20934,216 @@ def link_parent_student(parent_id):
     conn.close()
 
     return redirect(f"/parent_admin/{parent_id}")
+
+
+@app.route("/student_guardian_access/<path:student_name>", methods=["GET", "POST"])
+def student_guardian_access(student_name):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_guardian_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM students WHERE name = ?", (student_name,))
+    student = cursor.fetchone()
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>", 404
+
+    notice = ""
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if action == "save_guardian":
+            try:
+                parent_id = int(request.form.get("parent_id") or 0)
+            except ValueError:
+                parent_id = 0
+            cursor.execute("""
+            SELECT id FROM parent_students
+            WHERE parent_id = ? AND student_name = ? AND COALESCE(active, 1) = 1
+            """, (parent_id, student_name))
+            if not cursor.fetchone():
+                conn.close()
+                return "<h1>Guardian link not found</h1>", 404
+            is_primary = 1 if request.form.get("is_primary_contact") == "1" else 0
+            if is_primary:
+                cursor.execute("UPDATE parent_students SET is_primary_contact = 0 WHERE student_name = ?", (student_name,))
+            cursor.execute("""
+            UPDATE parent_students
+            SET relationship = ?, is_primary_contact = ?, can_view_schedule = ?,
+                can_manage_schedule = ?, can_view_learning = ?, can_view_billing = ?,
+                can_pay = ?, can_message = ?, receive_notifications = ?
+            WHERE parent_id = ? AND student_name = ?
+            """, (
+                (request.form.get("relationship") or "Guardian").strip(),
+                is_primary,
+                1 if request.form.get("can_view_schedule") == "1" else 0,
+                1 if request.form.get("can_manage_schedule") == "1" else 0,
+                1 if request.form.get("can_view_learning") == "1" else 0,
+                1 if request.form.get("can_view_billing") == "1" else 0,
+                1 if request.form.get("can_pay") == "1" else 0,
+                1 if request.form.get("can_message") == "1" else 0,
+                1 if request.form.get("receive_notifications") == "1" else 0,
+                parent_id,
+                student_name,
+            ))
+            notice = "Guardian permissions saved."
+        elif action == "save_billing":
+            mode = (request.form.get("billing_mode") or "one_payer").strip()
+            if mode not in ("one_payer", "split"):
+                mode = "one_payer"
+            try:
+                primary_parent_id = int(request.form.get("primary_parent_id") or 0)
+                secondary_parent_id = int(request.form.get("secondary_parent_id") or 0) or None
+                primary_percent = float(request.form.get("primary_percent") or (50 if mode == "split" else 100))
+            except ValueError:
+                conn.close()
+                return "<h1>Invalid billing configuration.</h1>", 400
+            cursor.execute("""
+            SELECT parent_id FROM parent_students
+            WHERE student_name = ? AND COALESCE(active, 1) = 1
+            """, (student_name,))
+            valid_guardians = {int(row[0]) for row in cursor.fetchall()}
+            if primary_parent_id not in valid_guardians:
+                conn.close()
+                return "<h1>Please select a linked primary payer.</h1>", 400
+            if mode == "split":
+                if secondary_parent_id not in valid_guardians or secondary_parent_id == primary_parent_id:
+                    conn.close()
+                    return "<h1>Split billing requires two different linked guardians.</h1>", 400
+                primary_percent = max(0.0, min(100.0, primary_percent))
+                secondary_percent = round(100.0 - primary_percent, 2)
+            else:
+                secondary_parent_id = None
+                primary_percent = 100.0
+                secondary_percent = 0.0
+            cursor.execute("""
+            INSERT INTO student_billing_rules (
+                student_name, billing_mode, primary_parent_id, secondary_parent_id,
+                primary_percent, secondary_percent, active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(student_name) DO UPDATE SET
+                billing_mode = excluded.billing_mode,
+                primary_parent_id = excluded.primary_parent_id,
+                secondary_parent_id = excluded.secondary_parent_id,
+                primary_percent = excluded.primary_percent,
+                secondary_percent = excluded.secondary_percent,
+                active = 1,
+                updated_at = excluded.updated_at
+            """, (
+                student_name, mode, primary_parent_id, secondary_parent_id,
+                primary_percent, secondary_percent, now, now,
+            ))
+            cursor.execute("UPDATE parent_students SET can_pay = 0 WHERE student_name = ?", (student_name,))
+            payer_ids = [primary_parent_id] + ([secondary_parent_id] if secondary_parent_id else [])
+            placeholders = ",".join(["?"] * len(payer_ids))
+            cursor.execute(
+                f"UPDATE parent_students SET can_view_billing = 1, can_pay = 1 WHERE student_name = ? AND parent_id IN ({placeholders})",
+                [student_name] + payer_ids,
+            )
+            cursor.execute("""
+            DELETE FROM invoice_allocations
+            WHERE invoice_id IN (
+                SELECT id FROM invoices
+                WHERE student_name = ?
+                  AND COALESCE(status, 'unpaid') NOT IN ('paid', 'partially_paid', 'payment_processing')
+            )
+            """, (student_name,))
+            notice = "Billing responsibility saved. Open invoices will use the new allocation."
+        conn.commit()
+
+    rule = ensure_student_billing_rule(cursor, student_name)
+    cursor.execute("""
+    SELECT ps.parent_id, COALESCE(pp.parent_name, 'Guardian'), COALESCE(pp.email, ''),
+           COALESCE(ps.relationship, 'Guardian'), COALESCE(ps.is_primary_contact, 0),
+           COALESCE(ps.can_view_schedule, 1), COALESCE(ps.can_manage_schedule, 1),
+           COALESCE(ps.can_view_learning, 1), COALESCE(ps.can_view_billing, 1),
+           COALESCE(ps.can_pay, 1), COALESCE(ps.can_message, 1),
+           COALESCE(ps.receive_notifications, 1)
+    FROM parent_students ps
+    JOIN parent_profiles pp ON pp.id = ps.parent_id
+    WHERE ps.student_name = ? AND COALESCE(ps.active, 1) = 1
+    ORDER BY COALESCE(ps.is_primary_contact, 0) DESC, pp.parent_name, pp.id
+    """, (student_name,))
+    guardians = cursor.fetchall()
+    conn.commit()
+    conn.close()
+
+    def checked(value):
+        return "checked" if value else ""
+
+    guardian_cards = ""
+    for guardian in guardians:
+        guardian_cards += f"""
+        <form class="guardian-card" method="POST">
+            <input type="hidden" name="action" value="save_guardian">
+            <input type="hidden" name="parent_id" value="{guardian[0]}">
+            <div class="guardian-head"><div><h2>{escape(str(guardian[1]))}</h2><p>{escape(str(guardian[2]))}</p></div><span>{escape(str(guardian[3]))}</span></div>
+            <div class="grid">
+                <label>Relationship<select name="relationship"><option>{escape(str(guardian[3]))}</option><option>Mother</option><option>Father</option><option>Guardian</option><option>Emergency contact</option></select></label>
+                <label class="check"><input type="checkbox" name="is_primary_contact" value="1" {checked(guardian[4])}> Primary contact</label>
+                <label class="check"><input type="checkbox" name="can_view_schedule" value="1" {checked(guardian[5])}> View schedule</label>
+                <label class="check"><input type="checkbox" name="can_manage_schedule" value="1" {checked(guardian[6])}> Cancel, reschedule, and book</label>
+                <label class="check"><input type="checkbox" name="can_view_learning" value="1" {checked(guardian[7])}> View notes and homework</label>
+                <label class="check"><input type="checkbox" name="can_view_billing" value="1" {checked(guardian[8])}> View billing</label>
+                <label class="check"><input type="checkbox" name="can_pay" value="1" {checked(guardian[9])}> Make payments</label>
+                <label class="check"><input type="checkbox" name="can_message" value="1" {checked(guardian[10])}> Message H-Music</label>
+                <label class="check"><input type="checkbox" name="receive_notifications" value="1" {checked(guardian[11])}> Receive notifications</label>
+            </div>
+            <button type="submit">Save access</button>
+        </form>
+        """
+    if not guardian_cards:
+        guardian_cards = '<div class="card"><p>No guardian account is linked yet.</p></div>'
+
+    guardian_options = "".join(
+        f'<option value="{guardian[0]}">{escape(str(guardian[1]))} · {escape(str(guardian[3]))}</option>'
+        for guardian in guardians
+    )
+    primary_parent_id = int((rule[2] if rule else 0) or 0)
+    secondary_parent_id = int((rule[3] if rule else 0) or 0)
+    primary_options = guardian_options.replace(
+        f'value="{primary_parent_id}"', f'value="{primary_parent_id}" selected', 1
+    ) if primary_parent_id else guardian_options
+    secondary_options = '<option value="">None</option>' + guardian_options
+    if secondary_parent_id:
+        secondary_options = secondary_options.replace(
+            f'value="{secondary_parent_id}"', f'value="{secondary_parent_id}" selected', 1
+        )
+    billing_mode = (rule[1] if rule else "one_payer") or "one_payer"
+    primary_percent = float((rule[4] if rule else 100) or 0)
+
+    return f"""
+    <html><head><title>Guardians &amp; Billing</title><style>
+    *{{box-sizing:border-box}} body{{margin:0;background:#f5f7fb;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:28px}}
+    .page{{max-width:1080px;margin:auto}} .top{{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px}} h1,h2,p{{margin:0}} h1{{font-size:27px}} h2{{font-size:17px}} p{{color:#667085;margin-top:4px}}
+    .notice{{background:#ecfdf5;color:#166534;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin-bottom:14px;font-weight:800}}
+    .guardian-card,.card{{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:12px;box-shadow:0 8px 22px rgba(15,23,42,.04)}}
+    .guardian-head{{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:12px}} .guardian-head span{{background:#eef6ff;color:#155d9e;border-radius:999px;padding:5px 9px;font-weight:800}}
+    .grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}} label{{font-size:13px;font-weight:750;color:#475467}} label.check{{display:flex;align-items:center;gap:8px;min-height:42px;border:1px solid #e5e7eb;border-radius:9px;padding:9px;background:#fafafa}}
+    input[type=checkbox]{{width:18px;height:18px}} select,input[type=number]{{width:100%;min-height:42px;border:1px solid #d1d5db;border-radius:9px;padding:8px;margin-top:5px;background:#fff}}
+    button,.button{{display:inline-flex;align-items:center;justify-content:center;min-height:40px;border:0;border-radius:9px;padding:10px 14px;background:#1d65ad;color:#fff;font-weight:900;text-decoration:none;margin-top:12px}}
+    .billing-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}} .hint{{font-size:12px;color:#667085;margin-top:8px}}
+    @media(max-width:760px){{body{{padding:14px}}.grid,.billing-grid{{grid-template-columns:1fr}}.top{{align-items:flex-start;flex-direction:column}}}}
+    </style></head><body><main class="page">
+      <div class="top"><div><h1>{escape(student_name)} · Guardians &amp; Billing</h1><p>Independent logins, permissions, and payment responsibility.</p></div><a class="button" href="/student/{quote(student_name, safe='')}">Back to student</a></div>
+      {f'<div class="notice">{escape(notice)}</div>' if notice else ''}
+      <section>{guardian_cards}</section>
+      <form class="card" method="POST">
+        <input type="hidden" name="action" value="save_billing">
+        <h2>Billing responsibility</h2><p class="hint">Only ACH and Zelle are available. Credit card and PayPal payment are disabled.</p>
+        <div class="billing-grid">
+          <label>Billing mode<select name="billing_mode"><option value="one_payer" {'selected' if billing_mode == 'one_payer' else ''}>One payer</option><option value="split" {'selected' if billing_mode == 'split' else ''}>Split billing</option></select></label>
+          <label>Primary payer<select name="primary_parent_id" required>{primary_options}</select></label>
+          <label>Second payer<select name="secondary_parent_id">{secondary_options}</select></label>
+          <label>Primary payer percentage<input type="number" name="primary_percent" min="0" max="100" step="0.01" value="{primary_percent:g}"></label>
+        </div>
+        <p class="hint">For split billing, the second payer automatically receives the remaining percentage.</p>
+        <button type="submit">Save billing arrangement</button>
+      </form>
+    </main></body></html>
+    """
 
 
 @app.route("/create_parent_child/<int:parent_id>", methods=["POST"])
@@ -23900,6 +24503,8 @@ def ensure_parent_portal_feature_schema():
         ("parent_booking_requests", "owner_note", "owner_note TEXT"),
         ("parent_booking_requests", "confirmed_schedule_id", "confirmed_schedule_id INTEGER"),
         ("guardian_invites", "guardian_phone", "guardian_phone TEXT"),
+        ("guardian_invites", "student_name", "student_name TEXT"),
+        ("guardian_invites", "owner_note", "owner_note TEXT"),
         ("studio_events", "status", "status TEXT DEFAULT 'published'"),
         ("event_rsvps", "notes", "notes TEXT"),
     ]:
@@ -24146,8 +24751,16 @@ def get_saved_stripe_payment_method(cursor, parent_id):
     return row[0], row[1] or 0, row[2], row[3]
 
 
-def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, payment_intent_id=None, source="stripe_checkout"):
+def finalize_stripe_invoice_payment(
+    invoice_id,
+    checkout_session_id=None,
+    payment_intent_id=None,
+    source="stripe_checkout",
+    allocation_id=None,
+    parent_id=None,
+):
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     payment_date = date.today().strftime("%Y-%m-%d")
@@ -24175,6 +24788,53 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     if not invoice:
         conn.close()
         return False
+
+    if allocation_id:
+        cursor.execute("""
+        SELECT id, parent_id, amount, status
+        FROM invoice_allocations
+        WHERE id = ? AND invoice_id = ?
+        """, (allocation_id, invoice_id))
+        allocation = cursor.fetchone()
+        if not allocation or (parent_id and str(allocation[1]) != str(parent_id)):
+            conn.rollback()
+            conn.close()
+            return False
+        cursor.execute("""
+        UPDATE invoice_allocations
+        SET stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+            stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+            updated_at = ?
+        WHERE id = ?
+        """, (checkout_session_id, payment_intent_id, now, allocation_id))
+        result = record_invoice_allocation_paid(
+            cursor,
+            allocation_id,
+            "Stripe ACH",
+            payment_date=payment_date,
+            reference=source,
+        )
+        if not result.get("ok"):
+            conn.rollback()
+            conn.close()
+            return False
+        cursor.execute("""
+        UPDATE invoices
+        SET stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+            stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+            autopay_status = CASE WHEN status = 'paid' THEN 'paid' ELSE 'partially_paid' END
+        WHERE id = ?
+        """, (checkout_session_id, payment_intent_id, invoice_id))
+        conn.commit()
+        conn.close()
+        create_invoice_message_event(
+            invoice_id,
+            "stripe_paid",
+            parent_id=allocation[1],
+            student_name=invoice[1],
+            amount=allocation[2],
+        )
+        return True
 
     if invoice[4] == "paid":
         conn.close()
@@ -24289,8 +24949,16 @@ def finalize_stripe_invoice_payment(invoice_id, checkout_session_id=None, paymen
     return True
 
 
-def mark_stripe_invoice_payment_failed(invoice_id=None, payment_intent_id=None, checkout_session_id=None, reason="Stripe payment failed"):
+def mark_stripe_invoice_payment_failed(
+    invoice_id=None,
+    payment_intent_id=None,
+    checkout_session_id=None,
+    reason="Stripe payment failed",
+    allocation_id=None,
+    parent_id=None,
+):
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     if not invoice_id and payment_intent_id:
         conn = sqlite3.connect("hmusic.db")
@@ -24314,19 +24982,56 @@ def mark_stripe_invoice_payment_failed(invoice_id=None, payment_intent_id=None, 
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("""
-    UPDATE invoices
-    SET status = CASE WHEN status = 'paid' THEN status ELSE 'payment_failed' END,
-        stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
-        stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
-        autopay_status = ?
-    WHERE id = ?
-    """, (
-        checkout_session_id,
-        payment_intent_id,
-        f"failed: {reason_text}",
-        invoice_id
-    ))
+    if allocation_id:
+        cursor.execute("""
+        UPDATE invoice_allocations
+        SET status = CASE WHEN status = 'paid' THEN status ELSE 'failed' END,
+            stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+            stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+            lock_token = NULL,
+            updated_at = ?
+        WHERE id = ? AND invoice_id = ?
+          AND (? IS NULL OR parent_id = ?)
+        """, (
+            checkout_session_id,
+            payment_intent_id,
+            now,
+            allocation_id,
+            invoice_id,
+            parent_id,
+            parent_id,
+        ))
+        if cursor.rowcount:
+            refresh_invoice_status_from_allocations(cursor, invoice_id)
+            cursor.execute("""
+            UPDATE invoices
+            SET stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+                stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+                autopay_status = ?
+            WHERE id = ?
+            """, (
+                checkout_session_id,
+                payment_intent_id,
+                f"failed: {reason_text}",
+                invoice_id,
+            ))
+        else:
+            conn.close()
+            return False
+    else:
+        cursor.execute("""
+        UPDATE invoices
+        SET status = CASE WHEN status = 'paid' THEN status ELSE 'payment_failed' END,
+            stripe_checkout_session_id = COALESCE(?, stripe_checkout_session_id),
+            stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+            autopay_status = ?
+        WHERE id = ?
+        """, (
+            checkout_session_id,
+            payment_intent_id,
+            f"failed: {reason_text}",
+            invoice_id
+        ))
     cursor.execute("""
     INSERT INTO notification_delivery_queue (
         user_role,
@@ -25515,6 +26220,9 @@ def new_parent_message():
         if not parent_can_access_student(parent_id, student_name):
             conn.close()
             return "<h1>Permission denied</h1>"
+        if not parent_has_student_permission(parent_id, student_name, "message"):
+            conn.close()
+            return "<h1>Messaging is not enabled for this guardian.</h1>", 403
 
         if recipient_mode == "director":
             subject = f"Parent / Director Message - {student_name}"
@@ -27048,6 +27756,8 @@ def parent_reschedule():
 
     if parent_id and not parent_can_access_student(parent_id, student_name):
         return "<h1>Permission denied</h1>"
+    if not parent_has_student_permission(parent_id, student_name, "manage_schedule"):
+        return "<h1>This guardian has view-only schedule access.</h1>", 403
 
     if request.method == "POST":
         schedule_id = request.form.get("schedule_id")
@@ -27098,6 +27808,29 @@ def parent_reschedule():
         if lesson[6] not in (None, "", "scheduled"):
             conn.close()
             return "<h1>Only scheduled lessons can be rescheduled.</h1>"
+
+        cursor.execute("""
+        SELECT id, parent_id, request_type
+        FROM (
+            SELECT id, parent_id, request_type
+            FROM lesson_change_requests
+            WHERE schedule_id = ? AND status IN ('pending', 'pending_owner_review')
+            UNION ALL
+            SELECT id, parent_id, 'reschedule_lesson' AS request_type
+            FROM reschedule_requests
+            WHERE original_schedule_id = ? AND status IN ('pending', 'pending_owner_review')
+        ) pending_changes
+        ORDER BY id DESC
+        LIMIT 1
+        """, (schedule_id, schedule_id))
+        pending_change = cursor.fetchone()
+        if pending_change:
+            conn.close()
+            return """
+            <h1>A schedule change is already pending</h1>
+            <p>Another guardian has already submitted a cancellation or reschedule request for this lesson. Please wait for H-Music to review it.</p>
+            <p><a href="/parent_schedule">Back to Schedule</a></p>
+            """, 409
 
         hours_before = get_hours_before_lesson(lesson[2], lesson[3])
         is_last_minute = hours_before < 24
@@ -29561,6 +30294,7 @@ def parent_dashboard():
 
     ensure_v27_schema()
     ensure_v19_schema()
+    ensure_guardian_billing_schema()
 
     parent_id = session.get("parent_id")
     unread_messages = get_unread_message_count("parent", parent_id) if parent_id else 0
@@ -29590,6 +30324,10 @@ def parent_dashboard():
     if parent_id and not parent_can_access_student(parent_id, current_student):
         session.pop("parent_student_name", None)
         return redirect("/parent_dashboard")
+
+    can_view_schedule = parent_has_student_permission(parent_id, current_student, "view_schedule") if parent_id else True
+    can_view_learning = parent_has_student_permission(parent_id, current_student, "view_learning") if parent_id else True
+    can_view_billing = parent_has_student_permission(parent_id, current_student, "view_billing") if parent_id else True
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -29662,6 +30400,28 @@ def parent_dashboard():
     LIMIT 10
     """, (current_student,))
     invoices = cursor.fetchall()
+    if can_view_billing and parent_id:
+        parent_invoice_rows = []
+        for invoice_row in invoices:
+            invoice_allocations = sync_invoice_allocations(
+                cursor,
+                invoice_row[0],
+                current_student,
+                invoice_row[1],
+                invoice_row[2],
+            )
+            own_share = next(
+                (row for row in invoice_allocations if int(row[1] or 0) == int(parent_id)),
+                None,
+            )
+            parent_invoice_rows.append((
+                invoice_row[0],
+                own_share[2] if own_share else 0,
+                own_share[3] if own_share else "view_only",
+                invoice_row[3],
+                invoice_row[4],
+            ))
+        invoices = parent_invoice_rows
 
     cursor.execute("""
     SELECT payment_date, amount, lessons_added, payment_method
@@ -29690,6 +30450,16 @@ def parent_dashboard():
     """, (current_student,))
     balance = cursor.fetchone()[0]
 
+    if not can_view_schedule:
+        upcoming_lessons = []
+    if not can_view_learning:
+        lesson_history = []
+    if not can_view_billing:
+        invoices = []
+        payments = []
+        ledger_entries = []
+        balance = 0
+
     activity_entries = []
     if parent_id:
         cursor.execute("""
@@ -29701,6 +30471,7 @@ def parent_dashboard():
         """, (parent_id,))
         activity_entries = cursor.fetchall()
 
+    conn.commit()
     conn.close()
 
     student_tabs = ""
@@ -30707,7 +31478,10 @@ def parent_schedule():
     if not parent_id or not linked_students:
         return redirect("/parent_dashboard")
 
-    linked_names = [str(row[0]) for row in linked_students if row and row[0]]
+    linked_names = [
+        str(row[0]) for row in linked_students
+        if row and row[0] and parent_has_student_permission(parent_id, str(row[0]), "view_schedule")
+    ]
     if not linked_names:
         return redirect("/parent_dashboard")
 
@@ -30717,6 +31491,12 @@ def parent_schedule():
         notes = (request.form.get("notes") or "").strip()
         if student_scope != "All linked students" and not parent_can_access_student(parent_id, student_scope):
             return "<h1>Permission denied</h1>"
+        permission_targets = linked_names if student_scope == "All linked students" else [student_scope]
+        if not permission_targets or any(
+            not parent_has_student_permission(parent_id, target, "manage_schedule")
+            for target in permission_targets
+        ):
+            return "<h1>Schedule changes are not enabled for this guardian.</h1>", 403
         if change_type not in ("reschedule", "cancel", "reschedule_or_cancel"):
             change_type = "reschedule"
         if not notes:
@@ -31179,15 +31959,16 @@ def parent_family():
         cursor.execute("""
         INSERT INTO guardian_invites (
             parent_id, guardian_name, guardian_email, guardian_phone,
-            relationship, status, created_at, updated_at
+            relationship, student_name, status, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, 'pending_owner_review', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending_owner_review', ?, ?)
         """, (
             parent_id,
             (request.form.get("guardian_name") or "").strip(),
             (request.form.get("guardian_email") or "").strip(),
             (request.form.get("guardian_phone") or "").strip(),
             (request.form.get("relationship") or "Guardian").strip(),
+            (request.form.get("student_name") or current_student or "").strip(),
             now, now
         ))
         invite_id = cursor.lastrowid
@@ -31196,7 +31977,7 @@ def parent_family():
         create_notification(
             "owner", "owner", "Guardian access request",
             f"{session.get('parent_name', 'Parent')} requested an additional guardian account.",
-            "/dashboard", related_type="guardian_invite", related_id=invite_id
+            "/guardian_invites", related_type="guardian_invite", related_id=invite_id
         )
         return redirect("/parent_family?sent=1")
 
@@ -31205,7 +31986,7 @@ def parent_family():
     cursor.execute("SELECT parent_name, email, phone FROM parent_profiles WHERE id = ?", (parent_id,))
     profile = cursor.fetchone() or ("Parent", "", "")
     cursor.execute("""
-    SELECT guardian_name, guardian_email, relationship, status, created_at
+    SELECT guardian_name, guardian_email, relationship, status, created_at, student_name
     FROM guardian_invites
     WHERE parent_id = ?
     ORDER BY id DESC
@@ -31218,8 +31999,12 @@ def parent_family():
         f"<div class='list-row'><div><b>{escape(str(row[0]))}</b><p class='muted'>{escape(str(row[1] or 'Family'))}</p></div><span class='pill good'>Linked</span></div>"
         for row in linked_students
     ) or "<p class='muted'>No linked students.</p>"
+    student_options = "".join(
+        f'<option value="{escape(str(row[0]), quote=True)}" {"selected" if row[0] == current_student else ""}>{escape(str(row[0]))}</option>'
+        for row in linked_students
+    )
     invite_rows = "".join(
-        f"<div class='list-row'><div><b>{escape(str(row[0] or 'Guardian'))}</b><p class='muted'>{escape(str(row[1] or ''))} · {escape(str(row[2] or 'Guardian'))}</p></div><span class='pill warn'>{escape(str(row[3] or 'pending'))}</span></div>"
+        f"<div class='list-row'><div><b>{escape(str(row[0] or 'Guardian'))}</b><p class='muted'>{escape(str(row[1] or ''))} · {escape(str(row[2] or 'Guardian'))} · {escape(str(row[5] or 'Student'))}</p></div><span class='pill warn'>{escape(str(row[3] or 'pending'))}</span></div>"
         for row in invites
     ) or "<p class='muted'>No extra guardians requested yet.</p>"
     sent = "<div class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and activate guardian access.</p></div>" if request.args.get("sent") == "1" else ""
@@ -31232,6 +32017,7 @@ def parent_family():
     <section class="app-card"><div class="section-head"><h2>Students</h2></div>{student_rows}</section>
     <form method="POST" class="app-card">
         <h2>Add Guardian</h2>
+        <label>Student</label><select name="student_name" required>{student_options}</select>
         <label>Name</label><input name="guardian_name" required>
         <label>Email</label><input type="email" name="guardian_email" required>
         <label>Phone</label><input name="guardian_phone">
@@ -31241,6 +32027,195 @@ def parent_family():
     <section class="app-card"><div class="section-head"><h2>Pending Access</h2></div>{invite_rows}</section>
     """
     return parent_portal_shell("Family Account", "profile", body)
+
+
+@app.route("/guardian_invites", methods=["GET", "POST"])
+def guardian_invites_admin():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_parent_portal_feature_schema()
+    ensure_guardian_billing_schema()
+    notice = ""
+    temporary_credentials = ""
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        try:
+            invite_id = int(request.form.get("invite_id") or 0)
+        except (TypeError, ValueError):
+            invite_id = 0
+        action = (request.form.get("action") or "").strip().lower()
+        cursor.execute("""
+        SELECT id, parent_id, guardian_name, guardian_email, guardian_phone,
+               relationship, student_name, status
+        FROM guardian_invites
+        WHERE id = ?
+        """, (invite_id,))
+        invite = cursor.fetchone()
+        if not invite:
+            conn.close()
+            return "<h1>Guardian request not found</h1>", 404
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        owner_note = (request.form.get("owner_note") or "").strip()
+        if action == "reject":
+            cursor.execute("""
+            UPDATE guardian_invites
+            SET status = 'rejected', owner_note = ?, updated_at = ?
+            WHERE id = ?
+            """, (owner_note, now, invite_id))
+            conn.commit()
+            create_notification(
+                "parent", str(invite[1]), "Guardian access update",
+                f"The guardian access request for {invite[6] or 'your student'} was not approved.",
+                "/parent_family", related_type="guardian_invite", related_id=invite_id,
+            )
+            notice = "Guardian request rejected."
+        elif action == "approve":
+            guardian_email = (invite[3] or "").strip().lower()
+            student_name = (invite[6] or "").strip()
+            cursor.execute("""
+            SELECT 1 FROM parent_students
+            WHERE parent_id = ? AND student_name = ? AND COALESCE(active, 1) = 1
+            """, (invite[1], student_name))
+            requester_has_student = cursor.fetchone()
+            if not guardian_email or not student_name or not requester_has_student:
+                conn.close()
+                return "<h1>This request no longer has a valid student or email.</h1>", 400
+
+            cursor.execute("SELECT id FROM parent_profiles WHERE LOWER(email) = LOWER(?)", (guardian_email,))
+            existing_parent = cursor.fetchone()
+            temp_password = None
+            if existing_parent:
+                guardian_parent_id = existing_parent[0]
+                cursor.execute("""
+                UPDATE parent_profiles
+                SET active = 1,
+                    parent_name = CASE WHEN TRIM(COALESCE(parent_name, '')) = '' THEN ? ELSE parent_name END,
+                    phone = CASE WHEN TRIM(COALESCE(phone, '')) = '' THEN ? ELSE phone END,
+                    updated_at = ?
+                WHERE id = ?
+                """, (invite[2] or "Guardian", invite[4] or "", now, guardian_parent_id))
+            else:
+                temp_password = hmusic_temp_password()
+                cursor.execute("""
+                INSERT INTO parent_profiles (
+                    parent_name, email, phone, password, password_hash,
+                    must_change_password, active, created_at, updated_at
+                )
+                VALUES (?, ?, ?, '', ?, 1, 1, ?, ?)
+                """, (
+                    invite[2] or "Guardian",
+                    guardian_email,
+                    invite[4] or None,
+                    hmusic_password_hash(temp_password),
+                    now,
+                    now,
+                ))
+                guardian_parent_id = cursor.lastrowid
+
+            cursor.execute("""
+            INSERT OR IGNORE INTO parent_students (
+                parent_id, student_name, relationship, active, created_at
+            )
+            VALUES (?, ?, ?, 1, ?)
+            """, (guardian_parent_id, student_name, invite[5] or "Guardian", now))
+            cursor.execute("""
+            UPDATE parent_students
+            SET relationship = ?, active = 1,
+                can_view_schedule = 1, can_manage_schedule = 1,
+                can_view_learning = 1, can_view_billing = 0, can_pay = 0,
+                can_message = 1, receive_notifications = 1
+            WHERE parent_id = ? AND student_name = ?
+            """, (invite[5] or "Guardian", guardian_parent_id, student_name))
+            cursor.execute("""
+            UPDATE guardian_invites
+            SET status = 'approved', owner_note = ?, updated_at = ?
+            WHERE id = ?
+            """, (owner_note, now, invite_id))
+            conn.commit()
+
+            if temp_password:
+                login_url = "https://hmusic-crm.onrender.com/parent_login"
+                body = (
+                    f"Hi {invite[2] or 'Guardian'},\n\n"
+                    f"Your independent H-Music parent account for {student_name} is ready.\n\n"
+                    f"Login: {login_url}\nEmail: {guardian_email}\n"
+                    f"Temporary password: {temp_password}\n\n"
+                    "Please change your password after signing in. Billing access is controlled separately by H-Music.\n\n"
+                    "Thank you,\nH-Music"
+                )
+                queue_id = queue_direct_delivery(
+                    "email", guardian_email, "Your H-Music Parent Account", body,
+                    "/parent_login", "guardian_invite", invite_id,
+                )
+                if queue_id:
+                    send_queued_email_now(queue_id)
+                temporary_credentials = (
+                    f"New account: {escape(guardian_email)} · temporary password: {escape(temp_password)}"
+                )
+            create_notification(
+                "parent", str(invite[1]), "Guardian access approved",
+                f"An independent guardian account was approved for {student_name}.",
+                "/parent_family", related_type="guardian_invite", related_id=invite_id,
+            )
+            notice = "Guardian account approved and linked."
+
+    cursor.execute("""
+    SELECT gi.id, COALESCE(p.parent_name, p.email, 'Parent'), gi.guardian_name,
+           gi.guardian_email, gi.guardian_phone, gi.relationship,
+           gi.student_name, gi.status, gi.created_at, COALESCE(gi.owner_note, '')
+    FROM guardian_invites gi
+    LEFT JOIN parent_profiles p ON p.id = gi.parent_id
+    ORDER BY CASE WHEN gi.status = 'pending_owner_review' THEN 0 ELSE 1 END, gi.id DESC
+    LIMIT 100
+    """)
+    invites = cursor.fetchall()
+    conn.close()
+
+    rows = ""
+    for item in invites:
+        actions = ""
+        if item[7] == "pending_owner_review":
+            actions = f"""
+            <form method="POST" class="actions">
+                <input type="hidden" name="invite_id" value="{item[0]}">
+                <input name="owner_note" placeholder="Optional note">
+                <button name="action" value="approve">Approve account</button>
+                <button class="reject" name="action" value="reject">Reject</button>
+            </form>
+            """
+        rows += f"""
+        <tr>
+            <td>{escape(str(item[6] or '-'))}</td>
+            <td>{escape(str(item[1] or '-'))}</td>
+            <td>{escape(str(item[2] or '-'))}<small>{escape(str(item[3] or ''))}</small></td>
+            <td>{escape(str(item[5] or 'Guardian'))}</td>
+            <td>{escape(str(item[7] or 'pending').replace('_', ' ').title())}</td>
+            <td>{actions or escape(str(item[9] or '-'))}</td>
+        </tr>
+        """
+    rows = rows or "<tr><td colspan='6'>No guardian requests.</td></tr>"
+    banner = ""
+    if notice:
+        banner = f'<div class="notice">{escape(notice)}<br>{temporary_credentials}</div>'
+
+    return f"""
+    <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Guardian Requests</title><style>
+    body{{margin:0;background:#f5f7fb;color:#111827;font-family:Arial,sans-serif}}main{{padding:24px;max-width:1200px;margin:auto}}
+    .head{{display:flex;justify-content:space-between;align-items:center;gap:12px}}a{{color:#1f6fb8;font-weight:700}}
+    .notice{{margin:16px 0;padding:12px;border:1px solid #86efac;background:#f0fdf4;border-radius:8px}}
+    .table{{overflow:auto;background:#fff;border:1px solid #e5e7eb;border-radius:8px}}table{{width:100%;border-collapse:collapse;min-width:900px}}
+    th,td{{padding:12px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}small{{display:block;color:#667085;margin-top:4px}}
+    .actions{{display:grid;grid-template-columns:minmax(140px,1fr) auto auto;gap:8px}}input,button{{min-height:36px;border:1px solid #d0d5dd;border-radius:7px;padding:0 10px}}
+    button{{background:#1f6fb8;color:#fff;font-weight:800;cursor:pointer}}button.reject{{background:#fff;color:#b42318;border-color:#fecaca}}
+    </style></head><body><main><div class="head"><div><h1>Guardian access requests</h1><p>Approve a separate login, then configure billing and permissions from Guardian access.</p></div><a href="/parents">Back to parents</a></div>
+    {banner}<div class="table"><table><tr><th>Student</th><th>Requested by</th><th>New guardian</th><th>Relationship</th><th>Status</th><th>Action</th></tr>{rows}</table></div>
+    </main></body></html>
+    """
 
 
 @app.route("/studio_events", methods=["GET", "POST"])
@@ -31939,7 +32914,9 @@ def stripe_webhook():
                     invoice_id=invoice_id,
                     checkout_session_id=data_object.get("id"),
                     payment_intent_id=data_object.get("payment_intent"),
-                    reason=data_object.get("payment_status") or event_type
+                    reason=data_object.get("payment_status") or event_type,
+                    allocation_id=metadata.get("allocation_id"),
+                    parent_id=metadata.get("parent_id"),
                 )
                 record_stripe_webhook_event(
                     event_id,
@@ -31954,7 +32931,9 @@ def stripe_webhook():
                     int(invoice_id),
                     checkout_session_id=data_object.get("id"),
                     payment_intent_id=data_object.get("payment_intent"),
-                    source=event_type
+                    source=event_type,
+                    allocation_id=metadata.get("allocation_id"),
+                    parent_id=metadata.get("parent_id"),
                 )
                 record_stripe_webhook_event(
                     event_id,
@@ -31968,19 +32947,37 @@ def stripe_webhook():
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
                 conn = sqlite3.connect("hmusic.db")
                 cursor = conn.cursor()
-                cursor.execute("""
-                UPDATE invoices
-                SET status = 'stripe_processing',
-                    stripe_checkout_session_id = ?,
-                    stripe_payment_intent_id = ?,
-                    autopay_status = COALESCE(autopay_status, 'processing')
-                WHERE id = ?
-                AND status != 'paid'
-                """, (
-                    data_object.get("id"),
-                    data_object.get("payment_intent"),
-                    invoice_id
-                ))
+                allocation_id = metadata.get("allocation_id")
+                if allocation_id:
+                    ensure_guardian_billing_schema()
+                    cursor.execute("""
+                    UPDATE invoice_allocations
+                    SET status = CASE WHEN status = 'paid' THEN status ELSE 'processing' END,
+                        stripe_checkout_session_id = ?, stripe_payment_intent_id = ?,
+                        updated_at = ?
+                    WHERE id = ? AND invoice_id = ?
+                    """, (
+                        data_object.get("id"),
+                        data_object.get("payment_intent"),
+                        now,
+                        allocation_id,
+                        invoice_id,
+                    ))
+                    refresh_invoice_status_from_allocations(cursor, invoice_id)
+                else:
+                    cursor.execute("""
+                    UPDATE invoices
+                    SET status = 'stripe_processing',
+                        stripe_checkout_session_id = ?,
+                        stripe_payment_intent_id = ?,
+                        autopay_status = COALESCE(autopay_status, 'processing')
+                    WHERE id = ?
+                    AND status != 'paid'
+                    """, (
+                        data_object.get("id"),
+                        data_object.get("payment_intent"),
+                        invoice_id
+                    ))
                 cursor.execute("""
                 INSERT INTO notification_delivery_queue (
                     user_role,
@@ -32020,7 +33017,9 @@ def stripe_webhook():
             finalize_stripe_invoice_payment(
                 int(invoice_id),
                 payment_intent_id=data_object.get("id"),
-                source=event_type
+                source=event_type,
+                allocation_id=metadata.get("allocation_id"),
+                parent_id=metadata.get("parent_id"),
             )
             record_stripe_webhook_event(
                 event_id,
@@ -32040,7 +33039,9 @@ def stripe_webhook():
         marked = mark_stripe_invoice_payment_failed(
             invoice_id=invoice_id,
             payment_intent_id=payment_intent_id,
-            reason=error_obj
+            reason=error_obj,
+            allocation_id=metadata.get("allocation_id"),
+            parent_id=metadata.get("parent_id"),
         )
         record_stripe_webhook_event(
             event_id,
@@ -32205,7 +33206,7 @@ def hmusic_template_preview_context():
         "due_date": "2026-09-10",
         "lesson_count": "10",
         "coverage": "Private Lesson - Jianing Li",
-        "payment_methods": "ACH bank payment, Zelle, PayPal",
+        "payment_methods": "ACH bank payment or Zelle",
         "payment_error": "Payment was declined.",
         "trial_date": "2026-09-05",
         "trial_time": "4:30 PM",
@@ -32303,13 +33304,12 @@ def stripe_invoice_checkout(invoice_id):
         return redirect(f"/parent_invoice/{invoice_id}?stripe_missing=1")
 
     ensure_billing_schema()
+    ensure_guardian_billing_schema()
     parent_id = session.get("parent_id")
-    payment_method = (request.args.get("method") or "ach").strip().lower()
-    if payment_method not in ("ach", "card"):
-        payment_method = "ach"
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    cursor.execute("BEGIN IMMEDIATE")
     cursor.execute("""
     SELECT id, student_name, amount, status
     FROM invoices
@@ -32325,24 +33325,60 @@ def stripe_invoice_checkout(invoice_id):
         conn.close()
         return "<h1>Permission denied</h1>"
 
-    fee_calc = hmusic_card_gross_up(invoice[2])
-    charge_amount = fee_calc["total"] if payment_method == "card" else float(invoice[2] or 0)
-    processing_fee = fee_calc["fee"] if payment_method == "card" else 0.0
-    payment_method_types = ["card"] if payment_method == "card" else ["us_bank_account"]
-    method_label = "Credit / Debit Card" if payment_method == "card" else "ACH Bank Payment"
+    if not parent_has_student_permission(parent_id, invoice[1], "view_billing") or not parent_has_student_permission(parent_id, invoice[1], "pay"):
+        conn.close()
+        return "<h1>Payment permission required</h1>", 403
+
+    sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[2], invoice[3])
+    cursor.execute("""
+    SELECT id, amount, status
+    FROM invoice_allocations
+    WHERE invoice_id = ? AND parent_id = ?
+    """, (invoice_id, parent_id))
+    allocation = cursor.fetchone()
+    if not allocation:
+        conn.rollback()
+        conn.close()
+        return "<h1>No payment share is assigned to this account.</h1>", 403
+    if (allocation[2] or "unpaid") not in ("unpaid", "failed"):
+        conn.rollback()
+        conn.close()
+        return redirect(f"/parent_invoice/{invoice_id}?already_processing=1")
+
+    charge_amount = float(allocation[1] or 0)
+    if charge_amount <= 0:
+        conn.rollback()
+        conn.close()
+        return redirect(f"/parent_invoice/{invoice_id}?invalid_amount=1")
+    allocation_id = allocation[0]
+    lock_token = secrets.token_urlsafe(24)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = 'processing', payment_method = 'Stripe ACH', lock_token = ?,
+        locked_at = ?, updated_at = ?
+    WHERE id = ? AND status IN ('unpaid', 'failed')
+    """, (lock_token, now, now, allocation_id))
+    if cursor.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        return redirect(f"/parent_invoice/{invoice_id}?already_processing=1")
+    refresh_invoice_status_from_allocations(cursor, invoice_id)
+    conn.commit()
 
     try:
         customer_id = get_or_create_stripe_customer(cursor, parent_id)
+        conn.commit()
         checkout_session = stripe.checkout.Session.create(
             mode="payment",
             customer=customer_id,
-            payment_method_types=payment_method_types,
+            payment_method_types=["us_bank_account"],
             line_items=[{
                 "price_data": {
                     "currency": "usd",
                     "product_data": {
                         "name": f"H-Music Tuition - {invoice[1]}",
-                        "description": f"{method_label}. Package ${hmusic_money(invoice[2])}; processing fee ${hmusic_money(processing_fee)}.",
+                        "description": f"ACH bank payment. Your assigned share is ${hmusic_money(charge_amount)}.",
                     },
                     "unit_amount": int(round(charge_amount * 100)),
                 },
@@ -32353,25 +33389,31 @@ def stripe_invoice_checkout(invoice_id):
             metadata={
                 "invoice_id": str(invoice_id),
                 "parent_id": str(parent_id),
-                "payment_method": payment_method,
-                "base_amount": hmusic_money(invoice[2]),
-                "processing_fee": hmusic_money(processing_fee),
+                "allocation_id": str(allocation_id),
+                "payment_method": "ach",
+                "base_amount": hmusic_money(charge_amount),
+                "processing_fee": "0.00",
                 "total_charged": hmusic_money(charge_amount),
-                "processing_fee_paid_by": "parent" if payment_method == "card" else "hmusic",
+                "processing_fee_paid_by": "hmusic",
             },
             payment_intent_data={
                 "metadata": {
                     "invoice_id": str(invoice_id),
                     "parent_id": str(parent_id),
-                    "payment_method": payment_method,
-                    "base_amount": hmusic_money(invoice[2]),
-                    "processing_fee": hmusic_money(processing_fee),
+                    "allocation_id": str(allocation_id),
+                    "payment_method": "ach",
+                    "base_amount": hmusic_money(charge_amount),
+                    "processing_fee": "0.00",
                     "total_charged": hmusic_money(charge_amount),
-                    "processing_fee_paid_by": "parent" if payment_method == "card" else "hmusic",
+                    "processing_fee_paid_by": "hmusic",
                 }
             }
         )
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        UPDATE invoice_allocations
+        SET stripe_checkout_session_id = ?, updated_at = ?
+        WHERE id = ? AND lock_token = ?
+        """, (checkout_session.id, now, allocation_id, lock_token))
         cursor.execute("""
         UPDATE invoices
         SET stripe_checkout_session_id = ?,
@@ -32396,7 +33438,13 @@ def stripe_invoice_checkout(invoice_id):
         conn.close()
         return redirect(checkout_session.url)
     except Exception as exc:
-        conn.rollback()
+        cursor.execute("""
+        UPDATE invoice_allocations
+        SET status = 'failed', lock_token = NULL, updated_at = ?
+        WHERE id = ? AND lock_token = ?
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"), allocation_id, lock_token))
+        refresh_invoice_status_from_allocations(cursor, invoice_id)
+        conn.commit()
         conn.close()
         return f"""
         <h1>Stripe Checkout Failed</h1>
@@ -32415,12 +33463,17 @@ def stripe_invoice_success():
     if not invoice_id or not session_id:
         return redirect("/parent_dashboard")
 
+    allocation_id = None
+    metadata_parent_id = None
     try:
         checkout_session = stripe.checkout.Session.retrieve(session_id) if configure_stripe() else None
         session_invoice_id = None
         payment_intent_id = None
         if checkout_session:
-            session_invoice_id = checkout_session.get("metadata", {}).get("invoice_id")
+            checkout_metadata = checkout_session.get("metadata", {}) or {}
+            session_invoice_id = checkout_metadata.get("invoice_id")
+            allocation_id = checkout_metadata.get("allocation_id")
+            metadata_parent_id = checkout_metadata.get("parent_id")
             payment_intent_id = checkout_session.get("payment_intent")
         if session_invoice_id and str(session_invoice_id) != str(invoice_id):
             return redirect("/parent_dashboard")
@@ -32430,7 +33483,9 @@ def stripe_invoice_success():
                 int(invoice_id),
                 checkout_session_id=session_id,
                 payment_intent_id=payment_intent_id,
-                source="stripe_success_return"
+                source="stripe_success_return",
+                allocation_id=allocation_id,
+                parent_id=metadata_parent_id,
             )
             if finalized:
                 return redirect(f"/parent_invoice/{invoice_id}?stripe_paid=1")
@@ -32438,15 +33493,25 @@ def stripe_invoice_success():
         pass
 
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("""
-    UPDATE invoices
-    SET status = 'stripe_processing',
-        stripe_checkout_session_id = ?,
-        autopay_status = 'processing'
-    WHERE id = ?
-    """, (session_id, invoice_id))
+    if allocation_id:
+        cursor.execute("""
+        UPDATE invoice_allocations
+        SET status = CASE WHEN status = 'paid' THEN status ELSE 'processing' END,
+            stripe_checkout_session_id = ?, updated_at = ?
+        WHERE id = ? AND invoice_id = ?
+        """, (session_id, datetime.now().strftime("%Y-%m-%d %H:%M"), allocation_id, invoice_id))
+        refresh_invoice_status_from_allocations(cursor, invoice_id)
+    else:
+        cursor.execute("""
+        UPDATE invoices
+        SET status = 'stripe_processing',
+            stripe_checkout_session_id = ?,
+            autopay_status = 'processing'
+        WHERE id = ?
+        """, (session_id, invoice_id))
     conn.commit()
     conn.close()
 
@@ -32457,6 +33522,8 @@ def stripe_invoice_success():
 def square_invoice_checkout(invoice_id):
     if not require_parent():
         return redirect("/parent_login")
+
+    return redirect(f"/parent_invoice/{invoice_id}?cards_disabled=1")
 
     if not square_is_configured():
         return redirect(f"/parent_invoice/{invoice_id}?square_missing=1")
@@ -32648,6 +33715,7 @@ def parent_invoice(invoice_id):
         return redirect("/parent_login")
 
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     parent_id = session.get("parent_id")
 
@@ -32688,11 +33756,38 @@ def parent_invoice(invoice_id):
     if not parent_can_access_student(parent_id, invoice[1]):
         conn.close()
         return "<h1>Permission denied</h1>"
+    if not parent_has_student_permission(parent_id, invoice[1], "view_billing"):
+        conn.close()
+        return "<h1>Billing access is not enabled for this guardian.</h1>", 403
+
+    allocations = sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[3], invoice[4])
+    billing_rule = ensure_student_billing_rule(cursor, invoice[1])
+    own_allocation = next((row for row in allocations if int(row[1] or 0) == int(parent_id or 0)), None)
+    can_pay_invoice = bool(
+        own_allocation
+        and parent_has_student_permission(parent_id, invoice[1], "pay")
+    )
+    cursor.execute("""
+    SELECT ia.id, ia.parent_id, COALESCE(pp.parent_name, 'Guardian'), ia.amount,
+           COALESCE(ia.status, 'unpaid')
+    FROM invoice_allocations ia
+    LEFT JOIN parent_profiles pp ON pp.id = ia.parent_id
+    WHERE ia.invoice_id = ?
+    ORDER BY ia.id
+    """, (invoice_id,))
+    allocation_display_rows = cursor.fetchall()
+    conn.commit()
 
     if request.method == "POST":
         action = request.form.get("action")
 
-        if action == "save_autorenew" and invoice[7]:
+        if (
+            action == "save_autorenew"
+            and invoice[7]
+            and billing_rule
+            and int(billing_rule[2] or 0) == int(parent_id or 0)
+            and can_pay_invoice
+        ):
             auto_renew_enabled = 1 if request.form.get("auto_renew_enabled") == "1" else 0
             auto_renew_lessons = float(request.form.get("auto_renew_lessons") or invoice[11] or invoice[2] or 10)
             cursor.execute("""
@@ -32711,7 +33806,13 @@ def parent_invoice(invoice_id):
             conn.close()
             return redirect(f"/parent_invoice/{invoice_id}")
 
-        if action == "select_package_option" and invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+        if (
+            action == "select_package_option"
+            and billing_rule
+            and int(billing_rule[2] or 0) == int(parent_id or 0)
+            and all((row[3] or "unpaid") in ("unpaid", "failed") for row in allocations)
+            and invoice[4] not in ("paid", "partially_paid", "payment_processing", "stripe_processing", "square_processing")
+        ):
             try:
                 selected_lessons = float(request.form.get("selected_lessons") or 0)
                 selected_amount = float(request.form.get("selected_amount") or 0)
@@ -32745,23 +33846,37 @@ def parent_invoice(invoice_id):
             return redirect(f"/parent_invoice/{invoice_id}")
 
         if action == "notify_paid":
+            if not can_pay_invoice or not own_allocation:
+                conn.close()
+                return "<h1>This invoice share is assigned to another guardian.</h1>", 403
             payment_note = (request.form.get("payment_note") or "").strip()
-            payment_method = (request.form.get("payment_method") or "Manual").strip()
+            payment_method = (request.form.get("payment_method") or "Zelle").strip()
+            if payment_method != "Zelle":
+                conn.close()
+                return "<h1>Only ACH and Zelle are supported.</h1>", 400
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
             cursor.execute("""
-            UPDATE invoices
-            SET status = CASE WHEN status = 'unpaid' THEN 'pending_confirmation' ELSE status END,
-                manual_payment_status = ?
-            WHERE id = ?
-            AND status != 'paid'
+            UPDATE invoice_allocations
+            SET status = 'pending_confirmation', payment_method = 'Zelle',
+                manual_payment_status = ?, lock_token = ?, locked_at = ?, updated_at = ?
+            WHERE id = ? AND status IN ('unpaid', 'failed')
             """, (
-                f"{payment_method} notice sent",
-                invoice_id
+                f"Zelle notice sent by parent #{parent_id}",
+                secrets.token_urlsafe(18),
+                now,
+                now,
+                own_allocation[0],
             ))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                conn.close()
+                return redirect(f"/parent_invoice/{invoice_id}?already_processing=1")
+            invoice_status = refresh_invoice_status_from_allocations(cursor, invoice_id)
             conn.commit()
             conn.close()
             message_body = (
                 f"{session.get('parent_name', 'Parent')} marked invoice #{invoice_id} for {invoice[1]} as paid / ready for confirmation. "
-                f"Amount: ${invoice[3]}. Method: {payment_method}. Owner confirmation: /pay_invoice/{invoice_id}"
+                f"Assigned share: ${own_allocation[2]}. Method: {payment_method}. Invoice status: {invoice_status}. Owner confirmation: /pay_invoice/{invoice_id}"
             )
             if payment_note:
                 message_body += f"\n\nParent note: {payment_note}"
@@ -32771,7 +33886,7 @@ def parent_invoice(invoice_id):
                 message_body,
                 parent_id=parent_id,
                 student_name=invoice[1],
-                amount=invoice[3]
+                amount=own_allocation[2]
             )
             return redirect("/parent_dashboard?payment_notice=sent")
 
@@ -32783,9 +33898,10 @@ def parent_invoice(invoice_id):
     subtotal_amount = invoice[12] if invoice[12] not in (None, 0) else invoice[3]
     discount_code = invoice[13] or ""
     discount_amount = invoice[14] or 0
-    allowed_methods = {m.strip().lower() for m in (invoice[15] or "ach,zelle,paypal").split(",") if m.strip()}
+    allowed_methods = {m.strip().lower() for m in (invoice[15] or "ach,zelle").split(",") if m.strip()}
+    allowed_methods &= {"ach", "zelle"}
     if not allowed_methods:
-        allowed_methods = {"ach", "zelle", "paypal"}
+        allowed_methods = {"ach", "zelle"}
     package_options = hmusic_invoice_package_options(invoice[17], invoice[2], subtotal_amount)
     package_options_html = ""
     if package_options:
@@ -32796,7 +33912,13 @@ def parent_invoice(invoice_id):
             selected = abs(float(option["lessons"]) - float(invoice[2] or 0)) < 0.001
             selected_class = " active" if selected else ""
             option_button = "<div class='selected-chip'>Selected</div>"
-            if not selected and invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+            if (
+                not selected
+                and billing_rule
+                and int(billing_rule[2] or 0) == int(parent_id or 0)
+                and all((row[3] or "unpaid") in ("unpaid", "failed") for row in allocations)
+                and invoice[4] not in ("paid", "partially_paid", "payment_processing", "stripe_processing", "square_processing")
+            ):
                 option_button = f"""
                     <form method="POST">
                         <input type="hidden" name="action" value="select_package_option">
@@ -32819,22 +33941,48 @@ def parent_invoice(invoice_id):
             </div>
         """
 
+    own_amount = float((own_allocation[2] if own_allocation else 0) or 0)
+    own_status = (own_allocation[3] if own_allocation else "not_assigned") or "unpaid"
+    allocation_summary_rows = ""
+    for allocation_row in allocation_display_rows:
+        is_current = int(allocation_row[1] or 0) == int(parent_id or 0)
+        label = "Your share" if is_current else "Other guardian share"
+        allocation_summary_rows += f"""
+        <div class="allocation-row">
+            <div><b>{label}</b><span>${hmusic_money(allocation_row[3])}</span></div>
+            <span class="allocation-status">{escape(str(allocation_row[4]).replace('_', ' '))}</span>
+        </div>
+        """
+    allocation_summary_html = f"""
+    <div class="section-title">Payment responsibility</div>
+    <div class="allocation-list">{allocation_summary_rows}</div>
+    """ if allocation_summary_rows else ""
+
     payment_status_alert = ""
     if request.args.get("stripe_missing") == "1":
-        payment_status_alert = "<div class='warn'>ACH is not connected yet. Please use Zelle or PayPal for now.</div>"
-    elif request.args.get("stripe_paid") == "1" or invoice[4] == "paid":
-        payment_status_alert = "<div class='alert'>Payment received. This invoice is marked paid.</div>"
-    elif request.args.get("stripe_processing") == "1" or invoice[4] == "stripe_processing":
+        payment_status_alert = "<div class='warn'>ACH is not connected yet. Please use Zelle for now.</div>"
+    elif request.args.get("already_processing") == "1":
+        payment_status_alert = "<div class='alert'>This payment share is already processing or waiting for confirmation.</div>"
+    elif request.args.get("stripe_paid") == "1" or own_status == "paid":
+        if invoice[4] == "paid":
+            payment_status_alert = "<div class='alert'>Payment received. This invoice is paid.</div>"
+        else:
+            payment_status_alert = "<div class='alert'>Your payment share is complete. The invoice is waiting for the other assigned share.</div>"
+    elif request.args.get("stripe_processing") == "1" or own_status == "processing":
         payment_status_alert = "<div class='alert'>ACH payment is processing. Bank transfers can take several business days to fully settle.</div>"
-    elif invoice[4] == "pending_confirmation":
+    elif own_status == "pending_confirmation":
         payment_status_alert = "<div class='alert'>Payment notice sent. H-Music will confirm and add lesson credits after review.</div>"
-    elif invoice[4] == "payment_failed":
-        payment_status_alert = "<div class='warn'>The previous Stripe/ACH payment did not complete. Please try again or use Zelle / PayPal.</div>"
+    elif own_status == "failed":
+        payment_status_alert = "<div class='warn'>The previous ACH payment did not complete. Please try again or use Zelle.</div>"
+    elif not own_allocation:
+        payment_status_alert = "<div class='alert'>Payment is assigned to another guardian. You can view the invoice status, but no payment is required from this account.</div>"
+    elif not can_pay_invoice:
+        payment_status_alert = "<div class='alert'>This account can view billing, but payment permission is disabled.</div>"
     elif request.args.get("cancelled") == "1":
-        payment_status_alert = "<div class='warn'>ACH checkout was cancelled. You can try again or use Zelle / PayPal.</div>"
+        payment_status_alert = "<div class='warn'>ACH checkout was cancelled. You can try again or use Zelle.</div>"
 
     online_payment_html = ""
-    if invoice[4] not in ("paid", "pending_confirmation", "stripe_processing", "square_processing"):
+    if can_pay_invoice and own_allocation and own_status in ("unpaid", "failed"):
         payment_choices = []
         if "zelle" in allowed_methods:
             payment_choices.append("""
@@ -32854,31 +34002,13 @@ def parent_invoice(invoice_id):
                 </div>
             """)
 
-        if "paypal" in allowed_methods:
-            payment_choices.append("""
-                <div class="payment-choice">
-                    <div class="method-head"><h3>PayPal</h3><span class="badge">Manual confirm</span></div>
-                    <p>Use the H-Music PayPal email, then notify the owner.</p>
-                    <div class="account-box">
-                        <span class="copy-account-text">hmusicjustplay@gmail.com</span>
-                        <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
-                    </div>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="notify_paid">
-                        <input type="hidden" name="payment_method" value="PayPal">
-                        <textarea name="payment_note" rows="2" placeholder="Optional: PayPal name or transaction note"></textarea>
-                        <button type="submit">I Paid by PayPal</button>
-                    </form>
-                </div>
-            """)
-
         if "ach" in allowed_methods and stripe_is_configured():
             payment_choices.append(f"""
                 <div class="payment-choice">
                     <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
                     <p>Pay securely by bank transfer through Stripe. Processing may take several business days.</p>
                     <div class="pay-summary">
-                        <span>Amount due</span><b>${hmusic_money(invoice[3])}</b>
+                        <span>Your amount due</span><b>${hmusic_money(own_amount)}</b>
                     </div>
                     <a class="button primary-action" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
                 </div>
@@ -32887,7 +34017,7 @@ def parent_invoice(invoice_id):
             payment_choices.append("""
                 <div class="payment-choice disabled">
                     <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
-                    <p>ACH online payment is being set up. Please use Zelle or PayPal for now.</p>
+                    <p>ACH online payment is being set up. Please use Zelle for now.</p>
                     <button type="button" class="primary-action" disabled>Pay by ACH</button>
                 </div>
             """)
@@ -32950,6 +34080,10 @@ def parent_invoice(invoice_id):
             .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f5f7fb; border-radius:10px; padding:10px; margin:8px 0; }}
             .pay-summary span {{ color:#6b7280; }}
             .pay-summary b {{ text-align:right; }}
+            .allocation-list {{ display:grid; gap:8px; }}
+            .allocation-row {{ display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid #d8dee9; border-radius:13px; padding:11px 12px; background:#fff; }}
+            .allocation-row div {{ display:grid; gap:2px; }} .allocation-row span {{ color:#6b7280; font-size:12px; font-weight:800; }}
+            .allocation-status {{ border-radius:999px; background:#eef6ff; color:#1d65ad !important; padding:5px 8px; white-space:nowrap; text-transform:capitalize; }}
             .auto-renew-panel {{ margin-top:14px; border-top:1px solid #e5e7eb; padding-top:12px; }}
             .auto-renew-panel summary {{ font-weight:900; color:#111827; cursor:pointer; }}
             .back-link {{ display:inline-block; margin-top:14px; color:#5747e8; font-weight:900; text-decoration:none; }}
@@ -33011,10 +34145,11 @@ def parent_invoice(invoice_id):
                     <div class="summary-value">{escape(str(invoice[1]))}</div>
                 </div>
                 <div>
-                    <div class="summary-label">Amount due</div>
-                    <div class="amount">${hmusic_money(invoice[3])}</div>
+                    <div class="summary-label">Your amount due</div>
+                    <div class="amount">${hmusic_money(own_amount)}</div>
                 </div>
             </div>
+            {allocation_summary_html}
             {package_options_html}
             {online_payment_html}
             <p class="hint">Lessons are added after payment is confirmed or ACH succeeds.</p>
@@ -33045,6 +34180,7 @@ def parent_profile():
 
     ensure_v27_schema()
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     parent_id = session.get("parent_id")
 
@@ -33159,7 +34295,10 @@ def parent_profile():
     linked = cursor.fetchall()
 
     invoice_records = []
-    linked_student_names = [item[0] for item in linked]
+    linked_student_names = [
+        item[0] for item in linked
+        if parent_has_student_permission(parent_id, item[0], "view_billing")
+    ]
     if linked_student_names:
         cursor.execute("PRAGMA table_info(invoices)")
         invoice_cols = {row[1] for row in cursor.fetchall()}
@@ -33181,6 +34320,30 @@ def parent_profile():
         """, linked_student_names)
         invoice_records = cursor.fetchall()
 
+        parent_invoice_records = []
+        for record in invoice_records:
+            allocations = sync_invoice_allocations(
+                cursor,
+                record[0],
+                record[1],
+                record[3],
+                record[4],
+            )
+            own_share = next(
+                (row for row in allocations if int(row[1] or 0) == int(parent_id)),
+                None,
+            )
+            parent_invoice_records.append(
+                record[:3]
+                + (
+                    own_share[2] if own_share else 0,
+                    own_share[3] if own_share else "view_only",
+                )
+                + record[5:]
+            )
+        invoice_records = parent_invoice_records
+
+    conn.commit()
     conn.close()
 
     parent_name = profile[0] if profile else ""
@@ -36031,12 +37194,6 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                             <div class="payment-note">Instructions sent after slot confirmation.</div>
                         </label>
                         <label class="pay-card">
-                            <input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>
-                            <div class="pay-title">PayPal</div>
-                            <p>Send online after confirmation.</p>
-                            <div class="payment-note">hmusicjustplay@gmail.com</div>
-                        </label>
-                        <label class="pay-card">
                             <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
                             <div class="pay-title">Zelle</div>
                             <p>Send from your bank app.</p>
@@ -36089,7 +37246,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
             {payment_html}
-            <p>Trial payment can be made by ACH, PayPal, or Zelle. Credit cards are not accepted for trial lessons. PayPal/Zelle: hmusicjustplay@gmail.com.</p>
+            <p>Trial payment can be made by ACH or Zelle. Zelle: hmusicjustplay@gmail.com.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/">Back to H-Music</a></p>
         </div></div>
@@ -36226,13 +37383,12 @@ def v35_registration_form(error="", values=None):
                         <label>Billing email<input type="email" name="billing_email" value="{val('billing_email')}" placeholder="Same as primary email" required></label>
                         <label>Preferred payment setup<select name="payment_setup" required>
                             <option value="">Choose...</option>
-                            <option {'selected' if values.get('payment_setup') == 'ACH bank transfer through Square' else ''}>ACH bank transfer through Square</option>
-                            <option {'selected' if values.get('payment_setup') == 'Card through Square' else ''}>Card through Square</option>
+                            <option {'selected' if values.get('payment_setup') == 'ACH bank transfer' else ''}>ACH bank transfer</option>
                             <option {'selected' if values.get('payment_setup') == 'Other, approved by H-Music' else ''}>Other, approved by H-Music</option>
                         </select></label>
                         <label class="full">Billing address<input name="billing_address" value="{val('billing_address')}" placeholder="Street, city, ZIP"></label>
                     </div>
-                    <div class="notice">Do not enter bank account numbers here. H-Music will send a secure invoice/payment setup link through Square or the parent app.</div>
+                    <div class="notice">Do not enter bank account numbers here. H-Music will send a secure ACH setup link through the parent app.</div>
                 </section>
                 <section>
                     <div class="section-title">Agreements</div>
@@ -36253,7 +37409,7 @@ def v35_registration_form(error="", values=None):
                         </div>
                     </details>
                     <label class="check"><input type="checkbox" name="policy_ack" value="1" required> I have reviewed and agree to the H-Music lesson, cancellation, makeup, and billing policy.</label>
-                    <label class="check"><input type="checkbox" name="billing_ack" value="1" required> I authorize H-Music to send invoices and secure payment setup links through the parent app, email, or Square.</label>
+                    <label class="check"><input type="checkbox" name="billing_ack" value="1" required> I authorize H-Music to send invoices and secure ACH payment setup links through the parent app or email.</label>
                     <label class="check"><input type="checkbox" name="media_ok" value="1"> Photo/video permission for studio learning moments and recitals.</label>
                     <div class="grid" style="margin-top:14px;">
                         <label>Parent / guardian signature<input name="guardian_signature" value="{val('guardian_signature')}" placeholder="Type full name" required></label>
@@ -36591,8 +37747,8 @@ def public_trial_request():
             return v35_public_trial_form("Please enter either email or phone.", form_values, family_context)
         if data["trial_duration"] not in fee_by_duration:
             return v35_public_trial_form("Please select a trial class length.", form_values, family_context)
-        if not data["payment_method"]:
-            return v35_public_trial_form("Please select a payment method.", form_values, family_context)
+        if data["payment_method"] not in ("ACH", "Zelle"):
+            return v35_public_trial_form("Please select ACH or Zelle.", form_values, family_context)
         try:
             age_number = float(data["age"]) if data["age"] else None
         except ValueError:
@@ -37217,7 +38373,7 @@ def inquiry_detail(inquiry_id):
                     <div><label>Program Interest</label><select name="program_interest">{opts(['Group Class', 'Private Class'], inquiry['program_interest'] or 'Group Class')}</select></div>
                     <div><label>Trial Duration</label><select name="trial_duration">{opts(['15 mins', '30 mins', '45 mins', '60 mins'], inquiry['trial_duration'] or '30 mins')}</select></div>
                     <div><label>Trial Fee</label><select name="trial_fee">{opts(['$15', '$30', '$45', '$60'], inquiry['trial_fee'] or '$30')}</select></div>
-                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH', 'PayPal', 'Zelle'], inquiry['payment_method'] or 'ACH')}</select></div>
+                    <div><label>Payment Method</label><select name="payment_method">{opts(['ACH', 'Zelle'], inquiry['payment_method'] or 'ACH')}</select></div>
                     <div><label>Previous Learning?</label><select name="previous_experience">{opts(['No', 'Yes'], inquiry['previous_experience'] or 'No')}</select></div>
                     <div><label>If yes, how long?</label><input name="experience_duration" value="{v35_safe(inquiry['experience_duration'])}"></div>
                     <div><label>Preferred Days</label><input name="preferred_days" value="{v35_safe(inquiry['preferred_days'])}"></div>
@@ -41945,7 +43101,7 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
         "invoice_link": invoice_link,
         "lesson_count": hmusic_lesson_count_label(lesson_count),
         "coverage": " · ".join([item for item in [course_name, teacher_name] if item]),
-        "payment_methods": "ACH bank payment, Zelle, PayPal",
+        "payment_methods": "ACH bank payment or Zelle",
     }
     fallback = (
         f"Hi {parent_name or 'Parent'},\n\n"
@@ -45406,6 +46562,7 @@ _runtime_schema_names = (
     "ensure_v145_schema",
     "ensure_child_os_schema",
     "ensure_parent_portal_feature_schema",
+    "ensure_guardian_billing_schema",
     "ensure_billing_schema",
     "ensure_message_template_schema",
     "ensure_course_duration_request_schema",

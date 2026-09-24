@@ -141,6 +141,21 @@ CHECKS = {
     "all schema helpers cached": "def hmusic_schema_once(func):",
     "schema work runs during startup": "for schema_name in _runtime_schema_names:",
     "postgres backend feature flag": "from database_backend import connect as hmusic_database_connect, using_postgres",
+    "guardian access owner route": '"/student_guardian_access/<path:student_name>"',
+    "guardian invite approval route": '"/guardian_invites"',
+    "guardian invite student binding": '("guardian_invites", "student_name", "student_name TEXT")',
+    "guardian permission schema": '"can_manage_schedule", "can_manage_schedule INTEGER DEFAULT 1"',
+    "guardian billing visibility permission": 'parent_has_student_permission(parent_id, invoice[1], "view_billing")',
+    "student billing rules table": "CREATE TABLE IF NOT EXISTS student_billing_rules",
+    "invoice allocation table": "CREATE TABLE IF NOT EXISTS invoice_allocations",
+    "invoice allocation sync": "def sync_invoice_allocations",
+    "invoice share payment recorder": "def record_invoice_allocation_paid",
+    "invoice paid only after every share": 'if all(status == "paid" for status in statuses):',
+    "stripe allocation metadata": '"allocation_id": str(allocation_id)',
+    "stripe ACH only": 'payment_method_types=["us_bank_account"]',
+    "owner confirms individual zelle share": 'name="action" value="confirm_allocation"',
+    "schedule request permission": 'parent_has_student_permission(parent_id, student_name, "manage_schedule")',
+    "billing methods ACH and zelle only": 'allowed_methods &= {"ach", "zelle"}',
 }
 
 
@@ -150,6 +165,8 @@ FORBIDDEN = {
     "old edit credit action": "Edit credit",
     "old add first course credit action": "Add first course credit",
     "sqlite-only email collation": "COLLATE NOCASE",
+    "trial paypal option": 'name="payment_method" value="PayPal"',
+    "invoice card checkout option": 'method=card',
 }
 
 STUDENT_DETAIL_FORBIDDEN = {
