@@ -8992,11 +8992,14 @@ def calendar():
                 event_line = f"{compact_location_room(event[17] if len(event) > 17 else '', event[5])} · {event[7] or course_name or 'Lesson'}"
                 teacher_line = f'<span class="ev-teacher">with {escape(str(event[4]).strip())}</span>' if event[4] and str(event[4]).strip() else ""
                 event_cards += f"""
-                <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="openLessonPanel({event[0]}); event.stopPropagation();"
+                <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="ownerCalendarEventClick(event, this)"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
                      data-time="{escape(str(event[2] or ''))}"
                      data-student="{escape(str(event[3] or ''))}"
                      data-teacher="{escape(str(event[4] or ''))}">
+                    {'' if event_status == 'parent_cancel_pending_confirm' else f'''<label class="owner-select-box" onclick="event.stopPropagation();" title="Select lesson">
+                      <input type="checkbox" class="owner-select-input" value="{event[0]}" onchange="ownerMultiUpdate()">
+                    </label>'''}
                     <span class="ev-head">
                       <span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>
                       <div class="owner-status-form" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" draggable="false">
@@ -9168,7 +9171,7 @@ def calendar():
             .day-num.today-badge{{background:var(--blue);color:#fff;font-weight:600}}
 
             /* event card */
-            .ev{{border-radius:5px;padding:2px 4px 3px 5px;font-size:9px;margin-bottom:3px;
+            .ev{{position:relative;border-radius:5px;padding:2px 4px 3px 5px;font-size:9px;margin-bottom:3px;
                  border:1px solid rgba(24,95,165,.14);border-left:3px solid transparent;line-height:1.05;
                  cursor:grab;user-select:none;overflow:hidden;color:#0F172A;
                  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}}
@@ -9214,6 +9217,19 @@ def calendar():
             .calendar-status-select.sd-last-min{{color:var(--last-min-orange);background-color:#FFF3E0}}
             .calendar-status-select.sd-noshow{{color:#B42318;background-color:#FEE4E2}}
             .calendar-status-select.sd-cancelled,.calendar-status-select.sd-excused,.calendar-status-select.sd-early-cancel{{color:var(--cancel-red);background-color:#EEF0F3}}
+            .owner-multi-toggle.active{{background:var(--blue);border-color:var(--blue);color:#fff}}
+            .owner-select-box{{display:none;position:absolute;right:5px;top:3px;z-index:3;align-items:center;justify-content:center;background:rgba(255,255,255,.96);border:1px solid #D9DEE8;border-radius:5px;padding:1px}}
+            .owner-select-input{{width:15px;height:15px;margin:0;accent-color:var(--blue)}}
+            .cal-table.owner-multi-on .owner-select-box{{display:flex}}
+            .cal-table.owner-multi-on .owner-status-form{{visibility:hidden}}
+            .cal-table.owner-multi-on .ev{{cursor:pointer}}
+            .ev.owner-multi-selected{{outline:2px solid var(--blue);box-shadow:0 0 0 3px rgba(24,95,165,.14)}}
+            .owner-multi-bar{{display:none;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 18px;border-top:1px solid var(--line);background:#F8FAFC}}
+            .owner-multi-bar.show{{display:flex}}
+            .owner-multi-count{{font-weight:900;color:var(--text);margin-right:auto}}
+            .owner-multi-bar select,.owner-multi-bar button{{height:32px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--text);padding:0 10px;font:inherit;font-size:12px;font-weight:800}}
+            .owner-multi-apply{{background:var(--blue)!important;border-color:var(--blue)!important;color:#fff!important}}
+            .owner-multi-clear{{color:var(--muted)!important}}
             .ev.ev-early-cancel{{color:var(--cancel-red) !important}}
             .ev.ev-early-cancel .ev-status-badge{{background:#E5E7EB;color:var(--cancel-red);box-shadow:none;
                                                   text-decoration:line-through;text-decoration-thickness:1.5px}}
@@ -9473,6 +9489,7 @@ def calendar():
           Calendar — {month_label}
         </div>
         <div class="top-btns">
+          <button class="btn owner-multi-toggle" id="ownerMultiToggle" type="button" onclick="ownerMultiToggle()"><i class="ti ti-checkbox"></i> Multi-Select</button>
           <a class="btn" href="/">Home</a>
           <a class="btn" href="{add_schedule_href}">+ Add Schedule</a>
           <a class="btn" href="/locations_rooms">Locations & Rooms</a>
@@ -9527,6 +9544,20 @@ def calendar():
       <div class="success-strip" id="successStrip">
         <i class="ti ti-check" style="font-size:14px"></i>
         <span id="successMsg"></span>
+      </div>
+      <div class="owner-multi-bar" id="ownerMultiBar">
+        <div class="owner-multi-count"><span id="ownerMultiCount">0</span> selected</div>
+        <select id="ownerMultiStatus" aria-label="Status for selected lessons">
+          <option value="scheduled">Scheduled</option>
+          <option value="present">Present</option>
+          <option value="no_show">No Show</option>
+          <option value="last_min_cancel">Last Min Cancel</option>
+          <option value="excused_24h">Cancel &gt; 24h</option>
+          <option value="teacher_cancelled">Teacher Cancel</option>
+          <option value="makeup">Makeup</option>
+        </select>
+        <button class="owner-multi-apply" type="button" onclick="ownerMultiApply()">Apply status</button>
+        <button class="owner-multi-clear" type="button" onclick="ownerMultiClear()">Clear</button>
       </div>
       </div><!-- /owner-calendar-sticky -->
 
@@ -10261,12 +10292,73 @@ def calendar():
     function ownerViewStudent() {{ if (activePanelLesson) window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || ''); }}
     function ownerRenewPackage() {{ if (activePanelLesson) window.location.href = '/payment/' + encodeURIComponent(activePanelLesson.student || ''); }}
 
+    // ---- multi-select status updates ----
+    let ownerMultiOn = false;
+    function ownerMultiSelectedIds() {{
+      return Array.from(document.querySelectorAll('.owner-select-input:checked')).map(cb => cb.value);
+    }}
+    function ownerMultiUpdate() {{
+      const ids = ownerMultiSelectedIds();
+      const count = document.getElementById('ownerMultiCount');
+      const bar = document.getElementById('ownerMultiBar');
+      if (count) count.textContent = ids.length;
+      if (bar) bar.classList.toggle('show', ownerMultiOn && ids.length > 0);
+      document.querySelectorAll('.ev[data-id]').forEach(card => {{
+        const cb = card.querySelector('.owner-select-input');
+        card.classList.toggle('owner-multi-selected', !!cb && cb.checked);
+      }});
+    }}
+    function ownerMultiToggle() {{
+      ownerMultiOn = !ownerMultiOn;
+      document.getElementById('calTable').classList.toggle('owner-multi-on', ownerMultiOn);
+      document.getElementById('ownerMultiToggle').classList.toggle('active', ownerMultiOn);
+      if (!ownerMultiOn) ownerMultiClear();
+      ownerMultiUpdate();
+    }}
+    function ownerMultiClear() {{
+      document.querySelectorAll('.owner-select-input').forEach(cb => cb.checked = false);
+      ownerMultiUpdate();
+    }}
+    function ownerCalendarEventClick(event, card) {{
+      event.stopPropagation();
+      if (!ownerMultiOn) {{
+        openLessonPanel(Number(card.dataset.id));
+        return;
+      }}
+      if (event.target.closest('input,label')) return;
+      const cb = card.querySelector('.owner-select-input');
+      if (!cb) return;
+      cb.checked = !cb.checked;
+      ownerMultiUpdate();
+    }}
+    function ownerMultiApply() {{
+      const ids = ownerMultiSelectedIds();
+      if (!ids.length) return;
+      const status = document.getElementById('ownerMultiStatus').value;
+      const label = document.getElementById('ownerMultiStatus').selectedOptions[0].textContent;
+      if (!confirm(`Apply ${{label}} to ${{ids.length}} selected lesson(s)? Credits, fees, and payroll will follow the normal status rules.`)) return;
+      const notifyParent = status === 'teacher_cancelled' ? confirm('Send cancellation notices to the affected parents?') : false;
+      fetch('/owner_multi_select_action', {{
+        method:'POST',
+        headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
+        body:JSON.stringify({{schedule_ids:ids,status,notify_parent_on_teacher_cancel:notifyParent}})
+      }}).then(async response => {{
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'Batch update failed.');
+        location.reload();
+      }}).catch(error => alert(error.message));
+    }}
+
     // ---- drag-and-drop ----
     let dragId = null, dragStudent = null, dragTeacher = null;
     let dragDate = null, dragTime = null, pendingDrop = null;
 
     document.querySelectorAll('.ev[data-id]').forEach(el => {{
       el.addEventListener('dragstart', e => {{
+        if (ownerMultiOn) {{
+          e.preventDefault();
+          return;
+        }}
         if (e.target.closest('.owner-status-form')) {{
           e.preventDefault();
           return;
@@ -15352,6 +15444,84 @@ def lesson_change_request_detail(request_id):
     </body>
     </html>
     """
+
+@app.route("/owner_multi_select_action", methods=["POST"])
+def owner_multi_select_action():
+    if not require_owner():
+        return {"ok": False, "error": "Owner login required"}, 401
+
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("schedule_ids") or data.get("ids") or []
+    schedule_ids = []
+    for raw_id in raw_ids:
+        try:
+            schedule_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    schedule_ids = list(dict.fromkeys(schedule_ids))[:100]
+    if not schedule_ids:
+        return {"ok": False, "error": "Choose at least one lesson."}, 400
+
+    status = (data.get("status") or "").strip()
+    allowed_statuses = {
+        "scheduled", "present", "no_show", "last_min_cancel",
+        "excused_24h", "teacher_cancelled", "makeup"
+    }
+    if status not in allowed_statuses:
+        return {"ok": False, "error": "Invalid status."}, 400
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(schedule_ids))
+    cursor.execute(f"""
+        SELECT id, COALESCE(status, 'scheduled')
+        FROM schedule
+        WHERE id IN ({placeholders})
+    """, tuple(schedule_ids))
+    selected_rows = cursor.fetchall()
+    conn.close()
+
+    pending_ids = {
+        int(row[0]) for row in selected_rows
+        if row[1] == "parent_cancel_pending_confirm"
+    }
+    eligible_ids = [
+        int(row[0]) for row in selected_rows
+        if int(row[0]) not in pending_ids
+    ]
+    if not eligible_ids:
+        return {"ok": False, "error": "Pending parent cancellations must be reviewed separately."}, 400
+
+    updated = 0
+    errors = []
+    teacher_cancel_notice_ids = []
+    for schedule_id in eligible_ids:
+        result = apply_lesson_status(
+            schedule_id,
+            status,
+            actor="owner:bulk_status",
+            reason="Owner bulk status update"
+        )
+        if result.get("ok"):
+            updated += 1
+            if status == "teacher_cancelled":
+                teacher_cancel_notice_ids.append(schedule_id)
+        else:
+            errors.append(result.get("error") or f"Lesson {schedule_id} failed")
+
+    if data.get("notify_parent_on_teacher_cancel"):
+        for schedule_id in teacher_cancel_notice_ids:
+            hmusic_queue_teacher_cancel_parent_notice(schedule_id)
+
+    skipped_message = f" Skipped {len(pending_ids)} pending cancellation request(s)." if pending_ids else ""
+    return {
+        "ok": updated > 0,
+        "message": f"Updated {updated} lesson(s).{skipped_message}",
+        "updated": updated,
+        "skipped": len(pending_ids),
+        "error": "; ".join(errors[:3]) if errors and not updated else "",
+    }
+
 
 @app.route("/teacher_multi_select_action", methods=["POST"])
 def teacher_multi_select_action():
