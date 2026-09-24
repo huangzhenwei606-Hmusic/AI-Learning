@@ -2354,7 +2354,7 @@ def home():
         cursor.execute("""
         SELECT COUNT(*)
         FROM lesson_change_requests
-        WHERE request_type IN ('cancel_lesson', 'teacher_cancel_lesson')
+        WHERE request_type = 'cancel_lesson'
         AND status IN ('pending', 'pending_owner_review')
         """)
         pending_cancel_count = cursor.fetchone()[0] or 0
@@ -2362,7 +2362,7 @@ def home():
         cursor.execute("""
         SELECT id, student_name, original_date, original_time, policy_status
         FROM lesson_change_requests
-        WHERE request_type IN ('cancel_lesson', 'teacher_cancel_lesson')
+        WHERE request_type = 'cancel_lesson'
         AND status IN ('pending', 'pending_owner_review')
         ORDER BY id DESC
         LIMIT 5
@@ -8856,7 +8856,7 @@ def calendar():
 
     def owner_status_dot(status):
         status = status or "scheduled"
-        if status == "teacher_cancel_pending_confirm":
+        if status == "parent_cancel_pending_confirm":
             return "sd-late"
         if status == "present":
             return "sd-present"
@@ -8872,7 +8872,7 @@ def calendar():
 
     def owner_status_label(status):
         status = status or "scheduled"
-        if status == "teacher_cancel_pending_confirm":
+        if status == "parent_cancel_pending_confirm":
             return "Cancel pending confirm"
         if status == "present":
             return "Present"
@@ -8890,7 +8890,7 @@ def calendar():
 
     def owner_status_icons(status):
         status = status or "scheduled"
-        if status == "teacher_cancel_pending_confirm":
+        if status == "parent_cancel_pending_confirm":
             return '<span class="ev-icon ev-icon-lastmin" aria-label="Cancel pending confirm"><i class="ti ti-clock" aria-hidden="true"></i></span>'
         if status == "teacher_cancelled":
             return '<span class="ev-icon ev-icon-teacher" aria-label="Teacher cancel"><i class="ti ti-clipboard-x" aria-hidden="true"></i></span>'
@@ -9962,7 +9962,7 @@ def calendar():
       return 'ic-default';
     }}
     function statusDotClass(st) {{
-      if (st === 'teacher_cancel_pending_confirm') return 'sd-late';
+      if (st === 'parent_cancel_pending_confirm') return 'sd-late';
       if (st === 'present')   return 'sd-present';
       if (st === 'late') return 'sd-late';
       if (st === 'no_show' || st === 'no-show') return 'sd-noshow';
@@ -9973,7 +9973,7 @@ def calendar():
     }}
 
     const CALENDAR_STATUS_OPTIONS = [
-      ['teacher_cancel_pending_confirm', 'Cancel pending confirm'],
+      ['parent_cancel_pending_confirm', 'Cancel pending confirm'],
       ['scheduled', 'Scheduled'],
       ['present', 'Present'],
       ['no_show', 'No Show'],
@@ -10023,8 +10023,8 @@ def calendar():
     let activePanelStatus = 'scheduled';
     let panelDetailBaseline = null;
     let panelReminderBaseline = null;
-    function statusLabel(st) {{ return st === 'teacher_cancel_pending_confirm' ? 'Cancel pending confirm' : st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
-    function statusClass(st) {{ return st === 'teacher_cancel_pending_confirm' ? 'late' : st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
+    function statusLabel(st) {{ return st === 'parent_cancel_pending_confirm' ? 'Cancel pending confirm' : st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : st === 'teacher_cancelled' ? 'Teacher cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st && st.startsWith('cancel') ? 'Last min cancel' : 'Scheduled'; }}
+    function statusClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'late' : st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : st === 'teacher_cancelled' ? 'excused' : (st === 'excused_24h' || st === 'excused') ? 'early_cancel' : (st === 'last_min_cancel' || (st && st.startsWith('cancel'))) ? 'cancelled' : 'scheduled'; }}
     function inputTimeValue(timeText) {{
       if (!timeText) return '';
       const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i);
@@ -13031,7 +13031,7 @@ def teacher_dashboard():
     def status_label(status):
         raw = (status or "").strip().lower()
         compact = raw.replace("-", "_").replace(" ", "_")
-        if compact == "teacher_cancel_pending_confirm":
+        if compact == "parent_cancel_pending_confirm":
             return "Cancel pending confirm"
         if compact in ("excused", "excused_24h", "cancel_>_24h", "cancelled_>_24h", "canceled_>_24h"):
             return "Cancel >24h"
@@ -13068,13 +13068,12 @@ def teacher_dashboard():
             ("no_show", "No Show"),
             ("last_min_cancel", "Last Min Cancel"),
             ("excused_24h", "Cancel > 24h"),
+            ("teacher_cancelled", "Teacher Cancel"),
             ("makeup", "Makeup"),
         ]
         current_status = current_status or "scheduled"
-        if current_status == "teacher_cancel_pending_confirm":
+        if current_status == "parent_cancel_pending_confirm":
             options.insert(0, (current_status, "Cancel pending confirm"))
-        elif current_status == "teacher_cancelled":
-            options.insert(0, (current_status, "Teacher Cancel"))
         return "".join(
             f'<option value="{value}" {"selected" if value == current_status else ""}>{label}</option>'
             for value, label in options
@@ -13120,7 +13119,7 @@ def teacher_dashboard():
         return room_name or "-"
 
     def _t_status_dot(st):
-        if st == "teacher_cancel_pending_confirm": return "sd-late"
+        if st == "parent_cancel_pending_confirm": return "sd-late"
         if st == "present":   return "sd-present"
         if st == "late":      return "sd-late"
         if st in ("no_show","no-show"): return "sd-noshow"
@@ -13130,7 +13129,7 @@ def teacher_dashboard():
         return "sd-scheduled"
 
     def _t_status_label(st):
-        if st == "teacher_cancel_pending_confirm":
+        if st == "parent_cancel_pending_confirm":
             return "Cancel pending confirm"
         if st == "present":
             return "Present"
@@ -13448,11 +13447,12 @@ def teacher_dashboard():
         month_active = "active" if schedule_mode == "month" else ""
         schedule_grid_class = "month-view" if schedule_mode == "month" else "week-view"
         direct_reschedule = bool(teacher_perms.get("direct_reschedule"))
+        direct_cancel = bool(teacher_perms.get("direct_cancel"))
         delete_allowed = bool(teacher_perms.get("delete_lessons"))
         sub_allowed = bool(teacher_perms.get("sub_request"))
         reminder_allowed = bool(teacher_perms.get("schedule_reminders"))
         reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
-        cancel_label = "Cancel class"
+        cancel_label = "Cancel lesson" if direct_cancel else "Cancel request"
         delete_button_html = '<button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button>' if delete_allowed else ''
         owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
@@ -13631,6 +13631,7 @@ def teacher_dashboard():
         <script>
 
         const TEACHER_CAN_DIRECT_RESCHEDULE = {str(direct_reschedule).lower()};
+        const TEACHER_CAN_DIRECT_CANCEL = {str(direct_cancel).lower()};
         const TEACHER_CAN_DELETE = {str(delete_allowed).lower()};
         const TEACHER_CAN_ADD_SCHEDULE = {str(bool(teacher_perms.get("add_own_schedule"))).lower()};
         const TEACHER_ROOMS = {teacher_calendar_room_payload};
@@ -13643,9 +13644,9 @@ def teacher_dashboard():
         let teacherPanelCourseChanged = false;
         let teacherPanelRoomChanged = false;
         let teacherGroupNameBaseline = '';
-        function teacherStatusLabel(st) {{ return st === 'teacher_cancel_pending_confirm' ? 'Cancel pending confirm' : st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
-        function teacherStatusClass(st) {{ return st === 'teacher_cancel_pending_confirm' ? 'late' : st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'early_cancel' : st === 'last_min_cancel' ? 'cancelled' : 'scheduled'; }}
-        function teacherStatusDotClass(st) {{ return st === 'teacher_cancel_pending_confirm' ? 'sd-late' : st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : st === 'last_min_cancel' ? 'sd-last-min' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
+        function teacherStatusLabel(st) {{ return st === 'parent_cancel_pending_confirm' ? 'Cancel pending confirm' : st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
+        function teacherStatusClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'late' : st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'early_cancel' : st === 'last_min_cancel' ? 'cancelled' : 'scheduled'; }}
+        function teacherStatusDotClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'sd-late' : st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : st === 'last_min_cancel' ? 'sd-last-min' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
         function repaintTeacherScheduleEvent(scheduleId, status) {{
             const st = status || 'scheduled';
             const isEarlyCancel = st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'));
@@ -13719,7 +13720,7 @@ def teacher_dashboard():
             }});
         }}
         function teacherInputTime(timeText) {{ if (!timeText) return ''; const m = String(timeText).trim().match(/^(\\d{{1,2}}):(\\d{{2}})\\s*(AM|PM)?$/i); if (!m) return timeText; let h = parseInt(m[1], 10); const ap = (m[3] || '').toUpperCase(); if (ap === 'PM' && h < 12) h += 12; if (ap === 'AM' && h === 12) h = 0; return String(h).padStart(2, '0') + ':' + m[2]; }}
-        function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); const cancelButton = document.querySelector('button[onclick="teacherCancelRequest()"]'); if (cancelButton) {{ const pending = activeTeacherStatus === 'teacher_cancel_pending_confirm'; cancelButton.disabled = pending; cancelButton.textContent = pending ? 'Cancel pending confirm' : 'Cancel class'; }} }}
+        function paintTeacherStatus(st) {{ activeTeacherStatus = st || 'scheduled'; const badge = document.getElementById('tPanelStatus'); badge.textContent = teacherStatusLabel(activeTeacherStatus); badge.className = 'panel-status ' + teacherStatusClass(activeTeacherStatus); document.querySelectorAll('#teacherLessonPanel .att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activeTeacherStatus)); }}
         function teacherPanelToast(msg) {{ const t = document.getElementById('tPanelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
         function setTeacherRescheduleScope(scope) {{ teacherRescheduleScope = scope === 'following' ? 'following' : 'once'; const once = document.getElementById('tPanelScopeOnce'); const following = document.getElementById('tPanelScopeFollowing'); if (once) once.classList.toggle('active', teacherRescheduleScope === 'once'); if (following) following.classList.toggle('active', teacherRescheduleScope === 'following'); document.querySelectorAll('[name="tPanelRescheduleScope"]').forEach(input => input.checked = input.value === teacherRescheduleScope); }}
         function selectedTeacherPanelRoom() {{ const select = document.getElementById('tPanelRoomSelect'); const option = select && select.selectedOptions ? select.selectedOptions[0] : null; const roomId = Number(option ? option.dataset.roomId || 0 : 0); const roomName = select ? select.value || '' : ''; return TEACHER_ROOMS.find(room => Number(room.id || 0) === roomId && room.room_name === roomName) || TEACHER_ROOMS.find(room => room.room_name === roomName) || null; }}
@@ -13786,7 +13787,7 @@ def teacher_dashboard():
         function setTeacherPanelStatus(st) {{ paintTeacherStatus(st); saveTeacherLessonPanel(true).catch(() => {{}}); }}
         function teacherRequestReschedule() {{ if (!activeTeacherLesson) return; const room = teacherPanelRoomPayload(); teacherLessonAction({{action:'reschedule', schedule_id:activeTeacherLesson.id, new_date:document.getElementById('tPanelNewDate').value, new_time:document.getElementById('tPanelNewTime').value, reschedule_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value, location_id:room.location_id, room_id:room.room_id, location:room.location, classroom:room.classroom}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
         function teacherSubRequest() {{ if (!activeTeacherLesson) return; teacherLessonAction({{action:'sub_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => teacherPanelToast(d.message || 'Request sent.')).catch(e => alert(e.message)); }}
-        function teacherCancelRequest() {{ if (!activeTeacherLesson || teacherPanelSaving) return; const button = document.querySelector('button[onclick="teacherCancelRequest()"]'); teacherPanelSaving = true; if (button) {{ button.disabled = true; button.textContent = 'Sending...'; }} teacherLessonAction({{action:'cancel_request', schedule_id:activeTeacherLesson.id, reason:document.getElementById('tPanelReason').value}}).then(d => {{ activeTeacherLesson.status = d.status || 'teacher_cancel_pending_confirm'; paintTeacherStatus(activeTeacherLesson.status); repaintTeacherScheduleEvent(activeTeacherLesson.id, activeTeacherLesson.status); teacherPanelToast(d.message || 'Cancel pending confirm'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)).finally(() => {{ teacherPanelSaving = false; if (button) {{ const pending = activeTeacherLesson && activeTeacherLesson.status === 'teacher_cancel_pending_confirm'; button.disabled = pending; button.textContent = pending ? 'Cancel pending confirm' : 'Cancel class'; }} }}); }}
+        function teacherCancelRequest() {{ if (!activeTeacherLesson) return; const msg = TEACHER_CAN_DIRECT_CANCEL ? (teacherRescheduleScope === 'following' ? 'Cancel this and following lessons now?' : 'Cancel this lesson now?') : 'Send cancellation request to owner?'; if (!confirm(msg)) return; const payload = {{action:'cancel_request', schedule_id:activeTeacherLesson.id, cancel_scope:teacherRescheduleScope, reason:document.getElementById('tPanelReason').value}}; if (TEACHER_CAN_DIRECT_CANCEL) payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.'); teacherLessonAction(payload).then(d => {{ teacherPanelToast(d.message || 'Saved.'); if (TEACHER_CAN_DIRECT_CANCEL) setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherDeleteLesson() {{ if (!activeTeacherLesson || !TEACHER_CAN_DELETE) return; const msg = teacherRescheduleScope === 'following' ? 'Delete this and following lessons from your calendar?' : 'Delete this lesson from your calendar?'; if (!confirm(msg)) return; teacherLessonAction({{action:'delete', schedule_id:activeTeacherLesson.id, delete_scope:teacherRescheduleScope}}).then(d => {{ teacherPanelToast(d.message || 'Deleted.'); setTimeout(() => location.reload(), 700); }}).catch(e => alert(e.message)); }}
         function teacherLessonHistory() {{ if (activeTeacherLesson) window.location.href = '/add_lesson/' + encodeURIComponent(activeTeacherLesson.student || ''); }}
 
@@ -14503,7 +14504,7 @@ def hmusic_last_min_fee(duration):
 def hmusic_policy_status_label(status):
     labels = {
         "scheduled": "Scheduled",
-        "teacher_cancel_pending_confirm": "Cancel pending confirm",
+        "parent_cancel_pending_confirm": "Cancel pending confirm",
         "present": "Present",
         "no_show": "No Show",
         "last_min_cancel": "Last Min Cancel",
@@ -14918,17 +14919,18 @@ def parent_cancel():
     if not require_parent():
         return redirect("/parent_login")
 
+    ensure_v321_schema()
     student_name = session["parent_student_name"]
 
     if request.method == "POST":
         schedule_id = request.form.get("schedule_id")
-        reason = request.form.get("reason")
+        reason = (request.form.get("reason") or "Parent selected Cancel class in the parent app.").strip()
 
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
 
         cursor.execute("""
-        SELECT student_name, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), enrollment_id
+        SELECT student_name, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), enrollment_id, COALESCE(status, 'scheduled')
         FROM schedule
         WHERE id = ?
         """, (schedule_id,))
@@ -14938,9 +14940,32 @@ def parent_cancel():
             conn.close()
             return "<h1>Lesson not found</h1>"
 
-        if lesson[0] != student_name:
+        parent_id = session.get("parent_id")
+        if not parent_id or not parent_can_access_student(parent_id, lesson[0]):
             conn.close()
             return "<h1>Permission denied</h1>"
+        student_name = lesson[0]
+
+        cursor.execute("""
+        SELECT id
+        FROM lesson_change_requests
+        WHERE schedule_id = ?
+          AND parent_id = ?
+          AND request_type = 'cancel_lesson'
+          AND status IN ('pending', 'pending_owner_review')
+        ORDER BY id DESC
+        LIMIT 1
+        """, (schedule_id, parent_id))
+        existing_request = cursor.fetchone()
+        if existing_request:
+            cursor.execute("UPDATE schedule SET status = 'parent_cancel_pending_confirm' WHERE id = ?", (schedule_id,))
+            conn.commit()
+            conn.close()
+            return redirect("/parent_schedule?cancel=pending")
+
+        if lesson[7] not in ("scheduled", "parent_cancel_pending_confirm"):
+            conn.close()
+            return redirect("/parent_schedule")
 
         cancel_status = get_parent_cancel_status(lesson[1], lesson[2])
         holder = hmusic_waiver_holder(cursor, student_name, lesson[6])
@@ -14967,7 +14992,7 @@ def parent_cancel():
         )
         VALUES (?, ?, ?, 'cancel_lesson', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
         """, (
-            session.get("parent_id"),
+            parent_id,
             student_name,
             schedule_id,
             lesson[1],
@@ -14982,11 +15007,12 @@ def parent_cancel():
             now
         ))
         request_id = cursor.lastrowid
+        cursor.execute("UPDATE schedule SET status = 'parent_cancel_pending_confirm' WHERE id = ?", (schedule_id,))
         conn.commit()
         conn.close()
 
         log_parent_activity(
-            session.get("parent_id"),
+            parent_id,
             student_name,
             "cancel_request",
             f"Parent requested cancellation for lesson #{schedule_id}; policy preview {cancel_status}; pending owner approval.",
@@ -15012,20 +15038,7 @@ def parent_cancel():
                 related_id=request_id
             )
 
-        fee_line = f"<p>Pending fee preview: ${hmusic_money(fee_preview)}</p>" if fee_preview else "<p>Pending fee preview: $0.00</p>"
-        waiver_line = "<p>Package waiver available: Yes</p>" if waiver_available else "<p>Package waiver available: No</p>"
-        return f"""
-        <h1>Cancellation Request Submitted</h1>
-        <p>Request #{request_id}</p>
-        <p>Student: {student_name}</p>
-        <p>Policy preview: {hmusic_policy_status_label(cancel_status)}</p>
-        {fee_line}
-        {waiver_line}
-        <p>Status: Waiting for studio approval.</p>
-        <p><b>Need a makeup time?</b> Please submit a reschedule request from the parent app so the owner can approve a new slot.</p>
-        <p><a href="/parent_reschedule">Request Reschedule</a></p>
-        <p><a href="/parent_dashboard">Back to Parent Portal</a></p>
-        """
+        return redirect("/parent_schedule?cancel=pending")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -15128,7 +15141,6 @@ def lesson_change_request_detail(request_id):
     if not req:
         conn.close()
         return "<h1>Request not found</h1>"
-    teacher_cancel_request = req[4] == "teacher_cancel_lesson"
 
     if request.method == "POST":
         if (req[13] or "pending") not in ("pending", "pending_owner_review"):
@@ -15140,19 +15152,7 @@ def lesson_change_request_detail(request_id):
         decision = action or "reviewed"
         result = {"ok": True}
 
-        if teacher_cancel_request and action == "apply_policy":
-            result = apply_lesson_status(
-                req[3],
-                "teacher_cancelled",
-                actor="owner:teacher_cancel_confirm",
-                reason=owner_note or req[12],
-                use_policy_waiver=False
-            )
-        elif teacher_cancel_request and action == "reject":
-            result = {"ok": True}
-        elif teacher_cancel_request:
-            result = {"ok": False, "error": "Unknown action"}
-        elif action == "apply_policy":
+        if action == "apply_policy":
             result = apply_lesson_status(
                 req[3],
                 req[9],
@@ -15192,11 +15192,11 @@ def lesson_change_request_detail(request_id):
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         new_status = "rejected" if action == "reject" else "approved"
-        if teacher_cancel_request and action == "reject":
+        if action == "reject" and req[4] == "cancel_lesson":
             cursor.execute("""
             UPDATE schedule
             SET status = 'scheduled'
-            WHERE id = ? AND status = 'teacher_cancel_pending_confirm'
+            WHERE id = ? AND status = 'parent_cancel_pending_confirm'
             """, (req[3],))
         cursor.execute("""
         UPDATE lesson_change_requests
@@ -15209,12 +15209,6 @@ def lesson_change_request_detail(request_id):
         conn.commit()
         conn.close()
 
-        if teacher_cancel_request and action == "apply_policy":
-            try:
-                hmusic_queue_teacher_cancel_parent_notice(req[3])
-            except Exception:
-                app.logger.exception("Teacher cancellation confirmed, but parent notice queueing failed")
-
         if req[1]:
             create_notification(
                 "parent",
@@ -15224,14 +15218,6 @@ def lesson_change_request_detail(request_id):
                 "/parent_dashboard",
                 related_type="lesson_change_request",
                 related_id=request_id
-            )
-        elif teacher_cancel_request and req[7]:
-            decision_label = "confirmed" if action != "reject" else "rejected"
-            create_notification(
-                "teacher", req[7], "Cancellation request updated",
-                f"H-Music {decision_label} the cancellation request for {req[2]} on {req[5]} {req[6]}.",
-                "/teacher_dashboard?view=schedule",
-                related_type="lesson_change_request", related_id=request_id
             )
         return redirect(f"/lesson_change_request/{request_id}")
 
@@ -15250,13 +15236,6 @@ def lesson_change_request_detail(request_id):
     current_state = ""
     if schedule_state:
         current_state = f"{hmusic_policy_status_label(schedule_state[0])} · credit {schedule_state[1]} · waiver {schedule_state[2]} · pending fee ${hmusic_money(schedule_state[3])}"
-    request_source = "Teacher" if teacher_cancel_request else "Parent"
-    if teacher_cancel_request:
-        request_metrics = '<div class="metric"><span>Result after confirmation</span><b>Teacher Cancel</b></div><div class="metric"><span>Student charge</span><b>$0.00</b></div><div class="metric"><span>Lesson credit</span><b>No deduction</b></div>'
-        request_actions = '<button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button><button class="danger" name="action" value="reject" type="submit">Reject request</button>'
-    else:
-        request_metrics = f'<div class="metric"><span>Policy preview</span><b>{status_label}</b></div><div class="metric"><span>Waiver</span><b>{waiver_text}</b></div><div class="metric"><span>Fee preview</span><b>${fee_preview}</b></div>'
-        request_actions = '<button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button><button class="warn" name="action" value="charge" type="submit">Confirm + charge</button><button name="action" value="no_charge" type="submit">Confirm no charge</button><button class="danger" name="action" value="reject" type="submit">Reject request</button>'
 
     return f"""
     <html>
@@ -15287,20 +15266,24 @@ def lesson_change_request_detail(request_id):
             <div class="card">
                 <p class="muted">Request #{req[0]} · {escape(req[16] or '')}</p>
                 <h1>{escape(req[2])} cancellation request</h1>
-                <p><b>Requested by:</b> {request_source}</p>
                 <p>{escape(req[5] or '')} {escape(req[6] or '')} · {escape(req[7] or '')} · {escape(req[8] or '')}</p>
                 <p><b>Reason:</b> {escape(req[12] or 'No reason provided.')}</p>
                 <p><b>Request status:</b> {escape(request_status_display)}</p>
                 <p><b>Current lesson state:</b> {escape(current_state or 'Lesson not found')}</p>
                 <div class="grid">
-                    {request_metrics}
+                    <div class="metric"><span>Policy preview</span><b>{status_label}</b></div>
+                    <div class="metric"><span>Waiver</span><b>{waiver_text}</b></div>
+                    <div class="metric"><span>Fee preview</span><b>${fee_preview}</b></div>
                 </div>
             </div>
             <form class="card" method="POST">
                 <label class="muted">Owner note</label>
                 <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
                 <div class="actions">
-                    {request_actions}
+                    <button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button>
+                    <button class="warn" name="action" value="charge" type="submit">Confirm + charge</button>
+                    <button name="action" value="no_charge" type="submit">Confirm no charge</button>
+                    <button class="danger" name="action" value="reject" type="submit">Reject request</button>
                 </div>
             </form>
             <a class="button" href="/owner_cancel_requests">Back to cancel requests</a>
@@ -15601,7 +15584,7 @@ def ensure_calendar_lesson_panel_schema():
 
 def calendar_status_label(status):
     status = status or "scheduled"
-    if status == "teacher_cancel_pending_confirm":
+    if status == "parent_cancel_pending_confirm":
         return "Cancel pending confirm"
     if status == "present":
         return "Present"
@@ -16042,7 +16025,6 @@ def calendar_lesson_detail(schedule_id):
 @app.route("/calendar_lesson_action", methods=["POST"])
 def calendar_lesson_action():
     ensure_calendar_lesson_panel_schema()
-    ensure_v321_schema()
     if not (require_owner() or require_teacher()):
         return {"ok": False, "error": "Login required"}, 401
     data = request.get_json(silent=True) or {}
@@ -16109,9 +16091,6 @@ def calendar_lesson_action():
     if action == "save":
         status = (data.get("status") or row[6] or "scheduled").strip()
         original_status = row[6] or "scheduled"
-        if is_teacher and status == "teacher_cancelled" and original_status != "teacher_cancelled":
-            conn.close()
-            return {"ok": False, "error": "Use Cancel class to request owner confirmation."}, 400
         teacher_cancel_notice_ids = []
         lesson_note = hmusic_parent_visible_lesson_note(data.get("lesson_note") or "")
         private_note = (data.get("private_note") or "").strip()
@@ -16675,7 +16654,7 @@ def calendar_lesson_action():
         return {"ok": True, "message": "Sub request sent to owner."}
 
     if action == "cancel_request":
-        if is_owner:
+        if is_owner or teacher_permissions.get("direct_cancel"):
             status = (data.get("status") or "teacher_cancelled").strip()
             cancel_scope = (data.get("cancel_scope") or data.get("scope") or "once").strip()
             cancel_scope = cancel_scope if cancel_scope in {"once", "following"} else "once"
@@ -16695,6 +16674,11 @@ def calendar_lesson_action():
                 elif int(cancel_id) == int(schedule_id):
                     first_error = result.get("error") or "Lesson was not cancelled."
                     break
+            if updated and not is_owner:
+                detail = f"{row[2]} cancelled {row[1]}'s lesson on {row[3]} {row[4]}."
+                if updated > 1:
+                    detail += f" {updated - 1} following lesson(s) were cancelled."
+                create_notification("owner", "owner", "Teacher cancelled lesson", detail, "/calendar", related_type="teacher_direct_cancel", related_id=int(schedule_id))
             parent_notice_count = 0
             notice_warning = ""
             if teacher_cancel_notice_ids and data.get("notify_parent_on_teacher_cancel"):
@@ -16711,51 +16695,11 @@ def calendar_lesson_action():
                 message += f" {parent_notice_count} parent notice(s) queued."
             return {"ok": updated > 0, "message": message + notice_warning, "error": "" if updated else "Lesson was not cancelled."}
         reason = (data.get("reason") or "Teacher requested cancellation from calendar panel").strip()
-        cursor.execute("""
-        SELECT id
-        FROM lesson_change_requests
-        WHERE schedule_id = ?
-          AND request_type = 'teacher_cancel_lesson'
-          AND status IN ('pending', 'pending_owner_review')
-        ORDER BY id DESC
-        LIMIT 1
-        """, (schedule_id,))
-        existing_request = cursor.fetchone()
-        if existing_request:
-            cursor.execute("UPDATE schedule SET status = 'teacher_cancel_pending_confirm' WHERE id = ?", (schedule_id,))
-            conn.commit()
-            conn.close()
-            return {
-                "ok": True,
-                "message": "Cancel pending confirm",
-                "status": "teacher_cancel_pending_confirm",
-                "request_id": int(existing_request[0]),
-            }
-        cursor.execute("""
-        INSERT INTO lesson_change_requests (
-            parent_id, student_name, schedule_id, request_type, original_date,
-            original_time, teacher, classroom, policy_status, fee_preview,
-            waiver_available, reason, status, created_at, updated_at
-        )
-        VALUES (NULL, ?, ?, 'teacher_cancel_lesson', ?, ?, ?, ?,
-                'teacher_cancelled', 0, 0, ?, 'pending', ?, ?)
-        """, (row[1], schedule_id, row[3], row[4], row[2], row[5], reason, now, now))
-        request_id = cursor.lastrowid
-        cursor.execute("UPDATE schedule SET status = 'teacher_cancel_pending_confirm' WHERE id = ?", (schedule_id,))
-        conn.commit()
+        thread_id = get_or_create_message_thread(f"Cancel request - {row[1]}", student_name=row[1], teacher_name=row[2], thread_type="teacher_cancel_request", related_type="schedule", related_id=int(schedule_id))
+        add_message(thread_id, "teacher", row[2], "owner", f"Cancel request for {row[1]} on {row[3]} {row[4]}. Reason: {reason}")
         conn.close()
-        create_notification(
-            "owner", "owner", "Teacher cancellation request",
-            f"{row[2]} requested cancellation for {row[1]} on {row[3]} {row[4]}.",
-            f"/lesson_change_request/{request_id}",
-            related_type="lesson_change_request", related_id=request_id
-        )
-        return {
-            "ok": True,
-            "message": "Cancel pending confirm",
-            "status": "teacher_cancel_pending_confirm",
-            "request_id": request_id,
-        }
+        create_notification("owner", "owner", "Teacher cancellation request", f"{row[2]} requested cancellation for {row[1]} on {row[3]} {row[4]}.", f"/message_thread/{thread_id}", related_type="schedule", related_id=int(schedule_id))
+        return {"ok": True, "message": "Cancellation request sent to owner."}
 
     if action == "duplicate":
         if not is_owner:
@@ -26776,7 +26720,7 @@ def owner_cancel_requests():
         SELECT id, student_name, original_date, original_time, teacher, classroom,
                policy_status, fee_preview, waiver_available, reason, status, created_at
         FROM lesson_change_requests
-        WHERE request_type IN ('cancel_lesson', 'teacher_cancel_lesson')
+        WHERE request_type = 'cancel_lesson'
         ORDER BY id DESC
         LIMIT 100
         """)
@@ -26785,7 +26729,7 @@ def owner_cancel_requests():
         SELECT id, student_name, original_date, original_time, teacher, classroom,
                policy_status, fee_preview, waiver_available, reason, status, created_at
         FROM lesson_change_requests
-        WHERE request_type IN ('cancel_lesson', 'teacher_cancel_lesson')
+        WHERE request_type = 'cancel_lesson'
         AND status IN ('pending', 'pending_owner_review')
         ORDER BY id DESC
         LIMIT 100
@@ -26840,7 +26784,7 @@ def owner_cancel_requests():
     <body>
         <div class="container">
             <h1>Cancellation Requests</h1>
-            <p class="muted">Parent and teacher cancellation requests that need owner review.</p>
+            <p class="muted">Parent cancellation requests that need owner policy review.</p>
             <div class="actions">
                 <a class="button" href="/owner_cancel_requests">Pending</a>
                 <a class="button secondary" href="/owner_cancel_requests?status=all">All</a>
@@ -29376,7 +29320,7 @@ def parent_dashboard():
     LEFT JOIN studio_locations l ON s.location_id = l.id
     WHERE student_name = ?
     AND lesson_date >= ?
-    AND (status IS NULL OR status='scheduled')
+    AND (status IS NULL OR status IN ('scheduled', 'parent_cancel_pending_confirm'))
     ORDER BY s.lesson_date, s.lesson_time
     LIMIT 3
     """, (current_student, today))
@@ -29457,7 +29401,7 @@ def parent_dashboard():
         lesson_time = escape(str(time_range or ""))
         lesson_teacher = escape(str(l[2] or ""))
         lesson_place = escape(str(location_room or "TBD"))
-        lesson_status = escape(str(l[6] or "scheduled"))
+        lesson_status = escape(hmusic_policy_status_label(l[6] or "scheduled"))
         course_color = normalize_hex_color(l[7]) or default_course_color(l[8], l[5], l[9])
         lesson_style = (
             f"--course-color:{course_color};"
@@ -29481,7 +29425,7 @@ def parent_dashboard():
             <td>{time_range}</td>
             <td>{l[2]}</td>
             <td>{location_room or "TBD"}</td>
-            <td>{l[6] or "scheduled"}</td>
+            <td>{escape(hmusic_policy_status_label(l[6] or "scheduled"))}</td>
         </tr>
         """
 
@@ -29655,7 +29599,7 @@ def parent_dashboard():
     FROM schedule
     WHERE student_name = ?
     AND lesson_date BETWEEN ? AND ?
-    AND (status IS NULL OR status IN ('scheduled', 'present', 'late'))
+    AND (status IS NULL OR status IN ('scheduled', 'present', 'late', 'parent_cancel_pending_confirm'))
     ORDER BY lesson_date
     """, (current_student, cal_start.strftime("%Y-%m-%d"), cal_end.strftime("%Y-%m-%d")))
     lesson_dates = {row[0] for row in cursor.fetchall() if row[0]}
@@ -29687,12 +29631,16 @@ def parent_dashboard():
         next_lesson_room = escape(str(next_lesson[3] or "Room TBD"))
         next_lesson_address = escape(str(next_lesson[10] or next_lesson[4] or "Address TBD"))
         next_lesson_course = escape(str(next_lesson[8] or "Lesson"))
+        if next_lesson[6] == "parent_cancel_pending_confirm":
+            next_lesson_pill = "Cancel pending confirm"
         try:
             lesson_date_obj = datetime.strptime(str(next_lesson[0]), "%Y-%m-%d").date()
             delta = (lesson_date_obj - date.today()).days
-            next_lesson_pill = "Today" if delta == 0 else "Tomorrow" if delta == 1 else lesson_date_obj.strftime("%b %-d")
+            if next_lesson[6] != "parent_cancel_pending_confirm":
+                next_lesson_pill = "Today" if delta == 0 else "Tomorrow" if delta == 1 else lesson_date_obj.strftime("%b %-d")
         except Exception:
-            next_lesson_pill = "Next"
+            if next_lesson[6] != "parent_cancel_pending_confirm":
+                next_lesson_pill = "Next"
 
     renewal_copy = "Renew soon" if course_credit_total <= 1 else "Lessons available"
     notes_preview = lesson_note_cards
@@ -30398,11 +30346,12 @@ def parent_schedule():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute(f"""
-    SELECT id, student_name, lesson_date, lesson_time, teacher, classroom, COALESCE(duration, 30), COALESCE(course_type_name, '')
+    SELECT id, student_name, lesson_date, lesson_time, teacher, classroom,
+           COALESCE(duration, 30), COALESCE(course_type_name, ''), COALESCE(status, 'scheduled')
     FROM schedule
     WHERE student_name IN ({placeholders})
     AND lesson_date >= ?
-    AND (status IS NULL OR status = '' OR status IN ('scheduled', 'teacher_cancel_pending_confirm'))
+    AND (status IS NULL OR status = '' OR status IN ('scheduled', 'parent_cancel_pending_confirm'))
     ORDER BY lesson_date, lesson_time
     LIMIT 16
     """, tuple(linked_names) + (today,))
@@ -30439,6 +30388,19 @@ def parent_schedule():
     next_lesson = upcoming[0] if upcoming else None
     next_card = ""
     if next_lesson:
+        next_cancel_pending = next_lesson[8] == "parent_cancel_pending_confirm"
+        if next_cancel_pending:
+            next_actions = '<div class="cancel-pending-state">Cancel pending confirm</div>'
+        else:
+            next_actions = f"""
+                <div class="primary-schedule-actions">
+                    <form class="schedule-cancel-form" method="POST" action="/parent_cancel">
+                        <input type="hidden" name="schedule_id" value="{next_lesson[0]}">
+                        <button class="schedule-action cancel" type="submit"><strong>Cancel class</strong><span>Owner confirmation pending after submission</span></button>
+                    </form>
+                    <a class="schedule-action reschedule" href="/parent_reschedule?schedule_id={next_lesson[0]}"><strong>Request reschedule</strong><span>Choose preferred times for approval</span></a>
+                </div>
+            """
         next_card = f"""
         <section class="app-card schedule-next">
             <div class="schedule-strip"><span>{escape(str(next_lesson[2]))}</span><span>{escape(str(next_lesson[1]))}</span></div>
@@ -30446,10 +30408,7 @@ def parent_schedule():
                 <div class="schedule-time">{escape(str(next_lesson[3] or 'Time TBD'))}</div>
                 <div class="schedule-meta">{escape(str(next_lesson[7] or 'Private Lesson'))} · {escape(str(next_lesson[4] or 'Teacher TBD'))}</div>
                 <div class="schedule-room">Room: {escape(str(next_lesson[5] or 'TBD'))}</div>
-                <div class="primary-schedule-actions">
-                    <a class="schedule-action cancel" href="/parent_cancel?schedule_id={next_lesson[0]}"><strong>Cancel lesson</strong><span>Reason required; owner confirms policy</span></a>
-                    <a class="schedule-action reschedule" href="/parent_reschedule?schedule_id={next_lesson[0]}"><strong>Request reschedule</strong><span>Choose preferred times for approval</span></a>
-                </div>
+                {next_actions}
             </div>
         </section>
         """
@@ -30460,6 +30419,17 @@ def parent_schedule():
 
     upcoming_rows = ""
     for lesson in upcoming:
+        cancel_pending = lesson[8] == "parent_cancel_pending_confirm"
+        if cancel_pending:
+            lesson_actions = '<span class="cancel-pending-state compact">Cancel pending confirm</span>'
+        else:
+            lesson_actions = f"""
+                <a href="/parent_reschedule?schedule_id={lesson[0]}">Reschedule</a>
+                <form class="mini-cancel-form" method="POST" action="/parent_cancel">
+                    <input type="hidden" name="schedule_id" value="{lesson[0]}">
+                    <button class="danger-link" type="submit">Cancel class</button>
+                </form>
+            """
         upcoming_rows += f"""
         <div class="schedule-row">
             <div>
@@ -30468,8 +30438,7 @@ def parent_schedule():
                 <small>{escape(str(lesson[5] or 'Room TBD'))}</small>
             </div>
             <div class="mini-actions">
-                <a href="/parent_reschedule?schedule_id={lesson[0]}">Reschedule</a>
-                <a class="danger-link" href="/parent_cancel?schedule_id={lesson[0]}">Cancel</a>
+                {lesson_actions}
             </div>
         </div>
         """
@@ -30491,11 +30460,12 @@ def parent_schedule():
             row[6],
         ))
     for row in cancel_requests:
+        cancel_request_status = "Cancel pending confirm" if row[4] in ("pending", "pending_owner_review") else row[4]
         recent_items.append((
             "Cancel",
             row[0],
             f"{row[1]} {row[2]} · {hmusic_policy_status_label(row[3])}",
-            row[4],
+            cancel_request_status,
             row[5],
         ))
     for row in booking_requests:
@@ -30508,6 +30478,7 @@ def parent_schedule():
     ) or "<p class='muted'>No schedule requests yet.</p>"
 
     sent = "<section class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and follow up before anything changes on the calendar.</p></section>" if request.args.get("sent") == "1" else ""
+    cancel_pending_notice = "<section class='app-card'><span class='pill warn'>Cancel pending confirm</span><p>The class stays on the schedule until the owner confirms the cancellation.</p></section>" if request.args.get("cancel") == "pending" else ""
     notes_required = "<section class='app-card'><span class='pill warn'>Notes required</span><p>Please describe what needs to change.</p></section>" if request.args.get("notes_required") == "1" else ""
 
     body = f"""
@@ -30524,6 +30495,10 @@ def parent_schedule():
         .schedule-action span {{ font-size:11px; line-height:1.24; color:#716d67; font-weight:750; }}
         .schedule-action.cancel {{ color:#b42318; background:#fff7f5; border-color:#ffc9c1; }}
         .schedule-action.reschedule {{ color:#1d65ad; background:#eef6ff; border-color:#bcd8f5; }}
+        .schedule-cancel-form,.mini-cancel-form {{ margin:0; padding:0; border:0; background:transparent; }}
+        .schedule-cancel-form .schedule-action {{ width:100%; text-align:left; font:inherit; cursor:pointer; }}
+        .cancel-pending-state {{ display:flex; align-items:center; justify-content:center; min-height:58px; border:1px solid #f2c879; border-radius:12px; background:#fff8e8; color:#8a5700; font-size:13px; font-weight:900; }}
+        .cancel-pending-state.compact {{ min-height:0; padding:7px 9px; border-radius:999px; font-size:11px; white-space:nowrap; }}
         .policy-mini {{ display:grid; gap:0; padding:9px 12px; }}
         .policy-mini div {{ display:grid; grid-template-columns:66px 1fr; gap:7px; padding:6px 0; border-top:1px solid #eee9e2; font-size:11px; font-weight:700; color:#716d67; line-height:1.22; }}
         .policy-mini div:first-child {{ border-top:0; }}
@@ -30535,7 +30510,7 @@ def parent_schedule():
         .schedule-row small {{ color:#8a857d; font-size:10px; font-weight:750; }}
         .mini-actions {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
         .mini-actions a {{ border:1px solid #ddd9d2; color:#1d65ad; background:#fff; border-radius:999px; padding:6px 8px; font-size:11px; font-weight:900; white-space:nowrap; }}
-        .mini-actions .danger-link {{ color:#b42318; border-color:#ffd7d2; background:#fffafa; }}
+        .mini-actions .danger-link {{ color:#b42318; border:1px solid #ffd7d2; background:#fffafa; border-radius:999px; padding:6px 8px; font:inherit; font-size:11px; font-weight:900; white-space:nowrap; cursor:pointer; }}
         .book-grid {{ display:grid; gap:9px; }}
         .book-card {{ display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; border:1px solid #ddd9d2; background:#fff; border-radius:14px; padding:13px; }}
         .book-card b {{ display:block; font-size:14px; margin-bottom:3px; }}
@@ -30552,6 +30527,7 @@ def parent_schedule():
     <h1>Schedule</h1>
     <p class="muted">Cancel, reschedule, book, makeup, or send a schedule note for multiple lessons.</p>
     {sent}
+    {cancel_pending_notice}
     {notes_required}
     <div class="section-head"><h2>Next Lesson</h2></div>
     {next_card}

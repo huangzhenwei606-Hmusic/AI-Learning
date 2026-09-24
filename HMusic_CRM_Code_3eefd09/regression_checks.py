@@ -84,10 +84,11 @@ CHECKS = {
     "teacher calendar schedule grid class": "schedule_grid_class",
     "teacher calendar inline status select": 'class="teacher-card-status {dot}"',
     "teacher calendar status autosave": "statusSelectForAutoSave.addEventListener('change'",
-    "teacher cancellation is one click": "function teacherCancelRequest() {{ if (!activeTeacherLesson || teacherPanelSaving) return;",
-    "teacher cancellation pending status": "teacher_cancel_pending_confirm",
-    "teacher cancellation pending label": "Cancel pending confirm",
-    "teacher cancellation owner queue": "request_type = 'teacher_cancel_lesson'",
+    "parent cancel submits directly": '<form class="schedule-cancel-form" method="POST" action="/parent_cancel">',
+    "parent cancel pending status": "parent_cancel_pending_confirm",
+    "parent cancel pending label": "Cancel pending confirm",
+    "parent cancel returns to schedule": 'return redirect("/parent_schedule?cancel=pending")',
+    "parent cancel rejection restores schedule": "WHERE id = ? AND status = 'parent_cancel_pending_confirm'",
     "owner calendar left-aligned time chip": '<span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>',
     "owner calendar inline status select": 'class="calendar-status-select {dot_class}"',
     "teacher mobile bootstrap api": '"/api/teacher/bootstrap"',
@@ -160,12 +161,12 @@ def main():
             print(f"- {name}: {STUDENT_DETAIL_FORBIDDEN[name]}")
         raise SystemExit(1)
     try:
-        teacher_cancel_source = source.split("function teacherCancelRequest()", 1)[1].split("function teacherDeleteLesson()", 1)[0]
+        parent_schedule_source = source.split("def parent_schedule():", 1)[1].split('@app.route("/parent_booking_request"', 1)[0]
     except IndexError:
-        print("Regression check failed. Could not locate teacher cancellation action.")
+        print("Regression check failed. Could not locate parent schedule route.")
         raise SystemExit(1)
-    if "confirm(" in teacher_cancel_source:
-        print("Regression check failed. Teacher cancellation still opens an extra confirmation choice.")
+    if 'href="/parent_cancel?schedule_id=' in parent_schedule_source:
+        print("Regression check failed. Parent cancellation still opens the intermediate choices page.")
         raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 
