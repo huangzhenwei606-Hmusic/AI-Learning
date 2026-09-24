@@ -28644,6 +28644,7 @@ def reschedule_request_detail(request_id):
         return redirect("/owner_login")
 
     ensure_v28_schema()
+    ensure_location_room_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -28679,16 +28680,29 @@ def reschedule_request_detail(request_id):
     WHERE id = ?
     """, (request_id,))
     r = cursor.fetchone()
-    conn.close()
-
     if not r:
+        conn.close()
         return "<h1>Reschedule request not found</h1>"
 
-    conn2 = sqlite3.connect("hmusic.db")
-    cursor2 = conn2.cursor()
-    cursor2.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
-    teacher_rows = cursor2.fetchall()
-    conn2.close()
+    cursor.execute("SELECT DISTINCT TRIM(teacher_name) FROM teachers WHERE TRIM(COALESCE(teacher_name, '')) != '' ORDER BY TRIM(teacher_name)")
+    teacher_rows = cursor.fetchall()
+    cursor.execute("""
+    SELECT
+        sr.id,
+        sr.room_name,
+        sr.location_id,
+        COALESCE(sl.location_name, ''),
+        COALESCE(sl.address, '')
+    FROM studio_rooms sr
+    JOIN studio_locations sl ON sl.id = sr.location_id
+    WHERE COALESCE(sr.active, 1) = 1
+      AND COALESCE(sl.active, 1) = 1
+    ORDER BY sl.sort_order, sl.location_name, sr.sort_order, sr.room_name
+    """)
+    active_rooms = cursor.fetchall()
+    cursor.execute("SELECT COALESCE(room_id, 0) FROM schedule WHERE id = ?", (r[3],))
+    current_schedule = cursor.fetchone()
+    conn.close()
 
     teacher_options = ""
     requested_teacher = r[16] or r[6]
@@ -28700,7 +28714,27 @@ def reschedule_request_detail(request_id):
 
     for t in teacher_rows:
         selected = "selected" if t[0] == requested_teacher else ""
-        teacher_options += f'<option value="{t[0]}" {selected}>{t[0]}</option>'
+        teacher_options += f'<option value="{escape(t[0], quote=True)}" {selected}>{escape(t[0])}</option>'
+
+    selected_room_id = int((current_schedule[0] if current_schedule else 0) or 0)
+    requested_room_key = re.sub(r"[^a-z0-9]", "", str(requested_classroom or "").lower())
+    if requested_room_key:
+        for room in active_rooms:
+            if re.sub(r"[^a-z0-9]", "", str(room[1] or "").lower()) == requested_room_key:
+                selected_room_id = int(room[0])
+                break
+    if not selected_room_id and active_rooms:
+        selected_room_id = int(active_rooms[0][0])
+
+    room_options = ""
+    for room in active_rooms:
+        location_name = str(room[3] or "Location")
+        address = str(room[4] or "Address not provided")
+        room_label = f"{location_name} · {address} · {room[1]}"
+        selected = "selected" if int(room[0]) == selected_room_id else ""
+        room_options += f'<option value="{room[0]}" {selected}>{escape(room_label)}</option>'
+    if not room_options:
+        room_options = '<option value="">No active locations and rooms</option>'
 
     pending_actions = ""
     if r[11] == "pending":
@@ -28718,8 +28752,11 @@ def reschedule_request_detail(request_id):
             Approved Time:<br>
             <input type="time" name="approved_time" value="{r[9]}" required>
 
-            Approved Room:<br>
-            <input name="approved_classroom" value="{requested_classroom or ''}" required>
+            Approved Location &amp; Room:<br>
+            <select name="approved_room_id" required>
+                {room_options}
+            </select>
+            <div class="field-help">Each option includes the studio, full address, and room.</div>
 
             Owner Note:<br>
             <textarea name="owner_note" rows="3"></textarea>
@@ -28746,7 +28783,8 @@ def reschedule_request_detail(request_id):
             .card {{ background:#f5f5ff; border:1px solid #ddd; border-radius:10px; padding:16px; }}
             .label {{ color:#6b7280; font-size:13px; }}
             .value {{ font-size:20px; font-weight:bold; margin-top:6px; }}
-            input, textarea {{ width:100%; padding:10px; margin:8px 0 16px; font-size:15px; }}
+            input, select, textarea {{ width:100%; padding:10px; margin:8px 0 16px; font-size:15px; }}
+            .field-help {{ color:#6b7280; font-size:13px; margin:-10px 0 16px; }}
             button, a.button {{ display:inline-block; background:#5b5cff; color:white; border:none; padding:10px 16px; border-radius:6px; font-weight:bold; text-decoration:none; margin-right:8px; }}
             .danger {{ background:#dc2626; }}
         </style>
@@ -28788,10 +28826,12 @@ def approve_reschedule(request_id):
         return redirect("/owner_login")
 
     ensure_v28_schema()
+    ensure_location_room_schema()
 
     approved_teacher = request.form.get("approved_teacher")
     approved_date = request.form.get("approved_date")
     approved_time = request.form.get("approved_time")
+    approved_room_id = (request.form.get("approved_room_id") or "").strip()
     approved_classroom = request.form.get("approved_classroom")
     owner_note = request.form.get("owner_note")
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -28811,7 +28851,10 @@ def approve_reschedule(request_id):
         COALESCE(s.duration, 30),
         rr.requested_teacher,
         rr.requested_classroom,
-        rr.requested_slot_source
+        rr.requested_slot_source,
+        COALESCE(s.location_id, 0),
+        COALESCE(s.room_id, 0),
+        COALESCE(s.location, '')
     FROM reschedule_requests rr
     LEFT JOIN schedule s
         ON rr.original_schedule_id = s.id
@@ -28829,6 +28872,34 @@ def approve_reschedule(request_id):
 
     actual_teacher = approved_teacher or r[8] or r[5]
     actual_classroom = approved_classroom or r[9] or r[6]
+    actual_location_id = int(r[11] or 0) or None
+    actual_room_id = int(r[12] or 0) or None
+    actual_location = r[13] or ""
+    actual_address = ""
+
+    if approved_room_id:
+        cursor.execute("""
+        SELECT
+            sr.id,
+            sr.room_name,
+            sr.location_id,
+            COALESCE(sl.location_name, ''),
+            COALESCE(sl.address, '')
+        FROM studio_rooms sr
+        JOIN studio_locations sl ON sl.id = sr.location_id
+        WHERE sr.id = ?
+          AND COALESCE(sr.active, 1) = 1
+          AND COALESCE(sl.active, 1) = 1
+        """, (approved_room_id,))
+        approved_room = cursor.fetchone()
+        if not approved_room:
+            conn.close()
+            return f'<h1>Please select a valid location and room.</h1><p><a href="/reschedule_request/{request_id}">Back to Request</a></p>', 400
+        actual_room_id = int(approved_room[0])
+        actual_classroom = approved_room[1]
+        actual_location_id = int(approved_room[2])
+        actual_location = approved_room[3]
+        actual_address = approved_room[4]
 
     if not approved_date or not approved_time or not actual_teacher or not actual_classroom:
         conn.close()
@@ -28856,6 +28927,9 @@ def approve_reschedule(request_id):
     SET teacher = ?,
         lesson_date = ?,
         lesson_time = ?,
+        location_id = ?,
+        room_id = ?,
+        location = ?,
         classroom = ?,
         status = 'scheduled'
     WHERE id = ?
@@ -28863,6 +28937,9 @@ def approve_reschedule(request_id):
         actual_teacher,
         approved_date,
         approved_time,
+        actual_location_id,
+        actual_room_id,
+        actual_location,
         actual_classroom,
         r[3]
     ))
@@ -28897,18 +28974,20 @@ def approve_reschedule(request_id):
     if r[10] == "manual":
         mark_manual_open_slot_used(actual_teacher, approved_date, approved_time, actual_classroom, request_id)
 
+    approved_place = " · ".join(part for part in (actual_location, actual_address, actual_classroom) if part)
+
     log_parent_activity(
         r[1],
         r[2],
         "reschedule_approved",
-        f"Owner approved reschedule request #{request_id}; teacher {actual_teacher}; room {actual_classroom}; new time {approved_date} {approved_time}.",
+        f"Owner approved reschedule request #{request_id}; teacher {actual_teacher}; location {approved_place}; new time {approved_date} {approved_time}.",
         r[3]
     )
 
     create_reschedule_message_event(
         request_id,
         "approved",
-        f"Your reschedule request was approved. Teacher: {actual_teacher}. Room: {actual_classroom}. New lesson time: {approved_date} {approved_time}. {owner_note or ''}",
+        f"Your reschedule request was approved. Teacher: {actual_teacher}. Location: {approved_place}. New lesson time: {approved_date} {approved_time}. {owner_note or ''}",
         parent_id=r[1],
         student_name=r[2],
         teacher_name=actual_teacher
