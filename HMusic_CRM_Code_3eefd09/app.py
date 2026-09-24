@@ -8829,6 +8829,7 @@ def calendar():
         ensure_v321_schema()
         ensure_calendar_lesson_panel_schema()
         ensure_location_room_schema()
+        ensure_event_room_booking_schema()
     except Exception as exc:
         print(f"[calendar] schema preparation failed: {exc}")
         traceback.print_exc()
@@ -8971,6 +8972,23 @@ def calendar():
     """, slot_params)
     open_slots = cursor.fetchall()
 
+    event_room_bookings = []
+    if not selected_student and selected_status in ("", "scheduled"):
+        event_room_params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
+        event_room_teacher_filter = ""
+        if selected_teacher:
+            event_room_teacher_filter = " AND LOWER(TRIM(COALESCE(teacher_name, ''))) = LOWER(TRIM(?))"
+            event_room_params.append(selected_teacher)
+        cursor.execute(f"""
+        SELECT id, teacher_name, title, booking_date, start_time, end_time, event_type
+        FROM event_room_bookings
+        WHERE booking_date BETWEEN ? AND ?
+        AND status = 'approved'
+        {event_room_teacher_filter}
+        ORDER BY booking_date, start_time, id
+        """, event_room_params)
+        event_room_bookings = cursor.fetchall()
+
     cursor.execute("""
     SELECT name, duration, COALESCE(is_group, 0), COALESCE(display_color, '')
     FROM course_types
@@ -9047,6 +9065,10 @@ def calendar():
     events_by_date = {}
     for item in schedules:
         events_by_date.setdefault(item[1], []).append(item)
+
+    event_room_by_date = {}
+    for booking in event_room_bookings:
+        event_room_by_date.setdefault(booking[3], []).append(booking)
 
     slots_by_date = {}
     for slot in open_slots:
@@ -9172,6 +9194,19 @@ def calendar():
             muted = "muted-day" if day_obj.month != month_start.month else ""
             today_class = "today-cell" if day_obj == date.today() else ""
             event_cards = ""
+            for booking in event_room_by_date.get(date_key, []):
+                event_cards += f"""
+                <a class="ev owner-studio-event" href="/owner_event_room_bookings#booking-{booking[0]}"
+                   onclick="event.stopPropagation();" title="Open Event Room booking">
+                    <span class="ev-head">
+                      <span class="ev-time"><span class="calendar-time-chip">{escape(event_room_display_time(booking[4]))}–{escape(event_room_display_time(booking[5]))}</span></span>
+                      <span class="owner-studio-event-badge">Studio Event</span>
+                    </span>
+                    <span class="ev-name">{escape(str(booking[2] or 'Studio Event'))}</span>
+                    <span class="ev-sub">Event Room · {escape(EVENT_ROOM_TYPES.get(booking[6], booking[6] or 'Event'))}</span>
+                    <span class="ev-teacher">with {escape(str(booking[1] or 'Teacher'))}</span>
+                </a>
+                """
             for event in events_by_date.get(date_key, []):
                 event_status = event[9] or "scheduled"
                 course_name = event[11] or event[8] or ""
@@ -9378,6 +9413,9 @@ def calendar():
                  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}}
             .ev:active{{cursor:grabbing;opacity:.6}}
             .ev.dragging{{opacity:.35}}
+            .owner-studio-event{{display:block;text-decoration:none;background:#EAF7F0!important;border-color:#B9E1CC!important;border-left-color:#1E7A50!important;cursor:pointer!important;user-select:auto}}
+            .owner-studio-event:hover{{background:#DDF2E7!important}}
+            .owner-studio-event-badge{{display:inline-flex;align-items:center;border-radius:999px;padding:2px 5px;background:#1E7A50;color:#fff;font-size:7.5px;font-weight:900;white-space:nowrap}}
             .ev-name{{font-weight:900;display:block;color:#111827;text-decoration:none;border-radius:3px;
                       width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis;
                       font-size:10px;line-height:1.05;white-space:nowrap;margin:1px 0 0}}
@@ -13485,7 +13523,7 @@ def owner_event_room_bookings():
             for key, label in (("internal", "Teachers only"), ("studio", "Studio students"), ("families", "Students & families"))
         )
         booking_rows += f"""
-        <details class="oerb-row" {"open" if row[11] == "pending" else ""}>
+        <details class="oerb-row" id="booking-{row[0]}" {"open" if row[11] == "pending" else ""}>
           <summary><span><b>{escape(str(row[4]))} · {escape(event_room_display_time(row[5]))}–{escape(event_room_display_time(row[6]))}</b><small>{escape(str(row[3] or ''))} · {escape(str(row[1] or ''))}</small></span><em class="{escape(str(row[11] or ''))}">{escape(EVENT_ROOM_STATUSES.get(row[11], row[11] or ''))}</em></summary>
           <form method="POST" class="oerb-edit">
             <input type="hidden" name="action" value="update"><input type="hidden" name="booking_id" value="{row[0]}">
@@ -13531,7 +13569,7 @@ def owner_event_room_bookings():
         </form>
       </section>
       <section class="oerb-card"><div class="oerb-card-head"><h2>Manage bookings</h2><span>Pending requests appear first</span></div>{booking_rows}</section>
-    </main></body></html>
+    </main><script>document.addEventListener('DOMContentLoaded',function(){{if(location.hash){{const booking=document.querySelector(location.hash);if(booking&&booking.tagName==='DETAILS'){{booking.open=true;booking.scrollIntoView({{behavior:'smooth',block:'center'}});}}}}}});</script></body></html>
     """
 
 
