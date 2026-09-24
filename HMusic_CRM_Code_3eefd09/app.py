@@ -20087,13 +20087,17 @@ def parent_admin(parent_id):
         if s[3] == 1:
             unlink_action = f"""
             <form method="POST" action="/unlink_parent_student/{s[0]}" class="inline-form">
-                <button class="button danger" type="submit">Remove access</button>
+                <button class="button compact danger" type="submit">Remove access</button>
             </form>
             """
 
         shared_guardians_html = ""
         for guardian in guardians_by_student.get(s[1], []):
             guardian_id, guardian_name, guardian_email, relationship, is_primary = guardian[1:]
+            guardian_display_name = str(guardian_name or guardian_email or "Parent")
+            guardian_initials = "".join(
+                part[0] for part in guardian_display_name.split()[:2] if part
+            ).upper() or "P"
             badges = ""
             if guardian_id == parent_id:
                 badges += '<span class="guardian-badge current">This account</span>'
@@ -20101,12 +20105,13 @@ def parent_admin(parent_id):
                 badges += '<span class="guardian-badge">Primary</span>'
             shared_guardians_html += f"""
                 <div class="guardian-item">
-                    <div>
-                        <a href="/parent_admin/{guardian_id}">{escape(str(guardian_name or guardian_email or 'Parent'))}</a>
+                    <div class="guardian-avatar">{escape(guardian_initials)}</div>
+                    <div class="guardian-copy">
+                        <a href="/parent_admin/{guardian_id}">{escape(guardian_display_name)}</a>
                         <span>{escape(str(guardian_email or 'No email'))}</span>
                     </div>
                     <div class="guardian-meta">
-                        <span>{escape(str(relationship or 'Parent'))}</span>{badges}
+                        <span class="guardian-relation">{escape(str(relationship or 'Parent'))}</span>{badges}
                     </div>
                 </div>
             """
@@ -20114,37 +20119,44 @@ def parent_admin(parent_id):
             shared_guardians_html = '<span class="muted">No active guardian account</span>'
 
         linked_rows += f"""
-        <tr>
-            <td>
-                <div class="child-cell">
-                    <a href="/student/{quote(str(s[1] or ''), safe='')}">{escape(str(s[1] or '-'))}</a>
-                    <span>{escape(str(child_contact))}</span>
+        <article class="family-student-row">
+            <div class="student-summary">
+                <div class="student-title-line">
+                    <a class="student-name" href="/student/{quote(str(s[1] or ''), safe='')}">{escape(str(s[1] or '-'))}</a>
+                    <span class="pill {status_class}">{status}</span>
                 </div>
-            </td>
-            <td>{escape(str(s[5] or 'Unassigned'))}</td>
-            <td>{escape(str(s[2] or 'Parent'))}</td>
-            <td><div class="guardian-list">{shared_guardians_html}</div></td>
-            <td>
+                <div class="student-meta"><span>Teacher</span><strong>{escape(str(s[5] or 'Unassigned'))}</strong></div>
+                <div class="student-meta"><span>This account</span><strong>{escape(str(s[2] or 'Parent'))}</strong></div>
+                <div class="student-contact">{escape(str(child_contact))}</div>
+            </div>
+            <div class="student-section guardians-section">
+                <div class="row-label">Shared guardians</div>
+                <div class="guardian-list">{shared_guardians_html}</div>
+            </div>
+            <div class="student-section permissions-section">
+                <div class="row-label">Parent app access</div>
                 <div class="access-pills">
                     <span>Schedule</span><span>Homework</span><span>Invoices</span><span>Messages</span>
                 </div>
-            </td>
-            <td><span class="pill {status_class}">{status}</span></td>
-            <td>
-                <div class="row-actions">
+            </div>
+            <div class="student-section manage-section">
+                <div class="row-label">Manage</div>
+                <div class="student-actions-primary">
                     <a class="button compact primary" href="/new_owner_message?{urlencode({'parent_id': parent_id, 'student_name': s[1] or '', 'subject': 'Message about ' + str(s[1] or '')})}">Message</a>
+                    <a class="button compact guardian-action" href="/student_guardian_access/{quote(str(s[1] or ''), safe='')}">Manage guardians</a>
+                </div>
+                <div class="student-actions-secondary">
                     <a class="button compact" href="/student/{quote(str(s[1] or ''), safe='')}">Profile</a>
-                    <a class="button compact" href="/student_guardian_access/{quote(str(s[1] or ''), safe='')}">Guardian access</a>
                     <a class="button compact" href="/edit_student/{quote(str(s[1] or ''), safe='')}">Edit</a>
                     <a class="button compact" href="#family-credits">Credits</a>
                     {unlink_action}
                 </div>
-            </td>
-        </tr>
+            </div>
+        </article>
         """
 
     if not linked_rows:
-        linked_rows = "<tr><td colspan='7' class='empty'>No children are visible in this parent app yet.</td></tr>"
+        linked_rows = "<div class='empty'>No children are visible in this parent app yet.</div>"
 
     student_options = ""
     for s in available_students:
@@ -20579,23 +20591,38 @@ def parent_admin(parent_id):
             table {{ width:100%; border-collapse:collapse; min-width:880px; font-size:12px; }}
             th, td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }}
             th {{ color:var(--muted); font-size:11px; font-weight:850; background:#fff; }}
-            .child-cell {{ border-left:3px solid var(--blue); padding-left:8px; }}
-            .child-cell a {{ color:var(--text); font-weight:900; display:block; }}
-            .child-cell a:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
-            .child-cell span {{ display:block; color:var(--muted); font-size:11px; margin-top:2px; }}
-            .child-cell .contact-warning {{ color:#b45309; }}
-            .guardian-list {{ display:grid; gap:6px; min-width:210px; }}
-            .guardian-item {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding-bottom:6px; border-bottom:1px solid var(--line); }}
-            .guardian-item:last-child {{ padding-bottom:0; border-bottom:0; }}
-            .guardian-item a {{ color:var(--blue-dark); font-size:12px; font-weight:900; }}
+            .family-student-list {{ display:grid; }}
+            .family-student-row {{ display:grid; grid-template-columns:minmax(175px,.75fr) minmax(240px,1.15fr) minmax(250px,1fr); grid-template-areas:"student guardians permissions" "student guardians manage"; column-gap:20px; row-gap:13px; align-items:start; padding:16px; border-bottom:1px solid var(--line); }}
+            .family-student-row:last-child {{ border-bottom:0; }}
+            .student-summary {{ grid-area:student; border-left:3px solid var(--blue); padding-left:10px; min-width:0; }}
+            .student-title-line {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
+            .student-name {{ color:var(--text); font-size:15px; font-weight:900; }}
+            .student-name:hover {{ color:var(--blue-dark); text-decoration:underline; text-underline-offset:2px; }}
+            .student-meta {{ display:flex; align-items:baseline; gap:6px; margin-top:7px; font-size:11px; }}
+            .student-meta span {{ color:var(--muted); }}
+            .student-meta strong {{ color:var(--text); font-weight:850; }}
+            .student-contact {{ margin-top:8px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }}
+            .student-section {{ min-width:0; }}
+            .guardians-section {{ grid-area:guardians; }}
+            .permissions-section {{ grid-area:permissions; }}
+            .manage-section {{ grid-area:manage; }}
+            .row-label {{ margin-bottom:8px; color:var(--muted); font-size:10px; font-weight:900; text-transform:uppercase; }}
+            .guardian-list {{ display:grid; gap:8px; }}
+            .guardian-item {{ display:grid; grid-template-columns:32px minmax(0,1fr); align-items:center; gap:4px 8px; }}
+            .guardian-avatar {{ width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:8px; background:var(--blue-soft); color:var(--blue-dark); font-size:10px; font-weight:900; }}
+            .guardian-copy {{ min-width:0; }}
+            .guardian-item a {{ display:block; color:var(--blue-dark); font-size:12px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
             .guardian-item a:hover {{ text-decoration:underline; text-underline-offset:2px; }}
-            .guardian-item > div > span {{ display:block; color:var(--muted); font-size:10px; margin-top:2px; }}
-            .guardian-meta {{ display:flex; justify-content:flex-end; align-items:center; gap:4px; flex-wrap:wrap; }}
-            .guardian-meta > span {{ margin:0; }}
+            .guardian-copy > span {{ display:block; color:var(--muted); font-size:10px; margin-top:2px; overflow-wrap:anywhere; }}
+            .guardian-meta {{ grid-column:2; display:flex; justify-content:flex-start; align-items:center; gap:4px; flex-wrap:wrap; }}
+            .guardian-relation {{ color:var(--muted); font-size:10px; font-weight:750; }}
             .guardian-badge {{ display:inline-flex !important; min-height:18px; align-items:center; padding:0 6px; border-radius:999px; background:#eef2f7; color:#475467 !important; font-size:9px !important; font-weight:850; white-space:nowrap; }}
             .guardian-badge.current {{ background:var(--blue-soft); color:var(--blue-dark) !important; }}
             .access-pills {{ display:flex; gap:4px; flex-wrap:wrap; }}
             .access-pills span {{ min-height:20px; display:inline-flex; align-items:center; padding:0 7px; border:1px solid var(--line); border-radius:999px; background:#f8fafc; color:#475467; font-size:11px; font-weight:800; }}
+            .student-actions-primary, .student-actions-secondary {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }}
+            .student-actions-secondary {{ margin-top:7px; padding-top:7px; border-top:1px solid var(--line); }}
+            .guardian-action {{ color:var(--blue-dark); border-color:#bfdbfe; background:#eff6ff; }}
             .empty {{ color:var(--muted); text-align:center; padding:28px; }}
             .activity-table {{ min-width:760px; }}
             .invoice-link {{ color:var(--blue-dark); font-weight:900; display:block; }}
@@ -20604,6 +20631,11 @@ def parent_admin(parent_id):
                 .topbar, .head, .layout, .add-grid, .new-child-grid {{ grid-template-columns:1fr; }}
                 .tabs, .top-actions {{ justify-content:flex-start; }}
                 .quick-credit-add {{ grid-template-columns:1fr; }}
+                .family-student-row {{ grid-template-columns:minmax(180px,.8fr) minmax(260px,1.2fr); grid-template-areas:"student guardians" "permissions manage"; gap:16px; }}
+                .manage-section {{ padding-top:2px; }}
+            }}
+            @media (max-width:620px) {{
+                .family-student-row {{ grid-template-columns:1fr; grid-template-areas:"student" "guardians" "permissions" "manage"; gap:14px; }}
             }}
         </style>
     </head>
@@ -20749,21 +20781,8 @@ def parent_admin(parent_id):
                     </section>
 
                     <section class="panel">
-                        <div class="panel-head"><h2>Students in this family</h2><span>Profiles, billing, and parent app access</span></div>
-                        <div class="table-wrap">
-                            <table>
-                                <tr>
-                                    <th>Child</th>
-                                    <th>Teacher</th>
-                                    <th>Relationship</th>
-                                    <th>Shared guardians</th>
-                                    <th>Parent app can see</th>
-                                    <th>Status</th>
-                                    <th>Action</th>
-                                </tr>
-                                {linked_rows}
-                            </table>
-                        </div>
+                        <div class="panel-head"><h2>Students in this family</h2><span>Accounts, permissions, and family access</span></div>
+                        <div class="family-student-list">{linked_rows}</div>
                     </section>
 
                     <section class="panel" id="family-credits">
