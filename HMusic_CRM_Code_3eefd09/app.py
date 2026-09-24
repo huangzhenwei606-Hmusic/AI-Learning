@@ -15348,7 +15348,7 @@ def lesson_change_request_detail(request_id):
             cursor.execute("""
             UPDATE schedule
             SET status = 'scheduled'
-            WHERE id = ? AND status = 'parent_cancel_pending_confirm'
+            WHERE id = ?
             """, (req[3],))
         cursor.execute("""
         UPDATE lesson_change_requests
@@ -29540,7 +29540,17 @@ def parent_dashboard():
         s.classroom,
         COALESCE(s.location, ''),
         COALESCE(s.duration, 30),
-        s.status,
+        CASE
+            WHEN COALESCE(s.status, 'scheduled') = 'parent_cancel_pending_confirm'
+             AND EXISTS (
+                SELECT 1 FROM lesson_change_requests lcr
+                WHERE lcr.schedule_id = s.id
+                  AND lcr.request_type = 'cancel_lesson'
+                  AND lcr.status IN ('pending', 'pending_owner_review')
+             ) THEN 'parent_cancel_pending_confirm'
+            WHEN COALESCE(s.status, 'scheduled') = 'parent_cancel_pending_confirm' THEN 'scheduled'
+            ELSE COALESCE(s.status, 'scheduled')
+        END,
         COALESCE(c.display_color, ''),
         COALESCE(s.course_type_name, ''),
         COALESCE(s.is_group, 0),
@@ -29825,15 +29835,52 @@ def parent_dashboard():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT lesson_date
-    FROM schedule
-    WHERE student_name = ?
-    AND lesson_date BETWEEN ? AND ?
-    AND (status IS NULL OR status IN ('scheduled', 'present', 'late', 'parent_cancel_pending_confirm'))
-    ORDER BY lesson_date
+    SELECT
+        s.lesson_date,
+        s.lesson_time,
+        s.teacher,
+        COALESCE(s.duration, 30),
+        COALESCE(s.course_type_name, 'Lesson'),
+        CASE
+            WHEN COALESCE(s.status, 'scheduled') = 'parent_cancel_pending_confirm'
+             AND EXISTS (
+                SELECT 1 FROM lesson_change_requests lcr
+                WHERE lcr.schedule_id = s.id
+                  AND lcr.request_type = 'cancel_lesson'
+                  AND lcr.status IN ('pending', 'pending_owner_review')
+             ) THEN 'parent_cancel_pending_confirm'
+            WHEN COALESCE(s.status, 'scheduled') = 'parent_cancel_pending_confirm' THEN 'scheduled'
+            ELSE COALESCE(s.status, 'scheduled')
+        END,
+        COALESCE(NULLIF(TRIM(s.location), ''), NULLIF(TRIM(l.address), ''), '')
+    FROM schedule s
+    LEFT JOIN studio_locations l ON l.id = s.location_id
+    WHERE s.student_name = ?
+    AND s.lesson_date BETWEEN ? AND ?
+    AND (s.status IS NULL OR s.status IN ('scheduled', 'present', 'late', 'parent_cancel_pending_confirm'))
+    ORDER BY s.lesson_date, s.lesson_time
     """, (current_student, cal_start.strftime("%Y-%m-%d"), cal_end.strftime("%Y-%m-%d")))
-    lesson_dates = {row[0] for row in cursor.fetchall() if row[0]}
+    calendar_lesson_rows = cursor.fetchall()
     conn.close()
+
+    calendar_lessons_by_date = {}
+    for row in calendar_lesson_rows:
+        if not row[0]:
+            continue
+        calendar_lessons_by_date.setdefault(str(row[0]), []).append({
+            "time": format_lesson_time_range(row[1], row[3]),
+            "course": row[4] or "Lesson",
+            "teacher": row[2] or "Teacher TBD",
+            "status": hmusic_policy_status_label(row[5] or "scheduled"),
+            "location": row[6] or "Location TBD",
+        })
+    lesson_dates = set(calendar_lessons_by_date)
+    calendar_lesson_payload = json.dumps(calendar_lessons_by_date).replace("</", "<\\/")
+    initial_calendar_date = ""
+    if upcoming_lessons and str(upcoming_lessons[0][0] or "") in calendar_lessons_by_date:
+        initial_calendar_date = str(upcoming_lessons[0][0])
+    elif today in calendar_lessons_by_date:
+        initial_calendar_date = today
 
     def parent_short_date(date_text):
         try:
@@ -29848,29 +29895,16 @@ def parent_dashboard():
     next_lesson_day = "No lesson scheduled"
     next_lesson_time = ""
     next_lesson_teacher = escape(str(student[1] or "Teacher TBD"))
-    next_lesson_room = "Room TBD"
     next_lesson_address = ""
     next_lesson_course = "Lesson"
-    next_lesson_pill = ""
     if upcoming_lessons:
         next_lesson = upcoming_lessons[0]
         next_time_range = format_lesson_time_range(next_lesson[1], next_lesson[5])
         next_lesson_day = parent_short_date(next_lesson[0])
         next_lesson_time = escape(str(next_time_range or ""))
         next_lesson_teacher = escape(str(next_lesson[2] or "Teacher TBD"))
-        next_lesson_room = escape(str(next_lesson[3] or "Room TBD"))
         next_lesson_address = escape(str(next_lesson[10] or next_lesson[4] or "Address TBD"))
         next_lesson_course = escape(str(next_lesson[8] or "Lesson"))
-        if next_lesson[6] == "parent_cancel_pending_confirm":
-            next_lesson_pill = "Cancel pending confirm"
-        try:
-            lesson_date_obj = datetime.strptime(str(next_lesson[0]), "%Y-%m-%d").date()
-            delta = (lesson_date_obj - date.today()).days
-            if next_lesson[6] != "parent_cancel_pending_confirm":
-                next_lesson_pill = "Today" if delta == 0 else "Tomorrow" if delta == 1 else lesson_date_obj.strftime("%b %-d")
-        except Exception:
-            if next_lesson[6] != "parent_cancel_pending_confirm":
-                next_lesson_pill = "Next"
 
     renewal_copy = "Renew soon" if course_credit_total <= 1 else "Lessons available"
     notes_preview = lesson_note_cards
@@ -29890,8 +29924,12 @@ def parent_dashboard():
                 classes.append("today")
             if date_key in lesson_dates:
                 classes.append("has-lesson")
-            label = day_obj.day if in_month else ""
-            cal_cells += f'<div class="{" ".join(classes)}"><span>{label}</span></div>'
+            if in_month:
+                cal_cells += f'''<div class="{" ".join(classes)}" data-calendar-date="{date_key}">
+                    <button type="button" onclick="showParentCalendarDay('{date_key}', this)" aria-label="Show lessons for {date_key}">{day_obj.day}</button>
+                </div>'''
+            else:
+                cal_cells += f'<div class="{" ".join(classes)}"><span></span></div>'
     mini_calendar = f"""
         <section class="app-card mini-calendar" id="calendar">
             <div class="section-head calendar-head">
@@ -29903,6 +29941,9 @@ def parent_dashboard():
             </div>
             <div class="weekdays">{weekday_header}</div>
             <div class="month-grid">{cal_cells}</div>
+            <div class="calendar-day-detail" id="calendarDayDetail" aria-live="polite">
+                <div class="calendar-detail-empty">Select a date to view lesson details.</div>
+            </div>
         </section>
     """
 
@@ -29937,8 +29978,7 @@ def parent_dashboard():
             .kpi-sub {{ margin-top:6px; color:#75716b; font-size:11px; font-weight:700; }}
             .kpi-next .kpi-value {{ color:#111; font-size:17px; line-height:1.12; }}
             .next-card {{ margin-bottom:14px; padding:0; overflow:hidden; }}
-            .next-strip {{ display:flex; justify-content:space-between; align-items:center; background:#d9e9fb; color:#2a65ad; padding:8px 16px; font-size:12px; font-weight:900; text-transform:uppercase; }}
-            .next-strip span:last-child {{ text-transform:none; background:#c5ddf8; border-radius:999px; padding:4px 10px; }}
+            .next-strip {{ display:flex; align-items:center; background:#d9e9fb; color:#2a65ad; padding:9px 16px; font-size:12px; font-weight:900; text-transform:uppercase; }}
             .next-body {{ padding:10px 14px 12px; }}
             .next-line {{ display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:6px; }}
             .next-date {{ font-size:16px; font-weight:900; line-height:1.1; }}
@@ -29957,13 +29997,24 @@ def parent_dashboard():
             .weekdays,.month-grid {{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; }}
             .weekdays {{ color:#77736d; font-size:9px; font-weight:800; margin-bottom:1px; }}
             .weekdays div {{ padding:3px 0; }}
-            .mini-day {{ min-height:22px; display:grid; place-items:center; position:relative; color:#343434; font-size:12px; font-weight:600; }}
-            .mini-day span {{ display:grid; place-items:center; width:22px; height:22px; border-radius:7px; }}
-            .mini-day.muted span {{ color:transparent; }}
-            .mini-day.has-lesson span {{ background:#d8e7f9; color:#2a65ad; font-weight:800; }}
+            .mini-day {{ min-height:28px; display:grid; place-items:center; position:relative; color:#343434; font-size:12px; font-weight:600; }}
+            .mini-day button,.mini-day span {{ display:grid; place-items:center; width:27px; height:27px; border:0; border-radius:8px; padding:0; background:transparent; color:inherit; font:inherit; font-weight:700; cursor:pointer; }}
+            .mini-day button:hover,.mini-day button:focus-visible {{ background:#eef6ff; color:#1d65ad; outline:2px solid #bcd8f5; outline-offset:1px; }}
+            .mini-day.muted span {{ color:transparent; cursor:default; }}
+            .mini-day.has-lesson button {{ background:#d8e7f9; color:#2a65ad; font-weight:900; }}
             .mini-day.has-lesson:after {{ content:""; position:absolute; bottom:1px; left:50%; transform:translateX(-50%); width:3px; height:3px; border-radius:999px; background:#2a65ad; }}
-            .mini-day.today span {{ background:#1d65ad; color:#fff; font-weight:900; }}
+            .mini-day.today button {{ background:#1d65ad; color:#fff; font-weight:900; }}
             .mini-day.today:after {{ background:#fff; }}
+            .mini-day.selected button {{ outline:2px solid #1d65ad; outline-offset:2px; }}
+            .calendar-day-detail {{ margin-top:10px; padding-top:10px; border-top:1px solid #eee9e2; }}
+            .calendar-detail-heading {{ margin-bottom:7px; color:#34312d; font-size:11px; font-weight:900; text-transform:uppercase; }}
+            .calendar-detail-list {{ display:grid; gap:7px; }}
+            .calendar-detail-lesson {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:9px 10px; border:1px solid #e2ded7; border-radius:9px; background:#faf9f7; }}
+            .calendar-detail-time {{ color:#151515; font-size:12px; font-weight:900; }}
+            .calendar-detail-meta,.calendar-detail-location {{ margin-top:2px; color:#716d67; font-size:10px; font-weight:750; line-height:1.3; }}
+            .calendar-detail-status {{ align-self:start; border-radius:999px; padding:4px 7px; background:#eef6ff; color:#1d65ad; font-size:9px; font-weight:900; white-space:nowrap; }}
+            .calendar-detail-status.pending {{ background:#fff0d5; color:#8a5700; }}
+            .calendar-detail-empty {{ color:#77736d; font-size:10px; font-weight:750; }}
             .notes-card {{ margin-bottom:14px; padding:0; overflow:hidden; }}
             .notes-card .section-head {{ padding:14px 16px; margin:0; border-bottom:1px solid #ddd9d2; }}
             .notes-list {{ display:grid; gap:0; }}
@@ -30007,12 +30058,11 @@ def parent_dashboard():
                 <section class="app-card kpi-next"><div class="kpi-label">Next lesson</div><div class="kpi-value">{next_lesson_day}</div><div class="kpi-sub">{next_lesson_time or next_lesson_teacher}</div></section>
             </div>
             <section class="app-card next-card">
-                <div class="next-strip"><span>Next Lesson</span><span>{escape(next_lesson_pill or 'Next')}</span></div>
+                <div class="next-strip"><span>Next Lesson</span></div>
                 <div class="next-body">
                     <div class="next-line"><div class="next-date">{next_lesson_day}</div><div class="next-time">{next_lesson_time}</div></div>
                     <div class="next-meta"><span>Course: {next_lesson_course}</span><span>Teacher: {next_lesson_teacher}</span></div>
                     <div class="next-address">Address: {next_lesson_address}</div>
-                    <div class="next-address">Room: {next_lesson_room}</div>
                 </div>
             </section>
             {mini_calendar}
@@ -30047,6 +30097,62 @@ def parent_dashboard():
             </details>
         </div>
         {parent_bottom_nav("home")}
+        <script>
+            const parentCalendarLessons = {calendar_lesson_payload};
+            function showParentCalendarDay(dateKey, button) {{
+                document.querySelectorAll('.mini-day.selected').forEach(day => day.classList.remove('selected'));
+                const dayCell = button ? button.closest('.mini-day') : document.querySelector(`[data-calendar-date="${{dateKey}}"]`);
+                if (dayCell) dayCell.classList.add('selected');
+
+                const detail = document.getElementById('calendarDayDetail');
+                const lessons = parentCalendarLessons[dateKey] || [];
+                detail.replaceChildren();
+
+                const heading = document.createElement('div');
+                heading.className = 'calendar-detail-heading';
+                const parsedDate = new Date(dateKey + 'T12:00:00');
+                heading.textContent = parsedDate.toLocaleDateString(undefined, {{weekday:'long', month:'short', day:'numeric'}});
+                detail.appendChild(heading);
+
+                if (!lessons.length) {{
+                    const empty = document.createElement('div');
+                    empty.className = 'calendar-detail-empty';
+                    empty.textContent = 'No lessons scheduled.';
+                    detail.appendChild(empty);
+                    return;
+                }}
+
+                const list = document.createElement('div');
+                list.className = 'calendar-detail-list';
+                lessons.forEach(lesson => {{
+                    const row = document.createElement('div');
+                    row.className = 'calendar-detail-lesson';
+                    const copy = document.createElement('div');
+                    const time = document.createElement('div');
+                    time.className = 'calendar-detail-time';
+                    time.textContent = lesson.time || 'Time TBD';
+                    const meta = document.createElement('div');
+                    meta.className = 'calendar-detail-meta';
+                    meta.textContent = (lesson.course || 'Lesson') + ' · ' + (lesson.teacher || 'Teacher TBD');
+                    const location = document.createElement('div');
+                    location.className = 'calendar-detail-location';
+                    location.textContent = lesson.location || 'Location TBD';
+                    copy.append(time, meta, location);
+                    const status = document.createElement('span');
+                    status.className = 'calendar-detail-status' + (lesson.status === 'Cancel pending confirm' ? ' pending' : '');
+                    status.textContent = lesson.status || 'Scheduled';
+                    row.append(copy, status);
+                    list.appendChild(row);
+                }});
+                detail.appendChild(list);
+            }}
+            window.addEventListener('load', function() {{
+                const initialDate = {json.dumps(initial_calendar_date)};
+                if (!initialDate) return;
+                const initialButton = document.querySelector(`[data-calendar-date="${{initialDate}}"] button`);
+                if (initialButton) showParentCalendarDay(initialDate, initialButton);
+            }});
+        </script>
     </body>
     </html>
     """
@@ -30577,7 +30683,18 @@ def parent_schedule():
     cursor = conn.cursor()
     cursor.execute(f"""
     SELECT s.id, s.student_name, s.lesson_date, s.lesson_time, s.teacher, s.classroom,
-           COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''), COALESCE(s.status, 'scheduled'),
+           COALESCE(s.duration, 30), COALESCE(s.course_type_name, ''),
+           CASE
+               WHEN COALESCE(s.status, 'scheduled') = 'parent_cancel_pending_confirm'
+                AND EXISTS (
+                   SELECT 1 FROM lesson_change_requests lcr
+                   WHERE lcr.schedule_id = s.id
+                     AND lcr.request_type = 'cancel_lesson'
+                     AND lcr.status IN ('pending', 'pending_owner_review')
+                ) THEN 'parent_cancel_pending_confirm'
+               WHEN COALESCE(s.status, 'scheduled') = 'parent_cancel_pending_confirm' THEN 'scheduled'
+               ELSE COALESCE(s.status, 'scheduled')
+           END,
            COALESCE(NULLIF(TRIM(s.location), ''), NULLIF(TRIM(l.address), ''), '')
     FROM schedule s
     LEFT JOIN studio_locations l ON l.id = s.location_id
