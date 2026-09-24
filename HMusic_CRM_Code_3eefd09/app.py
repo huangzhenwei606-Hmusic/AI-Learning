@@ -30623,12 +30623,15 @@ def parent_schedule():
         next_cancel_pending = next_lesson[8] == "parent_cancel_pending_confirm"
         if next_cancel_pending:
             next_actions = f'''
-                <div class="cancel-pending-actions">
-                    <div class="cancel-pending-state">Cancel pending confirm</div>
+                <div class="pending-action-panel">
+                    <div class="pending-copy">
+                        <span class="pending-badge">Cancel pending confirm</span>
+                        <span class="pending-helper">This lesson remains scheduled until the owner reviews it.</span>
+                    </div>
                     <form class="undo-cancel-form" method="POST" action="/parent_cancel">
                         <input type="hidden" name="schedule_id" value="{next_lesson[0]}">
                         <input type="hidden" name="action" value="undo">
-                        <button class="undo-cancel-button" type="submit">Undo cancellation</button>
+                        <button class="undo-cancel-button" type="submit">Undo cancellation request</button>
                     </form>
                 </div>
             '''
@@ -30658,40 +30661,49 @@ def parent_schedule():
         <section class="app-card"><span class="pill warn">No upcoming lessons</span><h3 style="margin-top:10px;">No scheduled lessons found.</h3><p class="muted">Use book or trial request if you need to add a lesson.</p></section>
         """
 
+    def parent_schedule_date_label(raw_date):
+        try:
+            parsed = datetime.strptime(str(raw_date), "%Y-%m-%d")
+            return f"{parsed.strftime('%a, %b')} {parsed.day}"
+        except (TypeError, ValueError):
+            return str(raw_date or "Date TBD")
+
     upcoming_rows = ""
-    for lesson in upcoming:
+    remaining_upcoming = upcoming[1:] if next_lesson else upcoming
+    for lesson in remaining_upcoming:
         cancel_pending = lesson[8] == "parent_cancel_pending_confirm"
         if cancel_pending:
             lesson_actions = f'''
-                <span class="cancel-pending-state compact">Cancel pending confirm</span>
+                <span class="pending-badge">Cancel pending</span>
                 <form class="undo-cancel-form" method="POST" action="/parent_cancel">
                     <input type="hidden" name="schedule_id" value="{lesson[0]}">
                     <input type="hidden" name="action" value="undo">
-                    <button class="undo-cancel-button compact" type="submit">Undo cancellation</button>
+                    <button class="undo-cancel-button compact" type="submit">Undo request</button>
                 </form>
             '''
         else:
             lesson_actions = f"""
-                <a href="/parent_reschedule?schedule_id={lesson[0]}">Reschedule</a>
+                <a class="lesson-action-button" href="/parent_reschedule?schedule_id={lesson[0]}">Reschedule</a>
                 <form class="mini-cancel-form" method="POST" action="/parent_cancel">
                     <input type="hidden" name="schedule_id" value="{lesson[0]}">
-                    <button class="danger-link" type="submit">Cancel class</button>
+                    <button class="lesson-action-button danger-link" type="submit">Cancel class</button>
                 </form>
             """
         upcoming_rows += f"""
         <div class="schedule-row">
-            <div>
-                <b>{escape(str(lesson[2]))} · {escape(str(lesson[3] or 'Time TBD'))}</b>
-                <p>{escape(str(lesson[1]))} · {escape(str(lesson[7] or 'Lesson'))} · {escape(str(lesson[4] or 'Teacher TBD'))}</p>
-                <small>{escape(str(lesson[9] or ''))}</small>
+            <div class="lesson-info">
+                <div class="lesson-datetime"><span>{escape(parent_schedule_date_label(lesson[2]))}</span><span>{escape(str(lesson[3] or 'Time TBD'))}</span></div>
+                <strong class="lesson-student">{escape(str(lesson[1]))}</strong>
+                <div class="lesson-detail">{escape(str(lesson[7] or 'Lesson'))}<span>·</span>{escape(str(lesson[4] or 'Teacher TBD'))}</div>
+                <div class="lesson-location">{escape(str(lesson[9] or 'Location TBD'))}</div>
             </div>
-            <div class="mini-actions">
+            <div class="mini-actions {'pending' if cancel_pending else ''}">
                 {lesson_actions}
             </div>
         </div>
         """
     if not upcoming_rows:
-        upcoming_rows = "<p class='muted'>No future scheduled lessons yet.</p>"
+        upcoming_rows = "<p class='muted'>No additional scheduled lessons yet.</p>"
 
     student_scope_options = '<option value="All linked students">All linked students</option>' + "".join(
         f'<option value="{escape(name)}" {"selected" if name == current_student else ""}>{escape(name)}</option>'
@@ -30729,46 +30741,60 @@ def parent_schedule():
         for item in recent_items[:8]
     ) or "<p class='muted'>No schedule requests yet.</p>"
 
-    sent = "<section class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and follow up before anything changes on the calendar.</p></section>" if request.args.get("sent") == "1" else ""
-    cancel_pending_notice = "<section class='app-card'><span class='pill warn'>Cancel pending confirm</span><p>The class stays on the schedule until the owner confirms the cancellation.</p></section>" if request.args.get("cancel") == "pending" else ""
-    cancel_withdrawn_notice = "<section class='app-card'><span class='pill good'>Cancellation withdrawn</span><p>The lesson remains scheduled.</p></section>" if request.args.get("cancel") == "withdrawn" else ""
-    cancel_already_reviewed_notice = "<section class='app-card'><span class='pill warn'>Cancellation already reviewed</span><p>This request can no longer be withdrawn.</p></section>" if request.args.get("cancel") == "already_reviewed" else ""
-    notes_required = "<section class='app-card'><span class='pill warn'>Notes required</span><p>Please describe what needs to change.</p></section>" if request.args.get("notes_required") == "1" else ""
+    sent = "<div class='schedule-feedback good'><b>Request sent</b><span>Owner review is required before the schedule changes.</span></div>" if request.args.get("sent") == "1" else ""
+    cancel_pending_notice = "<div class='schedule-feedback pending'><b>Cancellation requested</b><span>The lesson remains scheduled while owner confirmation is pending.</span></div>" if request.args.get("cancel") == "pending" else ""
+    cancel_withdrawn_notice = "<div class='schedule-feedback good'><b>Cancellation withdrawn</b><span>The lesson remains scheduled.</span></div>" if request.args.get("cancel") == "withdrawn" else ""
+    cancel_already_reviewed_notice = "<div class='schedule-feedback pending'><b>Cancellation already reviewed</b><span>This request can no longer be withdrawn.</span></div>" if request.args.get("cancel") == "already_reviewed" else ""
+    notes_required = "<div class='schedule-feedback pending'><b>Notes required</b><span>Please describe what needs to change.</span></div>" if request.args.get("notes_required") == "1" else ""
 
     body = f"""
     <style>
-        .schedule-strip {{ display:flex; justify-content:space-between; gap:10px; align-items:center; background:#d9e9fb; color:#2467b2; padding:9px 13px; font-size:12px; font-weight:900; text-transform:uppercase; }}
+        .schedule-feedback {{ display:grid; grid-template-columns:max-content 1fr; gap:8px 12px; align-items:center; margin:10px 0 14px; padding:11px 13px; border:1px solid #d8d4cd; border-radius:10px; background:#fff; }}
+        .schedule-feedback b {{ font-size:12px; line-height:1.2; }}
+        .schedule-feedback span {{ color:#625f5a; font-size:11px; font-weight:700; line-height:1.35; }}
+        .schedule-feedback.pending {{ border-color:#f0cf8f; background:#fffaf0; }}
+        .schedule-feedback.pending b {{ color:#8a5700; }}
+        .schedule-feedback.good {{ border-color:#bfe2cc; background:#f3fbf6; }}
+        .schedule-feedback.good b {{ color:#166534; }}
+        .schedule-strip {{ display:flex; justify-content:space-between; gap:10px; align-items:center; background:#d9e9fb; color:#2467b2; padding:10px 14px; font-size:12px; font-weight:900; text-transform:uppercase; }}
+        .schedule-strip span {{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
         .schedule-next {{ padding:0; overflow:hidden; }}
-        .schedule-next-body {{ padding:13px; }}
-        .schedule-time {{ font-size:17px; font-weight:900; margin-bottom:4px; }}
-        .schedule-meta {{ color:#5f5b55; font-size:13px; font-weight:800; margin-bottom:6px; }}
-        .schedule-location {{ color:#716d67; font-size:11px; font-weight:750; margin-bottom:11px; }}
+        .schedule-next-body {{ padding:16px; }}
+        .schedule-time {{ font-size:22px; line-height:1; font-weight:900; margin-bottom:7px; }}
+        .schedule-meta {{ color:#403e3a; font-size:14px; font-weight:850; margin-bottom:5px; }}
+        .schedule-location {{ color:#716d67; font-size:11px; font-weight:750; margin-bottom:14px; }}
         .primary-schedule-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
-        .schedule-action {{ min-height:76px; border:1px solid #ddd9d2; border-radius:14px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; }}
-        .schedule-action strong {{ font-size:16px; line-height:1.08; }}
+        .schedule-action {{ min-height:72px; border:1px solid #ddd9d2; border-radius:10px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; }}
+        .schedule-action strong {{ font-size:14px; line-height:1.15; }}
         .schedule-action span {{ font-size:11px; line-height:1.24; color:#716d67; font-weight:750; }}
         .schedule-action.cancel {{ color:#b42318; background:#fff7f5; border-color:#ffc9c1; }}
         .schedule-action.reschedule {{ color:#1d65ad; background:#eef6ff; border-color:#bcd8f5; }}
         .schedule-cancel-form,.mini-cancel-form {{ margin:0; padding:0; border:0; background:transparent; }}
         .schedule-cancel-form .schedule-action {{ width:100%; text-align:left; font:inherit; cursor:pointer; }}
-        .cancel-pending-state {{ display:flex; align-items:center; justify-content:center; min-height:58px; border:1px solid #f2c879; border-radius:12px; background:#fff8e8; color:#8a5700; font-size:13px; font-weight:900; }}
-        .cancel-pending-state.compact {{ min-height:0; padding:7px 9px; border-radius:999px; font-size:11px; white-space:nowrap; }}
-        .cancel-pending-actions {{ display:grid; grid-template-columns:1fr auto; gap:9px; align-items:stretch; }}
+        .pending-action-panel {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; padding:11px; border:1px solid #f0cf8f; border-radius:10px; background:#fffaf0; }}
+        .pending-copy {{ min-width:0; display:grid; gap:5px; justify-items:start; }}
+        .pending-badge {{ display:inline-flex; align-items:center; width:max-content; max-width:100%; border-radius:999px; padding:5px 8px; background:#fff0d5; color:#8a5700; font-size:10px; line-height:1; font-weight:900; white-space:nowrap; }}
+        .pending-helper {{ color:#716d67; font-size:10px; font-weight:700; line-height:1.3; }}
         .undo-cancel-form {{ margin:0; padding:0; border:0; background:transparent; }}
-        .undo-cancel-button {{ height:100%; border:1px solid #bcd8f5; border-radius:12px; background:#eef6ff; color:#1d65ad; padding:10px 13px; font:inherit; font-size:12px; font-weight:900; white-space:nowrap; cursor:pointer; }}
-        .undo-cancel-button.compact {{ border-radius:999px; padding:6px 8px; font-size:11px; }}
+        .undo-cancel-button {{ min-height:38px; border:1px solid #a9cff4; border-radius:8px; background:#eef6ff; color:#1d65ad; padding:8px 11px; font:inherit; font-size:11px; font-weight:900; white-space:nowrap; cursor:pointer; }}
+        .undo-cancel-button.compact {{ min-height:34px; padding:7px 10px; }}
         .policy-mini {{ display:grid; gap:0; padding:9px 12px; }}
         .policy-mini div {{ display:grid; grid-template-columns:66px 1fr; gap:7px; padding:6px 0; border-top:1px solid #eee9e2; font-size:11px; font-weight:700; color:#716d67; line-height:1.22; }}
         .policy-mini div:first-child {{ border-top:0; }}
         .policy-mini b {{ color:#151515; }}
-        .schedule-row {{ display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; padding:11px 0; border-top:1px solid #eee9e2; }}
+        .schedule-row {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:center; padding:14px 0; border-top:1px solid #e8e4dd; }}
         .schedule-row:first-child {{ border-top:0; }}
-        .schedule-row b {{ display:block; font-size:13px; }}
-        .schedule-row p {{ margin:3px 0 1px; color:#716d67; font-size:11px; font-weight:750; }}
-        .schedule-row small {{ color:#8a857d; font-size:10px; font-weight:750; }}
-        .mini-actions {{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }}
-        .mini-actions a {{ border:1px solid #ddd9d2; color:#1d65ad; background:#fff; border-radius:999px; padding:6px 8px; font-size:11px; font-weight:900; white-space:nowrap; }}
-        .mini-actions .danger-link {{ color:#b42318; border:1px solid #ffd7d2; background:#fffafa; border-radius:999px; padding:6px 8px; font:inherit; font-size:11px; font-weight:900; white-space:nowrap; cursor:pointer; }}
+        .lesson-info {{ min-width:0; }}
+        .lesson-datetime {{ display:flex; align-items:center; gap:7px; margin-bottom:5px; color:#171717; font-size:13px; font-weight:900; white-space:nowrap; }}
+        .lesson-datetime span + span:before {{ content:"·"; margin-right:7px; color:#9b968e; }}
+        .lesson-student {{ display:block; margin-bottom:3px; color:#35332f; font-size:12px; line-height:1.25; }}
+        .lesson-detail {{ display:flex; flex-wrap:wrap; gap:4px; color:#716d67; font-size:11px; font-weight:750; line-height:1.3; }}
+        .lesson-location {{ margin-top:3px; color:#8a857d; font-size:10px; font-weight:750; line-height:1.3; }}
+        .mini-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:7px; min-width:190px; }}
+        .mini-actions.pending {{ display:flex; align-items:center; min-width:0; }}
+        .lesson-action-button {{ display:flex; align-items:center; justify-content:center; min-height:36px; border:1px solid #ccd9e6; color:#1d65ad; background:#fff; border-radius:8px; padding:7px 10px; font-size:11px; font-weight:900; white-space:nowrap; }}
+        .mini-cancel-form .lesson-action-button {{ width:100%; }}
+        .mini-actions .danger-link {{ color:#b42318; border-color:#f2c7c1; background:#fffafa; font:inherit; font-size:11px; font-weight:900; cursor:pointer; }}
         .book-grid {{ display:grid; gap:9px; }}
         .book-card {{ display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; border:1px solid #ddd9d2; background:#fff; border-radius:14px; padding:13px; }}
         .book-card b {{ display:block; font-size:14px; margin-bottom:3px; }}
@@ -30776,11 +30802,16 @@ def parent_schedule():
         .book-card em {{ font-style:normal; color:#1d65ad; font-size:18px; font-weight:900; }}
         .book-card.trial {{ background:#f7fbff; border-color:#bcd8f5; }}
         .note-panel {{ border-color:#bcd8f5; background:#f8fbff; }}
-        @media (max-width:430px) {{
+        @media (max-width:620px) {{
+            .schedule-feedback {{ grid-template-columns:1fr; gap:3px; }}
             .primary-schedule-actions {{ grid-template-columns:1fr; }}
-            .cancel-pending-actions {{ grid-template-columns:1fr; }}
-            .schedule-row {{ grid-template-columns:1fr; }}
-            .mini-actions {{ justify-content:flex-start; }}
+            .pending-action-panel {{ grid-template-columns:1fr; }}
+            .pending-action-panel .undo-cancel-button {{ width:100%; }}
+            .schedule-row {{ grid-template-columns:1fr; gap:10px; }}
+            .mini-actions {{ width:100%; min-width:0; }}
+            .mini-actions.pending {{ display:grid; grid-template-columns:1fr 1fr; align-items:center; }}
+            .mini-actions.pending .pending-badge {{ justify-content:center; width:100%; min-height:34px; border-radius:8px; }}
+            .mini-actions.pending .undo-cancel-button {{ width:100%; }}
         }}
     </style>
     <h1>Schedule</h1>
