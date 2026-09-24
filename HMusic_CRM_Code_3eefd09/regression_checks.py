@@ -99,6 +99,7 @@ CHECKS = {
     "parent schedule upcoming location": "lesson[9]",
     "owner calendar left-aligned time chip": '<span class="ev-time"><span class="calendar-time-chip">{time_range}</span></span>',
     "owner calendar inline status select": 'class="calendar-status-select {dot_class}"',
+    "owner pending cancel option only for pending lesson": "current === 'parent_cancel_pending_confirm'",
     "teacher mobile bootstrap api": '"/api/teacher/bootstrap"',
     "teacher mobile bootstrap csrf token": '"csrf_token": hmusic_csrf_token()',
     "teacher mobile device token api": '"/api/teacher/device_token"',

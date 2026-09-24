@@ -9973,7 +9973,6 @@ def calendar():
     }}
 
     const CALENDAR_STATUS_OPTIONS = [
-      ['parent_cancel_pending_confirm', 'Cancel pending confirm'],
       ['scheduled', 'Scheduled'],
       ['present', 'Present'],
       ['no_show', 'No Show'],
@@ -9985,7 +9984,10 @@ def calendar():
     function expandCalendarStatus(select) {{
       if (select.dataset.expanded === '1') return;
       const current = select.dataset.currentStatus || select.value || 'scheduled';
-      select.replaceChildren(...CALENDAR_STATUS_OPTIONS.map(([value, label]) => {{
+      const options = current === 'parent_cancel_pending_confirm'
+        ? [['parent_cancel_pending_confirm', 'Cancel pending confirm'], ...CALENDAR_STATUS_OPTIONS]
+        : CALENDAR_STATUS_OPTIONS;
+      select.replaceChildren(...options.map(([value, label]) => {{
         const option = document.createElement('option');
         option.value = value;
         option.textContent = label;
