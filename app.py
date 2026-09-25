@@ -44887,3 +44887,10 @@ def add_open_slot_quick():
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# Child OS service API is isolated from the parent web session and requires
+# HMUSIC_CHILD_OS_API_TOKEN on every request.
+from child_os_api import register_child_os_api
+
+register_child_os_api(app, HMUSIC_DB_PATH)
