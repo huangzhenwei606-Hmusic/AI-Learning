@@ -35,23 +35,25 @@ def register_child_os_api(app, db_path, api_token=None):
 
     def ensure_schema():
         conn = connect()
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS child_os_api_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            action TEXT NOT NULL,
-            parent_id INTEGER,
-            student_name TEXT,
-            status_code INTEGER NOT NULL,
-            idempotency_key TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS child_os_api_idempotency (
-            idempotency_key TEXT PRIMARY KEY,
-            action TEXT NOT NULL,
-            response_json TEXT NOT NULL,
-            status_code INTEGER NOT NULL,
-            created_at TEXT NOT NULL
-        );
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS child_os_api_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                parent_id INTEGER,
+                student_name TEXT,
+                status_code INTEGER NOT NULL,
+                idempotency_key TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS child_os_api_idempotency (
+                idempotency_key TEXT PRIMARY KEY,
+                action TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
         """)
         conn.commit()
         conn.close()
