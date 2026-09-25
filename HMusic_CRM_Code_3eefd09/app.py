@@ -304,6 +304,8 @@ def hmusic_csrf_token():
 
 
 def hmusic_validate_csrf():
+    if request.path.startswith("/api/child-os/v1/"):
+        return True
     csrf_exempt_paths = {
         "/owner_login",
         "/teacher_login",
