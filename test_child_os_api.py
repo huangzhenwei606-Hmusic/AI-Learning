@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from flask import Flask
 
@@ -72,7 +73,52 @@ class ChildOsApiTest(unittest.TestCase):
             self.assertFalse(result.get_json()["executed"])
             self.assertEqual(result.get_json()["status"], "requires_parent_confirmation")
 
+    def test_schema_setup_does_not_require_executescript(self):
+        handle, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        real_connect = sqlite3.connect
+
+        class ExecuteOnlyConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            @property
+            def row_factory(self):
+                return self.connection.row_factory
+
+            @row_factory.setter
+            def row_factory(self, value):
+                self.connection.row_factory = value
+
+            def execute(self, *args, **kwargs):
+                return self.connection.execute(*args, **kwargs)
+
+            def commit(self):
+                return self.connection.commit()
+
+            def close(self):
+                return self.connection.close()
+
+        try:
+            with patch(
+                "child_os_api.sqlite3.connect",
+                side_effect=lambda *args, **kwargs: ExecuteOnlyConnection(real_connect(*args, **kwargs)),
+            ):
+                app = Flask("execute-only-schema")
+                register_child_os_api(app, db_path, api_token="test-token")
+
+            conn = real_connect(db_path)
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'child_os_api_%'"
+                )
+            }
+            conn.close()
+            self.assertEqual(tables, {"child_os_api_audit", "child_os_api_idempotency"})
+        finally:
+            os.unlink(db_path)
+
 
 if __name__ == "__main__":
     unittest.main()
-
