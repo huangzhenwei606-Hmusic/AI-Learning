@@ -15356,16 +15356,22 @@ def hmusic_adjust_waiver(cursor, holder, delta):
     if holder["table"] == "enrollments":
         cursor.execute("""
         UPDATE enrollments
-        SET policy_waiver_used = MAX(COALESCE(policy_waiver_used, 0) + ?, 0),
+        SET policy_waiver_used = CASE
+                WHEN COALESCE(policy_waiver_used, 0) + ? < 0 THEN 0
+                ELSE COALESCE(policy_waiver_used, 0) + ?
+            END,
             updated_at = ?
         WHERE id = ?
-        """, (delta, datetime.now().strftime("%Y-%m-%d %H:%M"), holder["id"]))
+        """, (delta, delta, datetime.now().strftime("%Y-%m-%d %H:%M"), holder["id"]))
     else:
         cursor.execute("""
         UPDATE students
-        SET free_cancel_used = MAX(COALESCE(free_cancel_used, 0) + ?, 0)
+        SET free_cancel_used = CASE
+                WHEN COALESCE(free_cancel_used, 0) + ? < 0 THEN 0
+                ELSE COALESCE(free_cancel_used, 0) + ?
+            END
         WHERE name = ?
-        """, (delta, holder["id"]))
+        """, (delta, delta, holder["id"]))
 
 
 def hmusic_pending_fee_total(cursor, student_name):

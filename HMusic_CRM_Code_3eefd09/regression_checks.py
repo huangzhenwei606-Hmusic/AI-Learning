@@ -70,6 +70,8 @@ CHECKS = {
     "teacher status ajax endpoint": "wants_json = \"application/json\"",
     "teacher status repaint": "repaintTeacherScheduleEvent",
     "teacher status form binding": "bindTeacherStatusForms();",
+    "portable enrollment waiver floor": "WHEN COALESCE(policy_waiver_used, 0) + ? < 0 THEN 0",
+    "portable student waiver floor": "WHEN COALESCE(free_cancel_used, 0) + ? < 0 THEN 0",
     "teacher inline add schedule modal": "teacherAddOverlay",
     "teacher calendar date opens add modal": "teacherOpenAddSchedule(dateStr)",
     "teacher inline add schedule form": "teacherInlineAddScheduleForm",
@@ -203,6 +205,8 @@ FORBIDDEN = {
     "teacher settled payroll": "Settled Payroll",
     "teacher projected payroll": "Projected Total",
     "teacher lesson rate row": "<span>Lesson Rate</span>",
+    "sqlite-only enrollment waiver max": "policy_waiver_used = MAX(COALESCE(policy_waiver_used, 0) + ?, 0)",
+    "sqlite-only student waiver max": "free_cancel_used = MAX(COALESCE(free_cancel_used, 0) + ?, 0)",
     "teacher group credit fallback": "('Credit: ' + (item.credit_units || 1))",
 }
 
