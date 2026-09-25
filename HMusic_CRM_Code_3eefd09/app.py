@@ -2174,11 +2174,12 @@ def teacher_dashboard_records_content(teacher_name):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT DISTINCT student_name
+    SELECT student_name, MIN(lesson_time) AS first_lesson_time
     FROM schedule
     WHERE LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
     AND lesson_date = ?
-    ORDER BY lesson_time, student_name
+    GROUP BY student_name
+    ORDER BY first_lesson_time, student_name
     """, (teacher_name, selected_date))
     day_students = [row[0] for row in cursor.fetchall() if row[0]]
     selected_student = request.values.get("student_name") or (day_students[0] if day_students else "")

@@ -73,6 +73,7 @@ CHECKS = {
     "teacher mobile calendar panel": "def teacher_mobile_calendar_panel",
     "teacher mobile calendar date selection": "function teacherSelectMobileDate(dateStr)",
     "teacher calendar hides piano equipment": 'r"\\b(?:grand|upright)\\s+piano\\b"',
+    "teacher records postgres-safe student ordering": "GROUP BY student_name\n    ORDER BY first_lesson_time, student_name",
     "portable enrollment waiver floor": "WHEN COALESCE(policy_waiver_used, 0) + ? < 0 THEN 0",
     "portable student waiver floor": "WHEN COALESCE(free_cancel_used, 0) + ? < 0 THEN 0",
     "teacher inline add schedule modal": "teacherAddOverlay",
