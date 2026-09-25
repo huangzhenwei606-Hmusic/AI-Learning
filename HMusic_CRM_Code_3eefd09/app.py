@@ -13844,7 +13844,12 @@ def teacher_dashboard():
 
     def teacher_location_room_label(location_name, room_name):
         location_name = str(location_name or "").strip()
-        room_name = str(room_name or "").strip()
+        room_name = re.sub(
+            r"\b(?:grand|upright)\s+piano\b",
+            "",
+            str(room_name or "").strip(),
+            flags=re.IGNORECASE,
+        ).strip(" /-")
         location_code = location_name.split()[0] if location_name else ""
         if location_code and room_name:
             return f"{location_code}/{room_name}"
@@ -13956,6 +13961,7 @@ def teacher_dashboard():
     .teacher-multi-bar select,.teacher-multi-bar button{height:36px;border:1px solid #D9DEE8;border-radius:8px;background:#fff;color:#172033;padding:0 10px;font:inherit;font-weight:800}
     .teacher-multi-apply{background:var(--blue)!important;border-color:var(--blue)!important;color:#fff!important}
     .teacher-multi-clear{color:#667085!important}
+    .teacher-mobile-calendar{display:none}
     .calendar-day.drop-active{outline:2px dashed var(--blue);outline-offset:-3px}
     .calendar-day-head strong{cursor:pointer;border-radius:999px;padding:1px 6px}
     .calendar-day-head strong:hover{background:rgba(24,95,165,.14)}
@@ -13998,6 +14004,35 @@ def teacher_dashboard():
     .panel-section{padding:18px 28px;border-bottom:1px solid #E5E7EB;background:#fff}.panel-section h3{font-size:13px;text-transform:uppercase;color:#667085;margin:0 0 12px;font-weight:900;letter-spacing:0}.att-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.att-btn{border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;min-height:46px;font:inherit;font-weight:900;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}.att-btn:hover{background:#F7FAFD;border-color:#C8D3E2}.att-btn.active{color:#fff;border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,.12)}.att-btn[data-status="present"].active{background:var(--s-present)}.att-btn[data-status="last_min_cancel"].active{background:var(--s-cancelled)}.att-btn[data-status="no_show"].active{background:var(--s-noshow)}.att-btn[data-status="excused_24h"].active{background:var(--s-excused)}.panel-field{width:100%;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;padding:11px 12px;font:inherit;font-size:15px;box-shadow:0 1px 2px rgba(15,23,42,.03)}.panel-field:focus{outline:2px solid rgba(24,95,165,.18);border-color:var(--blue)}.panel-field::placeholder{color:#98A2B3}textarea.panel-field{min-height:86px;resize:vertical;line-height:1.45}.panel-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-inline-link{margin-top:10px;border:0;background:transparent;color:var(--blue);font:inherit;font-size:13px;font-weight:900;padding:0;cursor:pointer}.teacher-duration-request{display:none;margin-top:10px;padding:12px;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC}.teacher-duration-request.show{display:block}.teacher-group-panel{display:none}.teacher-group-panel.show{display:block}.teacher-group-name{font-size:20px;font-weight:900}.teacher-group-list{display:grid;gap:8px;margin-top:12px}.teacher-group-row{display:grid;grid-template-columns:minmax(0,1fr) 128px 36px;gap:8px;align-items:center;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC;padding:10px}.teacher-group-child{min-width:0}.teacher-group-child b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#172033}.teacher-group-child small{display:block;color:#667085;font-weight:800;margin-top:2px}.teacher-group-row select{min-height:40px}.teacher-group-remove{width:36px;height:36px;border:1px solid #F2C7C7;border-radius:8px;background:#fff;color:#B42318;cursor:pointer;font-size:17px}.teacher-group-remove:hover{background:#FEF3F2}.teacher-group-add{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:10px}.teacher-group-add button{min-width:44px;border:0;border-radius:8px;background:var(--blue);color:#fff;font:inherit;font-weight:900;padding:0 13px;cursor:pointer}.teacher-group-help{display:block;margin-top:8px;color:#667085;font-size:11px;line-height:1.4}.panel-scope-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.panel-scope-option{display:flex;gap:9px;align-items:flex-start;border:1px solid #D9DEE8;border-radius:8px;background:#fff;padding:10px 11px;cursor:pointer}.panel-scope-option.active{border-color:#B8CCE3;background:var(--blue-bg);box-shadow:inset 3px 0 0 var(--blue)}.panel-scope-option input{margin-top:2px;accent-color:var(--blue)}.panel-scope-option span{display:block;line-height:1.25}.panel-scope-option b{display:block;color:#172033;font-size:13px}.panel-scope-option small{display:block;color:#667085;font-size:11px;margin-top:3px}.panel-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel-toggle strong{color:#172033}.panel-toggle small{color:#667085}.panel-toggle input{width:42px;height:24px;accent-color:var(--blue)}.panel-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel-action{min-height:54px;border:1px solid #D9DEE8;background:#fff;color:#172033;border-radius:8px;font:inherit;font-weight:900;cursor:pointer}.panel-action:hover{background:var(--blue-bg);border-color:#B8CCE3;color:var(--blue)}.owner-strip{margin-top:12px;border:1px solid #D7E8C4;border-radius:8px;padding:10px 12px;color:#27500A;background:#EAF3DE;font-size:12px;line-height:1.45}.panel-footer{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px 28px;border-top:1px solid #E5E7EB;background:#fff;box-shadow:0 -8px 18px rgba(15,23,42,.06)}.panel-footer button{height:48px;border-radius:8px;font:inherit;font-weight:900;font-size:16px;cursor:pointer}.panel-footer button:disabled{opacity:.65;cursor:not-allowed}.panel-discard{background:#fff;color:#172033;border:1px solid #D9DEE8}.panel-discard:hover{background:#F3F6FA}.panel-save{background:var(--blue);color:#fff;border:0}.panel-save:hover{background:#0C447C}.panel-save:disabled:hover{background:var(--blue)}.panel-toast{display:none;margin:0 28px 14px;padding:10px 12px;border-radius:8px;background:#EAF3DE;color:#27500A;font-weight:800;border:1px solid #D7E8C4}.panel-toast.show{display:block}
     .reminder-pill{display:inline-flex;border-radius:999px;background:#EAF3DE;color:#27500A;padding:5px 9px;font-size:11px;font-weight:900;margin-top:8px}.reminder-pill.off{background:#FEE2E2;color:#991B1B}
     @media(max-width:900px){
+      .teacher-desktop-calendar{display:none}
+      .teacher-mobile-calendar{display:block;margin:0 -16px;background:#fff;border-top:1px solid var(--td-line);border-bottom:1px solid var(--td-line)}
+      .teacher-mobile-period{display:grid;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;padding:10px 12px 4px}
+      .teacher-mobile-period span{text-align:center;color:#172033;font-size:15px;font-weight:900}
+      .teacher-mobile-period a{display:grid;place-items:center;width:40px;height:40px;border:0;border-radius:8px;color:#172033;background:transparent;text-decoration:none;font-size:20px}
+      .teacher-mobile-period a:last-child{justify-self:end}
+      .teacher-mobile-weekdays,.teacher-mobile-date-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));padding:0 12px}
+      .teacher-mobile-weekdays span{padding:6px 0;color:#667085;text-align:center;font-size:11px;font-weight:800}
+      .teacher-mobile-date{position:relative;display:grid;place-items:center;min-width:0;min-height:44px;border:0;border-radius:8px;background:transparent;color:#172033;font:inherit;font-size:13px;font-weight:800}
+      .teacher-mobile-date.outside{color:#98A2B3;opacity:.5}
+      .teacher-mobile-date.today:not(.selected){background:#E6F1FB;color:#185FA5}
+      .teacher-mobile-date.selected{background:#185FA5;color:#fff}
+      .teacher-mobile-date i{position:absolute;left:50%;bottom:5px;width:4px;height:4px;margin-left:-2px;border-radius:999px;background:#185FA5}
+      .teacher-mobile-date.selected i{background:#fff}
+      .teacher-mobile-agenda{margin-top:12px;border-top:1px solid var(--td-line);padding:0 16px 16px;background:var(--td-bg)}
+      .teacher-mobile-agenda-day{display:none}
+      .teacher-mobile-agenda-day.active{display:block}
+      .teacher-mobile-agenda-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:16px 0 10px}
+      .teacher-mobile-agenda-head h2{margin:0;color:#172033;font-size:17px;font-weight:900}
+      .teacher-mobile-agenda-head span{color:#667085;font-size:12px;font-weight:800;white-space:nowrap}
+      .teacher-mobile-lesson-list{display:grid;gap:8px}
+      .teacher-mobile-lesson-list .calendar-event{margin:0}
+      .teacher-mobile-empty{padding:28px 12px;border-top:1px solid var(--td-line);color:#667085;text-align:center;font-size:13px}
+      .schedule-controls>a,.schedule-controls>form,.teacher-multi-toggle{display:none}
+      .schedule-controls{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+      .schedule-tabs{display:grid;grid-template-columns:1fr 1fr}
+      .schedule-tabs a{text-align:center;min-height:42px;display:grid;place-items:center}
+      .teacher-tab-prefix{display:none}
+      #teacherMobileAddButton{min-height:42px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
       .calendar-day,.calendar-grid.month-view .calendar-day,.calendar-grid.week-view .calendar-day{min-height:0;border:1px solid var(--td-line);border-radius:8px;padding:10px;background:#fff}
       .calendar-grid.month-view .calendar-day.no-lessons{display:none}
       .calendar-day-head{font-size:13px;min-height:30px;margin-bottom:6px;border-bottom:1px solid var(--td-line)}
@@ -14079,6 +14114,97 @@ def teacher_dashboard():
         </a>
         """
 
+    def teacher_mobile_calendar_panel(period_start, period_end, grid_start, grid_end, by_date, event_room_by_date, mode):
+        active_dates = sorted(set(by_date.keys()) | set(event_room_by_date.keys()))
+        requested_date = (request.args.get("day") or "").strip()
+        valid_requested = requested_date and period_start.strftime("%Y-%m-%d") <= requested_date <= period_end.strftime("%Y-%m-%d")
+        if valid_requested:
+            selected_date = requested_date
+        elif period_start <= today_obj <= period_end:
+            selected_date = today
+        elif active_dates:
+            selected_date = active_dates[0]
+        else:
+            selected_date = period_start.strftime("%Y-%m-%d")
+
+        weekday_labels = "".join(f"<span>{label}</span>" for label in ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"))
+        day_buttons = ""
+        current_day = grid_start
+        while current_day <= grid_end:
+            day_key = current_day.strftime("%Y-%m-%d")
+            is_outside = current_day < period_start or current_day > period_end
+            has_items = bool(by_date.get(day_key) or event_room_by_date.get(day_key))
+            classes = ["teacher-mobile-date"]
+            if is_outside:
+                classes.append("outside")
+            if day_key == today:
+                classes.append("today")
+            if day_key == selected_date:
+                classes.append("selected")
+            day_buttons += f"""
+            <button type="button" class="{' '.join(classes)}" data-date="{day_key}"
+                    aria-pressed="{'true' if day_key == selected_date else 'false'}"
+                    {'disabled' if is_outside else ''}
+                    onclick="teacherSelectMobileDate('{day_key}')">
+                <span>{current_day.day}</span>{'<i aria-hidden="true"></i>' if has_items and not is_outside else ''}
+            </button>
+            """
+            current_day += timedelta(days=1)
+
+        agenda_sections = ""
+        current_day = period_start
+        while current_day <= period_end:
+            day_key = current_day.strftime("%Y-%m-%d")
+            day_lessons = by_date.get(day_key, [])
+            day_bookings = event_room_by_date.get(day_key, [])
+            day_items = "".join(calendar_event(lesson) for lesson in day_lessons)
+            day_items += "".join(calendar_event_room(booking) for booking in day_bookings)
+            if not day_items:
+                day_items = '<div class="teacher-mobile-empty">No lessons scheduled</div>'
+            count_parts = []
+            if day_lessons:
+                count_parts.append(f"{len(day_lessons)} lesson{'s' if len(day_lessons) != 1 else ''}")
+            if day_bookings:
+                count_parts.append(f"{len(day_bookings)} studio event{'s' if len(day_bookings) != 1 else ''}")
+            count_label = " · ".join(count_parts) if count_parts else "No lessons"
+            agenda_sections += f"""
+            <section class="teacher-mobile-agenda-day {'active' if day_key == selected_date else ''}"
+                     data-mobile-agenda-date="{day_key}" aria-hidden="{'false' if day_key == selected_date else 'true'}">
+                <div class="teacher-mobile-agenda-head">
+                    <h2>{current_day.strftime('%A, %b')} {current_day.day}</h2>
+                    <span>{count_label}</span>
+                </div>
+                <div class="teacher-mobile-lesson-list">{day_items}</div>
+            </section>
+            """
+            current_day += timedelta(days=1)
+
+        if mode == "month":
+            previous_period = (period_start - timedelta(days=1)).strftime("%Y-%m")
+            next_period = (period_end + timedelta(days=1)).strftime("%Y-%m")
+            previous_href = f"/teacher_dashboard?view=schedule&mode=month&month={previous_period}"
+            next_href = f"/teacher_dashboard?view=schedule&mode=month&month={next_period}"
+            period_label = period_start.strftime("%B %Y")
+        else:
+            previous_period = (period_start - timedelta(days=7)).strftime("%Y-%m-%d")
+            next_period = (period_start + timedelta(days=7)).strftime("%Y-%m-%d")
+            previous_href = f"/teacher_dashboard?view=schedule&mode=week&week={previous_period}"
+            next_href = f"/teacher_dashboard?view=schedule&mode=week&week={next_period}"
+            period_label = period_start.strftime("%b %d") + "–" + period_end.strftime("%b %d, %Y")
+
+        return f"""
+        <section class="teacher-mobile-calendar" data-calendar-mode="{mode}" aria-label="Teacher calendar">
+            <div class="teacher-mobile-period">
+                <a href="{previous_href}" aria-label="Previous {mode}"><i class="ti ti-chevron-left"></i></a>
+                <span>{period_label}</span>
+                <a href="{next_href}" aria-label="Next {mode}"><i class="ti ti-chevron-right"></i></a>
+            </div>
+            <div class="teacher-mobile-weekdays" aria-hidden="true">{weekday_labels}</div>
+            <div class="teacher-mobile-date-grid">{day_buttons}</div>
+            <div class="teacher-mobile-agenda">{agenda_sections}</div>
+        </section>
+        """, selected_date
+
     if view == "messages":
         content = teacher_dashboard_messages_content(teacher_name or "")
         return hstudio_teacher_dark_shell(
@@ -14158,6 +14284,15 @@ def teacher_dashboard():
                 current_day += timedelta(days=1)
             prev_month_date = (month_start - timedelta(days=1)).strftime("%Y-%m")
             next_month_date = (month_end + timedelta(days=1)).strftime("%Y-%m")
+            mobile_calendar_html, mobile_selected_date = teacher_mobile_calendar_panel(
+                month_start,
+                month_end,
+                month_grid_start,
+                month_grid_end,
+                by_date,
+                event_room_by_date,
+                "month",
+            )
             controls = f"""
                 <a href="/teacher_dashboard?view=schedule&mode=month&month={prev_month_date}">Previous</a>
                 <a href="/teacher_dashboard?view=schedule&mode=month&month={next_month_date}">Next</a>
@@ -14191,6 +14326,15 @@ def teacher_dashboard():
                 """
             prev_week = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
             next_week = (week_start + timedelta(days=7)).strftime("%Y-%m-%d")
+            mobile_calendar_html, mobile_selected_date = teacher_mobile_calendar_panel(
+                week_start,
+                week_end,
+                week_start,
+                week_end,
+                by_date,
+                event_room_by_date,
+                "week",
+            )
             controls = f"""
                 <a href="/teacher_dashboard?view=schedule&mode=week&week={prev_week}">Previous</a>
                 <a href="/teacher_dashboard?view=schedule&mode=week&week={next_week}">Next</a>
@@ -14217,7 +14361,7 @@ def teacher_dashboard():
         owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
-        mobile_add_button = f'<button type="button" onclick="teacherAddOnDate(\'{today}\')"><i class="ti ti-plus"></i> Add lesson</button>' if teacher_perms.get("add_own_schedule") else ''
+        mobile_add_button = f'<button type="button" id="teacherMobileAddButton" data-selected-date="{mobile_selected_date}" onclick="teacherAddOnDate(this.dataset.selectedDate || \'{today}\')"><i class="ti ti-plus"></i> Add lesson</button>' if teacher_perms.get("add_own_schedule") else ''
         teacher_schedule_return_url = request.full_path if request.query_string else "/teacher_dashboard?view=schedule"
         teacher_schedule_return_url_attr = escape(teacher_schedule_return_url, quote=True)
         teacher_group_add_html = '<div class="teacher-group-add"><input class="panel-field" id="tPanelGroupStudentInput" list="teacherInlineStudentList" placeholder="Search student" autocomplete="off" onkeydown="if(event.key === \'Enter\'){event.preventDefault();teacherAddGroupStudent();}"><button type="button" onclick="teacherAddGroupStudent()" title="Add student"><i class="ti ti-user-plus"></i> Add</button></div><small class="teacher-group-help">Roster changes follow the selected lesson scope below. Billing remains owner-managed.</small>' if manage_group_roster else ''
@@ -14229,8 +14373,8 @@ def teacher_dashboard():
                 </div>
                 <div class="schedule-controls">
                     <div class="schedule-tabs">
-                        <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}">This Week</a>
-                        <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}">This Month</a>
+                        <a class="{week_active}" href="/teacher_dashboard?view=schedule&mode=week&week={week_start.strftime('%Y-%m-%d')}"><span class="teacher-tab-prefix">This </span>Week</a>
+                        <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}"><span class="teacher-tab-prefix">This </span>Month</a>
                     </div>
                     {mobile_add_button}
                     <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" onclick="teacherMultiToggle()">Multi-Select</button>
@@ -14255,7 +14399,10 @@ def teacher_dashboard():
             <button class="teacher-multi-apply" type="button" onclick="teacherMultiApply()">Apply</button>
             <button class="teacher-multi-clear" type="button" onclick="teacherMultiClear()">Clear</button>
         </div>
-        <div class="calendar-grid {schedule_grid_class}" id="teacherCalendarGrid">{day_columns}</div>
+        {mobile_calendar_html}
+        <div class="teacher-desktop-calendar">
+            <div class="calendar-grid {schedule_grid_class}" id="teacherCalendarGrid">{day_columns}</div>
+        </div>
 
         <div class="teacher-add-overlay" id="teacherAddOverlay" onclick="teacherCloseAddSchedule(event)">
             <div class="teacher-add-modal" role="dialog" aria-modal="true" aria-labelledby="teacherAddTitle" onclick="event.stopPropagation()">
@@ -14408,6 +14555,23 @@ def teacher_dashboard():
         let teacherPanelRoomChanged = false;
         let teacherGroupNameBaseline = '';
         let teacherGroupRosterDirty = false;
+        function teacherSelectMobileDate(dateStr) {{
+            document.querySelectorAll('.teacher-mobile-date[data-date]').forEach(button => {{
+                const selected = button.dataset.date === dateStr;
+                button.classList.toggle('selected', selected);
+                button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+            }});
+            document.querySelectorAll('.teacher-mobile-agenda-day[data-mobile-agenda-date]').forEach(section => {{
+                const selected = section.dataset.mobileAgendaDate === dateStr;
+                section.classList.toggle('active', selected);
+                section.setAttribute('aria-hidden', selected ? 'false' : 'true');
+            }});
+            const addButton = document.getElementById('teacherMobileAddButton');
+            if (addButton) addButton.dataset.selectedDate = dateStr;
+            const url = new URL(window.location.href);
+            url.searchParams.set('day', dateStr);
+            window.history.replaceState(null, '', url);
+        }}
         function teacherStatusLabel(st) {{ return st === 'parent_cancel_pending_confirm' ? 'Cancel pending confirm' : st === 'present' ? 'Present' : st === 'no_show' ? 'No show' : st === 'last_min_cancel' ? 'Last min cancel' : (st === 'excused_24h' || st === 'excused') ? 'Canceled > 24h' : st === 'teacher_cancelled' ? 'Teacher cancel' : 'Scheduled'; }}
         function teacherStatusClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'late' : st === 'present' ? 'present' : st === 'no_show' ? 'no_show' : (st === 'excused_24h' || st === 'excused' || st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'early_cancel' : st === 'last_min_cancel' ? 'cancelled' : 'scheduled'; }}
         function teacherStatusDotClass(st) {{ return st === 'parent_cancel_pending_confirm' ? 'sd-late' : st === 'present' ? 'sd-present' : st === 'late' ? 'sd-late' : st === 'no_show' ? 'sd-noshow' : st === 'last_min_cancel' ? 'sd-last-min' : (st === 'excused_24h' || st === 'excused') ? 'sd-early-cancel' : (st === 'teacher_cancelled' || (st && st.startsWith('cancel'))) ? 'sd-cancelled' : 'sd-scheduled'; }}
