@@ -5,6 +5,7 @@ APP = Path(__file__).with_name("app.py")
 
 
 CHECKS = {
+    "child os bearer csrf exemption": 'request.path.startswith("/api/child-os/v1/")',
     "invoice reminder route": '"/send_invoice_payment_reminder/<int:invoice_id>"',
     "invoice reminder GET recovery": 'return redirect("/invoices?reminder=not_sent")',
     "invoice reminder email fallback": "if not parent or not hmusic_is_real_email(parent[1]):",
