@@ -47709,3 +47709,10 @@ def initialize_runtime_database():
 
 if os.environ.get("HMUSIC_PREPARE_DB_ON_STARTUP") == "1":
     initialize_runtime_database()
+
+
+# Child OS service API is isolated from the parent web session and requires
+# HMUSIC_CHILD_OS_API_TOKEN on every request.
+from child_os_api import register_child_os_api
+
+register_child_os_api(app, "hmusic.db")
