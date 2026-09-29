@@ -20372,6 +20372,26 @@ def ensure_postgres_guardian_billing_schema():
     cursor.execute("ALTER TABLE guardian_invites ADD COLUMN IF NOT EXISTS student_name TEXT")
     cursor.execute("ALTER TABLE guardian_invites ADD COLUMN IF NOT EXISTS owner_note TEXT")
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS parent_billing_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        stripe_customer_id TEXT,
+        stripe_setup_session_id TEXT,
+        stripe_setup_intent_id TEXT,
+        stripe_payment_method_id TEXT,
+        autopay_enabled INTEGER DEFAULT 0,
+        ach_enabled INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'not_connected',
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_billing_profiles_parent_id
+    ON parent_billing_profiles(parent_id)
+    """)
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS student_billing_rules (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         student_name TEXT UNIQUE,
@@ -20406,6 +20426,25 @@ def ensure_postgres_guardian_billing_schema():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoice_allocations_invoice ON invoice_allocations(invoice_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoice_allocations_parent ON invoice_allocations(parent_id)")
+    cursor.execute("""
+    SELECT DISTINCT invoice_id
+    FROM invoice_allocations
+    WHERE status = 'processing'
+      AND stripe_checkout_session_id IS NULL
+      AND locked_at IS NOT NULL
+      AND CAST(locked_at AS TIMESTAMP) < CURRENT_TIMESTAMP - INTERVAL '15 minutes'
+    """)
+    stale_invoice_ids = [row[0] for row in cursor.fetchall()]
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = 'failed', lock_token = NULL, updated_at = ?
+    WHERE status = 'processing'
+      AND stripe_checkout_session_id IS NULL
+      AND locked_at IS NOT NULL
+      AND CAST(locked_at AS TIMESTAMP) < CURRENT_TIMESTAMP - INTERVAL '15 minutes'
+    """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
+    for stale_invoice_id in stale_invoice_ids:
+        refresh_invoice_status_from_allocations(cursor, stale_invoice_id)
     conn.commit()
     conn.close()
 
@@ -25422,8 +25461,8 @@ def billing_settings():
         created_at,
         event_type,
         status,
-        COALESCE(related_invoice_id, ''),
-        COALESCE(related_parent_id, ''),
+        COALESCE(CAST(related_invoice_id AS TEXT), ''),
+        COALESCE(CAST(related_parent_id AS TEXT), ''),
         COALESCE(message, '')
     FROM stripe_webhook_events
     ORDER BY id DESC
@@ -34676,6 +34715,9 @@ def stripe_invoice_checkout(invoice_id):
         conn.close()
         return redirect(checkout_session.url)
     except Exception as exc:
+        # PostgreSQL rejects every statement after an error until the failed
+        # transaction is rolled back. Start recovery from a clean transaction.
+        conn.rollback()
         cursor.execute("""
         UPDATE invoice_allocations
         SET status = 'failed', lock_token = NULL, updated_at = ?
