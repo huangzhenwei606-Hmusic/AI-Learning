@@ -211,6 +211,17 @@ CHECKS = {
     "private duration creation stays private": 'if normalized_name == "private lesson":\n        is_group = 0',
     "group duration creation stays group": 'elif normalized_name in ("group class", "piano group class"):',
     "course duplicate merge runs at startup": "merge_known_duplicate_private_lesson_30()\n    conn = sqlite3.connect(\"hmusic.db\", timeout=15)",
+    "parent login tracking schema": '("last_login_at", "last_login_at TEXT")',
+    "parent activity tracking schema": '("last_activity_at", "last_activity_at TEXT")',
+    "parent login count tracking": "login_count = COALESCE(login_count, 0) + 1",
+    "parent mobile app login source": '"Mobile app" if native_app else "Web"',
+    "parent successful login tracking": "record_parent_login(cursor, parent[0], native_app=native_app)",
+    "parent dashboard usage tracking": "SET last_activity_at = ?, updated_at = ?",
+    "parent access status helper": "def parent_access_summary(",
+    "activated parent reminder keeps password": "Your existing password has not been changed",
+    "activated parent reminder label": "Send login reminder (keep password)",
+    "parent reset timestamp": "SET last_password_reset_at = ?, updated_at = ?",
+    "parent reset warning": "Their current password will stop working immediately.",
 }
 
 

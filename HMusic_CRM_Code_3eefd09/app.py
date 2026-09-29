@@ -3638,6 +3638,13 @@ def _csv_import_ensure_schema():
         ("active", "active INTEGER DEFAULT 1"),
         ("created_at", "created_at TEXT"),
         ("updated_at", "updated_at TEXT"),
+        ("first_login_at", "first_login_at TEXT"),
+        ("last_login_at", "last_login_at TEXT"),
+        ("last_activity_at", "last_activity_at TEXT"),
+        ("login_count", "login_count INTEGER DEFAULT 0"),
+        ("last_login_source", "last_login_source TEXT"),
+        ("last_password_reset_at", "last_password_reset_at TEXT"),
+        ("last_password_changed_at", "last_password_changed_at TEXT"),
     ]:
         add_column_if_missing(cursor, "parent_profiles", column_name, column_sql)
 
@@ -19963,6 +19970,13 @@ def ensure_v27_schema():
         ("active", "active INTEGER DEFAULT 1"),
         ("created_at", "created_at TEXT"),
         ("updated_at", "updated_at TEXT"),
+        ("first_login_at", "first_login_at TEXT"),
+        ("last_login_at", "last_login_at TEXT"),
+        ("last_activity_at", "last_activity_at TEXT"),
+        ("login_count", "login_count INTEGER DEFAULT 0"),
+        ("last_login_source", "last_login_source TEXT"),
+        ("last_password_reset_at", "last_password_reset_at TEXT"),
+        ("last_password_changed_at", "last_password_changed_at TEXT"),
     ]:
         add_column_if_missing(cursor, "parent_profiles", column_name, column_sql)
 
@@ -20104,6 +20118,29 @@ def ensure_v27_schema():
     conn.commit()
     conn.close()
     _v27_schema_ready = True
+
+
+def record_parent_login(cursor, parent_id, native_app=False):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    UPDATE parent_profiles
+    SET first_login_at = COALESCE(first_login_at, ?),
+        last_login_at = ?,
+        last_activity_at = ?,
+        login_count = COALESCE(login_count, 0) + 1,
+        last_login_source = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (now, now, now, "Mobile app" if native_app else "Web", now, parent_id))
+
+
+def parent_access_summary(last_login_at, login_count, must_change_password, last_login_source=""):
+    if last_login_at or int(login_count or 0) > 0:
+        source = f" via {last_login_source}" if last_login_source else ""
+        return "Logged in", f"Last login {last_login_at or 'recorded'}{source}", "good"
+    if int(must_change_password or 0) == 0:
+        return "Previously activated", "Password was changed before login tracking was added", "good"
+    return "Never logged in", "Temporary password is still pending", "neutral"
 
 
 def sync_parent_profile_for_student(cursor, student_name, parent_name=None, parent_email=None, parent_phone=None):
@@ -20846,6 +20883,12 @@ def parents():
         p.email,
         p.phone,
         p.active,
+        COALESCE(p.must_change_password, 0),
+        p.last_login_at,
+        COALESCE(p.login_count, 0),
+        COALESCE(p.last_login_source, ''),
+        p.last_activity_at,
+        p.last_password_reset_at,
         COUNT(ps.id),
         MAX(a.created_at)
     FROM parent_profiles p
@@ -20854,7 +20897,9 @@ def parents():
         AND ps.active = 1
     LEFT JOIN parent_activity_logs a
         ON p.id = a.parent_id
-    GROUP BY p.id, p.parent_name, p.email, p.phone, p.active
+    GROUP BY p.id, p.parent_name, p.email, p.phone, p.active,
+             p.must_change_password, p.last_login_at, p.login_count,
+             p.last_login_source, p.last_activity_at, p.last_password_reset_at
     ORDER BY p.parent_name, p.email
     """)
 
@@ -20863,21 +20908,24 @@ def parents():
 
     rows = ""
     for p in parents_data:
-        status = "Active" if p[4] == 1 else "Inactive"
+        account_status = "Active" if p[4] == 1 else "Inactive"
+        access_status, access_detail, access_class = parent_access_summary(p[6], p[7], p[5], p[8])
+        last_use = p[9] or p[6] or "No tracked use"
         rows += f"""
         <tr>
             <td><a href="/parent_admin/{p[0]}">{p[1] or ''}</a></td>
             <td>{p[2] or ''}</td>
             <td>{p[3] or ''}</td>
-            <td>{p[5] or 0}</td>
-            <td>{status}</td>
-            <td>{p[6] or ''}</td>
+            <td>{p[11] or 0}</td>
+            <td>{account_status}</td>
+            <td><strong>{access_status}</strong><br><small>{access_detail}</small></td>
+            <td>{last_use}</td>
             <td><a href="/edit_parent_admin/{p[0]}">Edit</a></td>
         </tr>
         """
 
     if not rows:
-        rows = "<tr><td colspan='7'>No parent profiles yet.</td></tr>"
+        rows = "<tr><td colspan='8'>No parent profiles yet.</td></tr>"
 
     return f"""
     <html>
@@ -20942,8 +20990,9 @@ def parents():
                     <th>Email</th>
                     <th>Phone</th>
                     <th>Students</th>
-                    <th>Status</th>
-                    <th>Last Activity</th>
+                    <th>Account</th>
+                    <th>Parent App Access</th>
+                    <th>Last Use</th>
                     <th>Action</th>
                 </tr>
                 {rows}
@@ -21073,7 +21122,10 @@ def parent_admin(parent_id):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, parent_name, email, phone, password, active, created_at, updated_at
+    SELECT id, parent_name, email, phone, password, active, created_at, updated_at,
+           COALESCE(must_change_password, 0), last_login_at,
+           COALESCE(login_count, 0), COALESCE(last_login_source, ''),
+           last_activity_at, last_password_reset_at
     FROM parent_profiles
     WHERE id = ?
     """, (parent_id,))
@@ -21589,6 +21641,11 @@ def parent_admin(parent_id):
 
     status = "Active" if parent[5] == 1 else "Inactive"
     status_class = "good" if parent[5] == 1 else "neutral"
+    access_status, access_detail, access_class = parent_access_summary(
+        parent[9], parent[10], parent[8], parent[11]
+    )
+    last_use_label = parent[12] or parent[9] or "No tracked use"
+    reset_note = f"Last reset {parent[13]}" if parent[13] else "No tracked password reset"
     active_link_count = sum(1 for row in linked_students if row[3] == 1)
     if len(active_student_names) == 1:
         family_billing_actions = f"""
@@ -21679,6 +21736,9 @@ def parent_admin(parent_id):
             .metric span {{ display:block; color:var(--muted); font-size:9px; font-weight:850; }}
             .metric strong {{ display:block; margin-top:2px; font-size:13px; font-weight:900; }}
             .explain {{ margin-top:8px; padding:7px 8px; border-radius:7px; border:1px solid #bfdbfe; background:#eff6ff; color:#155d9e; font-size:10px; font-weight:750; line-height:1.3; }}
+            .access-summary {{ margin-top:8px; padding:8px; border:1px solid var(--line); border-radius:7px; background:#fbfdff; }}
+            .access-summary strong {{ display:block; font-size:11px; }}
+            .access-summary span {{ display:block; color:var(--muted); font-size:9px; margin-top:2px; line-height:1.35; }}
             .stack {{ display:grid; gap:9px; }}
             .add-grid {{ display:grid; grid-template-columns:minmax(260px,1fr) 160px auto; gap:8px; align-items:end; }}
             .new-child-grid {{ display:grid; grid-template-columns:minmax(180px,1.2fr) minmax(150px,1fr) minmax(120px,.7fr) minmax(170px,1fr) 110px auto; gap:8px; align-items:end; }}
@@ -21807,6 +21867,7 @@ def parent_admin(parent_id):
                     <div class="subline">
                         <span>{escape(str(parent[1] or 'Parent Account'))}</span>
                         <span class="pill {status_class}">Parent login {status}</span>
+                        <span class="pill {access_class}">{escape(access_status)}</span>
                         <span>{escape(str(parent[2] or 'No email'))}</span>
                         <span>{active_link_count} linked child(ren)</span>
                     </div>
@@ -21830,6 +21891,12 @@ def parent_admin(parent_id):
                                 <div class="muted">{escape(str(parent[3] or 'No phone'))}</div>
                             </div>
                         </div>
+                        <div class="access-summary">
+                            <strong>{escape(access_status)} · {int(parent[10] or 0)} login(s)</strong>
+                            <span>{escape(access_detail)}</span>
+                            <span>Last use: {escape(str(last_use_label))}</span>
+                            <span>{escape(reset_note)}</span>
+                        </div>
                         <div class="metrics">
                             <div class="metric"><span>Children</span><strong>{active_link_count}</strong></div>
                             <div class="metric"><span>Unread</span><strong>{unread_count}</strong></div>
@@ -21838,7 +21905,7 @@ def parent_admin(parent_id):
                         </div>
                         <div class="explain">Use this page to control which children this parent can see in the parent app. Removing access hides a child from the parent app; it does not delete the student.</div>
                         <div class="top-actions" style="justify-content:flex-start;margin-top:10px;">
-                            <form method="POST" action="/reset_parent_password/{parent[0]}" class="inline-form">
+                            <form method="POST" action="/reset_parent_password/{parent[0]}" class="inline-form" onsubmit="return confirm('Reset this parent password? Their current password will stop working immediately.');">
                                 <button type="submit">Reset password</button>
                             </form>
                         </div>
@@ -22069,6 +22136,16 @@ def edit_parent_admin(parent_id):
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             parent_id
         ))
+        if new_password_hash:
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET last_password_reset_at = ?, updated_at = ?
+            WHERE id = ?
+            """, (
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                parent_id,
+            ))
 
         conn.commit()
         conn.close()
@@ -31207,7 +31284,8 @@ def parent_login():
             if parent and hmusic_check_password(password, parent[3], parent[4]):
                 if not parent[3] and parent[4]:
                     set_password_columns(cursor, "parent_profiles", parent[0], password, must_change=False)
-                    conn.commit()
+                record_parent_login(cursor, parent[0], native_app=native_app)
+                conn.commit()
                 cursor.execute("""
                 SELECT student_name
                 FROM parent_students
@@ -31255,6 +31333,9 @@ def parent_login():
                 """, (parent_email,))
 
                 parent = cursor.fetchone()
+                if parent:
+                    record_parent_login(cursor, parent[0], native_app=native_app)
+                    conn.commit()
                 conn.close()
 
                 session.clear()
@@ -31530,6 +31611,15 @@ def parent_forgot_password():
         if parent:
             temp_password = hmusic_temp_password()
             set_password_columns(cursor, "parent_profiles", parent[0], temp_password, must_change=True)
+            cursor.execute("""
+            UPDATE parent_profiles
+            SET last_password_reset_at = ?, updated_at = ?
+            WHERE id = ?
+            """, (
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                parent[0],
+            ))
             conn.commit()
             parent_name = parent[1] or "H-Music family"
             login_url = "https://hmusic-crm.onrender.com/parent_login"
@@ -31676,6 +31766,20 @@ def parent_dashboard():
     ensure_guardian_billing_schema()
 
     parent_id = session.get("parent_id")
+    if parent_id:
+        activity_conn = sqlite3.connect("hmusic.db")
+        activity_cursor = activity_conn.cursor()
+        activity_cursor.execute("""
+        UPDATE parent_profiles
+        SET last_activity_at = ?, updated_at = ?
+        WHERE id = ?
+        """, (
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            parent_id,
+        ))
+        activity_conn.commit()
+        activity_conn.close()
     unread_messages = get_unread_message_count("parent", parent_id) if parent_id else 0
     unread_notifications = get_unread_notification_count("parent", str(parent_id)) if parent_id else 0
     message_label = f"Messages ({unread_messages})" if unread_messages else "Messages"
@@ -37096,6 +37200,15 @@ def change_parent_password():
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
         set_password_columns(cursor, "parent_profiles", session.get("parent_id"), new_password, must_change=False)
+        cursor.execute("""
+        UPDATE parent_profiles
+        SET last_password_changed_at = ?, updated_at = ?
+        WHERE id = ?
+        """, (
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            session.get("parent_id"),
+        ))
         conn.commit()
         conn.close()
         session["must_change_password"] = False
@@ -37195,6 +37308,15 @@ def reset_parent_password(parent_id):
         return "<h1>Parent not found</h1>"
 
     set_password_columns(cursor, "parent_profiles", parent_id, temp_password, must_change=True)
+    cursor.execute("""
+    UPDATE parent_profiles
+    SET last_password_reset_at = ?, updated_at = ?
+    WHERE id = ?
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        parent_id,
+    ))
     conn.commit()
     conn.close()
 
@@ -37239,19 +37361,74 @@ def send_parent_welcome(name):
 
     sync_parent_profile_for_student(cursor, student[0], student[1], parent_email, parent_phone)
     email_key = parent_email or f"phone-{parent_phone}@hmusic.local"
-    cursor.execute("SELECT id, parent_name, email, phone FROM parent_profiles WHERE email = ?", (email_key,))
+    cursor.execute("""
+    SELECT id, parent_name, email, phone, COALESCE(must_change_password, 0),
+           last_login_at, COALESCE(login_count, 0)
+    FROM parent_profiles
+    WHERE email = ?
+    """, (email_key,))
     parent = cursor.fetchone()
     if not parent:
         conn.close()
         return "<h1>Could not create parent account</h1>"
 
+    login_url = "https://hmusic-crm.onrender.com/parent_login"
+    parent_name = parent[1] or student[1] or "H-Music family"
+    account_was_used = bool(parent[5] or int(parent[6] or 0) > 0 or int(parent[4] or 0) == 0)
+    if account_was_used:
+        conn.close()
+        reminder_body = (
+            f"Hi {parent_name},\n\n"
+            f"This is a reminder that your H-Music parent app account is ready for {student[0]}.\n\n"
+            f"Login: {login_url}\n"
+            f"Email: {parent[2]}\n\n"
+            f"Your existing password has not been changed. If you forgot it, use Reset password on the login page.\n\n"
+            f"H-Music"
+        )
+        if parent_email:
+            queue_direct_delivery("email", parent_email, "H-Music Parent App Login Reminder", reminder_body, "/parent_login", "parent_login_reminder", None)
+        if parent_phone:
+            queue_direct_delivery(
+                "sms",
+                parent_phone,
+                "H-Music Parent App Login Reminder",
+                f"H-Music parent app reminder for {student[0]}: hmusic-crm.onrender.com/parent_login Email: {parent[2]}. Your password was not changed.",
+                "/parent_login",
+                "parent_login_reminder",
+                None,
+            )
+        create_notification(
+            "owner",
+            "owner",
+            "Parent login reminder queued",
+            f"A login reminder was queued for {student[0]}; the existing password was kept.",
+            f"/student/{quote(student[0])}",
+            "parent_login_reminder",
+            parent[0],
+        )
+        return f"""
+        <h1>Parent Login Reminder Ready</h1>
+        <p>This account has already been activated. The reminder was queued without changing the parent's password.</p>
+        <p><b>Parent:</b> {escape(parent_name)}</p>
+        <p><b>Email:</b> {escape(parent[2] or '')}</p>
+        <p><a href="/student/{quote(student[0])}">Back to Student</a></p>
+        <p><a href="/parent_admin/{parent[0]}">Open Family Account</a></p>
+        """
+
     temp_password = hmusic_temp_password()
     set_password_columns(cursor, "parent_profiles", parent[0], temp_password, must_change=True)
+    cursor.execute("""
+    UPDATE parent_profiles
+    SET last_password_reset_at = ?, updated_at = ?
+    WHERE id = ?
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        parent[0],
+    ))
     conn.commit()
     conn.close()
 
-    login_url = "https://hmusic-crm.onrender.com/parent_login"
-    parent_name = parent[1] or student[1] or "H-Music family"
     email_body = (
         f"Hi {parent_name},\n\n"
         f"Your H-Music parent app account is ready for {student[0]}.\n\n"
@@ -37325,7 +37502,9 @@ def parent_login_info(name):
     cursor = conn.cursor()
     cursor.execute("""
     SELECT s.name, COALESCE(s.parent_name, ''), s.parent_email, s.parent_phone,
-           p.id, p.parent_name, p.email, p.phone, p.active
+           p.id, p.parent_name, p.email, p.phone, p.active,
+           COALESCE(p.must_change_password, 0), p.last_login_at,
+           COALESCE(p.login_count, 0), COALESCE(p.last_login_source, '')
     FROM students s
     LEFT JOIN parent_profiles p ON p.email = s.parent_email
     WHERE s.name = ?
@@ -37341,15 +37520,24 @@ def parent_login_info(name):
     status = "Active" if row[8] else "No active parent account"
     parent_name = row[5] or row[1] or "H-Music family"
     email = row[6] or row[2] or ""
+    access_status, access_detail, _access_class = parent_access_summary(
+        row[10], row[11], row[9], row[12]
+    ) if row[4] else ("No account", "Create parent access first", "neutral")
+    account_was_used = bool(row[4] and (row[10] or int(row[11] or 0) > 0 or int(row[9] or 0) == 0))
     family_action = (
         f'<a class="button secondary" href="/parent_admin/{row[4]}">Open Family Account</a>'
         if row[4]
         else ""
     )
     welcome_button_text = (
-        "Send login email + reset temporary password"
-        if row[4]
-        else "Create account + send login email"
+        "Send login reminder (keep password)"
+        if account_was_used
+        else ("Send login email + reset temporary password" if row[4] else "Create account + send login email")
+    )
+    welcome_note = (
+        "This account has already been activated. Sending another reminder will keep the current password."
+        if account_was_used
+        else "This creates a new temporary password. The parent will be asked to change it after logging in."
     )
 
     return f"""
@@ -37375,6 +37563,8 @@ def parent_login_info(name):
                 <p><b>Student:</b> {escape(row[0])}</p>
                 <p><b>Parent:</b> {escape(parent_name)}</p>
                 <p><b>Status:</b> {escape(status)}</p>
+                <p><b>Parent app:</b> {escape(access_status)}</p>
+                <p><b>Usage:</b> {escape(access_detail)}</p>
                 <p><b>Login URL:</b> {escape(login_url)}</p>
                 <p><b>Login email:</b> {escape(email or 'Missing email')}</p>
             </div>
@@ -37395,7 +37585,7 @@ If you need a new temporary password, H-Music will reset it and send a new welco
                 <a class="button secondary" href="/student/{quote(row[0])}">Back to Student</a>
                 {family_action}
             </div>
-            <p class="note">This sends the parent app login email and creates a new temporary password. The parent will be asked to change it after logging in.</p>
+            <p class="note">{escape(welcome_note)}</p>
         </div>
     </body>
     </html>
