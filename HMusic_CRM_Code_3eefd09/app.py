@@ -19937,9 +19937,41 @@ def parent_portal():
 # Parent profiles, multi-student access, and parent activity logs
 # =========================
 
+PARENT_ACCESS_TRACKING_COLUMNS = [
+    ("first_login_at", "first_login_at TEXT"),
+    ("last_login_at", "last_login_at TEXT"),
+    ("last_activity_at", "last_activity_at TEXT"),
+    ("login_count", "login_count INTEGER DEFAULT 0"),
+    ("last_login_source", "last_login_source TEXT"),
+    ("last_password_reset_at", "last_password_reset_at TEXT"),
+    ("last_password_changed_at", "last_password_changed_at TEXT"),
+]
+
+
+def ensure_parent_access_tracking_schema():
+    """Keep tracking columns available even when the older V27 schema was cached."""
+    with _schema_init_lock:
+        conn = sqlite3.connect("hmusic.db")
+        cursor = conn.cursor()
+        try:
+            for column_name, column_sql in PARENT_ACCESS_TRACKING_COLUMNS:
+                if os.environ.get("DATABASE_URL"):
+                    cursor.execute(
+                        f"ALTER TABLE parent_profiles ADD COLUMN IF NOT EXISTS {column_sql}"
+                    )
+                else:
+                    add_column_if_missing(
+                        cursor, "parent_profiles", column_name, column_sql
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def ensure_v27_schema():
     global _v27_schema_ready
     if _v27_schema_ready:
+        ensure_parent_access_tracking_schema()
         return
 
     conn = sqlite3.connect("hmusic.db")
@@ -19970,14 +20002,7 @@ def ensure_v27_schema():
         ("active", "active INTEGER DEFAULT 1"),
         ("created_at", "created_at TEXT"),
         ("updated_at", "updated_at TEXT"),
-        ("first_login_at", "first_login_at TEXT"),
-        ("last_login_at", "last_login_at TEXT"),
-        ("last_activity_at", "last_activity_at TEXT"),
-        ("login_count", "login_count INTEGER DEFAULT 0"),
-        ("last_login_source", "last_login_source TEXT"),
-        ("last_password_reset_at", "last_password_reset_at TEXT"),
-        ("last_password_changed_at", "last_password_changed_at TEXT"),
-    ]:
+    ] + PARENT_ACCESS_TRACKING_COLUMNS:
         add_column_if_missing(cursor, "parent_profiles", column_name, column_sql)
 
     cursor.execute("""
