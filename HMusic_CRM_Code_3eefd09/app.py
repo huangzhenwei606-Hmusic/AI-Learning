@@ -11479,18 +11479,54 @@ def add_schedule():
             <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
             """
 
+        submitted_group_names = []
+        submitted_group_name_keys = set()
+        for raw_group_name in request.form.getlist("group_student_name"):
+            submitted_group_name = hmusic_clean_student_picker_value(raw_group_name)
+            submitted_group_name_key = hmusic_name_key(submitted_group_name)
+            if not submitted_group_name or submitted_group_name_key in submitted_group_name_keys:
+                continue
+            submitted_group_name_keys.add(submitted_group_name_key)
+            submitted_group_names.append(submitted_group_name)
+        is_group_submission = (
+            (request.form.get("lesson_format") or "").strip().lower() == "group"
+            or bool(submitted_group_names)
+        )
         student_name = hmusic_clean_student_picker_value(request.form.get("student_name"))
+        if is_group_submission and submitted_group_names:
+            student_name = submitted_group_names[0]
         teacher = request.form.get("teacher")
         if require_teacher() and not require_owner():
             teacher = session.get("teacher_name")
-            teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher)
-            cursor.execute("""
-            SELECT 1
-            FROM students
-            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
-            LIMIT 1
-            """, (student_name,))
-            teacher_selected_existing_student = bool(cursor.fetchone())
+            if is_group_submission:
+                teacher_linked = bool(submitted_group_names) and all(
+                    teacher_can_access_student_record(cursor, name, teacher)
+                    for name in submitted_group_names
+                )
+                existing_group_students = set()
+                for name in submitted_group_names:
+                    cursor.execute("""
+                    SELECT name
+                    FROM students
+                    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                    LIMIT 1
+                    """, (name,))
+                    existing_row = cursor.fetchone()
+                    if existing_row:
+                        existing_group_students.add(hmusic_name_key(existing_row[0]))
+                teacher_selected_existing_student = (
+                    bool(submitted_group_names)
+                    and existing_group_students == submitted_group_name_keys
+                )
+            else:
+                teacher_linked = teacher_can_access_student_record(cursor, student_name, teacher)
+                cursor.execute("""
+                SELECT 1
+                FROM students
+                WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                LIMIT 1
+                """, (student_name,))
+                teacher_selected_existing_student = bool(cursor.fetchone())
 
             if not teacher_linked and not teacher_selected_existing_student and not allow_unassigned_teacher_schedule:
                 hidden_fields = {
