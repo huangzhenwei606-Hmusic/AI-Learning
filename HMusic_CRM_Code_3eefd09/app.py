@@ -15467,7 +15467,7 @@ def hmusic_lesson_duration_hours(duration):
 
 
 def hmusic_last_min_fee(duration):
-    return round(max(30, hmusic_lesson_duration_hours(duration) * 30), 2)
+    return round(hmusic_lesson_duration_hours(duration) * 30, 2)
 
 
 def hmusic_policy_status_label(status):
@@ -15556,6 +15556,74 @@ def hmusic_pending_fee_total(cursor, student_name):
     AND amount > 0
     """, (student_name,))
     return round(float(cursor.fetchone()[0] or 0), 2)
+
+
+def hmusic_pending_invoice_charges(cursor, student_name):
+    cursor.execute("""
+    SELECT id, entry_type, amount, description, created_at
+    FROM student_ledger
+    WHERE student_name = ?
+    AND entry_type IN ('pending_last_min_fee', 'pending_extra_charge')
+    AND related_invoice_id IS NULL
+    AND amount > 0
+    ORDER BY created_at, id
+    """, (student_name,))
+    return cursor.fetchall()
+
+
+def hmusic_pending_invoice_charge_total(cursor, student_name):
+    return round(sum(float(row[2] or 0) for row in hmusic_pending_invoice_charges(cursor, student_name)), 2)
+
+
+def hmusic_attach_pending_invoice_charges(cursor, student_name, invoice_id):
+    pending = hmusic_pending_invoice_charges(cursor, student_name)
+    if not pending:
+        return 0
+
+    cursor.execute("""
+    SELECT COALESCE(amount, 0), COALESCE(subtotal_amount, 0), COALESCE(notes, '')
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        return 0
+
+    added_total = round(sum(float(row[2] or 0) for row in pending), 2)
+    details = []
+    for _, entry_type, amount, description, _ in pending:
+        label = "Last-minute cancellation fee" if entry_type == "pending_last_min_fee" else "Additional charge"
+        clean_description = (description or label).split(" | Actor:", 1)[0]
+        details.append(f"{label}: {clean_description} (${hmusic_money(amount)})")
+
+    current_amount = round(float(invoice[0] or 0), 2)
+    current_subtotal = round(float(invoice[1] or current_amount), 2)
+    note_suffix = " Added invoice add-on(s): " + "; ".join(details) + "."
+    cursor.execute("""
+    UPDATE invoices
+    SET amount = ?,
+        subtotal_amount = ?,
+        notes = TRIM(COALESCE(notes, '') || ?)
+    WHERE id = ?
+    """, (
+        round(current_amount + added_total, 2),
+        round(current_subtotal + added_total, 2),
+        note_suffix,
+        invoice_id,
+    ))
+
+    for ledger_id, entry_type, _, _, _ in pending:
+        invoiced_type = "invoiced_last_min_fee" if entry_type == "pending_last_min_fee" else "invoiced_extra_charge"
+        cursor.execute("""
+        UPDATE student_ledger
+        SET entry_type = ?,
+            related_invoice_id = ?,
+            description = description || ' | Added to invoice #' || ?
+        WHERE id = ?
+        AND related_invoice_id IS NULL
+        """, (invoiced_type, invoice_id, invoice_id, ledger_id))
+
+    return added_total
 
 
 def hmusic_student_course_credits(cursor, student_name):
@@ -18127,7 +18195,7 @@ def create_package_invoice(name):
 
     parent_id = get_primary_parent_for_student(cursor, student[0])
     default_due_date = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
-    pending_fee_total = hmusic_pending_fee_total(cursor, student[0])
+    pending_fee_total = hmusic_pending_invoice_charge_total(cursor, student[0])
     course_credits = hmusic_student_course_credits(cursor, student[0])
     student_url_name = quote(student[0])
 
@@ -18223,7 +18291,7 @@ def create_package_invoice(name):
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         invoice_notes = notes or f"Package invoice for {charge_lessons:g} lesson(s)."
         if include_pending_fees and pending_fee_total > 0:
-            invoice_notes += f" Includes pending last-minute cancellation fee(s): ${hmusic_money(pending_fee_total)}."
+            invoice_notes += f" Includes pending invoice add-on(s): ${hmusic_money(pending_fee_total)}."
         if discount_code and discount_amount:
             invoice_notes += f" Discount code {discount_code} applied: -${hmusic_money(discount_amount)}."
 
@@ -18265,11 +18333,14 @@ def create_package_invoice(name):
         if include_pending_fees and pending_fee_total > 0:
             cursor.execute("""
             UPDATE student_ledger
-            SET entry_type = 'invoiced_last_min_fee',
+            SET entry_type = CASE
+                    WHEN entry_type = 'pending_last_min_fee' THEN 'invoiced_last_min_fee'
+                    ELSE 'invoiced_extra_charge'
+                END,
                 related_invoice_id = ?,
                 description = description || ' | Added to invoice #' || ?
             WHERE student_name = ?
-            AND entry_type = 'pending_last_min_fee'
+            AND entry_type IN ('pending_last_min_fee', 'pending_extra_charge')
             AND related_invoice_id IS NULL
             AND amount > 0
             """, (invoice_id, invoice_id, student[0]))
@@ -18333,8 +18404,8 @@ def create_package_invoice(name):
         pending_checked = "checked"
         pending_fee_html = f"""
                     <div class="span-2 pending-fee-box">
-                        <label class="method"><input type="checkbox" name="include_pending_fees" value="1" {pending_checked} onchange="syncInvoicePreview()"> Include pending Last Min Cancel fee(s): ${hmusic_money(pending_fee_total)}</label>
-                        <p>Pending fees are added to the next package invoice by default. Uncheck this only if you want to collect them separately.</p>
+                        <label class="method"><input type="checkbox" name="include_pending_fees" value="1" {pending_checked} onchange="syncInvoicePreview()"> Include pending invoice add-on(s): ${hmusic_money(pending_fee_total)}</label>
+                        <p>Includes last-minute cancellation fees and owner-added charges. Uncheck only if you want to collect them separately.</p>
                     </div>
         """
 
@@ -29988,7 +30059,7 @@ def parent_reschedule_group():
     </form>
     <section class="app-card policy-mini">
         <div><b>No Show</b><span>Within 1 hour or missed lesson. Deduct 1 credit unless waiver is available.</span></div>
-        <div><b>Last Min</b><span>Within 24h. Creates pending fee, minimum $30.</span></div>
+        <div><b>Last Min</b><span>Within 24h. Creates a pending fee at $30 per hour.</span></div>
         <div><b>&gt; 24h</b><span>No credit deduction and no fee.</span></div>
     </section>
     """
@@ -33326,7 +33397,7 @@ def parent_schedule():
     {next_card}
     <section class="app-card policy-mini">
         <div><b>No Show</b><span>Within 1 hour or missed lesson. Deduct 1 credit unless waiver is available.</span></div>
-        <div><b>Last Min</b><span>Within 24h. Creates pending fee, minimum $30.</span></div>
+        <div><b>Last Min</b><span>Within 24h. Creates a pending fee at $30 per hour.</span></div>
         <div><b>&gt; 24h</b><span>No credit deduction and no fee.</span></div>
     </section>
     <section class="app-card">
@@ -43509,6 +43580,17 @@ def enrollment_detail(enrollment_id):
     """, (enrollment_id,))
     lessons = cursor.fetchall()
 
+    pending_invoice_charges = hmusic_pending_invoice_charges(cursor, e[1])
+    cursor.execute("""
+    SELECT id, amount
+    FROM invoices
+    WHERE enrollment_id = ?
+    AND LOWER(COALESCE(status, 'unpaid')) IN ('unpaid', 'open', 'payment_failed')
+    ORDER BY id DESC
+    LIMIT 1
+    """, (enrollment_id,))
+    open_invoice = cursor.fetchone()
+
     conn.close()
 
     payment_rows = ""
@@ -43558,6 +43640,43 @@ def enrollment_detail(enrollment_id):
 
     if not invoice_rows:
         invoice_rows = "<tr><td colspan='6'>No invoices yet.</td></tr>"
+
+    pending_charge_total = round(sum(float(row[2] or 0) for row in pending_invoice_charges), 2)
+    pending_charge_rows = ""
+    for charge in pending_invoice_charges:
+        charge_label = "Last-minute cancellation" if charge[1] == "pending_last_min_fee" else "Additional charge"
+        charge_description = (charge[3] or charge_label).split(" | Actor:", 1)[0]
+        pending_charge_rows += f"""
+        <tr>
+            <td>{escape(str(charge[4] or ''))}</td>
+            <td>{escape(charge_label)}</td>
+            <td>{escape(charge_description)}</td>
+            <td>${hmusic_money(charge[2])}</td>
+        </tr>
+        """
+    if not pending_charge_rows:
+        pending_charge_rows = "<tr><td colspan='4'>No pending invoice add-ons.</td></tr>"
+
+    open_invoice_option = ""
+    merge_pending_button = ""
+    if open_invoice:
+        open_invoice_option = f'<option value="open_invoice">Merge into open invoice #{open_invoice[0]} (${hmusic_money(open_invoice[1])})</option>'
+        if pending_charge_total > 0:
+            merge_pending_button = f"""
+            <form method="POST" action="/merge_enrollment_pending_charges/{enrollment_id}" style="margin:0;">
+                <button type="submit" class="save-button">Merge ${hmusic_money(pending_charge_total)} into invoice #{open_invoice[0]}</button>
+            </form>
+            """
+
+    charge_notice = ""
+    if request.args.get("charge_added") == "1":
+        charge_notice = '<p class="charge-success">Additional charge saved.</p>'
+    elif request.args.get("charges_merged") == "1":
+        charge_notice = '<p class="charge-success">Pending charges merged into the open invoice.</p>'
+    elif request.args.get("charge_error") == "invalid":
+        charge_notice = '<p class="charge-error">Enter a description and an amount greater than $0.</p>'
+    elif request.args.get("charge_error") == "no_open_invoice":
+        charge_notice = '<p class="charge-error">No open invoice is available. The charge remains queued for the next tuition invoice.</p>'
 
     lesson_rows = ""
     ledger_rows = ""
@@ -43634,9 +43753,16 @@ def enrollment_detail(enrollment_id):
             .suggested {{ border-radius:999px; background:var(--blue-soft); color:var(--blue-dark); padding:7px 10px; font-size:12px; font-weight:900; white-space:nowrap; }}
             .form-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; align-items:end; }}
             label {{ display:grid; gap:6px; color:#344054; font-size:13px; font-weight:850; }}
-            input {{ width:100%; box-sizing:border-box; min-height:42px; padding:0 11px; border:1px solid #d6dde8; border-radius:8px; font:inherit; font-weight:750; background:#fff; }}
+            input, select, textarea {{ width:100%; box-sizing:border-box; min-height:42px; padding:0 11px; border:1px solid #d6dde8; border-radius:8px; font:inherit; font-weight:750; background:#fff; }}
             .help {{ color:var(--muted); font-size:12px; line-height:1.4; margin-top:12px; }}
             .save-row {{ display:flex; gap:10px; align-items:center; margin-top:16px; flex-wrap:wrap; }}
+            .invoice-addons {{ margin-top:16px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:18px; }}
+            .addon-head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; }}
+            .addon-total {{ color:var(--blue-dark); font-size:15px; font-weight:900; white-space:nowrap; }}
+            .addon-grid {{ display:grid; grid-template-columns:minmax(220px,2fr) minmax(120px,.7fr) minmax(220px,1.4fr) auto; gap:12px; align-items:end; }}
+            .addon-actions {{ display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; margin-top:-8px; }}
+            .charge-success {{ margin-bottom:14px; padding:10px 12px; border:1px solid #a7d7bc; border-radius:8px; background:#effaf3; color:#17643a; font-size:13px; font-weight:800; }}
+            .charge-error {{ margin-bottom:14px; padding:10px 12px; border:1px solid #efb8b8; border-radius:8px; background:#fff4f4; color:#a12626; font-size:13px; font-weight:800; }}
             details.advanced {{ margin-top:16px; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(15,23,42,.04); overflow:hidden; }}
             details.advanced > summary {{ list-style:none; cursor:pointer; padding:16px 18px; font-size:16px; font-weight:900; border-bottom:1px solid var(--line); }}
             details.advanced > summary::-webkit-details-marker {{ display:none; }}
@@ -43652,7 +43778,8 @@ def enrollment_detail(enrollment_id):
                 .page {{ padding:14px; }}
                 .header {{ flex-direction:column; }}
                 .actions {{ justify-content:flex-start; }}
-                .summary, .form-grid, .grid, .detail-lines {{ grid-template-columns:1fr; }}
+                .summary, .form-grid, .addon-grid, .grid, .detail-lines {{ grid-template-columns:1fr; }}
+                .addon-head {{ flex-direction:column; }}
             }}
         </style>
     </head>
@@ -43717,6 +43844,52 @@ def enrollment_detail(enrollment_id):
                                 <span class="muted">Last updated: {escape(str(e[25] or 'Not saved yet'))}</span>
                             </div>
                         </form>
+
+                        <section class="invoice-addons" id="invoice-addons">
+                            <div class="addon-head">
+                                <div>
+                                    <h3>Invoice add-ons</h3>
+                                    <p class="muted">Add one-time charges to this student's next tuition invoice or merge them into an open invoice.</p>
+                                </div>
+                                <div class="addon-total">Pending: ${hmusic_money(pending_charge_total)}</div>
+                            </div>
+                            {charge_notice}
+                            <form method="POST" action="/add_enrollment_invoice_charge/{enrollment_id}">
+                                <div class="addon-grid">
+                                    <label>
+                                        Description
+                                        <input type="text" name="description" maxlength="200" placeholder="Recital fee, materials, adjustment..." required>
+                                    </label>
+                                    <label>
+                                        Amount
+                                        <input type="number" name="amount" min="0.01" step="0.01" placeholder="0.00" required>
+                                    </label>
+                                    <label>
+                                        Add to
+                                        <select name="target">
+                                            <option value="next_invoice">Next tuition invoice</option>
+                                            {open_invoice_option}
+                                        </select>
+                                    </label>
+                                    <button type="submit" class="save-button">Add charge</button>
+                                </div>
+                            </form>
+
+                            <table>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Type</th>
+                                    <th>Description</th>
+                                    <th>Amount</th>
+                                </tr>
+                                {pending_charge_rows}
+                            </table>
+                            <div class="addon-actions">
+                                <strong>Pending total: ${hmusic_money(pending_charge_total)}</strong>
+                                {merge_pending_button}
+                            </div>
+                            <p class="help">Last-minute cancellation fees are queued automatically at $30 per hour. Add-ons change the invoice amount only; they do not add lesson credits or send a parent notification.</p>
+                        </section>
                     </div>
                 </section>
 
@@ -43874,6 +44047,100 @@ def update_enrollment_tuition(enrollment_id):
     conn.close()
 
     return redirect(f"/enrollment/{enrollment_id}{return_to_query}#tuition")
+
+
+@app.route("/add_enrollment_invoice_charge/<int:enrollment_id>", methods=["POST"])
+def add_enrollment_invoice_charge(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    description = (request.form.get("description") or "").strip()
+    target = (request.form.get("target") or "next_invoice").strip()
+    try:
+        amount = round(float(request.form.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        amount = 0
+
+    if not description or amount <= 0:
+        return redirect(f"/enrollment/{enrollment_id}?charge_error=invalid#invoice-addons")
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_name FROM enrollments WHERE id = ?", (enrollment_id,))
+    enrollment = cursor.fetchone()
+    if not enrollment:
+        conn.close()
+        return "<h1>Enrollment not found</h1>", 404
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO student_ledger (
+        student_name,
+        entry_type,
+        amount,
+        description,
+        related_invoice_id,
+        related_payment_id,
+        related_schedule_id,
+        created_at
+    )
+    VALUES (?, 'pending_extra_charge', ?, ?, NULL, NULL, NULL, ?)
+    """, (enrollment[0], amount, description, now))
+
+    merged = False
+    if target == "open_invoice":
+        cursor.execute("""
+        SELECT id
+        FROM invoices
+        WHERE enrollment_id = ?
+        AND LOWER(COALESCE(status, 'unpaid')) IN ('unpaid', 'open', 'payment_failed')
+        ORDER BY id DESC
+        LIMIT 1
+        """, (enrollment_id,))
+        invoice = cursor.fetchone()
+        if invoice:
+            merged = hmusic_attach_pending_invoice_charges(cursor, enrollment[0], invoice[0]) > 0
+
+    conn.commit()
+    conn.close()
+    result = "charges_merged=1" if merged else "charge_added=1"
+    return redirect(f"/enrollment/{enrollment_id}?{result}#invoice-addons")
+
+
+@app.route("/merge_enrollment_pending_charges/<int:enrollment_id>", methods=["POST"])
+def merge_enrollment_pending_charges(enrollment_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_name FROM enrollments WHERE id = ?", (enrollment_id,))
+    enrollment = cursor.fetchone()
+    if not enrollment:
+        conn.close()
+        return "<h1>Enrollment not found</h1>", 404
+
+    cursor.execute("""
+    SELECT id
+    FROM invoices
+    WHERE enrollment_id = ?
+    AND LOWER(COALESCE(status, 'unpaid')) IN ('unpaid', 'open', 'payment_failed')
+    ORDER BY id DESC
+    LIMIT 1
+    """, (enrollment_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return redirect(f"/enrollment/{enrollment_id}?charge_error=no_open_invoice#invoice-addons")
+
+    hmusic_attach_pending_invoice_charges(cursor, enrollment[0], invoice[0])
+    conn.commit()
+    conn.close()
+    return redirect(f"/enrollment/{enrollment_id}?charges_merged=1#invoice-addons")
 
 
 @app.route("/edit_enrollment/<int:enrollment_id>", methods=["GET", "POST"])
@@ -45121,6 +45388,7 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", gra
     """, (enrollment_id, invoice_type))
     existing = cursor.fetchone()
     if existing:
+        hmusic_attach_pending_invoice_charges(cursor, e[1], existing[0])
         return existing[0]
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -45155,7 +45423,9 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", gra
         0 if grant_credit_on_payment else 1
     ))
 
-    return cursor.lastrowid
+    invoice_id = cursor.lastrowid
+    hmusic_attach_pending_invoice_charges(cursor, e[1], invoice_id)
+    return invoice_id
 
 
 def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title):
