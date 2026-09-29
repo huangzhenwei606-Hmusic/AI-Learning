@@ -20437,7 +20437,8 @@ def ensure_postgres_guardian_billing_schema():
     stale_invoice_ids = [row[0] for row in cursor.fetchall()]
     cursor.execute("""
     UPDATE invoice_allocations
-    SET status = 'failed', lock_token = NULL, updated_at = ?
+    SET status = 'unpaid', payment_method = NULL, lock_token = NULL,
+        locked_at = NULL, updated_at = ?
     WHERE status = 'processing'
       AND stripe_checkout_session_id IS NULL
       AND locked_at IS NOT NULL
@@ -20445,6 +20446,16 @@ def ensure_postgres_guardian_billing_schema():
     """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
     for stale_invoice_id in stale_invoice_ids:
         refresh_invoice_status_from_allocations(cursor, stale_invoice_id)
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = 'unpaid', payment_method = NULL, lock_token = NULL,
+        locked_at = NULL, updated_at = ?
+    WHERE invoice_id IN (116, 117)
+      AND status = 'failed'
+      AND stripe_checkout_session_id IS NULL
+    """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
+    for restored_invoice_id in (116, 117):
+        refresh_invoice_status_from_allocations(cursor, restored_invoice_id)
     conn.commit()
     conn.close()
 
@@ -26026,6 +26037,97 @@ def get_saved_stripe_payment_method(cursor, parent_id):
         return None, 0, None, None
 
     return row[0], row[1] or 0, row[2], row[3]
+
+
+def enable_invoice_autopay_from_payment(
+    invoice_id,
+    parent_id,
+    payment_intent_id,
+    customer_id=None,
+    consent_confirmed=False,
+):
+    if not consent_confirmed or not invoice_id or not parent_id or not payment_intent_id or not configure_stripe():
+        return False
+
+    try:
+        payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+        metadata = payment_intent.get("metadata", {}) or {}
+        if (
+            payment_intent.get("status") != "succeeded"
+            or metadata.get("enable_autopay") != "1"
+            or str(metadata.get("invoice_id")) != str(invoice_id)
+            or str(metadata.get("parent_id")) != str(parent_id)
+        ):
+            return False
+        payment_method_id = payment_intent.get("payment_method")
+        customer_id = customer_id or payment_intent.get("customer")
+    except Exception:
+        return False
+
+    if not payment_method_id or not customer_id:
+        return False
+
+    ensure_v321_schema()
+    ensure_billing_schema()
+    ensure_guardian_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT enrollment_id, student_name, charge_lessons
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice or not invoice[0]:
+        conn.close()
+        return False
+
+    billing_rule = ensure_student_billing_rule(cursor, invoice[1])
+    if not billing_rule or int(billing_rule[2] or 0) != int(parent_id):
+        conn.rollback()
+        conn.close()
+        return False
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("""
+    INSERT INTO parent_billing_profiles (
+        parent_id,
+        stripe_customer_id,
+        stripe_payment_method_id,
+        autopay_enabled,
+        ach_enabled,
+        status,
+        notes,
+        created_at,
+        updated_at
+    )
+    VALUES (?, ?, ?, 1, 1, 'connected', ?, ?, ?)
+    ON CONFLICT(parent_id) DO UPDATE SET
+        stripe_customer_id = excluded.stripe_customer_id,
+        stripe_payment_method_id = excluded.stripe_payment_method_id,
+        autopay_enabled = 1,
+        ach_enabled = 1,
+        status = 'connected',
+        notes = excluded.notes,
+        updated_at = excluded.updated_at
+    """, (
+        parent_id,
+        customer_id,
+        payment_method_id,
+        f"AutoPay authorized while paying invoice #{invoice_id}.",
+        now,
+        now,
+    ))
+    cursor.execute("""
+    UPDATE enrollments
+    SET auto_renew_enabled = 1,
+        auto_renew_lessons = ?,
+        updated_at = ?
+    WHERE id = ?
+    """, (invoice[2] or 10, now, invoice[0]))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def finalize_stripe_invoice_payment(
@@ -34291,6 +34393,14 @@ def stripe_webhook():
     if event_type == "payment_intent.succeeded":
         invoice_id = metadata.get("invoice_id")
         if invoice_id:
+            if metadata.get("enable_autopay") == "1":
+                enable_invoice_autopay_from_payment(
+                    invoice_id,
+                    metadata.get("parent_id"),
+                    data_object.get("id"),
+                    customer_id=data_object.get("customer"),
+                    consent_confirmed=True,
+                )
             finalize_stripe_invoice_payment(
                 int(invoice_id),
                 payment_intent_id=data_object.get("id"),
@@ -34583,6 +34693,7 @@ def stripe_invoice_checkout(invoice_id):
     ensure_billing_schema()
     ensure_guardian_billing_schema()
     parent_id = session.get("parent_id")
+    enable_autopay = request.args.get("autopay") == "1"
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -34607,6 +34718,11 @@ def stripe_invoice_checkout(invoice_id):
         return "<h1>Payment permission required</h1>", 403
 
     sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[2], invoice[3])
+    billing_rule = ensure_student_billing_rule(cursor, invoice[1])
+    if enable_autopay and (not billing_rule or int(billing_rule[2] or 0) != int(parent_id or 0)):
+        conn.rollback()
+        conn.close()
+        return "<h1>Only the primary billing guardian can enable AutoPay.</h1>", 403
     cursor.execute("""
     SELECT id, amount, status
     FROM invoice_allocations
@@ -34646,6 +34762,21 @@ def stripe_invoice_checkout(invoice_id):
     try:
         customer_id = get_or_create_stripe_customer(cursor, parent_id)
         conn.commit()
+        payment_metadata = {
+            "invoice_id": str(invoice_id),
+            "parent_id": str(parent_id),
+            "allocation_id": str(allocation_id),
+            "payment_method": "ach",
+            "enable_autopay": "1" if enable_autopay else "0",
+            "base_amount": hmusic_money(charge_amount),
+            "processing_fee": "0.00",
+            "total_charged": hmusic_money(charge_amount),
+            "processing_fee_paid_by": "hmusic",
+        }
+        payment_intent_data = {"metadata": payment_metadata}
+        if enable_autopay:
+            payment_intent_data["setup_future_usage"] = "off_session"
+
         checkout_session = stripe.checkout.Session.create(
             mode="payment",
             customer=customer_id,
@@ -34663,28 +34794,8 @@ def stripe_invoice_checkout(invoice_id):
             }],
             success_url=public_url_for("/stripe/invoice/success") + f"?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=public_url_for(f"/parent_invoice/{invoice_id}?cancelled=1"),
-            metadata={
-                "invoice_id": str(invoice_id),
-                "parent_id": str(parent_id),
-                "allocation_id": str(allocation_id),
-                "payment_method": "ach",
-                "base_amount": hmusic_money(charge_amount),
-                "processing_fee": "0.00",
-                "total_charged": hmusic_money(charge_amount),
-                "processing_fee_paid_by": "hmusic",
-            },
-            payment_intent_data={
-                "metadata": {
-                    "invoice_id": str(invoice_id),
-                    "parent_id": str(parent_id),
-                    "allocation_id": str(allocation_id),
-                    "payment_method": "ach",
-                    "base_amount": hmusic_money(charge_amount),
-                    "processing_fee": "0.00",
-                    "total_charged": hmusic_money(charge_amount),
-                    "processing_fee_paid_by": "hmusic",
-                }
-            }
+            metadata=payment_metadata,
+            payment_intent_data=payment_intent_data,
         )
         cursor.execute("""
         UPDATE invoice_allocations
@@ -34720,7 +34831,8 @@ def stripe_invoice_checkout(invoice_id):
         conn.rollback()
         cursor.execute("""
         UPDATE invoice_allocations
-        SET status = 'failed', lock_token = NULL, updated_at = ?
+        SET status = 'unpaid', payment_method = NULL, lock_token = NULL,
+            locked_at = NULL, updated_at = ?
         WHERE id = ? AND lock_token = ?
         """, (datetime.now().strftime("%Y-%m-%d %H:%M"), allocation_id, lock_token))
         refresh_invoice_status_from_allocations(cursor, invoice_id)
@@ -35047,6 +35159,12 @@ def parent_invoice(invoice_id):
         own_allocation
         and parent_has_student_permission(parent_id, invoice[1], "pay")
     )
+    can_enable_autopay = bool(
+        can_pay_invoice
+        and billing_rule
+        and int(billing_rule[2] or 0) == int(parent_id or 0)
+        and invoice[7]
+    )
     cursor.execute("""
     SELECT ia.id, ia.parent_id, COALESCE(pp.parent_name, 'Guardian'), ia.amount,
            COALESCE(ia.status, 'unpaid')
@@ -35283,6 +35401,14 @@ def parent_invoice(invoice_id):
             """)
 
         if "ach" in allowed_methods and stripe_is_configured():
+            autopay_consent_html = ""
+            if can_enable_autopay:
+                autopay_consent_html = f"""
+                    <label class="autopay-consent">
+                        <input type="checkbox" name="autopay" value="1">
+                        <span><b>Use AutoPay for future tuition</b><small>Save this bank account and authorize H-Music to automatically charge future tuition invoices for {escape(str(invoice[1]))}. You can turn AutoPay off later.</small></span>
+                    </label>
+                """
             payment_choices.append(f"""
                 <div class="payment-choice">
                     <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
@@ -35290,7 +35416,11 @@ def parent_invoice(invoice_id):
                     <div class="pay-summary">
                         <span>Your amount due</span><b>${hmusic_money(own_amount)}</b>
                     </div>
-                    <a class="button primary-action" href="/stripe/invoice/{invoice_id}/checkout?method=ach">Pay by ACH</a>
+                    <form method="GET" action="/stripe/invoice/{invoice_id}/checkout">
+                        <input type="hidden" name="method" value="ach">
+                        {autopay_consent_html}
+                        <button class="primary-action" type="submit">Continue to secure ACH</button>
+                    </form>
                 </div>
             """)
         elif "ach" in allowed_methods:
@@ -35351,6 +35481,10 @@ def parent_invoice(invoice_id):
             .account-box {{ background:#f5f7fb; border-radius:12px; padding:9px; font-weight:900; margin:8px 0; display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; font-size:12px; }}
             .copy-account-text {{ word-break:break-all; }}
             input, select, textarea {{ width:100%; min-height:44px; padding:10px 12px; margin:8px 0; font-size:15px; border:1px solid #d1d5db; border-radius:12px; }}
+            .autopay-consent {{ display:grid; grid-template-columns:22px 1fr; gap:10px; align-items:start; margin:12px 0 4px; padding:11px; border:1px solid #c7d2fe; border-radius:12px; background:#eef2ff; cursor:pointer; }}
+            .autopay-consent input {{ width:20px; min-height:20px; margin:1px 0 0; accent-color:#5747e8; }}
+            .autopay-consent span {{ display:grid; gap:3px; font-size:13px; line-height:1.3; }}
+            .autopay-consent small {{ color:#4b5563; font-size:12px; line-height:1.35; }}
             textarea {{ min-height:64px; resize:vertical; }}
             button, a.button {{ display:inline-block; border:none; border-radius:13px; padding:11px 14px; font-weight:900; text-decoration:none; min-height:42px; font-size:14px; }}
             button {{ background:#eef2ff; color:#5747e8; }}
