@@ -20142,6 +20142,7 @@ def ensure_v27_schema():
 
     conn.commit()
     conn.close()
+    ensure_parent_access_tracking_schema()
     _v27_schema_ready = True
 
 
