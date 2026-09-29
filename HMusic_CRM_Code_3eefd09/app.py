@@ -2295,7 +2295,17 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 <label>Format<select name="lesson_format" id="teacherLessonFormat" onchange="syncTeacherLessonFormat()"><option value="private">Private</option><option value="group">Group</option></select></label>
                 <input type="hidden" name="billing_decision" value="existing_credits">
                 <label class="full">Custom Duration<input type="number" name="custom_duration" placeholder="Only for Custom Program"></label>
-                <label class="full" id="teacherGroupStudentsField">Group Students<textarea id="teacherGroupStudentNames" name="group_student_names" placeholder="For group classes, list at least two names here."></textarea></label>
+                <div class="full teacher-add-group-roster" id="teacherGroupStudentsField">
+                    <span class="teacher-group-roster-label">Group Students</span>
+                    <div class="teacher-add-group-head"><span>Student</span><span>Status</span><span></span></div>
+                    <div id="teacherGroupStudentRows">
+                        <div class="teacher-add-group-row"><input name="group_student_name" list="teacherStudentList" placeholder="Search student"><select name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select><input type="hidden" name="group_credit_units" value="1"><button type="button" class="teacher-group-row-remove" onclick="removeTeacherScheduleGroupRow(this)" title="Remove student">&times;</button></div>
+                        <div class="teacher-add-group-row"><input name="group_student_name" list="teacherStudentList" placeholder="Search student"><select name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select><input type="hidden" name="group_credit_units" value="1"><button type="button" class="teacher-group-row-remove" onclick="removeTeacherScheduleGroupRow(this)" title="Remove student">&times;</button></div>
+                    </div>
+                    <button type="button" class="teacher-group-row-add" onclick="addTeacherScheduleGroupRow()">+ Add student</button>
+                    <input type="hidden" name="group_size" id="teacherGroupSize">
+                    <input type="hidden" name="group_student_names" id="teacherGroupStudentNames">
+                </div>
                 <div class="full"><button type="submit">Create Schedule</button></div>
             </form>
         </section>
@@ -2324,6 +2334,14 @@ def teacher_dashboard_add_schedule_content(teacher_name):
             .duration-request-card {{ margin-top:14px; }}
             .duration-request-card h2 {{ margin:0 0 6px; font-size:18px; }}
             .td-note {{ color:var(--td-muted); margin:0 0 14px; line-height:1.45; }}
+            .teacher-group-roster-label {{ display:block; color:var(--td-muted); font-weight:600; margin-bottom:6px; }}
+            .teacher-add-group-head,.teacher-add-group-row {{ display:grid; grid-template-columns:minmax(0,1fr) 170px 40px; gap:8px; align-items:center; }}
+            .teacher-add-group-head {{ padding:0 4px 4px; color:var(--td-muted); font-size:12px; font-weight:800; text-transform:uppercase; }}
+            .teacher-add-group-row {{ margin-bottom:8px; }}
+            .teacher-add-group-row input,.teacher-add-group-row select {{ margin-top:0; }}
+            .teacher-group-row-remove {{ width:40px; height:40px; padding:0 !important; border:1px solid #fecaca !important; background:#fff !important; color:#b42318 !important; font-size:20px; }}
+            .teacher-group-row-add {{ margin-top:2px; background:#fff !important; color:var(--td-blue) !important; border:1px solid #bfdbfe !important; }}
+            @media(max-width:640px) {{ .teacher-add-group-head {{ display:none; }} .teacher-add-group-row {{ grid-template-columns:minmax(0,1fr) 132px 40px; }} }}
         </style>
         <script>
             const TEACHER_ADD_SCHEDULE_COURSES = {course_data_json};
@@ -2336,15 +2354,37 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 const format = document.getElementById('teacherLessonFormat');
                 return teacherCourseIsGroup() || (format && format.value === 'group');
             }}
+            function teacherScheduleGroupRowTemplate() {{
+                return `<div class="teacher-add-group-row"><input name="group_student_name" list="teacherStudentList" placeholder="Search student"><select name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select><input type="hidden" name="group_credit_units" value="1"><button type="button" class="teacher-group-row-remove" onclick="removeTeacherScheduleGroupRow(this)" title="Remove student">&times;</button></div>`;
+            }}
+            function addTeacherScheduleGroupRow() {{
+                const rows = document.getElementById('teacherGroupStudentRows');
+                if (rows) rows.insertAdjacentHTML('beforeend', teacherScheduleGroupRowTemplate());
+            }}
+            function removeTeacherScheduleGroupRow(button) {{
+                const rows = document.getElementById('teacherGroupStudentRows');
+                if (!rows || rows.children.length <= 2) return;
+                const row = button.closest('.teacher-add-group-row');
+                if (row) row.remove();
+                syncTeacherScheduleGroupFields();
+            }}
+            function syncTeacherScheduleGroupFields() {{
+                const rows = document.getElementById('teacherGroupStudentRows');
+                const names = rows ? Array.from(rows.querySelectorAll('input[name="group_student_name"]')).map(input => input.value.trim()).filter(Boolean) : [];
+                const uniqueNames = Array.from(new Set(names.map(name => name.toLowerCase())));
+                const hiddenNames = document.getElementById('teacherGroupStudentNames');
+                const hiddenSize = document.getElementById('teacherGroupSize');
+                if (hiddenNames) hiddenNames.value = names.join(', ');
+                if (hiddenSize) hiddenSize.value = String(uniqueNames.length);
+                return uniqueNames;
+            }}
             function syncTeacherLessonFormat() {{
                 const format = document.getElementById('teacherLessonFormat');
                 const field = document.getElementById('teacherGroupStudentsField');
-                const names = document.getElementById('teacherGroupStudentNames');
                 const student = document.getElementById('student_name');
                 if (format && teacherCourseIsGroup()) format.value = 'group';
                 const isGroup = teacherIsGroupLesson();
                 if (field) field.style.display = isGroup ? 'block' : 'none';
-                if (names && !isGroup) names.value = '';
                 if (student) student.required = !isGroup;
             }}
             function selectedTeacherAddScheduleCourse() {{
@@ -2382,13 +2422,14 @@ def teacher_dashboard_add_schedule_content(teacher_name):
             const teacherScheduleForm = document.querySelector('form[action="/add_schedule"]');
             if (teacherScheduleForm) teacherScheduleForm.addEventListener('submit', function(e) {{
                 if (!teacherIsGroupLesson()) return;
-                const namesInput = document.getElementById('teacherGroupStudentNames');
-                const names = (namesInput ? namesInput.value : '').split(',').map(name => name.trim()).filter(Boolean);
-                if (Array.from(new Set(names)).length < 2) {{
+                const names = syncTeacherScheduleGroupFields();
+                if (names.length < 2) {{
                     e.preventDefault();
                     alert('Group class needs at least two different students.');
                 }}
             }});
+            const teacherGroupRows = document.getElementById('teacherGroupStudentRows');
+            if (teacherGroupRows) teacherGroupRows.addEventListener('input', syncTeacherScheduleGroupFields);
             syncTeacherLessonFormat();
         </script>
     """
@@ -9911,13 +9952,13 @@ def calendar():
                 <tbody id="popGroupStudentRows">
                   <tr>
                     <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
-                    <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
+                    <td><select class="pop-sel group-attendance" name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select></td>
                     <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
                     <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
                   </tr>
                   <tr>
                     <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
-                    <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
+                    <td><select class="pop-sel group-attendance" name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select></td>
                     <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
                     <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
                   </tr>
@@ -10835,7 +10876,7 @@ def calendar():
       return `
         <tr>
           <td><input class="pop-inp group-student-name" name="group_student_name" list="popStudentList" placeholder="Student"></td>
-          <td><select class="pop-sel group-attendance"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="excused_24h">Cancel >24h</option></select></td>
+          <td><select class="pop-sel group-attendance" name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select></td>
           <td><input class="pop-inp group-credit" name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
           <td><button class="group-remove" type="button" onclick="removeGroupStudentRow(this)">&times;</button></td>
         </tr>`;
@@ -11539,6 +11580,11 @@ def add_schedule():
         raw_group_credits = request.form.getlist("group_credit_units")
         raw_group_rates = request.form.getlist("group_student_rate")
         raw_group_rules = request.form.getlist("group_billing_rule")
+        raw_group_statuses = request.form.getlist("group_attendance_status")
+        allowed_group_statuses = {
+            "scheduled", "present", "no_show", "last_min_cancel",
+            "excused_24h", "teacher_cancelled",
+        }
         group_participants = []
         seen_group_students = set()
         for idx, raw_name in enumerate(raw_group_names):
@@ -11562,11 +11608,15 @@ def add_schedule():
                 billing_rule = "existing_credits"
             if billing_rule not in ("existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge"):
                 billing_rule = "existing_credits"
+            attendance_status = (raw_group_statuses[idx] if idx < len(raw_group_statuses) else "scheduled") or "scheduled"
+            if attendance_status not in allowed_group_statuses:
+                attendance_status = "scheduled"
             group_participants.append({
                 "student_name": participant_name,
                 "credit_units": credit_units,
                 "student_rate": round(student_rate_value, 2),
                 "billing_rule": billing_rule,
+                "attendance_status": attendance_status,
             })
         schedule_note = ""
         if allow_unassigned_teacher_schedule:
@@ -11631,6 +11681,7 @@ def add_schedule():
                     "credit_units": 1,
                     "student_rate": 0,
                     "billing_rule": billing_decision if billing_decision in ("existing_credits", "invoice_later", "auto_invoice_per_lesson", "makeup_credit", "no_charge") else "existing_credits",
+                    "attendance_status": "scheduled",
                 }
                 for name in parsed_names
             ]
@@ -11836,7 +11887,7 @@ def add_schedule():
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         schedule_id,
                         participant["student_name"],
@@ -11845,6 +11896,7 @@ def add_schedule():
                         participant_rate,
                         participant["billing_rule"],
                         billing_status,
+                        participant["attendance_status"],
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
                     ))
@@ -14001,12 +14053,19 @@ def teacher_dashboard():
     .teacher-add-student-tools{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.teacher-add-secondary{border:1px solid #B8CCE3;background:#EFF6FF;color:var(--blue);border-radius:8px;padding:8px 10px;font:inherit;font-size:12px;font-weight:900;cursor:pointer}.teacher-add-secondary.active{background:var(--blue);border-color:var(--blue);color:#fff}.teacher-add-mode-note{display:none;margin-top:8px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:800;line-height:1.35}.teacher-add-mode-note.show{display:block}
     .teacher-course-duration-action{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:9px;border:1px dashed #B8CCE3;background:#F8FBFF;color:var(--blue);border-radius:8px;padding:10px 12px;font:inherit;font-weight:900;cursor:pointer}.teacher-course-duration-action:hover{background:var(--blue-bg)}.teacher-duration-quick{display:none;margin-top:10px;padding:12px;border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC}.teacher-duration-quick.show{display:block}
     .teacher-add-textarea{min-height:92px;resize:vertical;font-weight:700}
+    .teacher-inline-group-roster{border:1px solid #D9DEE8;border-radius:8px;background:#F8FAFC;padding:12px}
+    .teacher-inline-group-head,.teacher-inline-group-row{display:grid;grid-template-columns:minmax(0,1fr) 160px 38px;gap:8px;align-items:center}
+    .teacher-inline-group-head{padding:0 3px 5px;color:#667085;font-size:11px;font-weight:900;text-transform:uppercase}
+    .teacher-inline-group-row{margin-bottom:8px}
+    .teacher-inline-group-row .teacher-add-input,.teacher-inline-group-row .teacher-add-select{min-width:0}
+    .teacher-inline-group-remove{width:38px;height:42px;border:1px solid #F2C7C7;border-radius:8px;background:#fff;color:#B42318;font-size:20px;cursor:pointer}
+    .teacher-inline-group-add{border:1px solid #B8CCE3;border-radius:8px;background:#fff;color:var(--blue);padding:9px 12px;font:inherit;font-size:13px;font-weight:900;cursor:pointer}
     .teacher-add-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #E5E7EB}
     .teacher-add-actions button,.teacher-add-actions a{border:1px solid #D9DEE8;border-radius:8px;padding:11px 16px;font:inherit;font-weight:900;text-decoration:none;cursor:pointer}
     .teacher-add-cancel{background:#fff;color:#172033}
     .teacher-add-submit{background:var(--blue);border-color:var(--blue)!important;color:#fff}
     .teacher-add-note{border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:10px;padding:10px 12px;font-weight:800;line-height:1.4}
-    @media(max-width:780px){.teacher-add-grid{grid-template-columns:1fr}.teacher-add-full{grid-column:auto}.teacher-add-actions{display:grid}.teacher-add-actions button,.teacher-add-actions a{width:100%;text-align:center}}
+    @media(max-width:780px){.teacher-add-grid{grid-template-columns:1fr}.teacher-add-full{grid-column:auto}.teacher-add-actions{display:grid}.teacher-add-actions button,.teacher-add-actions a{width:100%;text-align:center}.teacher-inline-group-head{display:none}.teacher-inline-group-row{grid-template-columns:minmax(0,1fr) 130px 38px}}
     .lesson-scrim{position:fixed;inset:0;background:rgba(17,24,39,.42);display:none;z-index:1100}.lesson-scrim.show{display:block}
     .lesson-panel{position:fixed;top:0;right:0;bottom:0;width:min(560px,100vw);background:#fff;color:#172033;z-index:1101;transform:translateX(104%);transition:transform .18s ease;box-shadow:-22px 0 46px rgba(15,23,42,.18);display:flex;flex-direction:column;border-left:1px solid #E5E7EB}.lesson-panel.show{transform:translateX(0)}
     .lesson-panel-scroll{overflow:auto;padding-bottom:16px;background:#fff}.lesson-panel-head{padding:24px 28px 18px;border-bottom:1px solid #E5E7EB;position:relative;background:#fff}.lesson-panel-close{position:absolute;right:20px;top:18px;width:40px;height:40px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;color:#667085;font-size:22px;cursor:pointer}.lesson-panel-close:hover{background:#F3F6FA;color:#172033}
@@ -14503,10 +14562,17 @@ def teacher_dashboard():
                                 <span class="teacher-add-label">Custom Count</span>
                                 <input class="teacher-add-input" type="number" name="custom_lesson_count" id="teacherInlineCustomCount" min="1" max="260" placeholder="Only if custom" disabled>
                             </label>
-                            <label class="teacher-add-full" id="teacherInlineGroupStudentsField" style="display:none">
+                            <div class="teacher-add-full teacher-inline-group-roster" id="teacherInlineGroupStudentsField" style="display:none">
                                 <span class="teacher-add-label">Group Students</span>
-                                <textarea class="teacher-add-textarea" id="teacherInlineGroupStudents" name="group_student_names" placeholder="For group classes, list at least two student names separated by commas."></textarea>
-                            </label>
+                                <div class="teacher-inline-group-head"><span>Student</span><span>Status</span><span></span></div>
+                                <div id="teacherInlineGroupStudentRows">
+                                    <div class="teacher-inline-group-row"><input class="teacher-add-input" name="group_student_name" list="teacherInlineStudentList" placeholder="Search student"><select class="teacher-add-select" name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select><input type="hidden" name="group_credit_units" value="1"><button class="teacher-inline-group-remove" type="button" onclick="teacherRemoveInlineGroupStudentRow(this)" title="Remove student">&times;</button></div>
+                                    <div class="teacher-inline-group-row"><input class="teacher-add-input" name="group_student_name" list="teacherInlineStudentList" placeholder="Search student"><select class="teacher-add-select" name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select><input type="hidden" name="group_credit_units" value="1"><button class="teacher-inline-group-remove" type="button" onclick="teacherRemoveInlineGroupStudentRow(this)" title="Remove student">&times;</button></div>
+                                </div>
+                                <button class="teacher-inline-group-add" type="button" onclick="teacherAddInlineGroupStudentRow()">+ Add student</button>
+                                <input type="hidden" name="group_size" id="teacherInlineGroupSize">
+                                <input type="hidden" name="group_student_names" id="teacherInlineGroupStudentNames">
+                            </div>
                             <div class="teacher-add-full teacher-add-note">Billing stays owner-managed. This adds the schedule from the teacher calendar and uses existing credits unless owner changes billing later.</div>
                         </div>
                         <div class="teacher-add-actions">
@@ -14854,10 +14920,33 @@ def teacher_dashboard():
             const format = document.getElementById('teacherInlineLessonFormat');
             return teacherInlineCourseIsGroup() || (format && format.value === 'group');
         }}
+        function teacherInlineGroupStudentRowTemplate() {{
+            return `<div class="teacher-inline-group-row"><input class="teacher-add-input" name="group_student_name" list="teacherInlineStudentList" placeholder="Search student"><select class="teacher-add-select" name="group_attendance_status"><option value="scheduled">Scheduled</option><option value="present">Present</option><option value="no_show">No show</option><option value="last_min_cancel">Last min cancel</option><option value="excused_24h">Cancel &gt;24h</option><option value="teacher_cancelled">Teacher cancelled</option></select><input type="hidden" name="group_credit_units" value="1"><button class="teacher-inline-group-remove" type="button" onclick="teacherRemoveInlineGroupStudentRow(this)" title="Remove student">&times;</button></div>`;
+        }}
+        function teacherAddInlineGroupStudentRow() {{
+            const rows = document.getElementById('teacherInlineGroupStudentRows');
+            if (rows) rows.insertAdjacentHTML('beforeend', teacherInlineGroupStudentRowTemplate());
+        }}
+        function teacherRemoveInlineGroupStudentRow(button) {{
+            const rows = document.getElementById('teacherInlineGroupStudentRows');
+            if (!rows || rows.children.length <= 2) return;
+            const row = button.closest('.teacher-inline-group-row');
+            if (row) row.remove();
+            syncTeacherInlineGroupFields();
+        }}
+        function syncTeacherInlineGroupFields() {{
+            const rows = document.getElementById('teacherInlineGroupStudentRows');
+            const names = rows ? Array.from(rows.querySelectorAll('input[name="group_student_name"]')).map(input => input.value.trim()).filter(Boolean) : [];
+            const uniqueNames = Array.from(new Set(names.map(name => name.toLowerCase())));
+            const hiddenNames = document.getElementById('teacherInlineGroupStudentNames');
+            const hiddenSize = document.getElementById('teacherInlineGroupSize');
+            if (hiddenNames) hiddenNames.value = names.join(', ');
+            if (hiddenSize) hiddenSize.value = String(uniqueNames.length);
+            return uniqueNames;
+        }}
         function syncTeacherInlineAddFormat() {{
             const format = document.getElementById('teacherInlineLessonFormat');
             const groupField = document.getElementById('teacherInlineGroupStudentsField');
-            const groupNames = document.getElementById('teacherInlineGroupStudents');
             const studentField = document.getElementById('teacherAddStudentField');
             const student = document.getElementById('teacherAddStudent');
             if (format && teacherInlineCourseIsGroup()) format.value = 'group';
@@ -14869,7 +14958,6 @@ def teacher_dashboard():
                 if (isGroup) student.value = '';
             }}
             if (isGroup) teacherResetTypedStudentMode();
-            if (groupNames && !isGroup) groupNames.value = '';
         }}
         function syncTeacherInlinePackage() {{
             const packageType = document.getElementById('teacherInlinePackageType');
@@ -14961,13 +15049,14 @@ def teacher_dashboard():
         if (teacherAddStudentInput) teacherAddStudentInput.addEventListener('input', teacherResetTypedStudentMode);
         if (teacherInlineAddScheduleForm) teacherInlineAddScheduleForm.addEventListener('submit', function(e) {{
             if (!teacherInlineIsGroupLesson()) return;
-            const namesInput = document.getElementById('teacherInlineGroupStudents');
-            const names = (namesInput ? namesInput.value : '').split(',').map(name => name.trim()).filter(Boolean);
-            if (Array.from(new Set(names)).length < 2) {{
+            const names = syncTeacherInlineGroupFields();
+            if (names.length < 2) {{
                 e.preventDefault();
                 alert('Group class needs at least two different students.');
             }}
         }});
+        const teacherInlineGroupRows = document.getElementById('teacherInlineGroupStudentRows');
+        if (teacherInlineGroupRows) teacherInlineGroupRows.addEventListener('input', syncTeacherInlineGroupFields);
         syncTeacherInlineAddFormat();
         syncTeacherInlinePackage();
         syncTeacherInlineRoom();
