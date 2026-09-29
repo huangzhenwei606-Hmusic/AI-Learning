@@ -181,7 +181,7 @@ CHECKS = {
     "postgres guardian schema migration": "def ensure_postgres_guardian_billing_schema():",
     "postgres guardian permission migration": "ALTER TABLE parent_students ADD COLUMN IF NOT EXISTS",
     "postgres parent billing uniqueness migration": "CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_billing_profiles_parent_id",
-    "guardian schema runs during startup": "ensure_guardian_billing_schema()\n    conn = sqlite3.connect(\"hmusic.db\", timeout=15)",
+    "guardian schema runs during startup": "ensure_guardian_billing_schema()\n    merge_known_duplicate_private_lesson_30()",
     "guardian permission schema": '"can_manage_schedule", "can_manage_schedule INTEGER DEFAULT 1"',
     "guardian billing visibility permission": 'parent_has_student_permission(parent_id, invoice[1], "view_billing")',
     "student billing rules table": "CREATE TABLE IF NOT EXISTS student_billing_rules",
@@ -205,6 +205,12 @@ CHECKS = {
     "owner confirms individual zelle share": 'name="action" value="confirm_allocation"',
     "schedule request permission": 'parent_has_student_permission(parent_id, student_name, "manage_schedule")',
     "billing methods ACH and zelle only": 'allowed_methods &= {"ach", "zelle"}',
+    "verified duplicate private course merge": "def merge_known_duplicate_private_lesson_30():",
+    "duplicate private enrollments use canonical course": "SET course_type_id = 1,\n            course_type_name = 'Private Lesson'",
+    "duplicate private course is deactivated": "WHERE id = 11\n          AND lower(trim(name)) = 'private lesson'",
+    "private duration creation stays private": 'if normalized_name == "private lesson":\n        is_group = 0',
+    "group duration creation stays group": 'elif normalized_name in ("group class", "piano group class"):',
+    "course duplicate merge runs at startup": "merge_known_duplicate_private_lesson_30()\n    conn = sqlite3.connect(\"hmusic.db\", timeout=15)",
 }
 
 

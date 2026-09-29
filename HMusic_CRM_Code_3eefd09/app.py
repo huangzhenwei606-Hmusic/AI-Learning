@@ -40323,6 +40323,61 @@ def ensure_v18_schema():
     conn.close()
 
 
+def merge_known_duplicate_private_lesson_30():
+    """Merge the verified production duplicate course type 11 into course type 1."""
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+        SELECT id, name, duration, COALESCE(is_group, 0), COALESCE(active, 1)
+        FROM course_types
+        WHERE id IN (1, 11)
+        ORDER BY id
+        """)
+        rows = {int(row[0]): row for row in cursor.fetchall()}
+        canonical = rows.get(1)
+        duplicate = rows.get(11)
+        if not canonical or not duplicate:
+            return
+        canonical_matches = (
+            str(canonical[1] or "").strip().lower() == "private lesson"
+            and int(canonical[2] or 0) == 30
+            and int(canonical[3] or 0) == 0
+        )
+        duplicate_matches = (
+            str(duplicate[1] or "").strip().lower() == "private lesson"
+            and int(duplicate[2] or 0) == 30
+            and int(duplicate[3] or 0) == 1
+            and int(duplicate[4] or 0) == 1
+        )
+        if not canonical_matches or not duplicate_matches:
+            return
+
+        cursor.execute("""
+        UPDATE enrollments
+        SET course_type_id = 1,
+            course_type_name = 'Private Lesson',
+            duration = 30,
+            updated_at = ?
+        WHERE course_type_id = 11
+          AND lower(trim(COALESCE(course_type_name, ''))) = 'private lesson'
+          AND COALESCE(duration, 0) = 30
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
+        cursor.execute("""
+        UPDATE course_types
+        SET active = 0,
+            is_group = 0,
+            updated_at = ?
+        WHERE id = 11
+          AND lower(trim(name)) = 'private lesson'
+          AND COALESCE(duration, 0) = 30
+          AND COALESCE(is_group, 0) = 1
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M"),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ensure_course_duration_request_schema():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -40373,7 +40428,13 @@ def create_course_duration_from_base(cursor, course_type_id, requested_duration,
         return None
 
     base_name = base_course[0] or "Course"
-    is_group = 1 if (lesson_format == "group" or base_course[5]) else 0
+    normalized_name = " ".join(base_name.lower().split())
+    if normalized_name == "private lesson":
+        is_group = 0
+    elif normalized_name in ("group class", "piano group class"):
+        is_group = 1
+    else:
+        is_group = 1 if (lesson_format == "group" or base_course[5]) else 0
 
     cursor.execute("""
     SELECT id
@@ -48047,6 +48108,7 @@ def initialize_runtime_database():
                 schema_initializer()
     ensure_event_room_booking_schema()
     ensure_guardian_billing_schema()
+    merge_known_duplicate_private_lesson_30()
     conn = sqlite3.connect("hmusic.db", timeout=15)
     conn.execute("SELECT 1").fetchone()
     conn.close()
