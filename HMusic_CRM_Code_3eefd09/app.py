@@ -13934,11 +13934,14 @@ def teacher_dashboard():
     .calendar-event{cursor:grab;user-select:none}
     .calendar-event.dragging{opacity:.35}
     .calendar-grid.multi-select-on .calendar-event{cursor:pointer}
+    .teacher-mobile-calendar.multi-select-on .calendar-event{cursor:pointer}
     .calendar-event.multi-selected{outline:2px solid var(--blue);box-shadow:0 0 0 3px rgba(24,95,165,.14)}
     .teacher-select-box{display:none;position:absolute;right:5px;top:5px;z-index:2;background:rgba(255,255,255,.94);border:1px solid #D9DEE8;border-radius:6px;padding:2px}
     .teacher-select-input{width:15px;height:15px;margin:0;accent-color:var(--blue)}
     .calendar-grid.multi-select-on .teacher-select-box{display:flex}
     .calendar-grid.multi-select-on .event-status-form{display:none}
+    .teacher-mobile-calendar.multi-select-on .teacher-select-box{display:flex}
+    .teacher-mobile-calendar.multi-select-on .event-status-form{display:none}
     .event-top{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:1px}
     .event-time{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:2px;font-size:9px;line-height:1;color:#0F172A;font-weight:800;white-space:nowrap}
     .event-student{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827!important;font-size:10px!important;font-weight:900!important;line-height:1.05!important;margin:1px 0 0}
@@ -14035,11 +14038,17 @@ def teacher_dashboard():
       .teacher-mobile-lesson-list{display:grid;gap:8px}
       .teacher-mobile-lesson-list .calendar-event{margin:0}
       .teacher-mobile-empty{padding:28px 12px;border-top:1px solid var(--td-line);color:#667085;text-align:center;font-size:13px}
-      .schedule-controls>a,.schedule-controls>form,.teacher-multi-toggle{display:none}
-      .schedule-controls{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+      .schedule-controls>a,.schedule-controls>form{display:none}
+      .schedule-controls{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px}
       .schedule-tabs{display:grid;grid-template-columns:1fr 1fr}
       .schedule-tabs a{text-align:center;min-height:42px;display:grid;place-items:center}
       .teacher-tab-prefix{display:none}
+      .teacher-multi-toggle{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:42px;padding:0 11px;white-space:nowrap}
+      .teacher-mobile-calendar.multi-select-on .teacher-select-box{right:10px;top:10px;padding:7px}
+      .teacher-mobile-calendar.multi-select-on .teacher-select-input{width:20px;height:20px}
+      .teacher-multi-bar.show{display:grid;grid-template-columns:1fr 1fr;position:sticky;top:0;margin:0 -4px 10px}
+      .teacher-multi-count{grid-column:1 / -1}
+      .teacher-multi-bar select,.teacher-multi-bar button{width:100%;min-width:0}
       #teacherMobileAddButton{min-height:42px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
       .calendar-day,.calendar-grid.month-view .calendar-day,.calendar-grid.week-view .calendar-day{min-height:0;border:1px solid var(--td-line);border-radius:8px;padding:10px;background:#fff}
       .calendar-grid.month-view .calendar-day.no-lessons{display:none}
@@ -14084,7 +14093,7 @@ def teacher_dashboard():
         event_title = (lesson[12] or "Group lesson") if is_group_lesson else (lesson[3] or "-")
         return f"""
         <div class="calendar-event{event_class}"
-             draggable="true" style="border-left-width:3px;{course_style}" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();"
+             draggable="true" style="border-left-width:3px;{course_style}" onclick="teacherHandleLessonCardClick(this, {lesson[0]}, event);"
              data-id="{lesson[0]}" data-date="{escape(str(lesson[1] or ''))}"
              data-time="{escape(str(lesson[2] or ''))}"
             data-student="{escape(str(lesson[3] or ''))}"
@@ -14102,7 +14111,7 @@ def teacher_dashboard():
                     <button type="submit" aria-hidden="true" tabindex="-1">Save</button>
                 </form>
             </div>
-            <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="openTeacherLessonPanel({lesson[0]}); event.stopPropagation();">{escape(event_title)}</button>
+            <button type="button" class="event-student" style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer" onclick="teacherHandleLessonCardClick(this.closest('.calendar-event'), {lesson[0]}, event);">{escape(event_title)}</button>
             <div class="event-line">{escape(teacher_location_room_label(lesson[14] if len(lesson) > 14 else '', lesson[4]))} · {escape(lesson[10] or '')}</div>
             {cancel_result}
         </div>
@@ -14385,7 +14394,7 @@ def teacher_dashboard():
                         <a class="{month_active}" href="/teacher_dashboard?view=schedule&mode=month&month={selected_month}"><span class="teacher-tab-prefix">This </span>Month</a>
                     </div>
                     {mobile_add_button}
-                    <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" onclick="teacherMultiToggle()">Multi-Select</button>
+                    <button type="button" class="teacher-multi-toggle" id="teacherMultiToggle" aria-pressed="false" onclick="teacherMultiToggle()"><i class="ti ti-checkbox"></i> Select</button>
                     {controls}
                 </div>
             </div>
@@ -14563,6 +14572,17 @@ def teacher_dashboard():
         let teacherPanelRoomChanged = false;
         let teacherGroupNameBaseline = '';
         let teacherGroupRosterDirty = false;
+        function teacherHandleLessonCardClick(card, scheduleId, event) {{
+            if (event) event.stopPropagation();
+            if (!teacherMultiOn) {{
+                openTeacherLessonPanel(scheduleId);
+                return;
+            }}
+            const checkbox = card ? card.querySelector('.teacher-select-input') : null;
+            if (!checkbox) return;
+            checkbox.checked = !checkbox.checked;
+            teacherMultiUpdate();
+        }}
         function teacherSelectMobileDate(dateStr) {{
             document.querySelectorAll('.teacher-mobile-date[data-date]').forEach(button => {{
                 const selected = button.dataset.date === dateStr;
@@ -14765,7 +14785,7 @@ def teacher_dashboard():
 
         let teacherDrag = null;
         function teacherMultiSelectedIds() {{
-            return Array.from(document.querySelectorAll('.teacher-select-input:checked')).map(cb => cb.value);
+            return Array.from(new Set(Array.from(document.querySelectorAll('.teacher-select-input:checked')).map(cb => cb.value)));
         }}
         function teacherMultiUpdate() {{
             const ids = teacherMultiSelectedIds();
@@ -14783,7 +14803,12 @@ def teacher_dashboard():
             const grid = document.getElementById('teacherCalendarGrid');
             const toggle = document.getElementById('teacherMultiToggle');
             if (grid) grid.classList.toggle('multi-select-on', teacherMultiOn);
-            if (toggle) toggle.classList.toggle('active', teacherMultiOn);
+            document.querySelectorAll('.teacher-mobile-calendar').forEach(calendar => calendar.classList.toggle('multi-select-on', teacherMultiOn));
+            if (toggle) {{
+                toggle.classList.toggle('active', teacherMultiOn);
+                toggle.setAttribute('aria-pressed', teacherMultiOn ? 'true' : 'false');
+                toggle.innerHTML = teacherMultiOn ? '<i class="ti ti-x"></i> Done' : '<i class="ti ti-checkbox"></i> Select';
+            }}
             if (!teacherMultiOn) teacherMultiClear();
             teacherMultiUpdate();
         }}
