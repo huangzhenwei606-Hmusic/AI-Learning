@@ -11405,6 +11405,20 @@ def add_schedule():
     owner_calendar_return = safe_schedule_return(request.values.get("return_to"), "/calendar")
     add_schedule_href = f"/add_schedule?{urlencode({'return_to': owner_calendar_return})}"
 
+    def add_schedule_retry_href(start_date=""):
+        if require_teacher() and not require_owner():
+            calendar_href = (
+                owner_calendar_return
+                if owner_calendar_return.startswith("/teacher_dashboard")
+                else "/teacher_dashboard?view=schedule"
+            )
+            separator = "&" if "?" in calendar_href else "?"
+            retry_params = {"open_add": "1"}
+            if start_date:
+                retry_params["prefill_date"] = start_date
+            return f"{calendar_href}{separator}{urlencode(retry_params)}"
+        return add_schedule_href
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
@@ -11728,7 +11742,8 @@ def add_schedule():
 
         if is_group and len(group_participants) < 2:
             conn.close()
-            return f"<h1>Please add at least two students for a group class.</h1><p><a href='{escape(add_schedule_href, quote=True)}'>Back</a></p>", 400
+            retry_href = add_schedule_retry_href(start_date)
+            return f"<h1>Please add at least two students for a group class.</h1><p><a href='{escape(retry_href, quote=True)}'>Back</a></p>", 400
 
         effective_pricing = get_final_pricing(
             student_name,
@@ -15096,6 +15111,12 @@ def teacher_dashboard():
         syncTeacherInlineAddFormat();
         syncTeacherInlinePackage();
         syncTeacherInlineRoom();
+        const teacherAddUrlParams = new URLSearchParams(window.location.search);
+        if (teacherAddUrlParams.get('open_add') === '1') {{
+            const mobileAddButton = document.getElementById('teacherMobileAddButton');
+            const requestedDate = teacherAddUrlParams.get('prefill_date') || (mobileAddButton ? mobileAddButton.dataset.selectedDate : '') || '{today}';
+            teacherOpenAddSchedule(requestedDate);
+        }}
         bindTeacherStatusForms();
         document.querySelectorAll(".calendar-event[data-id]").forEach(card => {{
             card.addEventListener("click", e => {{
