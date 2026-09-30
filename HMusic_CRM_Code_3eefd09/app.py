@@ -19312,11 +19312,12 @@ def invoices():
             "paid": "Stripe confirmed the payment. The invoice is now paid.",
             "failed": "Stripe confirmed the payment failed. The parent can retry from the invoice now.",
             "processing": "Stripe confirms the ACH transfer is still processing. Do not ask the parent to pay again yet.",
+            "unpaid": "Stripe confirms no ACH payment was submitted. The invoice was restored to unpaid.",
             "missing": "Invoice not found.",
             "unavailable": "Stripe is not configured, so the payment status could not be checked.",
             "error": "Stripe could not be reached. No invoice status was changed.",
         }
-        notice_class = "notice ok" if payment_sync_state in ("paid", "failed") else "notice warn"
+        notice_class = "notice ok" if payment_sync_state in ("paid", "failed", "unpaid") else "notice warn"
         reminder_notice += f'<div class="{notice_class}">{escape(payment_sync_labels.get(payment_sync_state, "Payment status check finished."))}</div>'
 
     for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, reminder_sent_at, reminder_count, parent_id, parent_name, parent_email in invoice_rows:
@@ -27110,8 +27111,32 @@ def sync_stripe_invoice_payment(invoice_id):
                 results.append("paid")
                 continue
 
+            checkout_status = str((checkout_session or {}).get("status") or "").strip().lower()
+            if checkout_session and checkout_status in ("open", "expired"):
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                conn = sqlite3.connect("hmusic.db")
+                cursor = conn.cursor()
+                if allocation_id:
+                    cursor.execute("""
+                    UPDATE invoice_allocations
+                    SET status = 'unpaid', payment_method = NULL,
+                        lock_token = NULL, locked_at = NULL, updated_at = ?
+                    WHERE id = ? AND invoice_id = ? AND status = 'processing'
+                    """, (now, allocation_id, invoice_id))
+                    refresh_invoice_status_from_allocations(cursor, invoice_id)
+                else:
+                    cursor.execute("""
+                    UPDATE invoices
+                    SET status = 'unpaid', autopay_status = 'checkout_incomplete'
+                    WHERE id = ? AND status != 'paid'
+                    """, (invoice_id,))
+                conn.commit()
+                conn.close()
+                results.append("unpaid")
+                continue
+
             if not payment_intent_id:
-                results.append("processing")
+                results.append("unpaid")
                 continue
 
             payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
@@ -27178,6 +27203,8 @@ def sync_stripe_invoice_payment(invoice_id):
         return "processing"
     if "failed" in results:
         return "failed"
+    if "unpaid" in results:
+        return "unpaid"
     return "paid" if results and all(result == "paid" for result in results) else "processing"
 
 
@@ -35464,6 +35491,56 @@ def hmusic_card_gross_up(base_amount):
     }
 
 
+def stripe_checkout_payment_outcome(checkout_session):
+    if not checkout_session:
+        return "incomplete"
+
+    session_status = str(checkout_session.get("status") or "").strip().lower()
+    payment_status = str(checkout_session.get("payment_status") or "").strip().lower()
+    if session_status == "complete" and payment_status == "paid":
+        return "paid"
+    if session_status == "complete" and checkout_session.get("payment_intent"):
+        return "processing"
+    return "incomplete"
+
+
+def reopen_unsubmitted_stripe_allocation(cursor, invoice_id, parent_id):
+    cursor.execute("""
+    SELECT id, status, stripe_checkout_session_id
+    FROM invoice_allocations
+    WHERE invoice_id = ? AND parent_id = ?
+    """, (invoice_id, parent_id))
+    allocation = cursor.fetchone()
+    if not allocation or allocation[1] != "processing" or not allocation[2] or not configure_stripe():
+        return False
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(allocation[2])
+    except Exception:
+        app.logger.warning("Unable to reconcile Stripe checkout session %s", allocation[2], exc_info=True)
+        return False
+
+    metadata = checkout_session.get("metadata", {}) or {}
+    session_status = str(checkout_session.get("status") or "").strip().lower()
+    if (
+        session_status not in ("open", "expired")
+        or str(metadata.get("invoice_id") or "") != str(invoice_id)
+        or str(metadata.get("parent_id") or "") != str(parent_id)
+    ):
+        return False
+
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = 'unpaid', payment_method = NULL,
+        lock_token = NULL, locked_at = NULL, updated_at = ?
+    WHERE id = ? AND status = 'processing'
+    """, (datetime.now().strftime("%Y-%m-%d %H:%M"), allocation[0]))
+    if cursor.rowcount != 1:
+        return False
+    refresh_invoice_status_from_allocations(cursor, invoice_id)
+    return True
+
+
 @app.route("/stripe/invoice/<int:invoice_id>/checkout")
 def stripe_invoice_checkout(invoice_id):
     if not require_parent():
@@ -35528,17 +35605,23 @@ def stripe_invoice_checkout(invoice_id):
     allocation_id = allocation[0]
     lock_token = secrets.token_urlsafe(24)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    stale_lock_before = (datetime.now() - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M")
     cursor.execute("""
     UPDATE invoice_allocations
-    SET status = 'processing', payment_method = 'Stripe ACH', lock_token = ?,
-        locked_at = ?, updated_at = ?
+    SET lock_token = NULL, locked_at = NULL, updated_at = ?
     WHERE id = ? AND status IN ('unpaid', 'failed')
+      AND lock_token IS NOT NULL AND locked_at < ?
+    """, (now, allocation_id, stale_lock_before))
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET payment_method = 'Stripe ACH', lock_token = ?,
+        locked_at = ?, updated_at = ?
+    WHERE id = ? AND status IN ('unpaid', 'failed') AND lock_token IS NULL
     """, (lock_token, now, now, allocation_id))
     if cursor.rowcount != 1:
         conn.rollback()
         conn.close()
         return redirect(f"/parent_invoice/{invoice_id}?already_processing=1")
-    refresh_invoice_status_from_allocations(cursor, invoice_id)
     conn.commit()
 
     try:
@@ -35581,7 +35664,8 @@ def stripe_invoice_checkout(invoice_id):
         )
         cursor.execute("""
         UPDATE invoice_allocations
-        SET stripe_checkout_session_id = ?, updated_at = ?
+        SET stripe_checkout_session_id = ?, lock_token = NULL, locked_at = NULL,
+            updated_at = ?
         WHERE id = ? AND lock_token = ?
         """, (checkout_session.id, now, allocation_id, lock_token))
         cursor.execute("""
@@ -35613,11 +35697,9 @@ def stripe_invoice_checkout(invoice_id):
         conn.rollback()
         cursor.execute("""
         UPDATE invoice_allocations
-        SET status = 'unpaid', payment_method = NULL, lock_token = NULL,
-            locked_at = NULL, updated_at = ?
+        SET payment_method = NULL, lock_token = NULL, locked_at = NULL, updated_at = ?
         WHERE id = ? AND lock_token = ?
         """, (datetime.now().strftime("%Y-%m-%d %H:%M"), allocation_id, lock_token))
-        refresh_invoice_status_from_allocations(cursor, invoice_id)
         conn.commit()
         conn.close()
         return f"""
@@ -35637,22 +35719,25 @@ def stripe_invoice_success():
     if not invoice_id or not session_id:
         return redirect("/parent_dashboard")
 
-    allocation_id = None
-    metadata_parent_id = None
     try:
         checkout_session = stripe.checkout.Session.retrieve(session_id) if configure_stripe() else None
-        session_invoice_id = None
-        payment_intent_id = None
-        if checkout_session:
-            checkout_metadata = checkout_session.get("metadata", {}) or {}
-            session_invoice_id = checkout_metadata.get("invoice_id")
-            allocation_id = checkout_metadata.get("allocation_id")
-            metadata_parent_id = checkout_metadata.get("parent_id")
-            payment_intent_id = checkout_session.get("payment_intent")
-        if session_invoice_id and str(session_invoice_id) != str(invoice_id):
+        if not checkout_session:
+            return redirect(f"/parent_invoice/{invoice_id}?stripe_incomplete=1")
+
+        checkout_metadata = checkout_session.get("metadata", {}) or {}
+        session_invoice_id = checkout_metadata.get("invoice_id")
+        allocation_id = checkout_metadata.get("allocation_id")
+        metadata_parent_id = checkout_metadata.get("parent_id")
+        payment_intent_id = checkout_session.get("payment_intent")
+        if (
+            str(session_invoice_id or "") != str(invoice_id)
+            or str(metadata_parent_id or "") != str(session.get("parent_id") or "")
+            or not allocation_id
+        ):
             return redirect("/parent_dashboard")
 
-        if checkout_session and checkout_session.get("payment_status") == "paid":
+        payment_outcome = stripe_checkout_payment_outcome(checkout_session)
+        if payment_outcome == "paid":
             finalized = finalize_stripe_invoice_payment(
                 int(invoice_id),
                 checkout_session_id=session_id,
@@ -35663,29 +35748,35 @@ def stripe_invoice_success():
             )
             if finalized:
                 return redirect(f"/parent_invoice/{invoice_id}?stripe_paid=1")
+        if payment_outcome != "processing":
+            return redirect(f"/parent_invoice/{invoice_id}?stripe_incomplete=1")
     except Exception:
-        pass
+        app.logger.exception("Unable to verify Stripe checkout session %s", session_id)
+        return redirect(f"/parent_invoice/{invoice_id}?stripe_incomplete=1")
 
     ensure_v321_schema()
     ensure_guardian_billing_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    if allocation_id:
-        cursor.execute("""
-        UPDATE invoice_allocations
-        SET status = CASE WHEN status = 'paid' THEN status ELSE 'processing' END,
-            stripe_checkout_session_id = ?, updated_at = ?
-        WHERE id = ? AND invoice_id = ?
-        """, (session_id, datetime.now().strftime("%Y-%m-%d %H:%M"), allocation_id, invoice_id))
-        refresh_invoice_status_from_allocations(cursor, invoice_id)
-    else:
-        cursor.execute("""
-        UPDATE invoices
-        SET status = 'stripe_processing',
-            stripe_checkout_session_id = ?,
-            autopay_status = 'processing'
-        WHERE id = ?
-        """, (session_id, invoice_id))
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = CASE WHEN status = 'paid' THEN status ELSE 'processing' END,
+        stripe_checkout_session_id = ?, stripe_payment_intent_id = ?,
+        lock_token = NULL, locked_at = NULL, updated_at = ?
+    WHERE id = ? AND invoice_id = ? AND parent_id = ?
+    """, (
+        session_id,
+        payment_intent_id,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        allocation_id,
+        invoice_id,
+        session.get("parent_id"),
+    ))
+    if cursor.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        return redirect("/parent_dashboard")
+    refresh_invoice_status_from_allocations(cursor, invoice_id)
     conn.commit()
     conn.close()
 
@@ -35935,6 +36026,8 @@ def parent_invoice(invoice_id):
         return "<h1>Billing access is not enabled for this guardian.</h1>", 403
 
     allocations = sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[3], invoice[4])
+    if reopen_unsubmitted_stripe_allocation(cursor, invoice_id, parent_id):
+        allocations = sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[3], "unpaid")
     billing_rule = ensure_student_billing_rule(cursor, invoice[1])
     own_allocation = next((row for row in allocations if int(row[1] or 0) == int(parent_id or 0)), None)
     can_pay_invoice = bool(
@@ -36141,6 +36234,8 @@ def parent_invoice(invoice_id):
     payment_status_alert = ""
     if request.args.get("stripe_missing") == "1":
         payment_status_alert = "<div class='warn'>ACH is not connected yet. Please use Zelle for now.</div>"
+    elif request.args.get("stripe_incomplete") == "1":
+        payment_status_alert = "<div class='warn'>ACH payment was not submitted. The invoice is still unpaid, and you can try again.</div>"
     elif request.args.get("already_processing") == "1":
         payment_status_alert = "<div class='alert'>This payment share is already processing or waiting for confirmation.</div>"
     elif request.args.get("stripe_paid") == "1" or own_status == "paid":

@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 
@@ -196,6 +197,11 @@ CHECKS = {
     "stripe allocation metadata": '"allocation_id": str(allocation_id)',
     "stripe ACH only": 'payment_method_types=["us_bank_account"]',
     "stripe checkout failure rolls back transaction": "PostgreSQL rejects every statement after an error until the failed",
+    "stripe checkout start does not claim processing": "SET payment_method = 'Stripe ACH', lock_token = ?",
+    "stripe return requires complete session": "def stripe_checkout_payment_outcome(checkout_session):",
+    "stripe incomplete return stays unpaid": "ACH payment was not submitted. The invoice is still unpaid",
+    "stripe abandoned checkout self repair": "def reopen_unsubmitted_stripe_allocation(cursor, invoice_id, parent_id):",
+    "owner status check restores abandoned checkout": "Stripe confirms no ACH payment was submitted. The invoice was restored to unpaid.",
     "stale stripe allocation recovery": "CAST(locked_at AS TIMESTAMP) < CURRENT_TIMESTAMP - INTERVAL '15 minutes'",
     "pre-checkout ACH failure restores invoice": "SET status = 'unpaid', payment_method = NULL, lock_token = NULL",
     "invoice autopay consent": "Use AutoPay for future tuition",
@@ -326,6 +332,33 @@ def main():
     if '"ensure_guardian_billing_schema"' in runtime_schema_source:
         print("Regression check failed. PostgreSQL guardian migration is still wrapped as SQLite-only schema work.")
         raise SystemExit(1)
+    checkout_source = source.split("def stripe_invoice_checkout(invoice_id):", 1)[1].split('@app.route("/stripe/invoice/success")', 1)[0]
+    if "SET status = 'processing'" in checkout_source:
+        print("Regression check failed. Starting Stripe Checkout still marks the invoice share as processing.")
+        raise SystemExit(1)
+    tree = ast.parse(source)
+    outcome_node = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "stripe_checkout_payment_outcome"),
+        None,
+    )
+    if outcome_node is None:
+        print("Regression check failed. Stripe checkout outcome helper is missing.")
+        raise SystemExit(1)
+    outcome_namespace = {}
+    exec(compile(ast.Module(body=[outcome_node], type_ignores=[]), str(APP), "exec"), outcome_namespace)
+    classify_checkout = outcome_namespace["stripe_checkout_payment_outcome"]
+    outcome_cases = [
+        (None, "incomplete"),
+        ({"status": "open", "payment_status": "unpaid", "payment_intent": "pi_open"}, "incomplete"),
+        ({"status": "complete", "payment_status": "unpaid"}, "incomplete"),
+        ({"status": "complete", "payment_status": "unpaid", "payment_intent": "pi_processing"}, "processing"),
+        ({"status": "complete", "payment_status": "paid", "payment_intent": "pi_paid"}, "paid"),
+    ]
+    for checkout_session, expected in outcome_cases:
+        actual = classify_checkout(checkout_session)
+        if actual != expected:
+            print(f"Regression check failed. Stripe checkout outcome was {actual!r}; expected {expected!r}.")
+            raise SystemExit(1)
     print(f"Regression check passed: {len(CHECKS)} billing/family/message entrypoints present.")
 
 
