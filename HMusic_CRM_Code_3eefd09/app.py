@@ -295,6 +295,58 @@ def hmusic_parent_visible_lesson_note(value):
     return " ".join(text.split()).strip()
 
 
+def hmusic_lesson_history_rows(cursor, student_name, limit=10):
+    today_str = date.today().strftime("%Y-%m-%d")
+    cursor.execute("""
+    SELECT l.id, l.schedule_id,
+           COALESCE(NULLIF(s.lesson_date, ''), l.lesson_date) AS actual_lesson_date,
+           l.lesson_content, l.performance, l.homework,
+           COALESCE(l.created_by, ''), COALESCE(l.created_at, '')
+    FROM lessons l
+    LEFT JOIN schedule s ON s.id = l.schedule_id
+    WHERE l.student_name = ?
+      AND (
+          l.schedule_id IS NULL
+          OR s.id IS NULL
+          OR (
+              COALESCE(s.lesson_date, '') <= ?
+              AND LOWER(COALESCE(s.status, '')) NOT IN ('scheduled', 'parent_cancel_pending_confirm')
+          )
+      )
+    ORDER BY actual_lesson_date DESC, l.id DESC
+    LIMIT 200
+    """, (student_name, today_str))
+
+    rows = []
+    seen_schedule_lessons = set()
+    seen_batch_lessons = set()
+    for (
+        lesson_id, schedule_id, lesson_date, lesson_content, performance, homework,
+        created_by, created_at,
+    ) in cursor.fetchall():
+        schedule_key = int(schedule_id) if schedule_id else None
+        batch_key = (
+            str(created_at or "").strip(),
+            str(created_by or "").strip().casefold(),
+            str(lesson_date or "").strip(),
+            str(lesson_content or "").strip().casefold(),
+            str(performance or "").strip().casefold(),
+            str(homework or "").strip().casefold(),
+        )
+        if schedule_key is not None and schedule_key in seen_schedule_lessons:
+            continue
+        if batch_key[0] and batch_key in seen_batch_lessons:
+            continue
+        if schedule_key is not None:
+            seen_schedule_lessons.add(schedule_key)
+        if batch_key[0]:
+            seen_batch_lessons.add(batch_key)
+        rows.append((lesson_date, lesson_content, performance, homework))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def hmusic_csrf_token():
     token = session.get("_csrf_token")
     if not token:
@@ -6656,42 +6708,7 @@ def student_detail(name):
 
     today_str = date.today().strftime("%Y-%m-%d")
 
-    cursor.execute("""
-    SELECT id, schedule_id, lesson_date, lesson_content, performance, homework,
-           COALESCE(created_by, ''), COALESCE(created_at, '')
-    FROM lessons
-    WHERE student_name = ?
-    ORDER BY id DESC
-    LIMIT 80
-    """, (name,))
-    lesson_rows = cursor.fetchall()
-    lessons = []
-    seen_schedule_lessons = set()
-    seen_batch_lessons = set()
-    for (
-        lesson_id, schedule_id, lesson_date, lesson_content, performance, homework,
-        created_by, created_at,
-    ) in lesson_rows:
-        schedule_key = int(schedule_id) if schedule_id else None
-        batch_key = (
-            str(created_at or "").strip(),
-            str(created_by or "").strip().casefold(),
-            str(lesson_date or "").strip(),
-            str(lesson_content or "").strip().casefold(),
-            str(performance or "").strip().casefold(),
-            str(homework or "").strip().casefold(),
-        )
-        is_schedule_duplicate = schedule_key is not None and schedule_key in seen_schedule_lessons
-        is_batch_duplicate = bool(batch_key[0]) and batch_key in seen_batch_lessons
-        if is_schedule_duplicate or is_batch_duplicate:
-            continue
-        if schedule_key is not None:
-            seen_schedule_lessons.add(schedule_key)
-        if batch_key[0]:
-            seen_batch_lessons.add(batch_key)
-        lessons.append((lesson_date, lesson_content, performance, homework))
-        if len(lessons) >= 8:
-            break
+    lessons = hmusic_lesson_history_rows(cursor, name, limit=8)
 
     cursor.execute("""
     SELECT id, payment_date, amount, lessons_added, payment_method, COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
@@ -32406,14 +32423,7 @@ def parent_dashboard():
     """, (current_student, today))
     upcoming_lessons = cursor.fetchall()
 
-    cursor.execute("""
-    SELECT lesson_date, lesson_content, performance, homework
-    FROM lessons
-    WHERE student_name = ?
-    ORDER BY id DESC
-    LIMIT 10
-    """, (current_student,))
-    lesson_history = cursor.fetchall()
+    lesson_history = hmusic_lesson_history_rows(cursor, current_student, limit=10)
 
     cursor.execute("""
     SELECT id, amount, status, invoice_type, created_at
