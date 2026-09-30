@@ -3341,6 +3341,7 @@ def home():
     <h3>Parent & Renewal</h3>
     <div class="action-group">
         <a href="/parents">Parent Management</a>
+        <a href="/notification_center">Parent Notifications</a>
         <a href="/owner_reschedule_requests">Reschedule Requests{reschedule_badge}</a>
         <a href="/owner_booking_requests">Booking Requests{booking_badge}</a>
         <a href="/owner_cancel_requests">Cancel Requests{cancel_badge}</a>
@@ -19494,6 +19495,7 @@ def invoices():
                 <div class="topbar">
                     <a class="back" href="/">← Back to Home</a>
                     <div class="top-actions">
+                        <a class="button" href="/notification_center">Parent Notifications</a>
                         <a class="button" href="/billing_settings">Billing Settings</a>
                         <a class="button primary" href="/students">Create Invoice</a>
                     </div>
@@ -26060,11 +26062,11 @@ def notification_center():
     .notice{{margin:16px 0;padding:12px;border-radius:6px;font-weight:800}}.notice.ok{{background:#dcfce7;color:#166534}}.notice.warn{{background:#fee2e2;color:#991b1b}}.section{{border-top:1px solid #e5e7eb;padding:24px 0}}
     label{{display:block;font-weight:800;margin:12px 0 6px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:6px;font:inherit}}textarea{{min-height:110px;resize:vertical}}
     .channels{{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0}}.channels label{{display:flex;gap:7px;align-items:center;margin:0}}.channels input{{width:auto}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
-    button,.button{{display:inline-block;border:0;border-radius:6px;padding:11px 15px;background:#1d4ed8;color:white;font-weight:800;text-decoration:none;cursor:pointer}}.button.secondary{{background:white;color:#1d4ed8;border:1px solid #bfdbfe}}
+    button,.button{{display:inline-flex;align-items:center;justify-content:center;min-height:42px;border:0;border-radius:6px;padding:11px 15px;background:#1d4ed8;color:white;font-weight:800;text-decoration:none;cursor:pointer}}.button.secondary{{background:white;color:#1d4ed8;border:1px solid #bfdbfe}}.page-nav{{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}}
     @media(max-width:700px){{body{{padding:12px}}.grid{{grid-template-columns:1fr}}}}
     </style></head><body><div class="shell">
     <div class="top"><div><h1>Parent Notification Center</h1><div class="muted">Manual delivery controls</div></div><div class="status">{escape(sms_label)}</div></div>{notice}
-    <div style="margin:16px 0"><a class="button secondary" href="/notification_queue">Delivery history</a> <a class="button secondary" href="/invoices">Invoices</a></div>
+    <nav class="page-nav" aria-label="Notification navigation"><a class="button secondary" href="/">Owner Dashboard</a><a class="button secondary" href="/invoices">Invoices</a><a class="button secondary" href="/notification_queue">Delivery History</a></nav>
     <section class="section"><h2>Invoice notice</h2><form method="POST" onsubmit="return confirm('Send this invoice notice to the linked parent now?');">
     <input type="hidden" name="notice_kind" value="invoice"><label>Invoice</label><select name="invoice_id" required>{invoice_options}</select>
     <div class="grid"><div><label>Title override</label><input name="title"></div><div><label>Message override</label><input name="body"></div></div>
@@ -26304,7 +26306,7 @@ def notification_queue():
 
             <a class="button" href="/">Home</a>
             <a class="button" href="/new_students">New Students / Intake</a>
-            <a class="button" href="/notification_center">Create Parent Notice</a>
+            <a class="button" href="/notification_center">Parent Notifications</a>
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
 
