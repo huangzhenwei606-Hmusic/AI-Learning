@@ -6657,13 +6657,32 @@ def student_detail(name):
     today_str = date.today().strftime("%Y-%m-%d")
 
     cursor.execute("""
-    SELECT lesson_date, lesson_content, performance, homework
+    SELECT id, schedule_id, lesson_date, lesson_content, performance, homework
     FROM lessons
     WHERE student_name = ?
     ORDER BY id DESC
-    LIMIT 8
+    LIMIT 80
     """, (name,))
-    lessons = cursor.fetchall()
+    lesson_rows = cursor.fetchall()
+    lessons = []
+    seen_lessons = set()
+    for lesson_id, schedule_id, lesson_date, lesson_content, performance, homework in lesson_rows:
+        if schedule_id:
+            lesson_key = ("schedule", int(schedule_id))
+        else:
+            lesson_key = (
+                "legacy",
+                str(lesson_date or "").strip(),
+                str(lesson_content or "").strip().casefold(),
+                str(performance or "").strip().casefold(),
+                str(homework or "").strip().casefold(),
+            )
+        if lesson_key in seen_lessons:
+            continue
+        seen_lessons.add(lesson_key)
+        lessons.append((lesson_date, lesson_content, performance, homework))
+        if len(lessons) >= 8:
+            break
 
     cursor.execute("""
     SELECT id, payment_date, amount, lessons_added, payment_method, COALESCE(course_type_name, ''), COALESCE(teacher_name, '')
@@ -7819,31 +7838,54 @@ def teacher_lesson_notes():
                 course_type_name=schedule_row[3]
             )
 
-        cursor.execute("""
-        INSERT INTO lessons
-        (
-            student_name,
-            lesson_content,
-            performance,
-            homework,
-            lesson_date,
-            schedule_id,
-            created_by,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            selected_student,
-            lesson_content,
-            performance,
-            homework,
-            selected_date,
-            schedule_id,
-            f"teacher:{teacher_name}",
-            now,
-            now
-        ))
+        existing_lesson_id = None
+        if schedule_id:
+            cursor.execute("SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1", (schedule_id,))
+            existing_lesson = cursor.fetchone()
+            existing_lesson_id = existing_lesson[0] if existing_lesson else None
+
+        if existing_lesson_id:
+            cursor.execute("""
+            UPDATE lessons
+            SET student_name = ?, lesson_content = ?, performance = ?, homework = ?,
+                lesson_date = ?, created_by = ?, updated_at = ?
+            WHERE id = ?
+            """, (
+                selected_student,
+                lesson_content,
+                performance,
+                homework,
+                selected_date,
+                f"teacher:{teacher_name}",
+                now,
+                existing_lesson_id,
+            ))
+        else:
+            cursor.execute("""
+            INSERT INTO lessons
+            (
+                student_name,
+                lesson_content,
+                performance,
+                homework,
+                lesson_date,
+                schedule_id,
+                created_by,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                selected_student,
+                lesson_content,
+                performance,
+                homework,
+                selected_date,
+                schedule_id,
+                f"teacher:{teacher_name}",
+                now,
+                now
+            ))
 
         if schedule_id:
             cursor.execute("""
@@ -7855,7 +7897,7 @@ def teacher_lesson_notes():
             WHERE id = ?
             """, (lesson_content, homework, schedule_enrollment_id, now, schedule_id))
 
-        if schedule_enrollment_id:
+        if schedule_enrollment_id and not existing_lesson_id:
             cursor.execute("""
             UPDATE enrollments
             SET lessons_left = lessons_left - 1,
@@ -7988,32 +8030,55 @@ def add_lesson(name):
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         actor = f"teacher:{session.get('teacher_name')}" if require_teacher() and not require_owner() else "owner"
 
-        cursor.execute("""
-        INSERT INTO lessons
-        (
-            student_name,
-            lesson_content,
-            performance,
-            homework,
-            lesson_date,
-            schedule_id,
-            created_by,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            name,
-            lesson_content,
-            performance,
-            homework,
-            lesson_date,
-            schedule_id,
-            actor,
-            now,
-            now
-        ))
+        existing_lesson_id = None
+        if schedule_id:
+            cursor.execute("SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1", (schedule_id,))
+            existing_lesson = cursor.fetchone()
+            existing_lesson_id = existing_lesson[0] if existing_lesson else None
+
+        if existing_lesson_id:
+            cursor.execute("""
+            UPDATE lessons
+            SET student_name = ?, lesson_content = ?, performance = ?, homework = ?,
+                lesson_date = ?, created_by = ?, updated_at = ?
+            WHERE id = ?
+            """, (
+                name,
+                lesson_content,
+                performance,
+                homework,
+                lesson_date,
+                actor,
+                now,
+                existing_lesson_id,
+            ))
+        else:
+            cursor.execute("""
+            INSERT INTO lessons
+            (
+                student_name,
+                lesson_content,
+                performance,
+                homework,
+                lesson_date,
+                schedule_id,
+                created_by,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                lesson_content,
+                performance,
+                homework,
+                lesson_date,
+                schedule_id,
+                actor,
+                now,
+                now
+            ))
 
         if schedule_id:
             cursor.execute("""
@@ -8025,7 +8090,7 @@ def add_lesson(name):
             WHERE id = ?
             """, (lesson_content, homework, schedule_enrollment_id, now, schedule_id))
 
-        if schedule_enrollment_id:
+        if schedule_enrollment_id and not existing_lesson_id:
             cursor.execute("""
             UPDATE enrollments
             SET lessons_left = lessons_left - 1,
