@@ -26121,6 +26121,21 @@ def billing_settings():
     stripe_secret_ready = "Configured" if os.environ.get("STRIPE_SECRET_KEY") else "Missing"
     stripe_webhook_ready = "Configured" if os.environ.get("STRIPE_WEBHOOK_SECRET") else "Missing"
     smtp_ready = "Configured" if os.environ.get("HMUSIC_SMTP_HOST") else "Missing"
+    stripe_account_label = "Unavailable"
+    if configure_stripe():
+        try:
+            stripe_account = stripe.Account.retrieve()
+            business_profile = stripe_account.get("business_profile") or {}
+            account_name = (
+                business_profile.get("name")
+                or stripe_account.get("business_name")
+                or stripe_account.get("email")
+                or "Unnamed account"
+            )
+            stripe_account_label = f"{account_name} ({stripe_account.get('id') or 'unknown ID'})"
+        except Exception:
+            app.logger.exception("Unable to identify configured Stripe account")
+            stripe_account_label = "Configured, but account lookup failed"
 
     rows = ""
     for r in rows_data:
@@ -26190,6 +26205,10 @@ def billing_settings():
                 <div class="card">
                     <div class="label">Stripe Webhook Secret</div>
                     <div class="value">{stripe_webhook_ready}</div>
+                </div>
+                <div class="card">
+                    <div class="label">Connected Stripe Account</div>
+                    <div class="value">{escape(stripe_account_label)}</div>
                 </div>
                 <div class="card">
                     <div class="label">SMTP Email</div>

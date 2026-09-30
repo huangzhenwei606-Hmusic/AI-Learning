@@ -240,6 +240,7 @@ CHECKS = {
     "processing invoice cancellation helper": "def cancel_stripe_invoice_payment(invoice_id):",
     "processing invoice checkout lock label": "ACH in transit",
     "processing invoice checkout cancellation blocked": 'return "checkout_locked"',
+    "billing settings identifies Stripe account": "Connected Stripe Account",
     "processing invoice cancellation requires Stripe confirmation": "if str(payment_intent.get(\"status\") or \"\") != \"canceled\"",
     "processing invoice cancellation restores unpaid": "autopay_status = 'owner_canceled'",
     "guardian allocation processing action": 'status in ("payment_processing", "stripe_processing")',
