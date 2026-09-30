@@ -238,11 +238,13 @@ CHECKS = {
     "lesson history uses scheduled date": "COALESCE(NULLIF(s.lesson_date, ''), l.lesson_date) AS actual_lesson_date",
     "lesson history excludes future scheduled records": "COALESCE(s.lesson_date, '') <= ?",
     "student history dedupes schedule lessons": "schedule_key is not None and schedule_key in seen_schedule_lessons",
-    "student history dedupes same-save clones": "batch_key[0] and batch_key in seen_batch_lessons",
+    "student history keeps original same-save lesson": 'original = min(batch_items, key=lambda item: item["id"])',
+    "student history removes following lesson clones": 'cloned_ids.update(item["id"] for item in batch_items if item["id"] != original["id"])',
     "parent dashboard shares lesson history source": "lesson_history = hmusic_lesson_history_rows(cursor, current_student, limit=10)",
     "teacher lesson note updates existing schedule record": 'SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1',
     "lesson note credit deducts once": "if schedule_enrollment_id and not existing_lesson_id:",
     "calendar lesson record uses scheduled date": 'cursor.execute("SELECT lesson_date FROM schedule WHERE id = ?", (schedule_id,))',
+    "teacher following notes do not create history": 'upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, actor)\n        conn.commit()',
 }
 
 

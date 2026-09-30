@@ -299,9 +299,12 @@ def hmusic_lesson_history_rows(cursor, student_name, limit=10):
     today_str = date.today().strftime("%Y-%m-%d")
     cursor.execute("""
     SELECT l.id, l.schedule_id,
+           l.lesson_date AS recorded_lesson_date,
            COALESCE(NULLIF(s.lesson_date, ''), l.lesson_date) AS actual_lesson_date,
            l.lesson_content, l.performance, l.homework,
-           COALESCE(l.created_by, ''), COALESCE(l.created_at, '')
+           COALESCE(l.created_by, ''), COALESCE(l.created_at, ''),
+           COALESCE(s.teacher, ''), COALESCE(s.lesson_time, ''),
+           COALESCE(s.course_type_name, '')
     FROM lessons l
     LEFT JOIN schedule s ON s.id = l.schedule_id
     WHERE l.student_name = ?
@@ -313,38 +316,64 @@ def hmusic_lesson_history_rows(cursor, student_name, limit=10):
               AND LOWER(COALESCE(s.status, '')) NOT IN ('scheduled', 'parent_cancel_pending_confirm')
           )
       )
-    ORDER BY actual_lesson_date DESC, l.id DESC
-    LIMIT 200
+    ORDER BY l.id DESC
+    LIMIT 500
     """, (student_name, today_str))
 
-    rows = []
+    candidates = []
     seen_schedule_lessons = set()
-    seen_batch_lessons = set()
     for (
-        lesson_id, schedule_id, lesson_date, lesson_content, performance, homework,
-        created_by, created_at,
+        lesson_id, schedule_id, recorded_lesson_date, actual_lesson_date,
+        lesson_content, performance, homework, created_by, created_at,
+        teacher, lesson_time, course_type_name,
     ) in cursor.fetchall():
         schedule_key = int(schedule_id) if schedule_id else None
-        batch_key = (
-            str(created_at or "").strip(),
-            str(created_by or "").strip().casefold(),
-            str(lesson_date or "").strip(),
-            str(lesson_content or "").strip().casefold(),
-            str(performance or "").strip().casefold(),
-            str(homework or "").strip().casefold(),
-        )
         if schedule_key is not None and schedule_key in seen_schedule_lessons:
-            continue
-        if batch_key[0] and batch_key in seen_batch_lessons:
             continue
         if schedule_key is not None:
             seen_schedule_lessons.add(schedule_key)
-        if batch_key[0]:
-            seen_batch_lessons.add(batch_key)
-        rows.append((lesson_date, lesson_content, performance, homework))
-        if len(rows) >= limit:
-            break
-    return rows
+        batch_key = (
+            str(created_at or "").strip(),
+            str(created_by or "").strip().casefold(),
+            str(recorded_lesson_date or "").strip(),
+            str(lesson_content or "").strip().casefold(),
+            str(performance or "").strip().casefold(),
+            str(homework or "").strip().casefold(),
+            str(teacher or "").strip().casefold(),
+            str(lesson_time or "").strip(),
+            str(course_type_name or "").strip().casefold(),
+        )
+        candidates.append({
+            "id": int(lesson_id),
+            "schedule_id": schedule_key,
+            "recorded_date": str(recorded_lesson_date or "").strip(),
+            "actual_date": str(actual_lesson_date or "").strip(),
+            "lesson_content": lesson_content,
+            "performance": performance,
+            "homework": homework,
+            "batch_key": batch_key,
+        })
+
+    batch_groups = {}
+    for item in candidates:
+        if item["batch_key"][0] and item["schedule_id"] is not None:
+            batch_groups.setdefault(item["batch_key"], []).append(item)
+
+    cloned_ids = set()
+    for batch_items in batch_groups.values():
+        schedule_ids = {item["schedule_id"] for item in batch_items}
+        actual_dates = {item["actual_date"] for item in batch_items}
+        if len(schedule_ids) < 2 or len(actual_dates) < 2:
+            continue
+        original = min(batch_items, key=lambda item: item["id"])
+        cloned_ids.update(item["id"] for item in batch_items if item["id"] != original["id"])
+
+    visible = [item for item in candidates if item["id"] not in cloned_ids]
+    visible.sort(key=lambda item: (item["actual_date"], item["id"]), reverse=True)
+    return [
+        (item["actual_date"], item["lesson_content"], item["performance"], item["homework"])
+        for item in visible[:limit]
+    ]
 
 
 def hmusic_csrf_token():
@@ -18151,9 +18180,6 @@ def calendar_lesson_action():
         effective_lesson_time = detail_update.get("lesson_time") if detail_update else row[4]
         effective_classroom = detail_update.get("classroom") if detail_update else (teacher_location_update.get("classroom") if teacher_location_update else row[5])
         upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, actor)
-        if not is_owner and teacher_following_ids:
-            for following_id in teacher_following_ids:
-                upsert_calendar_lesson_record(cursor, following_id, effective_student_name, lesson_note, homework, private_note, actor)
         conn.commit()
         conn.close()
         if is_teacher and roster_change_summary and (roster_change_summary["added"] or roster_change_summary["removed"]):
