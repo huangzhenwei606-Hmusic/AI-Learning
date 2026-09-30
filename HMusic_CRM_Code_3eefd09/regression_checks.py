@@ -228,6 +228,9 @@ CHECKS = {
     "activated parent reminder label": "Send login reminder (keep password)",
     "parent reset timestamp": "SET last_password_reset_at = ?, updated_at = ?",
     "parent reset warning": "Their current password will stop working immediately.",
+    "processing invoice Stripe reconciliation": "def sync_stripe_invoice_payment(invoice_id):",
+    "processing invoice status action": "Check payment status",
+    "processing invoice retry safety": "Do not ask the parent to pay again yet.",
 }
 
 

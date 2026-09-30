@@ -19089,6 +19089,19 @@ def invoices():
         notice_class = "notice ok" if reminder_state == "sent" else "notice warn"
         reminder_notice = f'<div class="{notice_class}">{escape(reminder_labels.get(reminder_state, "Reminder request finished."))}</div>'
 
+    payment_sync_state = (request.args.get("payment_sync") or "").strip()
+    if payment_sync_state:
+        payment_sync_labels = {
+            "paid": "Stripe confirmed the payment. The invoice is now paid.",
+            "failed": "Stripe confirmed the payment failed. The parent can retry from the invoice now.",
+            "processing": "Stripe confirms the ACH transfer is still processing. Do not ask the parent to pay again yet.",
+            "missing": "Invoice not found.",
+            "unavailable": "Stripe is not configured, so the payment status could not be checked.",
+            "error": "Stripe could not be reached. No invoice status was changed.",
+        }
+        notice_class = "notice ok" if payment_sync_state in ("paid", "failed") else "notice warn"
+        reminder_notice += f'<div class="{notice_class}">{escape(payment_sync_labels.get(payment_sync_state, "Payment status check finished."))}</div>'
+
     for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, reminder_sent_at, reminder_count, parent_id, parent_name, parent_email in invoice_rows:
         student_safe = escape(str(student_name or "-"))
         student_href = quote(str(student_name or ""), safe="")
@@ -19111,6 +19124,13 @@ def invoices():
         action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
+        elif status == "stripe_processing":
+            action_html += f"""
+            <form class="inline-action-form" method="POST" action="/sync_invoice_payment/{invoice_id}">
+                <button class="row-action reminder" type="submit">Check payment status</button>
+            </form>
+            <a class="row-action" href="/parent_invoice/{invoice_id}">Review</a>
+            """
         elif not has_sendable_parent_email:
             action_html += (
                 f'<a class="row-action reminder" href="/edit_parent_admin/{parent_id}">Add real email</a>'
@@ -26820,6 +26840,137 @@ def mark_stripe_invoice_payment_failed(
     conn.commit()
     conn.close()
     return True
+
+
+def sync_stripe_invoice_payment(invoice_id):
+    """Reconcile a processing invoice with Stripe before allowing another charge."""
+    if not configure_stripe():
+        return "unavailable"
+
+    ensure_v321_schema()
+    ensure_guardian_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, parent_id, COALESCE(status, 'unpaid'),
+           stripe_checkout_session_id, stripe_payment_intent_id
+    FROM invoice_allocations
+    WHERE invoice_id = ? AND status = 'processing'
+    ORDER BY id
+    """, (invoice_id,))
+    allocations = cursor.fetchall()
+    cursor.execute("""
+    SELECT COALESCE(status, 'unpaid'), stripe_checkout_session_id,
+           stripe_payment_intent_id
+    FROM invoices WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    conn.close()
+
+    if not invoice:
+        return "missing"
+    if invoice[0] == "paid":
+        return "paid"
+
+    targets = allocations or [(None, None, invoice[0], invoice[1], invoice[2])]
+    results = []
+    try:
+        for allocation_id, parent_id, _status, checkout_session_id, payment_intent_id in targets:
+            checkout_session = None
+            if checkout_session_id:
+                checkout_session = stripe.checkout.Session.retrieve(checkout_session_id)
+                payment_intent_id = payment_intent_id or checkout_session.get("payment_intent")
+
+            if checkout_session and checkout_session.get("payment_status") == "paid":
+                finalize_stripe_invoice_payment(
+                    invoice_id,
+                    checkout_session_id=checkout_session_id,
+                    payment_intent_id=payment_intent_id,
+                    source="owner_status_check",
+                    allocation_id=allocation_id,
+                    parent_id=parent_id,
+                )
+                results.append("paid")
+                continue
+
+            if not payment_intent_id:
+                results.append("processing")
+                continue
+
+            payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+            stripe_status = str(payment_intent.get("status") or "unknown")
+            if stripe_status == "succeeded":
+                finalize_stripe_invoice_payment(
+                    invoice_id,
+                    checkout_session_id=checkout_session_id,
+                    payment_intent_id=payment_intent_id,
+                    source="owner_status_check",
+                    allocation_id=allocation_id,
+                    parent_id=parent_id,
+                )
+                results.append("paid")
+                continue
+
+            if stripe_status in ("canceled", "requires_payment_method"):
+                error_obj = payment_intent.get("last_payment_error") or {}
+                reason = (
+                    error_obj.get("message") or error_obj.get("code")
+                    if isinstance(error_obj, dict)
+                    else str(error_obj or "")
+                )
+                mark_stripe_invoice_payment_failed(
+                    invoice_id=invoice_id,
+                    payment_intent_id=payment_intent_id,
+                    checkout_session_id=checkout_session_id,
+                    reason=reason or f"Stripe status: {stripe_status}",
+                    allocation_id=allocation_id,
+                    parent_id=parent_id,
+                )
+                results.append("failed")
+                continue
+
+            conn = sqlite3.connect("hmusic.db")
+            cursor = conn.cursor()
+            if allocation_id:
+                cursor.execute("""
+                UPDATE invoice_allocations
+                SET stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+                    updated_at = ?
+                WHERE id = ? AND invoice_id = ? AND status = 'processing'
+                """, (
+                    payment_intent_id,
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    allocation_id,
+                    invoice_id,
+                ))
+                refresh_invoice_status_from_allocations(cursor, invoice_id)
+            cursor.execute("""
+            UPDATE invoices
+            SET stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id),
+                autopay_status = ?
+            WHERE id = ? AND status != 'paid'
+            """, (payment_intent_id, f"processing: {stripe_status}", invoice_id))
+            conn.commit()
+            conn.close()
+            results.append("processing")
+    except Exception:
+        app.logger.exception("Stripe status check failed for invoice %s", invoice_id)
+        return "error"
+
+    if "processing" in results:
+        return "processing"
+    if "failed" in results:
+        return "failed"
+    return "paid" if results and all(result == "paid" for result in results) else "processing"
+
+
+@app.route("/sync_invoice_payment/<int:invoice_id>", methods=["POST"])
+def sync_invoice_payment(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    result = sync_stripe_invoice_payment(invoice_id)
+    return redirect(f"/invoices?payment_sync={quote(result)}&invoice_id={invoice_id}")
 
 
 def public_url_for(path):
