@@ -19324,6 +19324,7 @@ def invoices():
     if payment_cancel_state:
         payment_cancel_labels = {
             "canceled": "Stripe canceled the ACH payment. The invoice was restored to unpaid.",
+            "checkout_locked": "Stripe Checkout already submitted this ACH transfer. It cannot be canceled while in transit, so the invoice remains processing.",
             "paid": "Stripe already completed this payment, so the invoice was not restored to unpaid.",
             "missing": "No active Stripe payment was found to cancel. No invoice status was changed.",
             "unavailable": "Stripe is not configured, so the ACH payment could not be canceled.",
@@ -19359,9 +19360,7 @@ def invoices():
             <form class="inline-action-form" method="POST" action="/sync_invoice_payment/{invoice_id}">
                 <button class="row-action reminder" type="submit">Check payment status</button>
             </form>
-            <form class="inline-action-form" method="POST" action="/cancel_invoice_payment/{invoice_id}" onsubmit="return confirm('Cancel the Stripe ACH payment for invoice #{invoice_id} and restore it to unpaid?');">
-                <button class="row-action danger" type="submit">Cancel ACH</button>
-            </form>
+            <span class="paid-text">ACH in transit</span>
             <a class="row-action" href="/parent_invoice/{invoice_id}">Review</a>
             """
         elif not has_sendable_parent_email:
@@ -27242,19 +27241,21 @@ def cancel_stripe_invoice_payment(invoice_id):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT COALESCE(status, 'unpaid'), stripe_payment_intent_id
+    SELECT COALESCE(status, 'unpaid'), stripe_payment_intent_id,
+           stripe_checkout_session_id
     FROM invoices
     WHERE id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
     cursor.execute("""
-    SELECT stripe_payment_intent_id
+    SELECT stripe_payment_intent_id, stripe_checkout_session_id
     FROM invoice_allocations
     WHERE invoice_id = ? AND status = 'processing'
       AND stripe_payment_intent_id IS NOT NULL
     ORDER BY id
     """, (invoice_id,))
-    allocation_intents = [row[0] for row in cursor.fetchall() if row[0]]
+    allocation_rows = cursor.fetchall()
+    allocation_intents = [row[0] for row in allocation_rows if row[0]]
     conn.close()
 
     if not invoice:
@@ -27263,6 +27264,13 @@ def cancel_stripe_invoice_payment(invoice_id):
         return "paid"
     if invoice[0] not in ("payment_processing", "stripe_processing"):
         return "missing"
+
+    # Stripe does not allow canceling a PaymentIntent created by a completed
+    # Checkout Session. Keep the invoice locked until Stripe reports success
+    # or failure so the parent cannot accidentally pay it twice.
+    checkout_session_ids = [row[1] for row in allocation_rows if row[1]]
+    if invoice[2] or checkout_session_ids:
+        return "checkout_locked"
 
     payment_intent_ids = list(dict.fromkeys(allocation_intents or [invoice[1]]))
     payment_intent_ids = [intent_id for intent_id in payment_intent_ids if intent_id]
