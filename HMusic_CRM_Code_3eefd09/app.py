@@ -20434,10 +20434,12 @@ def record_parent_login(cursor, parent_id, native_app=False):
     """, (now, now, now, "Mobile app" if native_app else "Web", now, parent_id))
 
 
-def parent_access_summary(last_login_at, login_count, must_change_password, last_login_source=""):
+def parent_access_summary(last_login_at, login_count, must_change_password, last_login_source="", last_activity_at=None):
     if last_login_at or int(login_count or 0) > 0:
         source = f" via {last_login_source}" if last_login_source else ""
         return "Logged in", f"Last login {last_login_at or 'recorded'}{source}", "good"
+    if last_activity_at:
+        return "Logged in", "Parent app use is confirmed; historical login count is unavailable", "good"
     if int(must_change_password or 0) == 0:
         return "Previously activated", "Password was changed before login tracking was added", "good"
     return "Never logged in", "Temporary password is still pending", "neutral"
@@ -21209,7 +21211,7 @@ def parents():
     rows = ""
     for p in parents_data:
         account_status = "Active" if p[4] == 1 else "Inactive"
-        access_status, access_detail, access_class = parent_access_summary(p[6], p[7], p[5], p[8])
+        access_status, access_detail, access_class = parent_access_summary(p[6], p[7], p[5], p[8], p[9])
         last_use = p[9] or p[6] or "No tracked use"
         rows += f"""
         <tr>
@@ -21942,7 +21944,12 @@ def parent_admin(parent_id):
     status = "Active" if parent[5] == 1 else "Inactive"
     status_class = "good" if parent[5] == 1 else "neutral"
     access_status, access_detail, access_class = parent_access_summary(
-        parent[9], parent[10], parent[8], parent[11]
+        parent[9], parent[10], parent[8], parent[11], parent[12]
+    )
+    login_count_label = (
+        f"{int(parent[10] or 0)} tracked login(s)"
+        if int(parent[10] or 0) > 0
+        else ("Historical count unavailable" if parent[12] else "0 tracked login(s)")
     )
     last_use_label = parent[12] or parent[9] or "No tracked use"
     reset_note = f"Last reset {parent[13]}" if parent[13] else "No tracked password reset"
@@ -22192,7 +22199,7 @@ def parent_admin(parent_id):
                             </div>
                         </div>
                         <div class="access-summary">
-                            <strong>{escape(access_status)} · {int(parent[10] or 0)} login(s)</strong>
+                            <strong>{escape(access_status)} · {escape(login_count_label)}</strong>
                             <span>{escape(access_detail)}</span>
                             <span>Last use: {escape(str(last_use_label))}</span>
                             <span>{escape(reset_note)}</span>

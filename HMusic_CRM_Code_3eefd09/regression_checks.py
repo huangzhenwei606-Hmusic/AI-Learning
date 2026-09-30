@@ -218,6 +218,8 @@ CHECKS = {
     "parent login tracking schema": '("last_login_at", "last_login_at TEXT")',
     "parent activity tracking schema": '("last_activity_at", "last_activity_at TEXT")',
     "parent login count tracking": "login_count = COALESCE(login_count, 0) + 1",
+    "parent historical activity login recovery": "Parent app use is confirmed; historical login count is unavailable",
+    "parent historical count is not shown as zero": "Historical count unavailable",
     "parent mobile app login source": '"Mobile app" if native_app else "Web"',
     "parent successful login tracking": "record_parent_login(cursor, parent[0], native_app=native_app)",
     "parent dashboard usage tracking": "SET last_activity_at = ?, updated_at = ?",
