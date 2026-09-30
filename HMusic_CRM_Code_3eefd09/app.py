@@ -933,7 +933,7 @@ def public_legal_page(title, body_html):
         <main class="container">
             <div class="brand-mark" aria-hidden="true"></div>
             <h1>{title}</h1>
-            <p class="updated">Last updated: June 17, 2026</p>
+            <p class="updated">Last updated: September 30, 2026</p>
             {body_html}
             <div class="actions">
                 <a href="/app">Parent App</a>
@@ -973,6 +973,9 @@ def privacy_policy():
         <h2>Sharing</h2>
         <p>We share information only as needed to operate the studio, support families, process payments, comply with law, or use trusted service providers such as Stripe, hosting, email, and SMS providers.</p>
 
+        <h2>SMS Privacy</h2>
+        <p>Mobile information and SMS consent records are used only to provide H-Music family communications. We do not sell mobile information, and we do not share mobile information or SMS opt-in consent with third parties or affiliates for marketing or promotional purposes. We may share limited information with service providers only as needed to deliver messages and operate the service.</p>
+
         <h2>Retention and Access</h2>
         <p>Lesson, account, and billing records may be retained while the student is enrolled and for reasonable business, tax, accounting, and support purposes. Families may contact H-Music & Arts to request help with access, correction, or account questions.</p>
 
@@ -997,6 +1000,11 @@ def terms_of_use():
 
         <h2>Messages and Lesson Notes</h2>
         <p>Messages, lesson notes, homework, and attachments should be used for lesson-related communication. The app is not intended for emergencies or urgent safety communication.</p>
+
+        <h2>H-Music Family Updates SMS Program</h2>
+        <p>Families who separately opt in may receive recurring transactional text messages from H-Music&Art about lesson reminders, schedule changes, cancellations, parent app access, invoices, payment status, and studio account updates. Message frequency varies. Message and data rates may apply.</p>
+        <p>Reply <strong>STOP</strong> to unsubscribe. Reply <strong>HELP</strong> for help, or contact <a href="mailto:hmusicjustplay@gmail.com">hmusicjustplay@gmail.com</a>. Consent to receive text messages is not a condition of enrollment or purchase. Carriers are not liable for delayed or undelivered messages.</p>
+        <p>See our <a href="/privacy">Privacy Policy</a> for information about how H-Music handles personal information and mobile opt-in data.</p>
 
         <h2>Changes</h2>
         <p>H-Music may update the app, policies, or these terms as the studio system evolves. Continued use of the app means you accept the updated terms.</p>
@@ -40216,6 +40224,7 @@ def v35_registration_form(error="", values=None):
                     </details>
                     <label class="check"><input type="checkbox" name="policy_ack" value="1" required> I have reviewed and agree to the H-Music lesson, cancellation, makeup, and billing policy.</label>
                     <label class="check"><input type="checkbox" name="billing_ack" value="1" required> I authorize H-Music to send invoices and secure ACH payment setup links through the parent app or email.</label>
+                    <label class="check"><input type="checkbox" name="sms_consent" value="1" {'checked' if values.get('sms_consent') == '1' else ''}> I agree to receive recurring transactional text messages from H-Music&Art about lessons, schedule changes, cancellations, parent app access, invoices, payments, and account updates at the mobile number provided. Message frequency varies. Message and data rates may apply. Reply <strong>STOP</strong> to opt out or <strong>HELP</strong> for help. Consent is not a condition of enrollment. See the <a href="/terms" target="_blank" rel="noopener">Terms</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</label>
                     <label class="check"><input type="checkbox" name="media_ok" value="1"> Photo/video permission for studio learning moments and recitals.</label>
                     <div class="grid" style="margin-top:14px;">
                         <label>Parent / guardian signature<input name="guardian_signature" value="{val('guardian_signature')}" placeholder="Type full name" required></label>
@@ -40307,6 +40316,7 @@ def public_student_registration():
             ("Student notes", request.form.get("student_notes", "")),
             ("Policy agreement", "Agreed"),
             ("Billing authorization", "Agreed"),
+            ("SMS consent", "Opted in" if request.form.get("sms_consent") == "1" else "Not opted in"),
             ("Guardian signature", request.form.get("guardian_signature", "")),
             ("Signed date", request.form.get("signed_date", "")),
             ("Media permission", "Yes" if request.form.get("media_ok") == "1" else "No"),
