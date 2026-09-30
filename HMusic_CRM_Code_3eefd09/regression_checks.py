@@ -80,6 +80,8 @@ CHECKS = {
     "teacher calendar date opens add modal": "teacherOpenAddSchedule(dateStr)",
     "teacher add validation returns to calendar modal": 'retry_params = {"open_add": "1"}',
     "teacher calendar reopens add modal after validation": "teacherAddUrlParams.get('open_add') === '1'",
+    "reviewed cancellation requests hide duplicate actions": "This request has already been processed. No further action is needed.",
+    "cancellation request confirmation feedback": "Cancellation request updated successfully.",
     "teacher inline add schedule form": "teacherInlineAddScheduleForm",
     "teacher add schedule respects return": "teacher_return = owner_calendar_return",
     "teacher inline package defaults ten lessons": '<select class="teacher-add-select" name="package_type" id="teacherInlinePackageType" onchange="syncTeacherInlinePackage()">\n                                    <option value="10">10 lessons</option>',

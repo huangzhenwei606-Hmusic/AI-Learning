@@ -16419,7 +16419,7 @@ def lesson_change_request_detail(request_id):
     if request.method == "POST":
         if (req[13] or "pending") not in ("pending", "pending_owner_review"):
             conn.close()
-            return redirect(f"/lesson_change_request/{request_id}")
+            return redirect(f"/lesson_change_request/{request_id}?already_reviewed=1")
         conn.close()
         action = request.form.get("action")
         owner_note = (request.form.get("owner_note") or "").strip()
@@ -16493,7 +16493,7 @@ def lesson_change_request_detail(request_id):
                 related_type="lesson_change_request",
                 related_id=request_id
             )
-        return redirect(f"/lesson_change_request/{request_id}")
+        return redirect(f"/lesson_change_request/{request_id}?updated=1")
 
     cursor.execute("""
     SELECT status, COALESCE(charge_lessons, 0), COALESCE(policy_waiver_applied, 0), COALESCE(pending_fee_amount, 0)
@@ -16510,6 +16510,43 @@ def lesson_change_request_detail(request_id):
     current_state = ""
     if schedule_state:
         current_state = f"{hmusic_policy_status_label(schedule_state[0])} · credit {schedule_state[1]} · waiver {schedule_state[2]} · pending fee ${hmusic_money(schedule_state[3])}"
+
+    request_is_actionable = (req[13] or "pending") in ("pending", "pending_owner_review")
+    decision_labels = {
+        "apply_policy": "Cancellation confirmed with policy",
+        "charge": "Cancellation confirmed and charged",
+        "no_charge": "Cancellation confirmed with no charge",
+        "reject": "Cancellation request rejected",
+    }
+    decision_label = decision_labels.get(req[14] or "", "Cancellation request reviewed")
+    owner_note_html = f'<p><b>Owner note:</b> {escape(req[15])}</p>' if req[15] else ""
+    if request_is_actionable:
+        decision_panel = f"""
+            <form class="card" method="POST">
+                <label class="muted">Owner note</label>
+                <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
+                <div class="actions">
+                    <button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button>
+                    <button class="warn" name="action" value="charge" type="submit">Confirm + charge</button>
+                    <button name="action" value="no_charge" type="submit">Confirm no charge</button>
+                    <button class="danger" name="action" value="reject" type="submit">Reject request</button>
+                </div>
+            </form>
+        """
+    else:
+        decision_panel = f"""
+            <div class="card reviewed">
+                <b>{escape(decision_label)}</b>
+                <p>This request has already been processed. No further action is needed.</p>
+                {owner_note_html}
+            </div>
+        """
+
+    update_notice = ""
+    if request.args.get("updated") == "1":
+        update_notice = '<div class="notice success">Cancellation request updated successfully.</div>'
+    elif request.args.get("already_reviewed") == "1":
+        update_notice = '<div class="notice">This request was already processed. No duplicate action was applied.</div>'
 
     return f"""
     <html>
@@ -16532,11 +16569,15 @@ def lesson_change_request_detail(request_id):
             button.primary {{ background:#1d65ad; border-color:#1d65ad; color:white; }}
             button.warn {{ background:#fff7ed; color:#9a3412; border-color:#fed7aa; }}
             button.danger {{ background:#fef2f2; color:#991b1b; border-color:#fecaca; }}
+            .notice {{ margin-bottom:14px; border:1px solid #cbd5e1; border-radius:10px; padding:12px 14px; background:#f8fafc; color:#334155; font-weight:700; }}
+            .notice.success,.reviewed {{ border-color:#bbf7d0; background:#f0fdf4; color:#166534; }}
+            .reviewed p {{ margin-bottom:0; }}
             @media(max-width:760px) {{ body {{ padding:14px; }} .grid,.actions {{ grid-template-columns:1fr; }} }}
         </style>
     </head>
     <body>
         <div class="wrap">
+            {update_notice}
             <div class="card">
                 <p class="muted">Request #{req[0]} · {escape(req[16] or '')}</p>
                 <h1>{escape(req[2])} cancellation request</h1>
@@ -16550,16 +16591,7 @@ def lesson_change_request_detail(request_id):
                     <div class="metric"><span>Fee preview</span><b>${fee_preview}</b></div>
                 </div>
             </div>
-            <form class="card" method="POST">
-                <label class="muted">Owner note</label>
-                <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
-                <div class="actions">
-                    <button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button>
-                    <button class="warn" name="action" value="charge" type="submit">Confirm + charge</button>
-                    <button name="action" value="no_charge" type="submit">Confirm no charge</button>
-                    <button class="danger" name="action" value="reject" type="submit">Reject request</button>
-                </div>
-            </form>
+            {decision_panel}
             <a class="button" href="/owner_cancel_requests">Back to cancel requests</a>
             <a class="button" href="/calendar">Back to calendar</a>
         </div>
