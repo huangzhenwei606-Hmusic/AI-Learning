@@ -19027,18 +19027,23 @@ def invoices():
     conn.close()
 
     summary = {row[0]: {"count": row[1], "amount": row[2]} for row in summary_rows}
-    open_statuses = ("unpaid", "payment_failed", "stripe_processing", "square_processing", "pending_confirmation")
+    open_statuses = ("unpaid", "payment_failed", "payment_processing", "stripe_processing", "square_processing", "pending_confirmation")
     open_count = sum(summary.get(status, {}).get("count", 0) for status in open_statuses)
     open_amount = sum(summary.get(status, {}).get("amount", 0) for status in open_statuses)
     paid_count = summary.get("paid", {}).get("count", 0)
     paid_amount = summary.get("paid", {}).get("amount", 0)
-    processing_count = summary.get("stripe_processing", {}).get("count", 0) + summary.get("square_processing", {}).get("count", 0)
+    processing_count = (
+        summary.get("payment_processing", {}).get("count", 0)
+        + summary.get("stripe_processing", {}).get("count", 0)
+        + summary.get("square_processing", {}).get("count", 0)
+    )
 
     def status_label(raw_status):
         status = (raw_status or "unpaid").lower()
         labels = {
             "unpaid": "Unpaid",
             "paid": "Paid",
+            "payment_processing": "Payment Processing",
             "stripe_processing": "Stripe processing",
             "square_processing": "Square processing",
             "pending_confirmation": "Needs confirmation",
@@ -19050,7 +19055,7 @@ def invoices():
         status = (raw_status or "unpaid").lower()
         if status == "paid":
             return "paid"
-        if status in ("stripe_processing", "square_processing"):
+        if status in ("payment_processing", "stripe_processing", "square_processing"):
             return "processing"
         if status == "payment_failed":
             return "failed"
@@ -19124,7 +19129,7 @@ def invoices():
         action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
-        elif status == "stripe_processing":
+        elif status in ("payment_processing", "stripe_processing"):
             action_html += f"""
             <form class="inline-action-form" method="POST" action="/sync_invoice_payment/{invoice_id}">
                 <button class="row-action reminder" type="submit">Check payment status</button>

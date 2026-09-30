@@ -231,6 +231,7 @@ CHECKS = {
     "processing invoice Stripe reconciliation": "def sync_stripe_invoice_payment(invoice_id):",
     "processing invoice status action": "Check payment status",
     "processing invoice retry safety": "Do not ask the parent to pay again yet.",
+    "guardian allocation processing action": 'status in ("payment_processing", "stripe_processing")',
 }
 
 
