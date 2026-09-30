@@ -7,6 +7,7 @@ import json
 import csv
 import io
 import zipfile
+import base64
 import secrets
 import re
 import unicodedata
@@ -19352,7 +19353,10 @@ def invoices():
         )
         status_safe = escape(status_label(status))
         type_safe = escape(type_label(invoice_type))
-        action_html = f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
+        action_html = (
+            f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
+            f'<a class="row-action" href="/notification_center?invoice_id={invoice_id}">Notify</a>'
+        )
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
         elif status in ("payment_processing", "stripe_processing"):
@@ -25112,6 +25116,80 @@ def send_email_delivery(destination, title, body, link_url):
     return True, f"Email sent via SMTP ({smtp_security})."
 
 
+def hmusic_normalize_sms_phone(phone):
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    if raw.startswith("+") and 8 <= len(digits) <= 15:
+        return f"+{digits}"
+    return None
+
+
+def sms_config_status():
+    missing = [
+        name for name in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN")
+        if not os.environ.get(name)
+    ]
+    if not os.environ.get("TWILIO_FROM_NUMBER") and not os.environ.get("TWILIO_MESSAGING_SERVICE_SID"):
+        missing.append("TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID")
+    return len(missing) == 0, missing
+
+
+def send_sms_delivery(destination, title, body, link_url):
+    sms_ready, missing = sms_config_status()
+    if not sms_ready:
+        return False, "SMS not configured: " + ", ".join(missing)
+
+    normalized_phone = hmusic_normalize_sms_phone(destination)
+    if not normalized_phone:
+        return False, "SMS not sent: parent phone number is invalid."
+
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    message_parts = [f"H-Music: {str(title or 'Notification').strip()}"]
+    if body:
+        message_parts.append(str(body).strip())
+    if link_url:
+        message_parts.append(hmusic_public_app_url(link_url))
+    payload = {
+        "To": normalized_phone,
+        "Body": "\n".join(part for part in message_parts if part)[:1500],
+    }
+    messaging_service_sid = os.environ.get("TWILIO_MESSAGING_SERVICE_SID")
+    if messaging_service_sid:
+        payload["MessagingServiceSid"] = messaging_service_sid
+    else:
+        payload["From"] = os.environ.get("TWILIO_FROM_NUMBER")
+
+    api_url = f"https://api.twilio.com/2010-04-01/Accounts/{quote(account_sid)}/Messages.json"
+    api_request = urlrequest.Request(
+        api_url,
+        data=urlencode(payload).encode("utf-8"),
+        method="POST",
+    )
+    auth = base64.b64encode(f"{account_sid}:{auth_token}".encode("utf-8")).decode("ascii")
+    api_request.add_header("Authorization", f"Basic {auth}")
+    api_request.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+    try:
+        with urlrequest.urlopen(api_request, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            error_data = json.loads(exc.read().decode("utf-8"))
+            error_message = error_data.get("message") or f"Twilio HTTP {exc.code}"
+        except Exception:
+            error_message = f"Twilio HTTP {exc.code}"
+        return False, error_message
+    except (URLError, TimeoutError) as exc:
+        return False, f"Twilio connection failed: {exc}"
+
+    return True, f"Sent via Twilio ({result.get('sid') or 'accepted'})."
+
+
 def smtp_config_status():
     required = [
         "HMUSIC_SMTP_HOST",
@@ -25127,7 +25205,7 @@ def mark_delivery_status(queue_id, status, provider_response=None):
     ensure_v33_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT destination FROM notification_delivery_queue WHERE id = ?", (queue_id,))
+    cursor.execute("SELECT channel, destination FROM notification_delivery_queue WHERE id = ?", (queue_id,))
     row = cursor.fetchone()
     cursor.execute("""
     UPDATE notification_delivery_queue
@@ -25142,8 +25220,8 @@ def mark_delivery_status(queue_id, status, provider_response=None):
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         queue_id
     ))
-    if row and status == "failed" and hmusic_is_hard_bounce_response(provider_response):
-        hmusic_suppress_email(cursor, row[0], provider_response[:240], f"queue:{queue_id}")
+    if row and row[0] == "email" and status == "failed" and hmusic_is_hard_bounce_response(provider_response):
+        hmusic_suppress_email(cursor, row[1], provider_response[:240], f"queue:{queue_id}")
     conn.commit()
     conn.close()
 
@@ -25175,6 +25253,35 @@ def send_queued_email_now(queue_id):
         sent = False
         response = f"Email send failed: {exc}"
 
+    mark_delivery_status(queue_id, "sent" if sent else "failed", response)
+    return sent, response
+
+
+def send_queued_sms_now(queue_id):
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT channel, destination, title, body, link_url, status
+    FROM notification_delivery_queue
+    WHERE id = ?
+    """, (queue_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return False, "Queue item not found."
+    channel, destination, title, body, link_url, status = row
+    if channel != "sms":
+        return False, "Queue item is not an SMS message."
+    if status not in ("pending", "failed"):
+        return False, f"Queue item already {status}."
+
+    try:
+        sent, response = send_sms_delivery(destination, title, body, link_url)
+    except Exception as exc:
+        sent = False
+        response = f"SMS send failed: {exc}"
     mark_delivery_status(queue_id, "sent" if sent else "failed", response)
     return sent, response
 
@@ -25766,6 +25873,194 @@ def run_autopay_checks():
     """
 
 
+def hmusic_invoice_notice_target(cursor, invoice_id):
+    cursor.execute("""
+    SELECT id, COALESCE(student_name, ''), COALESCE(amount, 0),
+           COALESCE(status, 'unpaid')
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        return None
+    cursor.execute("""
+    SELECT p.id, COALESCE(p.parent_name, ''), COALESCE(p.email, ''), COALESCE(p.phone, '')
+    FROM parent_profiles p
+    JOIN parent_students ps ON ps.parent_id = p.id
+    WHERE LOWER(TRIM(ps.student_name)) = LOWER(TRIM(?))
+      AND COALESCE(ps.active, 1) = 1
+      AND COALESCE(p.active, 1) = 1
+    ORDER BY
+      CASE WHEN LOWER(TRIM(COALESCE(p.email, ''))) LIKE '%@hmusic.local' THEN 1 ELSE 0 END,
+      ps.id DESC
+    LIMIT 1
+    """, (invoice[1],))
+    parent = cursor.fetchone()
+    return (invoice, parent) if parent else None
+
+
+def hmusic_send_selected_parent_notice(parent_id, title, body, link_url, channels, related_type, related_id):
+    totals = {"app": 0, "sms": 0, "sms_queued": 0, "email": 0, "skipped": 0}
+    parent_key = str(parent_id)
+    if "app" in channels:
+        create_notification(
+            "parent", parent_key, title, body, link_url,
+            related_type=related_type, related_id=related_id, queue_delivery=False,
+        )
+        totals["app"] = 1
+
+    if "sms" in channels:
+        queue_id = queue_notification_delivery(
+            "parent", parent_key, title, body, link_url, "sms",
+            related_type=related_type, related_id=related_id,
+        )
+        if queue_id:
+            sms_ready, _ = sms_config_status()
+            if sms_ready:
+                sent, _ = send_queued_sms_now(queue_id)
+                totals["sms"] = int(sent)
+                totals["skipped"] += int(not sent)
+            else:
+                totals["sms_queued"] = 1
+        else:
+            totals["skipped"] += 1
+
+    if "email" in channels:
+        queue_id = queue_notification_delivery(
+            "parent", parent_key, title, body, link_url, "email",
+            related_type=related_type, related_id=related_id,
+        )
+        if queue_id:
+            sent, _ = send_queued_email_now(queue_id)
+            totals["email"] = int(sent)
+            totals["skipped"] += int(not sent)
+        else:
+            totals["skipped"] += 1
+    return totals
+
+
+@app.route("/notification_center", methods=["GET", "POST"])
+def notification_center():
+    if not require_owner():
+        return redirect("/owner_login")
+
+    ensure_v321_schema()
+    ensure_v33_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+
+    if request.method == "POST":
+        notice_kind = (request.form.get("notice_kind") or "").strip()
+        channels = set(request.form.getlist("channels")) & {"app", "sms", "email"}
+        if not channels:
+            conn.close()
+            return redirect("/notification_center?state=error&message=Choose+at+least+one+channel")
+
+        title = (request.form.get("title") or "").strip()
+        body = (request.form.get("body") or "").strip()
+        parent_id = None
+        related_type = "studio_notice"
+        related_id = None
+        link_url = "/parent_dashboard"
+
+        if notice_kind == "invoice":
+            invoice_id = request.form.get("invoice_id", type=int)
+            target = hmusic_invoice_notice_target(cursor, invoice_id)
+            if not target:
+                conn.close()
+                return redirect("/notification_center?state=error&message=Invoice+or+parent+not+found")
+            invoice, parent = target
+            parent_id = int(parent[0])
+            related_type = "custom_invoice_notice"
+            related_id = int(invoice[0])
+            link_url = f"/parent_invoice/{invoice[0]}"
+            title = title or f"H-Music invoice #{invoice[0]}"
+            body = body or (
+                f"{invoice[1]} invoice #{invoice[0]} is {str(invoice[3]).replace('_', ' ')}. "
+                f"Amount: ${hmusic_money(invoice[2])}."
+            )
+        elif notice_kind == "studio":
+            parent_id = request.form.get("parent_id", type=int)
+            link_candidate = (request.form.get("link_url") or "/parent_dashboard").strip()
+            if link_candidate.startswith("/") and not link_candidate.startswith("//"):
+                link_url = link_candidate
+            if not parent_id or not title or not body:
+                conn.close()
+                return redirect("/notification_center?state=error&message=Parent,+title+and+message+are+required")
+            cursor.execute("SELECT id FROM parent_profiles WHERE id = ? AND COALESCE(active, 1) = 1", (parent_id,))
+            if not cursor.fetchone():
+                conn.close()
+                return redirect("/notification_center?state=error&message=Parent+not+found")
+        else:
+            conn.close()
+            return redirect("/notification_center?state=error&message=Unknown+notice+type")
+
+        conn.close()
+        totals = hmusic_send_selected_parent_notice(
+            parent_id, title, body, link_url, channels, related_type, related_id,
+        )
+        summary = (
+            f"App {totals['app']}; SMS sent {totals['sms']}; SMS queued {totals['sms_queued']}; "
+            f"email sent {totals['email']}; skipped {totals['skipped']}."
+        )
+        return redirect(f"/notification_center?state=sent&message={quote(summary)}")
+
+    cursor.execute("""
+    SELECT id, COALESCE(student_name, ''), COALESCE(amount, 0), COALESCE(status, 'unpaid')
+    FROM invoices
+    WHERE COALESCE(status, 'unpaid') != 'paid'
+    ORDER BY id DESC LIMIT 200
+    """)
+    invoices_data = cursor.fetchall()
+    cursor.execute("""
+    SELECT id, COALESCE(parent_name, ''), COALESCE(email, ''), COALESCE(phone, '')
+    FROM parent_profiles
+    WHERE COALESCE(active, 1) = 1
+    ORDER BY parent_name, email
+    """)
+    parents_data = cursor.fetchall()
+    conn.close()
+
+    selected_invoice_id = request.args.get("invoice_id", type=int)
+    invoice_options = "".join(
+        f'<option value="{row[0]}" {"selected" if row[0] == selected_invoice_id else ""}>'
+        f'#{row[0]} · {escape(row[1])} · ${hmusic_money(row[2])} · {escape(str(row[3]).replace("_", " "))}</option>'
+        for row in invoices_data
+    )
+    parent_options = "".join(
+        f'<option value="{row[0]}">{escape(row[1] or row[2] or f"Parent #{row[0]}")} · {escape(row[3] or "no phone")}</option>'
+        for row in parents_data
+    )
+    state = (request.args.get("state") or "").strip()
+    message = (request.args.get("message") or "").strip()
+    notice = f'<div class="notice {"ok" if state == "sent" else "warn"}">{escape(message)}</div>' if message else ""
+    sms_ready, sms_missing = sms_config_status()
+    sms_label = "Twilio ready" if sms_ready else "Twilio setup needed: " + ", ".join(sms_missing)
+
+    return f"""
+    <html><head><title>Parent Notification Center</title><style>
+    body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:28px}}
+    .shell{{max-width:1080px;margin:auto;background:white;border:1px solid #e5e7eb;padding:24px}}.top{{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}}
+    h1{{margin:0}}h2{{font-size:20px;margin:0 0 16px}}.muted{{color:#6b7280}}.status{{padding:8px 11px;border-radius:6px;background:{'#dcfce7' if sms_ready else '#fef3c7'};color:{'#166534' if sms_ready else '#92400e'};font-weight:800}}
+    .notice{{margin:16px 0;padding:12px;border-radius:6px;font-weight:800}}.notice.ok{{background:#dcfce7;color:#166534}}.notice.warn{{background:#fee2e2;color:#991b1b}}.section{{border-top:1px solid #e5e7eb;padding:24px 0}}
+    label{{display:block;font-weight:800;margin:12px 0 6px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:6px;font:inherit}}textarea{{min-height:110px;resize:vertical}}
+    .channels{{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0}}.channels label{{display:flex;gap:7px;align-items:center;margin:0}}.channels input{{width:auto}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+    button,.button{{display:inline-block;border:0;border-radius:6px;padding:11px 15px;background:#1d4ed8;color:white;font-weight:800;text-decoration:none;cursor:pointer}}.button.secondary{{background:white;color:#1d4ed8;border:1px solid #bfdbfe}}
+    @media(max-width:700px){{body{{padding:12px}}.grid{{grid-template-columns:1fr}}}}
+    </style></head><body><div class="shell">
+    <div class="top"><div><h1>Parent Notification Center</h1><div class="muted">Manual delivery controls</div></div><div class="status">{escape(sms_label)}</div></div>{notice}
+    <div style="margin:16px 0"><a class="button secondary" href="/notification_queue">Delivery history</a> <a class="button secondary" href="/invoices">Invoices</a></div>
+    <section class="section"><h2>Invoice notice</h2><form method="POST" onsubmit="return confirm('Send this invoice notice to the linked parent now?');">
+    <input type="hidden" name="notice_kind" value="invoice"><label>Invoice</label><select name="invoice_id" required>{invoice_options}</select>
+    <div class="grid"><div><label>Title override</label><input name="title"></div><div><label>Message override</label><input name="body"></div></div>
+    <div class="channels"><label><input type="checkbox" name="channels" value="app"> App</label><label><input type="checkbox" name="channels" value="sms"> SMS</label><label><input type="checkbox" name="channels" value="email"> Email</label></div><button type="submit">Send selected channels</button></form></section>
+    <section class="section"><h2>Studio notice</h2><form method="POST" onsubmit="return confirm('Send this studio notice to this parent now?');">
+    <input type="hidden" name="notice_kind" value="studio"><label>Parent</label><select name="parent_id" required>{parent_options}</select><label>Title</label><input name="title" maxlength="120" required><label>Message</label><textarea name="body" maxlength="1200" required></textarea><label>App link</label><input name="link_url" value="/parent_dashboard">
+    <div class="channels"><label><input type="checkbox" name="channels" value="app"> App</label><label><input type="checkbox" name="channels" value="sms"> SMS</label><label><input type="checkbox" name="channels" value="email"> Email</label></div><button type="submit">Send selected channels</button></form></section>
+    </div></body></html>
+    """
+
+
 @app.route("/notification_queue")
 def notification_queue():
     if not require_owner():
@@ -25803,8 +26098,11 @@ def notification_queue():
     smtp_ready, smtp_missing = smtp_config_status()
     smtp_status = "Ready - email can send" if smtp_ready else "Needs setup: " + ", ".join(smtp_missing)
     smtp_class = "ok" if smtp_ready else "warn"
+    sms_ready, sms_missing = sms_config_status()
+    sms_status = "Ready - SMS can send" if sms_ready else "Needs setup: " + ", ".join(sms_missing)
+    sms_class = "ok" if sms_ready else "warn"
 
-    external_rows = [r for r in rows_data if r[1] == "email"]
+    external_rows = [r for r in rows_data if r[1] in ("email", "sms")]
     owner_rows = [r for r in rows_data if r[1] == "push" and r[6] == "pending"]
 
     external_sent = sum(1 for r in external_rows if r[6] == "sent")
@@ -25963,7 +26261,7 @@ def notification_queue():
     <body>
         <div class="container">
             <h1>Owner Notifications</h1>
-            <p class="hint">This page is split into parent-facing email delivery and your own owner to-do list. SMS is paused for now. For trial lessons, each row shows the student and trial class context.</p>
+            <p class="hint">Parent App, email and SMS delivery records.</p>
 
             <div class="top-grid">
                 <div class="status-box">
@@ -25976,8 +26274,9 @@ def notification_queue():
                     <p class="hint">Email is automatic. Only failed rows need attention.</p>
                 </div>
                 <div class="summary-box">
-                    <h3>What needs action?</h3>
-                    <p class="hint">External notifications: only <strong>Failed</strong> needs owner attention. Owner to-do: click <strong>Complete</strong> when done.</p>
+                    <h3>SMS Sending</h3>
+                    <div>Twilio Status: <span class="{sms_class}">{escape(sms_status)}</span></div>
+                    <p class="hint">SMS sends only after an owner manually selects the SMS channel.</p>
                 </div>
             </div>
 
@@ -25990,11 +26289,12 @@ def notification_queue():
 
             <a class="button" href="/">Home</a>
             <a class="button" href="/new_students">New Students / Intake</a>
+            <a class="button" href="/notification_center">Create Parent Notice</a>
             <a class="button" href="/run_lesson_reminders">Queue Tomorrow Lesson Reminders</a>
             <a class="button" href="/billing_settings">Billing Settings</a>
 
-            <h2>External Email Notifications - to Parents</h2>
-            <p class="hint">Email only for now. SMS is paused until a text provider is connected. Failed email rows are the ones to check.</p>
+            <h2>Parent Email / SMS Delivery</h2>
+            <p class="hint">Only failed deliveries need owner attention.</p>
             <div class="section">{external_html}</div>
 
             <h2>Owner To-Do</h2>
@@ -26072,7 +26372,7 @@ def notification_queue_send(queue_id):
     elif channel == "push":
         mark_delivery_status(queue_id, "sent", "In-app notification queued. Browser push provider not connected yet.")
     elif channel == "sms":
-        mark_delivery_status(queue_id, "failed", "SMS provider not configured yet. Connect Twilio or another SMS provider next.")
+        send_queued_sms_now(queue_id)
     else:
         mark_delivery_status(queue_id, "failed", f"Unsupported channel: {channel}")
 
