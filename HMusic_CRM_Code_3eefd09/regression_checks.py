@@ -232,12 +232,18 @@ CHECKS = {
     "processing invoice status action": "Check payment status",
     "processing invoice retry safety": "Do not ask the parent to pay again yet.",
     "guardian allocation processing action": 'status in ("payment_processing", "stripe_processing")',
+    "last minute waiver retired in policy": "Cancellations made within 24 hours do not include a free emergency makeup credit or cancellation waiver.",
+    "last minute fee always previewed": 'fee_preview = hmusic_last_min_fee(lesson[5]) if cancel_status == "last_min_cancel" else 0',
+    "waiver remains no show only": 'if use_policy_waiver and status == "no_show"',
 }
 
 
 FORBIDDEN = {
     "student-level credit write": "UPDATE students\n        SET lessons_left",
     "course credit selector empty state": "No course selected",
+    "retired first last-minute exception": "First last-minute exception may be free",
+    "retired last-minute package waiver copy": "Within 24 hours, a last-minute fee may apply unless a package waiver is available.",
+    "retired automatic last-minute waiver": 'status in ("no_show", "last_min_cancel") and holder["used"] < holder["allowance"]',
     "old edit credit action": "Edit credit",
     "old add first course credit action": "Add first course credit",
     "sqlite-only email collation": "COLLATE NOCASE",

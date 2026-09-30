@@ -15966,7 +15966,7 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     policy_waiver_applied = 0
     pending_fee_amount = 0
     pending_fee_description = ""
-    if use_policy_waiver and status in ("no_show", "last_min_cancel") and holder["used"] < holder["allowance"]:
+    if use_policy_waiver and status == "no_show" and holder["used"] < holder["allowance"]:
         policy_waiver_applied = 1
         hmusic_adjust_waiver(cursor, holder, 1)
 
@@ -16243,8 +16243,8 @@ def parent_cancel():
 
         cancel_status = get_parent_cancel_status(lesson[1], lesson[2])
         holder = hmusic_waiver_holder(cursor, student_name, lesson[6])
-        waiver_available = 1 if cancel_status in ("no_show", "last_min_cancel") and holder["used"] < holder["allowance"] else 0
-        fee_preview = hmusic_last_min_fee(lesson[5]) if cancel_status == "last_min_cancel" and not waiver_available else 0
+        waiver_available = 1 if cancel_status == "no_show" and holder["used"] < holder["allowance"] else 0
+        fee_preview = hmusic_last_min_fee(lesson[5]) if cancel_status == "last_min_cancel" else 0
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         cursor.execute("""
         INSERT INTO lesson_change_requests (
@@ -29755,7 +29755,7 @@ def parent_reschedule():
         is_last_minute = hours_before < 24
         last_minute_note = ""
         if is_last_minute:
-            last_minute_note = " This is within 24 hours and may use the same last-minute fee logic as late cancellation. First last-minute exception may be free per package if available."
+            last_minute_note = " This is within 24 hours and uses the same fee logic as a late cancellation."
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -29840,7 +29840,7 @@ def parent_reschedule():
         warning_html = ""
         if is_last_minute:
             warning_html = """
-            <p><b>Last-minute reschedule notice:</b> This request is within 24 hours. A last-minute reschedule fee may apply, using the same policy as late cancellation. The first exception may be free per package if still available.</p>
+            <p><b>Last-minute reschedule notice:</b> This request is within 24 hours. A last-minute reschedule fee may apply using the same policy as late cancellation.</p>
             """
 
         return f"""
@@ -29993,7 +29993,7 @@ def parent_reschedule():
             <p class="muted">{escape(str(student_name))}</p>
             <section class="card policy">
                 <b>Policy preview</b>
-                <p>Request at least 24 hours before class when possible. Within 24 hours, a last-minute fee may apply unless a package waiver is available.</p>
+                <p>Request at least 24 hours before class when possible. Within 24 hours, a last-minute fee applies.</p>
             </section>
             <section class="card">
                 <h2>Need multiple changes?</h2>
@@ -39463,10 +39463,9 @@ def v35_registration_form(error="", values=None):
                         <summary>H-Music lesson, makeup, cancellation, and billing policy <span>Tap to view</span></summary>
                         <div class="policy-body">
                             <h3>Term and makeup policy</h3>
-                            <p>A standard term is 10 lessons. Each student receives one emergency makeup credit per 10-lesson term for a short-notice absence.</p>
-                            <p>This emergency makeup credit may be used once per term for a cancellation made within 24 hours before the lesson, as long as the cancellation is not within 2 hours of the lesson start time.</p>
+                            <p>A standard term is 10 lessons. Cancellations made within 24 hours do not include a free emergency makeup credit or cancellation waiver.</p>
                             <h3>Late cancellation fees</h3>
-                            <p>After the emergency makeup credit has been used, cancellations made within 24 hours of the lesson will be charged a late cancellation fee of $30 per 30 minutes.</p>
+                            <p>Cancellations made within 24 hours of the lesson will be charged a late cancellation fee of $30 per 30 minutes.</p>
                             <p>Cancellations made within 2 hours of the lesson start time will be charged the full lesson tuition and may not be eligible for makeup, unless approved by H-Music management.</p>
                             <p>Cancellations made more than 24 hours before the lesson may be rescheduled based on teacher and room availability.</p>
                             <h3>Teacher time and reporting</h3>
