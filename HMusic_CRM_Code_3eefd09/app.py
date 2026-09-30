@@ -65,6 +65,7 @@ HMUSIC_BACKUP_DIR = os.environ.get(
 )
 HMUSIC_TIMEZONE_NAME = os.environ.get("HMUSIC_TIMEZONE", "America/Los_Angeles")
 HMUSIC_TIMEZONE = ZoneInfo(HMUSIC_TIMEZONE_NAME) if ZoneInfo else None
+HMUSIC_TRANSACTIONAL_EMAIL = "hmusicjustplay@gmail.com"
 DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
@@ -8845,18 +8846,19 @@ Thank you,
 H-Music
 """
 
-    msg = EmailMessage()
-    msg["Subject"] = f"{name}'s Piano Lesson Update"
-    msg["From"] = "huangzhenwei606@gmail.com"
-    msg["To"] = parent_email
-    msg.set_content(email_text)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(
-            "huangzhenwei606@gmail.com",
-            os.getenv("GMAIL_APP_PASSWORD")
-        )
-        smtp.send_message(msg)
+    sent, delivery_response = send_email_delivery(
+        parent_email,
+        f"{name}'s Piano Lesson Update",
+        email_text,
+        ""
+    )
+    if not sent:
+        conn.close()
+        return f"""
+        <h1>Email Not Sent</h1>
+        <p>{escape(delivery_response)}</p>
+        <p><a href="/student/{quote(name, safe='')}">Back to Student</a></p>
+        """, 502
 
     today = date.today().strftime("%Y-%m-%d")
     selected_student_name = (request.args.get("student_name") or "").strip()
@@ -9041,18 +9043,14 @@ Thank you,
 H-Music
 """
 
-                msg = EmailMessage()
-                msg["Subject"] = f"{student_name}'s Piano Lesson Update"
-                msg["From"] = "huangzhenwei606@gmail.com"
-                msg["To"] = parent_email
-                msg.set_content(email_text)
-
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                    smtp.login(
-                        "huangzhenwei606@gmail.com",
-                        os.getenv("GMAIL_APP_PASSWORD")
-                    )
-                    smtp.send_message(msg)
+                sent, _ = send_email_delivery(
+                    parent_email,
+                    f"{student_name}'s Piano Lesson Update",
+                    email_text,
+                    ""
+                )
+                if not sent:
+                    continue
 
                 cursor.execute("""
                 INSERT INTO email_logs
@@ -25084,17 +25082,21 @@ def send_email_delivery(destination, title, body, link_url):
 
     smtp_host = os.environ.get("HMUSIC_SMTP_HOST")
     smtp_port = int(os.environ.get("HMUSIC_SMTP_PORT", "587"))
-    smtp_user = os.environ.get("HMUSIC_SMTP_USER")
+    smtp_user = (os.environ.get("HMUSIC_SMTP_USER") or "").strip()
     smtp_password = os.environ.get("HMUSIC_SMTP_PASSWORD")
-    from_email = os.environ.get("HMUSIC_FROM_EMAIL") or smtp_user
+    configured_from = (os.environ.get("HMUSIC_FROM_EMAIL") or "").strip()
     smtp_security = os.environ.get("HMUSIC_SMTP_SECURITY", "").strip().lower()
 
-    if not smtp_host or not smtp_user or not smtp_password or not from_email:
+    if not smtp_host or not smtp_user or not smtp_password:
         return False, "SMTP not configured. Add HMUSIC_SMTP_HOST, HMUSIC_SMTP_USER, HMUSIC_SMTP_PASSWORD, and HMUSIC_FROM_EMAIL."
+    if smtp_user.casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold():
+        return False, f"SMTP user must be {HMUSIC_TRANSACTIONAL_EMAIL}; email was not sent from a personal account."
+    if configured_from and configured_from.casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold():
+        return False, f"HMUSIC_FROM_EMAIL must be {HMUSIC_TRANSACTIONAL_EMAIL}."
 
     message = EmailMessage()
     message["Subject"] = title or "H-Music Notification"
-    message["From"] = from_email
+    message["From"] = HMUSIC_TRANSACTIONAL_EMAIL
     message["To"] = destination
     footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
     message.set_content(f"{body or ''}{footer}")
@@ -25198,6 +25200,11 @@ def smtp_config_status():
         "HMUSIC_FROM_EMAIL",
     ]
     missing = [name for name in required if not os.environ.get(name)]
+    if not missing:
+        if os.environ.get("HMUSIC_SMTP_USER", "").strip().casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold():
+            missing.append(f"HMUSIC_SMTP_USER={HMUSIC_TRANSACTIONAL_EMAIL}")
+        if os.environ.get("HMUSIC_FROM_EMAIL", "").strip().casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold():
+            missing.append(f"HMUSIC_FROM_EMAIL={HMUSIC_TRANSACTIONAL_EMAIL}")
     return len(missing) == 0, missing
 
 

@@ -17,6 +17,9 @@ CHECKS = {
     "smtp 465 ssl support": 'smtp_security = "ssl" if smtp_port == 465 else "starttls"',
     "smtp ssl client": "smtplib.SMTP_SSL if smtp_security == \"ssl\" else smtplib.SMTP",
     "smtp connection timeout": "smtp_port, timeout=30",
+    "transactional email account": 'HMUSIC_TRANSACTIONAL_EMAIL = "hmusicjustplay@gmail.com"',
+    "transactional sender enforcement": 'smtp_user.casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold()',
+    "transactional from header": 'message["From"] = HMUSIC_TRANSACTIONAL_EMAIL',
     "invoice reminder action": "Email reminder",
     "manual parent notification center": '@app.route("/notification_center", methods=["GET", "POST"])',
     "manual notification channel permissions": 'set(request.form.getlist("channels"))',
@@ -274,6 +277,7 @@ CHECKS = {
 
 
 FORBIDDEN = {
+    "legacy personal sender": "huangzhenwei606@gmail.com",
     "student-level credit write": "UPDATE students\n        SET lessons_left",
     "course credit selector empty state": "No course selected",
     "retired first last-minute exception": "First last-minute exception may be free",
