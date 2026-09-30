@@ -298,77 +298,68 @@ def hmusic_parent_visible_lesson_note(value):
 def hmusic_lesson_history_rows(cursor, student_name, limit=10):
     today_str = date.today().strftime("%Y-%m-%d")
     cursor.execute("""
-    SELECT l.id, l.schedule_id,
-           l.lesson_date AS recorded_lesson_date,
-           COALESCE(NULLIF(s.lesson_date, ''), l.lesson_date) AS actual_lesson_date,
-           l.lesson_content, l.performance, l.homework,
-           COALESCE(l.created_by, ''), COALESCE(l.created_at, ''),
-           COALESCE(s.teacher, ''), COALESCE(s.lesson_time, ''),
-           COALESCE(s.course_type_name, '')
-    FROM lessons l
-    LEFT JOIN schedule s ON s.id = l.schedule_id
-    WHERE l.student_name = ?
+    SELECT s.id, s.lesson_date,
+           COALESCE(NULLIF(l.lesson_content, ''), NULLIF(s.notes, ''), 'Lesson note'),
+           COALESCE(l.performance, ''),
+           COALESCE(NULLIF(l.homework, ''), NULLIF(s.homework_assignment, ''), '')
+    FROM schedule s
+    LEFT JOIN lessons l ON l.id = (
+        SELECT MAX(l2.id)
+        FROM lessons l2
+        WHERE l2.schedule_id = s.id
+    )
+    WHERE COALESCE(s.lesson_date, '') <= ?
       AND (
-          l.schedule_id IS NULL
-          OR s.id IS NULL
-          OR (
-              COALESCE(s.lesson_date, '') <= ?
-              AND LOWER(COALESCE(s.status, '')) NOT IN ('scheduled', 'parent_cancel_pending_confirm')
+          LOWER(TRIM(COALESCE(s.student_name, ''))) = LOWER(TRIM(?))
+          OR EXISTS (
+              SELECT 1
+              FROM group_schedule_students gs
+              WHERE gs.schedule_id = s.id
+                AND LOWER(TRIM(COALESCE(gs.student_name, ''))) = LOWER(TRIM(?))
           )
       )
-    ORDER BY l.id DESC
+      AND LOWER(COALESCE((
+          SELECT gs.attendance_status
+          FROM group_schedule_students gs
+          WHERE gs.schedule_id = s.id
+            AND LOWER(TRIM(COALESCE(gs.student_name, ''))) = LOWER(TRIM(?))
+          ORDER BY gs.id DESC
+          LIMIT 1
+      ), s.status, 'scheduled')) NOT IN ('scheduled', 'parent_cancel_pending_confirm')
+    ORDER BY s.lesson_date DESC, s.id DESC
     LIMIT 500
-    """, (student_name, today_str))
-
-    candidates = []
-    seen_schedule_lessons = set()
-    for (
-        lesson_id, schedule_id, recorded_lesson_date, actual_lesson_date,
-        lesson_content, performance, homework, created_by, created_at,
-        teacher, lesson_time, course_type_name,
-    ) in cursor.fetchall():
-        schedule_key = int(schedule_id) if schedule_id else None
-        if schedule_key is not None and schedule_key in seen_schedule_lessons:
-            continue
-        if schedule_key is not None:
-            seen_schedule_lessons.add(schedule_key)
-        batch_key = (
-            str(created_at or "").strip(),
-            str(created_by or "").strip().casefold(),
-            str(recorded_lesson_date or "").strip(),
-            str(lesson_content or "").strip().casefold(),
-            str(performance or "").strip().casefold(),
-            str(homework or "").strip().casefold(),
-            str(teacher or "").strip().casefold(),
-            str(lesson_time or "").strip(),
-            str(course_type_name or "").strip().casefold(),
-        )
-        candidates.append({
-            "id": int(lesson_id),
-            "schedule_id": schedule_key,
-            "recorded_date": str(recorded_lesson_date or "").strip(),
-            "actual_date": str(actual_lesson_date or "").strip(),
+    """, (today_str, student_name, student_name, student_name))
+    visible = [
+        {
+            "id": int(schedule_id),
+            "actual_date": str(lesson_date or "").strip(),
             "lesson_content": lesson_content,
             "performance": performance,
             "homework": homework,
-            "batch_key": batch_key,
-        })
+        }
+        for schedule_id, lesson_date, lesson_content, performance, homework in cursor.fetchall()
+    ]
 
-    batch_groups = {}
-    for item in candidates:
-        if item["batch_key"][0] and item["schedule_id"] is not None:
-            batch_groups.setdefault(item["batch_key"], []).append(item)
+    cursor.execute("""
+    SELECT l.id, l.lesson_date, l.lesson_content, l.performance, l.homework
+    FROM lessons l
+    WHERE LOWER(TRIM(COALESCE(l.student_name, ''))) = LOWER(TRIM(?))
+      AND (
+          l.schedule_id IS NULL
+          OR NOT EXISTS (SELECT 1 FROM schedule s WHERE s.id = l.schedule_id)
+      )
+      AND COALESCE(l.lesson_date, '') <= ?
+    ORDER BY l.lesson_date DESC, l.id DESC
+    LIMIT 200
+    """, (student_name, today_str))
+    visible.extend({
+        "id": -int(lesson_id),
+        "actual_date": str(lesson_date or "").strip(),
+        "lesson_content": lesson_content,
+        "performance": performance,
+        "homework": homework,
+    } for lesson_id, lesson_date, lesson_content, performance, homework in cursor.fetchall())
 
-    cloned_ids = set()
-    for batch_items in batch_groups.values():
-        schedule_ids = {item["schedule_id"] for item in batch_items}
-        actual_dates = {item["actual_date"] for item in batch_items}
-        if len(schedule_ids) < 2 or len(actual_dates) < 2:
-            continue
-        original = min(batch_items, key=lambda item: item["id"])
-        cloned_ids.update(item["id"] for item in batch_items if item["id"] != original["id"])
-
-    visible = [item for item in candidates if item["id"] not in cloned_ids]
     visible.sort(key=lambda item: (item["actual_date"], item["id"]), reverse=True)
     return [
         (item["actual_date"], item["lesson_content"], item["performance"], item["homework"])
