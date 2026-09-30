@@ -19320,6 +19320,18 @@ def invoices():
         notice_class = "notice ok" if payment_sync_state in ("paid", "failed", "unpaid") else "notice warn"
         reminder_notice += f'<div class="{notice_class}">{escape(payment_sync_labels.get(payment_sync_state, "Payment status check finished."))}</div>'
 
+    payment_cancel_state = (request.args.get("payment_cancel") or "").strip()
+    if payment_cancel_state:
+        payment_cancel_labels = {
+            "canceled": "Stripe canceled the ACH payment. The invoice was restored to unpaid.",
+            "paid": "Stripe already completed this payment, so the invoice was not restored to unpaid.",
+            "missing": "No active Stripe payment was found to cancel. No invoice status was changed.",
+            "unavailable": "Stripe is not configured, so the ACH payment could not be canceled.",
+            "error": "Stripe could not cancel the ACH payment. No invoice status was changed.",
+        }
+        notice_class = "notice ok" if payment_cancel_state == "canceled" else "notice warn"
+        reminder_notice += f'<div class="{notice_class}">{escape(payment_cancel_labels.get(payment_cancel_state, "Payment cancellation finished."))}</div>'
+
     for invoice_id, student_name, charge_lessons, amount, status, invoice_type, created_at, reminder_sent_at, reminder_count, parent_id, parent_name, parent_email in invoice_rows:
         student_safe = escape(str(student_name or "-"))
         student_href = quote(str(student_name or ""), safe="")
@@ -19346,6 +19358,9 @@ def invoices():
             action_html += f"""
             <form class="inline-action-form" method="POST" action="/sync_invoice_payment/{invoice_id}">
                 <button class="row-action reminder" type="submit">Check payment status</button>
+            </form>
+            <form class="inline-action-form" method="POST" action="/cancel_invoice_payment/{invoice_id}" onsubmit="return confirm('Cancel the Stripe ACH payment for invoice #{invoice_id} and restore it to unpaid?');">
+                <button class="row-action danger" type="submit">Cancel ACH</button>
             </form>
             <a class="row-action" href="/parent_invoice/{invoice_id}">Review</a>
             """
@@ -27215,6 +27230,87 @@ def sync_invoice_payment(invoice_id):
 
     result = sync_stripe_invoice_payment(invoice_id)
     return redirect(f"/invoices?payment_sync={quote(result)}&invoice_id={invoice_id}")
+
+
+def cancel_stripe_invoice_payment(invoice_id):
+    """Cancel an active Stripe ACH intent before reopening its invoice."""
+    if not configure_stripe():
+        return "unavailable"
+
+    ensure_v321_schema()
+    ensure_guardian_billing_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT COALESCE(status, 'unpaid'), stripe_payment_intent_id
+    FROM invoices
+    WHERE id = ?
+    """, (invoice_id,))
+    invoice = cursor.fetchone()
+    cursor.execute("""
+    SELECT stripe_payment_intent_id
+    FROM invoice_allocations
+    WHERE invoice_id = ? AND status = 'processing'
+      AND stripe_payment_intent_id IS NOT NULL
+    ORDER BY id
+    """, (invoice_id,))
+    allocation_intents = [row[0] for row in cursor.fetchall() if row[0]]
+    conn.close()
+
+    if not invoice:
+        return "missing"
+    if invoice[0] == "paid":
+        return "paid"
+    if invoice[0] not in ("payment_processing", "stripe_processing"):
+        return "missing"
+
+    payment_intent_ids = list(dict.fromkeys(allocation_intents or [invoice[1]]))
+    payment_intent_ids = [intent_id for intent_id in payment_intent_ids if intent_id]
+    if not payment_intent_ids:
+        return "missing"
+
+    try:
+        for payment_intent_id in payment_intent_ids:
+            payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+            stripe_status = str(payment_intent.get("status") or "")
+            if stripe_status == "succeeded":
+                return "paid"
+            if stripe_status != "canceled":
+                payment_intent = stripe.PaymentIntent.cancel(payment_intent_id)
+                if str(payment_intent.get("status") or "") != "canceled":
+                    return "error"
+    except Exception:
+        app.logger.exception("Stripe cancellation failed for invoice %s", invoice_id)
+        return "error"
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE invoice_allocations
+    SET status = 'unpaid', payment_method = NULL,
+        stripe_checkout_session_id = NULL, stripe_payment_intent_id = NULL,
+        lock_token = NULL, locked_at = NULL, updated_at = ?
+    WHERE invoice_id = ? AND status = 'processing'
+    """, (now, invoice_id))
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'unpaid', stripe_checkout_session_id = NULL,
+        stripe_payment_intent_id = NULL, autopay_status = 'owner_canceled'
+    WHERE id = ? AND status != 'paid'
+    """, (invoice_id,))
+    conn.commit()
+    conn.close()
+    return "canceled"
+
+
+@app.route("/cancel_invoice_payment/<int:invoice_id>", methods=["POST"])
+def cancel_invoice_payment(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+
+    result = cancel_stripe_invoice_payment(invoice_id)
+    return redirect(f"/invoices?payment_cancel={quote(result)}&invoice_id={invoice_id}")
 
 
 def public_url_for(path):
