@@ -301,14 +301,34 @@ def hmusic_lesson_history_rows(cursor, student_name, limit=10):
     SELECT s.id, s.lesson_date,
            COALESCE(NULLIF(l.lesson_content, ''), NULLIF(s.notes, ''), 'Lesson note'),
            COALESCE(l.performance, ''),
-           COALESCE(NULLIF(l.homework, ''), NULLIF(s.homework_assignment, ''), '')
+           COALESCE(NULLIF(l.homework, ''), NULLIF(s.homework_assignment, ''), ''),
+           COALESCE((
+               SELECT gs.attendance_status
+               FROM group_schedule_students gs
+               WHERE gs.schedule_id = s.id
+                 AND LOWER(TRIM(COALESCE(gs.student_name, ''))) = LOWER(TRIM(?))
+               ORDER BY gs.id DESC
+               LIMIT 1
+           ), s.status, 'scheduled'),
+           COALESCE(s.lesson_time, ''), COALESCE(s.teacher, ''),
+           COALESCE(s.course_type_name, ''), COALESCE(s.classroom, '')
     FROM schedule s
     LEFT JOIN lessons l ON l.id = (
         SELECT MAX(l2.id)
         FROM lessons l2
         WHERE l2.schedule_id = s.id
     )
-    WHERE COALESCE(s.lesson_date, '') <= ?
+    WHERE (
+          COALESCE(s.lesson_date, '') <= ?
+          OR LOWER(COALESCE((
+              SELECT gs.attendance_status
+              FROM group_schedule_students gs
+              WHERE gs.schedule_id = s.id
+                AND LOWER(TRIM(COALESCE(gs.student_name, ''))) = LOWER(TRIM(?))
+              ORDER BY gs.id DESC
+              LIMIT 1
+          ), s.status, 'scheduled')) NOT IN ('scheduled', 'parent_cancel_pending_confirm')
+      )
       AND (
           LOWER(TRIM(COALESCE(s.student_name, ''))) = LOWER(TRIM(?))
           OR EXISTS (
@@ -318,17 +338,8 @@ def hmusic_lesson_history_rows(cursor, student_name, limit=10):
                 AND LOWER(TRIM(COALESCE(gs.student_name, ''))) = LOWER(TRIM(?))
           )
       )
-      AND LOWER(COALESCE((
-          SELECT gs.attendance_status
-          FROM group_schedule_students gs
-          WHERE gs.schedule_id = s.id
-            AND LOWER(TRIM(COALESCE(gs.student_name, ''))) = LOWER(TRIM(?))
-          ORDER BY gs.id DESC
-          LIMIT 1
-      ), s.status, 'scheduled')) NOT IN ('scheduled', 'parent_cancel_pending_confirm')
     ORDER BY s.lesson_date DESC, s.id DESC
-    LIMIT 500
-    """, (today_str, student_name, student_name, student_name))
+    """, (student_name, today_str, student_name, student_name, student_name))
     visible = [
         {
             "id": int(schedule_id),
@@ -336,8 +347,16 @@ def hmusic_lesson_history_rows(cursor, student_name, limit=10):
             "lesson_content": lesson_content,
             "performance": performance,
             "homework": homework,
+            "status": status,
+            "lesson_time": lesson_time,
+            "teacher": teacher,
+            "course_type": course_type,
+            "classroom": classroom,
         }
-        for schedule_id, lesson_date, lesson_content, performance, homework in cursor.fetchall()
+        for (
+            schedule_id, lesson_date, lesson_content, performance, homework,
+            status, lesson_time, teacher, course_type, classroom,
+        ) in cursor.fetchall()
     ]
 
     cursor.execute("""
@@ -358,12 +377,22 @@ def hmusic_lesson_history_rows(cursor, student_name, limit=10):
         "lesson_content": lesson_content,
         "performance": performance,
         "homework": homework,
+        "status": "legacy_record",
+        "lesson_time": "",
+        "teacher": "",
+        "course_type": "",
+        "classroom": "",
     } for lesson_id, lesson_date, lesson_content, performance, homework in cursor.fetchall())
 
     visible.sort(key=lambda item: (item["actual_date"], item["id"]), reverse=True)
+    if limit is not None:
+        visible = visible[:max(0, int(limit))]
     return [
-        (item["actual_date"], item["lesson_content"], item["performance"], item["homework"])
-        for item in visible[:limit]
+        (
+            item["actual_date"], item["lesson_content"], item["performance"], item["homework"],
+            item["status"], item["lesson_time"], item["teacher"], item["course_type"], item["classroom"],
+        )
+        for item in visible
     ]
 
 
@@ -6707,6 +6736,64 @@ def ensure_student_detail_schema():
     conn.close()
 
 
+@app.route("/download_lesson_history/<name>")
+def download_lesson_history(name):
+    ensure_student_detail_schema()
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM students WHERE name = ? LIMIT 1", (name,))
+    student = cursor.fetchone()
+    if not student:
+        conn.close()
+        return "<h1>Student not found</h1>", 404
+
+    canonical_name = student[0]
+    allowed = require_owner()
+    if not allowed and require_teacher():
+        allowed = teacher_can_access_student_record(cursor, canonical_name, session.get("teacher_name"))
+    if not allowed and require_parent():
+        parent_id = session.get("parent_id")
+        allowed = bool(
+            parent_id
+            and parent_can_access_student(parent_id, canonical_name)
+            and parent_has_student_permission(parent_id, canonical_name, "view_learning")
+        )
+    if not allowed:
+        conn.close()
+        abort(403)
+
+    lessons = hmusic_lesson_history_rows(cursor, canonical_name, limit=None)
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Date", "Time", "Student", "Teacher", "Course", "Room", "Status",
+        "Lesson Notes", "Performance", "Homework",
+    ])
+
+    def csv_cell(value):
+        text = str(value or "")
+        return "'" + text if text.startswith(("=", "+", "-", "@")) else text
+
+    for lesson in lessons:
+        writer.writerow([
+            csv_cell(lesson[0]), csv_cell(lesson[5]), csv_cell(canonical_name),
+            csv_cell(lesson[6]), csv_cell(lesson[7]), csv_cell(lesson[8]),
+            csv_cell(hmusic_policy_status_label(lesson[4])),
+            csv_cell(hmusic_parent_visible_lesson_note(lesson[1])),
+            csv_cell(lesson[2]), csv_cell(lesson[3]),
+        ])
+
+    filename_name = re.sub(r"[^A-Za-z0-9_-]+", "_", canonical_name).strip("_") or "student"
+    return Response(
+        "\ufeff" + output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename_name}_lesson_history.csv"},
+    )
+
+
 @app.route("/student/<name>")
 def student_detail(name):
     ensure_student_detail_schema()
@@ -6860,15 +6947,20 @@ def student_detail(name):
     if lessons:
         for lesson in lessons:
             visible_lesson_note = hmusic_parent_visible_lesson_note(lesson[1]) or "No lesson notes yet."
+            lesson_status = hmusic_policy_status_label(lesson[4])
+            lesson_meta = " · ".join(part for part in [lesson[5], lesson[6], lesson[7]] if part)
+            performance_html = f'<p class="muted"><b>Performance:</b> {escape(lesson[2])}</p>' if lesson[2] else ""
             lesson_html += f"""
             <div class="timeline-item">
                 <div class="timeline-date">{escape(lesson[0] or '')}</div>
                 <div>
-                    <b>{escape(lesson[2] or 'Lesson note')}</b>
+                    <b>{escape(lesson_status)}</b>
+                    <p class="muted">{escape(lesson_meta)}</p>
                     <p>{escape(visible_lesson_note)}</p>
+                    {performance_html}
                     <p class="muted"><b>Homework:</b> {escape(lesson[3] or 'No homework recorded.')}</p>
                 </div>
-                <span class="pill">Lesson</span>
+                <span class="pill">{escape(lesson_status)}</span>
             </div>
             """
     else:
@@ -7101,6 +7193,9 @@ def student_detail(name):
             .card {{ background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); overflow:hidden; }}
             .section {{ padding:18px; border-bottom:1px solid var(--border); }}
             .section:last-child {{ border-bottom:0; }}
+            .section-title-row {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
+            .section-title-row h2 {{ margin:0; }}
+            .section-title-row a.button {{ width:auto; min-height:36px; padding:8px 11px; }}
             .student-head {{ display:flex; gap:14px; align-items:flex-start; }}
             .avatar {{ width:52px; height:52px; border-radius:12px; background:var(--blue); color:white; display:grid; place-items:center; font-weight:800; font-size:18px; flex:0 0 auto; }}
             .name-row {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }}
@@ -7255,7 +7350,10 @@ def student_detail(name):
 
                     <div class="tab-panel" data-student-panel="lessons">
                         <div class="section">
-                            <h2>Lesson History</h2>
+                            <div class="section-title-row">
+                                <h2>Lesson History</h2>
+                                <a class="button" href="/download_lesson_history/{student_url_name}">Download CSV</a>
+                            </div>
                             <div class="timeline">{lesson_html}</div>
                         </div>
                     </div>
@@ -15765,6 +15863,9 @@ def hmusic_policy_status_label(status):
         "excused_24h": "Cancel > 24h",
         "teacher_cancelled": "Teacher Cancel",
         "makeup": "Makeup",
+        "cancelled": "Cancelled",
+        "canceled": "Cancelled",
+        "legacy_record": "Legacy record",
     }
     return labels.get(status or "scheduled", status or "Scheduled")
 
@@ -32579,9 +32680,12 @@ def parent_dashboard():
     lesson_note_cards = ""
     for l in lesson_history:
         history_lesson_content = hmusic_parent_visible_lesson_note(l[1]) or "No lesson notes yet."
+        history_status = hmusic_policy_status_label(l[4])
         lesson_rows += f"""
         <tr>
             <td>{l[0]}</td>
+            <td>{escape(str(l[5] or ''))}</td>
+            <td>{escape(history_status)}</td>
             <td>{escape(str(history_lesson_content))}</td>
             <td>{l[2]}</td>
             <td>{l[3]}</td>
@@ -32590,6 +32694,8 @@ def parent_dashboard():
 
     for l in lesson_history[:3]:
         lesson_date = escape(str(l[0] or ""))
+        lesson_status = escape(hmusic_policy_status_label(l[4]))
+        lesson_course = escape(str(l[7] or "Lesson"))
         cleaned_lesson_content = hmusic_parent_visible_lesson_note(l[1])
         lesson_content = escape(cleaned_lesson_content or "No lesson notes yet.")
         performance = escape(str(l[2] or ""))
@@ -32597,7 +32703,7 @@ def parent_dashboard():
         performance_line = f'<div class="note-performance">{performance}</div>' if performance else ""
         lesson_note_cards += f"""
         <div class="note-card">
-            <div class="note-date">{lesson_date} · Private Lesson</div>
+            <div class="note-date">{lesson_date} · {lesson_course} · {lesson_status}</div>
             {performance_line}
             <div class="note-section">
                 <strong>Lesson Notes</strong>
@@ -32611,10 +32717,14 @@ def parent_dashboard():
         """
 
     if not lesson_rows:
-        lesson_rows = "<tr><td colspan='4'>No lesson history.</td></tr>"
+        lesson_rows = "<tr><td colspan='6'>No lesson history.</td></tr>"
         lesson_note_cards = """
         <div class="empty-card">No lesson notes or homework yet.</div>
         """
+    lesson_history_download_link = (
+        f'<a href="/download_lesson_history/{quote(current_student)}">Download CSV</a>'
+        if can_view_learning else ""
+    )
 
     invoice_rows = ""
     tuition_due_total = 0
@@ -33008,7 +33118,8 @@ def parent_dashboard():
                     <h2>Invoices</h2><table><tr><th>ID</th><th>Amount</th><th>Status</th><th>Type</th><th>Created</th><th>Action</th></tr>{invoice_rows}</table>
                     <h2>Payments</h2><table><tr><th>Date</th><th>Amount</th><th>Lessons</th><th>Method</th></tr>{payment_rows}</table>
                     <h2>Recent Ledger</h2><table><tr><th>Date</th><th>Type</th><th>Amount</th><th>Description</th></tr>{ledger_rows}</table>
-                    <h2>Lesson History</h2><table><tr><th>Date</th><th>Lesson</th><th>Performance</th><th>Homework</th></tr>{lesson_rows}</table>
+                    <div class="section-head"><h2>Lesson History</h2>{lesson_history_download_link}</div>
+                    <table><tr><th>Date</th><th>Time</th><th>Status</th><th>Lesson</th><th>Performance</th><th>Homework</th></tr>{lesson_rows}</table>
                 </div>
             </details>
         </div>
