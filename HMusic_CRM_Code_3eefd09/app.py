@@ -6657,7 +6657,8 @@ def student_detail(name):
     today_str = date.today().strftime("%Y-%m-%d")
 
     cursor.execute("""
-    SELECT id, schedule_id, lesson_date, lesson_content, performance, homework
+    SELECT id, schedule_id, lesson_date, lesson_content, performance, homework,
+           COALESCE(created_by, ''), COALESCE(created_at, '')
     FROM lessons
     WHERE student_name = ?
     ORDER BY id DESC
@@ -6665,21 +6666,29 @@ def student_detail(name):
     """, (name,))
     lesson_rows = cursor.fetchall()
     lessons = []
-    seen_lessons = set()
-    for lesson_id, schedule_id, lesson_date, lesson_content, performance, homework in lesson_rows:
-        if schedule_id:
-            lesson_key = ("schedule", int(schedule_id))
-        else:
-            lesson_key = (
-                "legacy",
-                str(lesson_date or "").strip(),
-                str(lesson_content or "").strip().casefold(),
-                str(performance or "").strip().casefold(),
-                str(homework or "").strip().casefold(),
-            )
-        if lesson_key in seen_lessons:
+    seen_schedule_lessons = set()
+    seen_batch_lessons = set()
+    for (
+        lesson_id, schedule_id, lesson_date, lesson_content, performance, homework,
+        created_by, created_at,
+    ) in lesson_rows:
+        schedule_key = int(schedule_id) if schedule_id else None
+        batch_key = (
+            str(created_at or "").strip(),
+            str(created_by or "").strip().casefold(),
+            str(lesson_date or "").strip(),
+            str(lesson_content or "").strip().casefold(),
+            str(performance or "").strip().casefold(),
+            str(homework or "").strip().casefold(),
+        )
+        is_schedule_duplicate = schedule_key is not None and schedule_key in seen_schedule_lessons
+        is_batch_duplicate = bool(batch_key[0]) and batch_key in seen_batch_lessons
+        if is_schedule_duplicate or is_batch_duplicate:
             continue
-        seen_lessons.add(lesson_key)
+        if schedule_key is not None:
+            seen_schedule_lessons.add(schedule_key)
+        if batch_key[0]:
+            seen_batch_lessons.add(batch_key)
         lessons.append((lesson_date, lesson_content, performance, homework))
         if len(lessons) >= 8:
             break
@@ -17179,6 +17188,9 @@ H-Music
 
 def upsert_calendar_lesson_record(cursor, schedule_id, student_name, lesson_note, homework, private_note, actor):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("SELECT lesson_date FROM schedule WHERE id = ?", (schedule_id,))
+    schedule_row = cursor.fetchone()
+    lesson_date = schedule_row[0] if schedule_row and schedule_row[0] else date.today().strftime("%Y-%m-%d")
     cursor.execute("SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1", (schedule_id,))
     row = cursor.fetchone()
     if row:
@@ -17191,7 +17203,7 @@ def upsert_calendar_lesson_record(cursor, schedule_id, student_name, lesson_note
     cursor.execute("""
     INSERT INTO lessons (student_name, lesson_content, performance, homework, lesson_date, schedule_id, private_note, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (student_name, lesson_note or "Lesson note", "", homework or "", date.today().strftime("%Y-%m-%d"), schedule_id, private_note or "", actor, now, now))
+    """, (student_name, lesson_note or "Lesson note", "", homework or "", lesson_date, schedule_id, private_note or "", actor, now, now))
     return cursor.lastrowid
 
 

@@ -235,9 +235,11 @@ CHECKS = {
     "last minute waiver retired in policy": "Cancellations made within 24 hours do not include a free emergency makeup credit or cancellation waiver.",
     "last minute fee always previewed": 'fee_preview = hmusic_last_min_fee(lesson[5]) if cancel_status == "last_min_cancel" else 0',
     "waiver remains no show only": 'if use_policy_waiver and status == "no_show"',
-    "student history dedupes schedule lessons": 'lesson_key = ("schedule", int(schedule_id))',
+    "student history dedupes schedule lessons": "is_schedule_duplicate = schedule_key is not None and schedule_key in seen_schedule_lessons",
+    "student history dedupes same-save clones": "is_batch_duplicate = bool(batch_key[0]) and batch_key in seen_batch_lessons",
     "teacher lesson note updates existing schedule record": 'SELECT id FROM lessons WHERE schedule_id = ? ORDER BY id DESC LIMIT 1',
     "lesson note credit deducts once": "if schedule_enrollment_id and not existing_lesson_id:",
+    "calendar lesson record uses scheduled date": 'cursor.execute("SELECT lesson_date FROM schedule WHERE id = ?", (schedule_id,))',
 }
 
 
