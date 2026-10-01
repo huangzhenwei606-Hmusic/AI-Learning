@@ -7768,28 +7768,40 @@ def send_invoice_payment_reminder(invoice_id):
     cursor = conn.cursor()
     cursor.execute("""
     SELECT
-        id,
-        student_name,
-        COALESCE(charge_lessons, 0),
-        COALESCE(amount, 0),
-        COALESCE(status, 'unpaid'),
-        COALESCE(invoice_type, 'invoice'),
-        COALESCE(payment_reminder_count, 0)
-    FROM invoices
-    WHERE id = ?
+        i.id,
+        COALESCE(i.student_name, ''),
+        COALESCE(i.amount, 0),
+        COALESCE(i.status, 'unpaid'),
+        COALESCE(i.charge_lessons, 0),
+        COALESCE(i.due_date, ''),
+        COALESCE(i.payment_methods, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, ''),
+        COALESCE(i.invoice_type, 'invoice'),
+        COALESCE(e.course_type_name, ''),
+        COALESCE(e.teacher_name, ''),
+        COALESCE(i.payment_reminder_count, 0)
+    FROM invoices i
+    LEFT JOIN enrollments e ON e.id = i.enrollment_id
+    WHERE i.id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
     if not invoice:
         conn.close()
         return reminder_redirect("missing")
 
-    _, student_name, charge_lessons, amount, status, invoice_type, reminder_count = invoice
+    student_name = invoice[1]
+    amount = invoice[2]
+    status = invoice[3]
+    reminder_count = invoice[14]
     if str(status or "unpaid").lower() == "paid":
         conn.close()
         return reminder_redirect("paid")
 
     cursor.execute("""
-    SELECT p.id, COALESCE(p.email, '')
+    SELECT p.id, COALESCE(p.parent_name, ''), COALESCE(p.email, '')
     FROM parent_profiles p
     JOIN parent_students ps ON ps.parent_id = p.id
     LEFT JOIN students s ON LOWER(TRIM(s.name)) = LOWER(TRIM(ps.student_name))
@@ -7809,9 +7821,9 @@ def send_invoice_payment_reminder(invoice_id):
     """, (student_name,))
     parent = cursor.fetchone()
 
-    if not parent or not hmusic_is_real_email(parent[1]):
+    if not parent or not hmusic_is_real_email(parent[2]):
         cursor.execute("""
-        SELECT p.id, COALESCE(p.email, '')
+        SELECT p.id, COALESCE(p.parent_name, ''), COALESCE(p.email, '')
         FROM parent_profiles p
         JOIN students s ON LOWER(TRIM(COALESCE(s.parent_email, ''))) = LOWER(TRIM(COALESCE(p.email, '')))
         WHERE LOWER(TRIM(s.name)) = LOWER(TRIM(?))
@@ -7821,24 +7833,18 @@ def send_invoice_payment_reminder(invoice_id):
         """, (student_name,))
         parent = cursor.fetchone()
 
-    if not parent or not hmusic_is_real_email(parent[1]):
+    if not parent or not hmusic_is_real_email(parent[2]):
         conn.close()
         return reminder_redirect("no_email")
 
-    parent_id, parent_email = parent
+    parent_id, _, parent_email = parent
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     invoice_link = public_url_for(f"/parent_invoice/{invoice_id}")
-    reminder_context = {
-        "parent_name": "",
-        "student_name": student_name,
-        "invoice_id": invoice_id,
-        "amount": hmusic_money(amount),
-        "due_date": "",
-        "lesson_count": f"{charge_lessons:g}",
-        "coverage": "",
-        "payment_methods": "",
-        "invoice_link": invoice_link,
-    }
+    reminder_context = hmusic_invoice_notice_context(
+        invoice[:14],
+        (parent[0], parent[1], parent[2], ""),
+        invoice_link,
+    )
     title = hmusic_render_message_template(
         "invoice_payment_reminder",
         "email_subject",
@@ -7846,9 +7852,13 @@ def send_invoice_payment_reminder(invoice_id):
         f"H-Music Payment Reminder: {student_name}"
     )
     body_fallback = (
-        f"Hi, this is a friendly reminder that {student_name}'s "
-        f"{invoice_type or 'tuition'} invoice #{invoice_id} for ${hmusic_money(amount)} is still open.\n\n"
-        f"Package: {charge_lessons:g} lesson(s)\n"
+        f"Hi {parent[1] or 'Parent'},\n\n"
+        f"This is a friendly reminder that invoice #{invoice_id} for {student_name} "
+        f"is still unpaid.\n\n"
+        f"Amount due: ${hmusic_money(amount)}\n"
+        f"Due date: {reminder_context['due_date']}\n"
+        f"Package: {reminder_context['lesson_count']} lesson(s)\n"
+        f"Coverage: {reminder_context['coverage']}\n"
         f"Please open the H-Music parent app to review and pay when convenient:\n{invoice_link}\n\n"
         "Thank you,\nH-Music"
     )
@@ -25892,10 +25902,24 @@ def run_autopay_checks():
 
 def hmusic_invoice_notice_target(cursor, invoice_id):
     cursor.execute("""
-    SELECT id, COALESCE(student_name, ''), COALESCE(amount, 0),
-           COALESCE(status, 'unpaid')
-    FROM invoices
-    WHERE id = ?
+    SELECT
+        i.id,
+        COALESCE(i.student_name, ''),
+        COALESCE(i.amount, 0),
+        COALESCE(i.status, 'unpaid'),
+        COALESCE(i.charge_lessons, 0),
+        COALESCE(i.due_date, ''),
+        COALESCE(i.payment_methods, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, ''),
+        COALESCE(i.invoice_type, 'invoice'),
+        COALESCE(e.course_type_name, ''),
+        COALESCE(e.teacher_name, '')
+    FROM invoices i
+    LEFT JOIN enrollments e ON e.id = i.enrollment_id
+    WHERE i.id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
     if not invoice:
@@ -25916,19 +25940,87 @@ def hmusic_invoice_notice_target(cursor, invoice_id):
     return (invoice, parent) if parent else None
 
 
-def hmusic_send_selected_parent_notice(parent_id, title, body, link_url, channels, related_type, related_id):
+def hmusic_display_date(value, empty_label="Upon receipt"):
+    raw = str(value or "").strip()
+    if not raw:
+        return empty_label
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M"):
+        try:
+            candidate = raw[:10] if fmt == "%Y-%m-%d" else raw[:16]
+            return datetime.strptime(candidate, fmt).strftime("%b %d, %Y")
+        except ValueError:
+            continue
+    return raw
+
+
+def hmusic_invoice_notice_context(invoice, parent, invoice_link, sms_note=""):
+    methods = {
+        item.strip().lower()
+        for item in str(invoice[6] or "ach,zelle").split(",")
+        if item.strip()
+    }
+    payment_labels = []
+    if "ach" in methods:
+        payment_labels.append("ACH bank payment")
+    if "zelle" in methods:
+        payment_labels.append("Zelle")
+    if not payment_labels:
+        payment_labels.append("See invoice")
+
+    course_name = invoice[8] or invoice[12] or str(invoice[11] or "Invoice").replace("_", " ").title()
+    coverage_parts = []
+    if invoice[7]:
+        coverage_parts.append(str(invoice[7]).strip())
+    if invoice[9]:
+        coverage_parts.append(f"Starting {hmusic_display_date(invoice[9], '')}")
+    if invoice[10]:
+        coverage_parts.append(str(invoice[10]).strip())
+
+    return {
+        "parent_name": parent[1] or "Parent",
+        "student_name": invoice[1],
+        "invoice_id": invoice[0],
+        "amount": hmusic_money(invoice[2]),
+        "due_date": hmusic_display_date(invoice[5]),
+        "lesson_count": hmusic_lesson_count_label(invoice[4]),
+        "coverage": " · ".join(coverage_parts) or course_name,
+        "course_name": course_name,
+        "teacher_name": invoice[13] or "Not assigned",
+        "payment_methods": " or ".join(payment_labels),
+        "invoice_link": invoice_link,
+        "sms_note": str(sms_note or "").strip(),
+    }
+
+
+def hmusic_send_selected_parent_notice(
+    parent_id,
+    title,
+    body,
+    link_url,
+    channels,
+    related_type,
+    related_id,
+    channel_content=None,
+):
     totals = {"app": 0, "sms": 0, "sms_queued": 0, "email": 0, "skipped": 0}
     parent_key = str(parent_id)
+
+    def content_for(channel):
+        override = (channel_content or {}).get(channel) or {}
+        return override.get("title") or title, override.get("body") or body
+
     if "app" in channels:
+        app_title, app_body = content_for("app")
         create_notification(
-            "parent", parent_key, title, body, link_url,
+            "parent", parent_key, app_title, app_body, link_url,
             related_type=related_type, related_id=related_id, queue_delivery=False,
         )
         totals["app"] = 1
 
     if "sms" in channels:
+        sms_title, sms_body = content_for("sms")
         queue_id = queue_notification_delivery(
-            "parent", parent_key, title, body, link_url, "sms",
+            "parent", parent_key, sms_title, sms_body, link_url, "sms",
             related_type=related_type, related_id=related_id,
         )
         if queue_id:
@@ -25943,8 +26035,9 @@ def hmusic_send_selected_parent_notice(parent_id, title, body, link_url, channel
             totals["skipped"] += 1
 
     if "email" in channels:
+        email_title, email_body = content_for("email")
         queue_id = queue_notification_delivery(
-            "parent", parent_key, title, body, link_url, "email",
+            "parent", parent_key, email_title, email_body, link_url, "email",
             related_type=related_type, related_id=related_id,
         )
         if queue_id:
@@ -25975,6 +26068,7 @@ def notification_center():
 
         title = (request.form.get("title") or "").strip()
         body = (request.form.get("body") or "").strip()
+        channel_content = None
         parent_id = None
         related_type = "studio_notice"
         related_id = None
@@ -25991,11 +26085,46 @@ def notification_center():
             related_type = "custom_invoice_notice"
             related_id = int(invoice[0])
             link_url = f"/parent_invoice/{invoice[0]}"
-            title = title or f"H-Music invoice #{invoice[0]}"
-            body = body or (
-                f"{invoice[1]} invoice #{invoice[0]} is {str(invoice[3]).replace('_', ' ')}. "
-                f"Amount: ${hmusic_money(invoice[2])}."
+            invoice_link = hmusic_public_app_url(link_url)
+            context = hmusic_invoice_notice_context(
+                invoice,
+                parent,
+                invoice_link,
+                request.form.get("sms_note"),
             )
+            title = hmusic_render_message_template(
+                "invoice_payment_reminder",
+                "app_title",
+                context,
+                f"Invoice #{invoice[0]} payment reminder",
+            )
+            body = hmusic_render_message_template(
+                "invoice_payment_reminder",
+                "app_body",
+                context,
+                f"{invoice[1]} has an invoice for ${hmusic_money(invoice[2])} ready for payment.",
+            )
+            sms_body = hmusic_render_message_template(
+                "invoice_payment_reminder",
+                "sms_body",
+                context,
+            ).strip()
+            if context["sms_note"]:
+                sms_body = f"{sms_body}\nNote from H-Music: {context['sms_note']}"
+            channel_content = {
+                "sms": {
+                    "title": f"Invoice #{invoice[0]} for {invoice[1]}",
+                    "body": sms_body,
+                },
+                "email": {
+                    "title": hmusic_render_message_template(
+                        "invoice_payment_reminder", "email_subject", context
+                    ),
+                    "body": hmusic_render_message_template(
+                        "invoice_payment_reminder", "email_body", context
+                    ),
+                },
+            }
         elif notice_kind == "studio":
             parent_id = request.form.get("parent_id", type=int)
             link_candidate = (request.form.get("link_url") or "/parent_dashboard").strip()
@@ -26014,7 +26143,14 @@ def notification_center():
 
         conn.close()
         totals = hmusic_send_selected_parent_notice(
-            parent_id, title, body, link_url, channels, related_type, related_id,
+            parent_id,
+            title,
+            body,
+            link_url,
+            channels,
+            related_type,
+            related_id,
+            channel_content=channel_content,
         )
         summary = (
             f"App {totals['app']}; SMS sent {totals['sms']}; SMS queued {totals['sms_queued']}; "
@@ -26069,7 +26205,8 @@ def notification_center():
     <nav class="page-nav" aria-label="Notification navigation"><a class="button secondary" href="/">Owner Dashboard</a><a class="button secondary" href="/invoices">Invoices</a><a class="button secondary" href="/notification_queue">Delivery History</a></nav>
     <section class="section"><h2>Invoice notice</h2><form method="POST" onsubmit="return confirm('Send this invoice notice to the linked parent now?');">
     <input type="hidden" name="notice_kind" value="invoice"><label>Invoice</label><select name="invoice_id" required>{invoice_options}</select>
-    <div class="grid"><div><label>Title override</label><input name="title"></div><div><label>Message override</label><input name="body"></div></div>
+    <label>Additional SMS message (optional)</label><textarea name="sms_note" maxlength="500" placeholder="Add a short note after the invoice details. The student, invoice number, program, coverage, lessons, amount, due date, and payment link are added automatically."></textarea>
+    <div class="muted">This note is added to SMS only. It does not replace the required invoice details or change the email template.</div>
     <div class="channels"><label><input type="checkbox" name="channels" value="app"> App</label><label><input type="checkbox" name="channels" value="sms"> SMS</label><label><input type="checkbox" name="channels" value="email"> Email</label></div><button type="submit">Send selected channels</button></form></section>
     <section class="section"><h2>Studio notice</h2><form method="POST" onsubmit="return confirm('Send this studio notice to this parent now?');">
     <input type="hidden" name="notice_kind" value="studio"><label>Parent</label><select name="parent_id" required>{parent_options}</select><label>Title</label><input name="title" maxlength="120" required><label>Message</label><textarea name="body" maxlength="1200" required></textarea><label>App link</label><input name="link_url" value="/parent_dashboard">
@@ -35704,8 +35841,8 @@ HMUSIC_MESSAGE_TEMPLATE_DEFAULTS = [
     ("trial_follow_up", "Trial", "Trial follow-up", "Suggested template for after a trial lesson.", "H-Music Trial Follow-Up for {student_name}", "Hi {parent_name},\n\nThank you for coming to {student_name}'s trial lesson with H-Music.\n\nIf you would like to continue, we can help set up the weekly schedule, tuition package, invoice, and parent app access.\n\nThank you,\nH-Music", "Thank you for joining {student_name}'s H-Music trial. Reply here if you would like help setting up weekly lessons.", "Trial follow-up", "Follow up with {parent_name} about {student_name}'s trial lesson.", "parent_name, student_name, teacher_name, trial_date"),
     ("lesson_reminder", "Lesson Schedule", "Lesson reminder", "Sent before a scheduled lesson.", "H-Music Lesson Reminder: {student_name} - {lesson_date_short} at {lesson_time}", "Hi {parent_name},\n\nThis is a reminder that {student_first_name} has a lesson tomorrow.\n\nStudent: {student_name}\nDate: {lesson_date}\nTime: {lesson_time}\nTeacher: {teacher_name}\nLocation: {location}\n{address_line}\n\nPlease open the H-Music Parent App to view schedule details.\n\nThank you,\nH-Music", "H-Music reminder: {student_name} has a lesson {lesson_date} at {lesson_time} with {teacher_name}.", "Lesson reminder", "{student_name} has a lesson on {lesson_date} at {lesson_time}.", "parent_name, student_name, student_first_name, lesson_date, lesson_date_short, lesson_time, teacher_name, location, address_line"),
     ("practice_reminder", "Practice / Homework", "Practice reminder", "Sent after a lesson when homework reminder is enabled.", "H-Music Practice Reminder for {student_name}", "Hi {parent_name},\n\nHere is {student_first_name}'s practice assignment from today's lesson:\n\n{homework}\n\nPlease open the H-Music parent app to review lesson notes and homework details:\n{parent_login_url}\n\nThank you,\nH-Music", "H-Music practice reminder for {student_name}: {homework_summary}. Full homework is in the parent app: {parent_login_url}", "H-Music Practice Reminder for {student_name}", "New practice homework is ready for {student_name}.", "parent_name, student_name, student_first_name, homework, homework_summary, parent_login_url"),
-    ("invoice_created", "Billing / Invoice", "New invoice", "Sent when a new tuition/package invoice is created.", "H-Music Tuition Invoice for {student_name}", "Hi {parent_name},\n\n{student_name}'s tuition invoice is ready.\n\nAmount due: ${amount}\nInvoice: #{invoice_id}\nDue date: {due_date}\n\nPlease open the H-Music Parent App to review payment options:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music invoice for {student_name}: ${amount}. Review/pay here: {invoice_link}", "New package invoice", "{student_name} has a tuition invoice due: ${amount}.", "parent_name, student_name, invoice_id, amount, due_date, invoice_link, lesson_count"),
-    ("invoice_payment_reminder", "Billing / Invoice", "Payment reminder", "Sent from Family billing when an invoice is still open.", "H-Music Payment Reminder: {student_name}", "Hi {parent_name},\n\nThis is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\nAmount due: ${amount}\nDue date: {due_date}\nPackage: {lesson_count} lesson(s)\nCoverage: {coverage}\nPayment options: {payment_methods}\n\nPlease open the H-Music Parent App to review the invoice and choose a payment method:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music reminder: {student_name} has an open invoice for ${amount}. Review/pay here: {invoice_link}", "H-Music payment reminder", "{student_name} has a tuition invoice ready for payment.", "parent_name, student_name, invoice_id, amount, due_date, lesson_count, coverage, payment_methods, invoice_link"),
+    ("invoice_created", "Billing / Invoice", "New invoice", "Sent when a new tuition/package invoice is created.", "H-Music Invoice #{invoice_id} for {student_name} - ${amount} Due", "Hi {parent_name},\n\nA new H-Music invoice is ready for {student_name}.\n\nInvoice details\n\nInvoice #: {invoice_id}\nStudent: {student_name}\nProgram: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}\nPayment options: {payment_methods}\n\nPlease review the invoice and complete payment here:\n{invoice_link}\n\nIf you have already completed this payment, please disregard this message.\n\nThank you,\nH-Music", "Program: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}", "New package invoice", "Invoice #{invoice_id} for {student_name}: ${amount} due {due_date}.", "parent_name, student_name, invoice_id, course_name, teacher_name, coverage, lesson_count, amount, due_date, payment_methods, invoice_link, sms_note"),
+    ("invoice_payment_reminder", "Billing / Invoice", "Payment reminder", "Sent from Family billing when an invoice is still open.", "H-Music Invoice #{invoice_id} for {student_name} - ${amount} Due", "Hi {parent_name},\n\nThis is a friendly reminder that the following H-Music invoice is still unpaid.\n\nInvoice details\n\nInvoice #: {invoice_id}\nStudent: {student_name}\nProgram: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}\nPayment options: {payment_methods}\n\nPlease review the invoice and complete payment here:\n{invoice_link}\n\nIf you have already completed this payment, please disregard this message.\n\nThank you,\nH-Music", "Program: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}", "H-Music payment reminder", "Invoice #{invoice_id} for {student_name}: ${amount} is still unpaid.", "parent_name, student_name, invoice_id, course_name, teacher_name, coverage, lesson_count, amount, due_date, payment_methods, invoice_link, sms_note"),
     ("payment_received", "Payment", "Payment received", "Sent after payment is confirmed.", "H-Music Payment Received for {student_name}", "Hi {parent_name},\n\nThank you. H-Music received payment for {student_name}.\n\nAmount: ${amount}\nInvoice: #{invoice_id}\n\nYour parent app has been updated.\n\nThank you,\nH-Music", "H-Music received payment for {student_name}: ${amount}. Thank you.", "Payment received", "Payment received for {student_name}: ${amount}.", "parent_name, student_name, amount, invoice_id"),
     ("payment_failed", "Payment", "Payment failed", "Sent when a card/ACH payment fails.", "H-Music Payment Needs Attention for {student_name}", "Hi {parent_name},\n\nWe could not complete the payment for {student_name}'s invoice.\n\nAmount: ${amount}\nInvoice: #{invoice_id}\nReason: {payment_error}\n\nPlease open the H-Music Parent App to review the invoice and try again:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music payment issue for {student_name}: invoice #{invoice_id} for ${amount}. Please review: {invoice_link}", "Payment needs attention", "Payment for {student_name}'s invoice needs attention.", "parent_name, student_name, amount, invoice_id, payment_error, invoice_link"),
     ("renewal_reminder", "Renewal / Low Balance", "Lesson package renewal", "Sent when lesson balance is low or over balance.", "{student_name}'s Lesson Package Renewal Reminder", "Dear Parent,\n\nThis is a friendly reminder that {student_first_name}'s lesson package is due for renewal.\n\n{balance_line}\n\nPlease open the H-Music parent app to review the renewal details and payment information:\n{parent_login_url}\n\nIf you have any questions before completing the renewal, please reply to this email.\n\nThank you,\nH-Music", "H-Music renewal reminder: {student_name}'s package is due for renewal. Details: {parent_login_url}", "Lesson package renewal", "{student_name}'s lesson package is due for renewal.", "student_name, student_first_name, balance_line, lesson_balance, package_count, package_size, parent_login_url"),
@@ -35776,6 +35913,35 @@ def ensure_message_template_schema(seed=True):
                 template["email_subject"], template["email_body"], template["sms_body"],
                 template["app_title"], template["app_body"], template["variables"], now
             ))
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message_template_migrations (
+            migration_key TEXT PRIMARY KEY,
+            applied_at TEXT
+        )
+        """)
+        migration_key = "invoice_details_v2"
+        cursor.execute(
+            "SELECT 1 FROM message_template_migrations WHERE migration_key = ?",
+            (migration_key,),
+        )
+        if not cursor.fetchone():
+            defaults = hmusic_default_message_template_map()
+            for template_key in ("invoice_created", "invoice_payment_reminder"):
+                template = defaults[template_key]
+                cursor.execute("""
+                UPDATE message_templates
+                SET description = ?, email_subject = ?, email_body = ?, sms_body = ?,
+                    app_title = ?, app_body = ?, variables = ?, active = 1, updated_at = ?
+                WHERE template_key = ?
+                """, (
+                    template["description"], template["email_subject"], template["email_body"],
+                    template["sms_body"], template["app_title"], template["app_body"],
+                    template["variables"], now, template_key,
+                ))
+            cursor.execute(
+                "INSERT INTO message_template_migrations (migration_key, applied_at) VALUES (?, ?)",
+                (migration_key, now),
+            )
     conn.commit()
     conn.close()
 
@@ -35841,8 +36007,10 @@ def hmusic_template_preview_context():
         "amount": "750.00",
         "due_date": "2026-09-10",
         "lesson_count": "10",
+        "course_name": "Private Piano",
         "coverage": "Private Lesson - Jianing Li",
         "payment_methods": "ACH bank payment or Zelle",
+        "sms_note": "Please contact H-Music if you have any questions.",
         "payment_error": "Payment was declined.",
         "trial_date": "2026-09-05",
         "trial_time": "4:30 PM",
@@ -46175,12 +46343,15 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
         "due_date": date.today().strftime("%Y-%m-%d"),
         "invoice_link": invoice_link,
         "lesson_count": hmusic_lesson_count_label(lesson_count),
+        "course_name": course_name,
+        "teacher_name": teacher_name or "Not assigned",
         "coverage": " · ".join([item for item in [course_name, teacher_name] if item]),
         "payment_methods": "ACH bank payment or Zelle",
+        "sms_note": "",
     }
     fallback = (
         f"Hi {parent_name or 'Parent'},\n\n"
-        f"This is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\n"
+        f"A new H-Music invoice is ready for {student_name}.\n\n"
         f"Amount due: ${hmusic_money(invoice_amount)}\n"
         f"Due date: {context['due_date']}\n"
         f"Package: {context['lesson_count']} lesson(s)\n"
@@ -46191,7 +46362,7 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
         "Thank you,\n"
         "H-Music"
     )
-    return hmusic_render_message_template("invoice_payment_reminder", "email_body", context, fallback)
+    return hmusic_render_message_template("invoice_created", "email_body", context, fallback)
 
 
 @app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
@@ -46549,12 +46720,74 @@ def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title
     if not parent_id:
         return
 
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    target = hmusic_invoice_notice_target(cursor, invoice_id)
+    conn.close()
+
+    if not target:
+        create_notification(
+            "parent",
+            str(parent_id),
+            title,
+            f"{student_name} has a tuition invoice due: ${amount}.",
+            f"/parent_invoice/{invoice_id}",
+        )
+        return
+
+    invoice, parent = target
+    invoice_path = f"/parent_invoice/{invoice_id}"
+    context = hmusic_invoice_notice_context(
+        invoice,
+        parent,
+        hmusic_public_app_url(invoice_path),
+    )
+    app_body = hmusic_render_message_template(
+        "invoice_created",
+        "app_body",
+        context,
+        f"Invoice #{invoice_id} for {student_name}: ${amount} due {context['due_date']}.",
+    )
     create_notification(
         "parent",
         str(parent_id),
         title,
-        f"{student_name} has a tuition invoice due: ${amount}.",
-        f"/parent_invoice/{invoice_id}"
+        app_body,
+        invoice_path,
+        related_type="invoice_created",
+        related_id=invoice_id,
+        queue_delivery=False,
+    )
+    queue_notification_delivery(
+        "parent",
+        str(parent_id),
+        title,
+        app_body,
+        invoice_path,
+        "push",
+        related_type="invoice_created",
+        related_id=invoice_id,
+    )
+    queue_notification_delivery(
+        "parent",
+        str(parent_id),
+        hmusic_render_message_template("invoice_created", "email_subject", context),
+        hmusic_render_message_template("invoice_created", "email_body", context),
+        invoice_path,
+        "email",
+        related_type="invoice_created",
+        related_id=invoice_id,
+    )
+    queue_notification_delivery(
+        "parent",
+        str(parent_id),
+        f"Invoice #{invoice_id} for {student_name}",
+        hmusic_render_message_template("invoice_created", "sms_body", context),
+        invoice_path,
+        "sms",
+        related_type="invoice_created",
+        related_id=invoice_id,
     )
 
 
