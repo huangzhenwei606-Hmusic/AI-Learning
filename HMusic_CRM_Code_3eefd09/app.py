@@ -22935,6 +22935,59 @@ def student_guardian_access(student_name):
                 student_name,
             ))
             notice = "Guardian permissions saved."
+        elif action == "link_guardian":
+            try:
+                parent_id = int(request.form.get("parent_id") or 0)
+            except ValueError:
+                parent_id = 0
+            cursor.execute("""
+            SELECT id, COALESCE(parent_name, 'Guardian'), COALESCE(email, '')
+            FROM parent_profiles
+            WHERE id = ? AND COALESCE(active, 1) = 1
+            """, (parent_id,))
+            parent = cursor.fetchone()
+            if not parent:
+                conn.close()
+                return "<h1>Active guardian account not found</h1>", 404
+            relationship = (request.form.get("relationship") or "Parent").strip() or "Parent"
+            cursor.execute("""
+            SELECT 1 FROM parent_students
+            WHERE student_name = ? AND COALESCE(active, 1) = 1
+              AND COALESCE(is_primary_contact, 0) = 1
+            LIMIT 1
+            """, (student_name,))
+            make_primary = 0 if cursor.fetchone() else 1
+            cursor.execute("""
+            INSERT OR IGNORE INTO parent_students (
+                parent_id, student_name, relationship, active, created_at
+            ) VALUES (?, ?, ?, 1, ?)
+            """, (parent_id, student_name, relationship, now))
+            cursor.execute("""
+            UPDATE parent_students
+            SET relationship = ?, active = 1, is_primary_contact = ?,
+                can_view_schedule = 1, can_manage_schedule = 1,
+                can_view_learning = 1, can_view_billing = 1, can_pay = 1,
+                can_message = 1, receive_notifications = 1
+            WHERE parent_id = ? AND student_name = ?
+            """, (relationship, make_primary, parent_id, student_name))
+            cursor.execute("""
+            UPDATE students
+            SET parent_name = CASE WHEN TRIM(COALESCE(parent_name, '')) = '' THEN ? ELSE parent_name END,
+                parent_email = CASE WHEN TRIM(COALESCE(parent_email, '')) = '' THEN ? ELSE parent_email END
+            WHERE name = ?
+            """, (parent[1], parent[2], student_name))
+            cursor.execute("""
+            INSERT INTO parent_activity_logs (
+                parent_id, student_name, action_type, description,
+                related_schedule_id, created_at
+            ) VALUES (?, ?, 'owner_reconnect_guardian', ?, NULL, ?)
+            """, (
+                parent_id,
+                student_name,
+                f"Owner reconnected {student_name} to guardian account {parent[1]}.",
+                now,
+            ))
+            notice = f"{parent[1]} was reconnected to {student_name}."
         elif action == "save_billing":
             mode = (request.form.get("billing_mode") or "one_payer").strip()
             if mode not in ("one_payer", "split"):
@@ -23013,6 +23066,24 @@ def student_guardian_access(student_name):
     ORDER BY COALESCE(ps.is_primary_contact, 0) DESC, pp.parent_name, pp.id
     """, (student_name,))
     guardians = cursor.fetchall()
+    cursor.execute("""
+    SELECT pp.id, COALESCE(pp.parent_name, 'Guardian'), COALESCE(pp.email, ''),
+           CASE WHEN inactive_link.parent_id IS NULL THEN 0 ELSE 1 END AS previously_linked
+    FROM parent_profiles pp
+    LEFT JOIN parent_students inactive_link
+      ON inactive_link.parent_id = pp.id
+     AND inactive_link.student_name = ?
+     AND COALESCE(inactive_link.active, 1) = 0
+    WHERE COALESCE(pp.active, 1) = 1
+      AND NOT EXISTS (
+          SELECT 1 FROM parent_students active_link
+          WHERE active_link.parent_id = pp.id
+            AND active_link.student_name = ?
+            AND COALESCE(active_link.active, 1) = 1
+      )
+    ORDER BY previously_linked DESC, LOWER(COALESCE(pp.parent_name, '')), LOWER(COALESCE(pp.email, '')), pp.id
+    """, (student_name, student_name))
+    available_guardians = cursor.fetchall()
     conn.commit()
     conn.close()
 
@@ -23041,7 +23112,26 @@ def student_guardian_access(student_name):
         </form>
         """
     if not guardian_cards:
-        guardian_cards = '<div class="card"><p>No guardian account is linked yet.</p></div>'
+        guardian_cards = '<div class="card empty-state"><h2>No guardian account is linked yet.</h2><p>Select an existing account below to reconnect access.</p></div>'
+
+    available_guardian_options = "".join(
+        f'<option value="{guardian[0]}">{escape(str(guardian[1]))} · {escape(str(guardian[2] or "No email"))}{" · Previously linked" if guardian[3] else ""}</option>'
+        for guardian in available_guardians
+    )
+    if available_guardian_options:
+        link_guardian_card = f"""
+        <form class="card reconnect-card" method="POST">
+            <input type="hidden" name="action" value="link_guardian">
+            <div><h2>Reconnect or add guardian</h2><p>Restore an existing parent account's access to {escape(student_name)}.</p></div>
+            <div class="reconnect-grid">
+                <label>Guardian account<select name="parent_id" required>{available_guardian_options}</select></label>
+                <label>Relationship<select name="relationship"><option>Parent</option><option>Mother</option><option>Father</option><option>Guardian</option><option>Emergency contact</option></select></label>
+            </div>
+            <button type="submit">Reconnect guardian</button>
+        </form>
+        """
+    else:
+        link_guardian_card = '<div class="card"><h2>Reconnect or add guardian</h2><p>No other active parent account is available. Create or reactivate a parent account first.</p></div>'
 
     guardian_options = "".join(
         f'<option value="{guardian[0]}">{escape(str(guardian[1]))} · {escape(str(guardian[3]))}</option>'
@@ -23070,12 +23160,13 @@ def student_guardian_access(student_name):
     .grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}} label{{font-size:13px;font-weight:750;color:#475467}} label.check{{display:flex;align-items:center;gap:8px;min-height:42px;border:1px solid #e5e7eb;border-radius:9px;padding:9px;background:#fafafa}}
     input[type=checkbox]{{width:18px;height:18px}} select,input[type=number]{{width:100%;min-height:42px;border:1px solid #d1d5db;border-radius:9px;padding:8px;margin-top:5px;background:#fff}}
     button,.button{{display:inline-flex;align-items:center;justify-content:center;min-height:40px;border:0;border-radius:9px;padding:10px 14px;background:#1d65ad;color:#fff;font-weight:900;text-decoration:none;margin-top:12px}}
-    .billing-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}} .hint{{font-size:12px;color:#667085;margin-top:8px}}
-    @media(max-width:760px){{body{{padding:14px}}.grid,.billing-grid{{grid-template-columns:1fr}}.top{{align-items:flex-start;flex-direction:column}}}}
+    .billing-grid,.reconnect-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}} .hint{{font-size:12px;color:#667085;margin-top:8px}} .empty-state{{border-style:dashed}} .reconnect-card{{border-color:#bfdbfe;background:#f8fbff}}
+    @media(max-width:760px){{body{{padding:14px}}.grid,.billing-grid,.reconnect-grid{{grid-template-columns:1fr}}.top{{align-items:flex-start;flex-direction:column}}}}
     </style></head><body><main class="page">
       <div class="top"><div><h1>{escape(student_name)} · Guardians &amp; Billing</h1><p>Independent logins, permissions, and payment responsibility.</p></div><a class="button" href="/student/{quote(student_name, safe='')}">Back to student</a></div>
       {f'<div class="notice">{escape(notice)}</div>' if notice else ''}
       <section>{guardian_cards}</section>
+      {link_guardian_card}
       <form class="card" method="POST">
         <input type="hidden" name="action" value="save_billing">
         <h2>Billing responsibility</h2><p class="hint">Only ACH and Zelle are available. Credit card and PayPal payment are disabled.</p>
