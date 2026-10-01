@@ -35841,8 +35841,8 @@ HMUSIC_MESSAGE_TEMPLATE_DEFAULTS = [
     ("trial_follow_up", "Trial", "Trial follow-up", "Suggested template for after a trial lesson.", "H-Music Trial Follow-Up for {student_name}", "Hi {parent_name},\n\nThank you for coming to {student_name}'s trial lesson with H-Music.\n\nIf you would like to continue, we can help set up the weekly schedule, tuition package, invoice, and parent app access.\n\nThank you,\nH-Music", "Thank you for joining {student_name}'s H-Music trial. Reply here if you would like help setting up weekly lessons.", "Trial follow-up", "Follow up with {parent_name} about {student_name}'s trial lesson.", "parent_name, student_name, teacher_name, trial_date"),
     ("lesson_reminder", "Lesson Schedule", "Lesson reminder", "Sent before a scheduled lesson.", "H-Music Lesson Reminder: {student_name} - {lesson_date_short} at {lesson_time}", "Hi {parent_name},\n\nThis is a reminder that {student_first_name} has a lesson tomorrow.\n\nStudent: {student_name}\nDate: {lesson_date}\nTime: {lesson_time}\nTeacher: {teacher_name}\nLocation: {location}\n{address_line}\n\nPlease open the H-Music Parent App to view schedule details.\n\nThank you,\nH-Music", "H-Music reminder: {student_name} has a lesson {lesson_date} at {lesson_time} with {teacher_name}.", "Lesson reminder", "{student_name} has a lesson on {lesson_date} at {lesson_time}.", "parent_name, student_name, student_first_name, lesson_date, lesson_date_short, lesson_time, teacher_name, location, address_line"),
     ("practice_reminder", "Practice / Homework", "Practice reminder", "Sent after a lesson when homework reminder is enabled.", "H-Music Practice Reminder for {student_name}", "Hi {parent_name},\n\nHere is {student_first_name}'s practice assignment from today's lesson:\n\n{homework}\n\nPlease open the H-Music parent app to review lesson notes and homework details:\n{parent_login_url}\n\nThank you,\nH-Music", "H-Music practice reminder for {student_name}: {homework_summary}. Full homework is in the parent app: {parent_login_url}", "H-Music Practice Reminder for {student_name}", "New practice homework is ready for {student_name}.", "parent_name, student_name, student_first_name, homework, homework_summary, parent_login_url"),
-    ("invoice_created", "Billing / Invoice", "New invoice", "Sent when a new tuition/package invoice is created.", "H-Music Invoice #{invoice_id} for {student_name} - ${amount} Due", "Hi {parent_name},\n\nA new H-Music invoice is ready for {student_name}.\n\nInvoice details\n\nInvoice #: {invoice_id}\nStudent: {student_name}\nProgram: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}\nPayment options: {payment_methods}\n\nPlease review the invoice and complete payment here:\n{invoice_link}\n\nIf you have already completed this payment, please disregard this message.\n\nThank you,\nH-Music", "Program: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}", "New package invoice", "Invoice #{invoice_id} for {student_name}: ${amount} due {due_date}.", "parent_name, student_name, invoice_id, course_name, teacher_name, coverage, lesson_count, amount, due_date, payment_methods, invoice_link, sms_note"),
-    ("invoice_payment_reminder", "Billing / Invoice", "Payment reminder", "Sent from Family billing when an invoice is still open.", "H-Music Invoice #{invoice_id} for {student_name} - ${amount} Due", "Hi {parent_name},\n\nThis is a friendly reminder that the following H-Music invoice is still unpaid.\n\nInvoice details\n\nInvoice #: {invoice_id}\nStudent: {student_name}\nProgram: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}\nPayment options: {payment_methods}\n\nPlease review the invoice and complete payment here:\n{invoice_link}\n\nIf you have already completed this payment, please disregard this message.\n\nThank you,\nH-Music", "Program: {course_name}\nTeacher: {teacher_name}\nCoverage: {coverage}\nPackage: {lesson_count} lesson(s)\nAmount due: ${amount}\nDue date: {due_date}", "H-Music payment reminder", "Invoice #{invoice_id} for {student_name}: ${amount} is still unpaid.", "parent_name, student_name, invoice_id, course_name, teacher_name, coverage, lesson_count, amount, due_date, payment_methods, invoice_link, sms_note"),
+    ("invoice_created", "Billing / Invoice", "New invoice", "Sent when a new tuition/package invoice is created.", "H-Music Tuition Invoice for {student_name}", "Hi {parent_name},\n\n{student_name}'s tuition invoice is ready.\n\nAmount due: ${amount}\nInvoice: #{invoice_id}\nDue date: {due_date}\n\nPlease open the H-Music Parent App to review payment options:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music invoice for {student_name}: ${amount}. Review/pay here: {invoice_link}", "New package invoice", "{student_name} has a tuition invoice due: ${amount}.", "parent_name, student_name, invoice_id, amount, due_date, invoice_link, lesson_count"),
+    ("invoice_payment_reminder", "Billing / Invoice", "Payment reminder", "Sent from Family billing when an invoice is still open.", "H-Music Payment Reminder: {student_name}", "Hi {parent_name},\n\nThis is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\nAmount due: ${amount}\nDue date: {due_date}\nPackage: {lesson_count} lesson(s)\nCoverage: {coverage}\nPayment options: {payment_methods}\n\nPlease open the H-Music Parent App to review the invoice and choose a payment method:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music reminder: {student_name} has an open invoice for ${amount}. Review/pay here: {invoice_link}", "H-Music payment reminder", "{student_name} has a tuition invoice ready for payment.", "parent_name, student_name, invoice_id, amount, due_date, lesson_count, coverage, payment_methods, invoice_link"),
     ("payment_received", "Payment", "Payment received", "Sent after payment is confirmed.", "H-Music Payment Received for {student_name}", "Hi {parent_name},\n\nThank you. H-Music received payment for {student_name}.\n\nAmount: ${amount}\nInvoice: #{invoice_id}\n\nYour parent app has been updated.\n\nThank you,\nH-Music", "H-Music received payment for {student_name}: ${amount}. Thank you.", "Payment received", "Payment received for {student_name}: ${amount}.", "parent_name, student_name, amount, invoice_id"),
     ("payment_failed", "Payment", "Payment failed", "Sent when a card/ACH payment fails.", "H-Music Payment Needs Attention for {student_name}", "Hi {parent_name},\n\nWe could not complete the payment for {student_name}'s invoice.\n\nAmount: ${amount}\nInvoice: #{invoice_id}\nReason: {payment_error}\n\nPlease open the H-Music Parent App to review the invoice and try again:\n{invoice_link}\n\nThank you,\nH-Music", "H-Music payment issue for {student_name}: invoice #{invoice_id} for ${amount}. Please review: {invoice_link}", "Payment needs attention", "Payment for {student_name}'s invoice needs attention.", "parent_name, student_name, amount, invoice_id, payment_error, invoice_link"),
     ("renewal_reminder", "Renewal / Low Balance", "Lesson package renewal", "Sent when lesson balance is low or over balance.", "{student_name}'s Lesson Package Renewal Reminder", "Dear Parent,\n\nThis is a friendly reminder that {student_first_name}'s lesson package is due for renewal.\n\n{balance_line}\n\nPlease open the H-Music parent app to review the renewal details and payment information:\n{parent_login_url}\n\nIf you have any questions before completing the renewal, please reply to this email.\n\nThank you,\nH-Music", "H-Music renewal reminder: {student_name}'s package is due for renewal. Details: {parent_login_url}", "Lesson package renewal", "{student_name}'s lesson package is due for renewal.", "student_name, student_first_name, balance_line, lesson_balance, package_count, package_size, parent_login_url"),
@@ -35941,6 +35941,29 @@ def ensure_message_template_schema(seed=True):
             cursor.execute(
                 "INSERT INTO message_template_migrations (migration_key, applied_at) VALUES (?, ?)",
                 (migration_key, now),
+            )
+        restore_key = "invoice_message_restore_v3"
+        cursor.execute(
+            "SELECT 1 FROM message_template_migrations WHERE migration_key = ?",
+            (restore_key,),
+        )
+        if not cursor.fetchone():
+            defaults = hmusic_default_message_template_map()
+            for template_key in ("invoice_created", "invoice_payment_reminder"):
+                template = defaults[template_key]
+                cursor.execute("""
+                UPDATE message_templates
+                SET description = ?, email_subject = ?, email_body = ?, sms_body = ?,
+                    app_title = ?, app_body = ?, variables = ?, active = 1, updated_at = ?
+                WHERE template_key = ?
+                """, (
+                    template["description"], template["email_subject"], template["email_body"],
+                    template["sms_body"], template["app_title"], template["app_body"],
+                    template["variables"], now, template_key,
+                ))
+            cursor.execute(
+                "INSERT INTO message_template_migrations (migration_key, applied_at) VALUES (?, ?)",
+                (restore_key, now),
             )
     conn.commit()
     conn.close()
@@ -46351,7 +46374,7 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
     }
     fallback = (
         f"Hi {parent_name or 'Parent'},\n\n"
-        f"A new H-Music invoice is ready for {student_name}.\n\n"
+        f"This is a friendly reminder that {student_name} has an H-Music tuition invoice ready for payment.\n\n"
         f"Amount due: ${hmusic_money(invoice_amount)}\n"
         f"Due date: {context['due_date']}\n"
         f"Package: {context['lesson_count']} lesson(s)\n"
@@ -46362,7 +46385,7 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
         "Thank you,\n"
         "H-Music"
     )
-    return hmusic_render_message_template("invoice_created", "email_body", context, fallback)
+    return hmusic_render_message_template("invoice_payment_reminder", "email_body", context, fallback)
 
 
 @app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
