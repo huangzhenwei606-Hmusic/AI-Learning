@@ -21290,7 +21290,11 @@ def refresh_invoice_status_from_allocations(cursor, invoice_id):
     return status
 
 
-def record_invoice_allocation_paid(cursor, allocation_id, payment_method, payment_date=None, reference=""):
+def record_invoice_allocation_paid(cursor, allocation_id, payment_method, payment_date=None, reference="", family_payment_id=None):
+    from family_billing import active_batch
+    reserved_batch_id = active_batch(cursor, allocation_id)
+    if reserved_batch_id and reserved_batch_id != family_payment_id:
+        return {"ok": False, "error": f"This share belongs to combined payment #{reserved_batch_id}."}
     payment_date = payment_date or date.today().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("""
@@ -21308,6 +21312,22 @@ def record_invoice_allocation_paid(cursor, allocation_id, payment_method, paymen
         return {"ok": True, "invoice_id": allocation[1], "already_paid": True}
 
     invoice_id = allocation[1]
+    # Serialize final shares on their invoice, including split-guardian payments.
+    # Re-read flags after the lock so concurrent callbacks cannot both grant credit.
+    cursor.execute("UPDATE invoices SET status = status WHERE id = ?", (invoice_id,))
+    reserved_batch_id = active_batch(cursor, allocation_id)
+    if reserved_batch_id and reserved_batch_id != family_payment_id:
+        return {"ok": False, "error": f"This share belongs to combined payment #{reserved_batch_id}."}
+    cursor.execute("""
+    SELECT ia.status, COALESCE(i.credits_applied, 0)
+    FROM invoice_allocations ia JOIN invoices i ON i.id = ia.invoice_id
+    WHERE ia.id = ?
+    """, (allocation_id,))
+    current_flags = cursor.fetchone()
+    if current_flags[0] == "paid":
+        return {"ok": True, "invoice_id": invoice_id, "already_paid": True}
+    allocation = list(allocation)
+    allocation[4], allocation[9] = current_flags
     student_name = allocation[5]
     enrollment_id = allocation[8]
     course_type_name = ""
@@ -22242,6 +22262,7 @@ def parent_admin(parent_id):
         family_billing_actions = billing_links
     else:
         family_billing_actions = ""
+    family_billing_actions += f'<a class="button primary compact" href="/family_billing/{parent[0]}">Combine payments</a>'
     try:
         unread_count = get_unread_notification_count("parent", str(parent[0]))
     except Exception:
@@ -27368,6 +27389,18 @@ def finalize_stripe_invoice_payment(
         conn.close()
         return False
 
+    from family_billing import ensure_schema as ensure_family_schema
+    ensure_family_schema(cursor)
+    cursor.execute("""
+    SELECT fp.id FROM family_payments fp
+    JOIN family_payment_items fi ON fi.family_payment_id = fp.id
+    WHERE fi.invoice_id = ? AND fp.status NOT IN ('paid', 'cancelled') LIMIT 1
+    """, (invoice_id,))
+    if cursor.fetchone():
+        conn.rollback()
+        conn.close()
+        return False
+
     if allocation_id:
         cursor.execute("""
         SELECT id, parent_id, amount, status
@@ -27414,6 +27447,18 @@ def finalize_stripe_invoice_payment(
             amount=allocation[2],
         )
         return True
+
+    from family_billing import ensure_schema as ensure_family_schema
+    ensure_family_schema(cursor)
+    cursor.execute("""
+    SELECT fp.id FROM family_payments fp
+    JOIN family_payment_items fi ON fi.family_payment_id = fp.id
+    WHERE fi.invoice_id = ? AND fp.status NOT IN ('paid', 'cancelled') LIMIT 1
+    """, (invoice_id,))
+    if cursor.fetchone():
+        conn.rollback()
+        conn.close()
+        return False
 
     if invoice[4] == "paid":
         conn.close()
@@ -37645,6 +37690,7 @@ def parent_profile():
                 <div class="section-header">
                     <div>
                         <div class="section-title">Package / Invoice Records</div>
+                        <p><a href="/family_billing/{parent_id}">Combine family payments</a></p>
                         <div class="section-note">Issued invoices and package purchase history. Lesson credits stay in Billing & Credits.</div>
                     </div>
                 </div>
@@ -49046,6 +49092,9 @@ def prepare_database_for_request():
             return redirect("/change_teacher_password")
         if session.get("parent_id"):
             return redirect("/change_parent_password")
+
+from family_billing import install_family_billing
+install_family_billing(app, globals())
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
