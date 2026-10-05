@@ -17798,6 +17798,7 @@ def calendar_lesson_detail(schedule_id):
     }
     if require_owner():
         response["lesson"].update({
+            "package_type": row[9] or "unlimited",
             "student_billing_method": row[22] or "",
             "student_price": float(row[23] or 0),
             "student_charge_amount": float(row[24] or 0),
