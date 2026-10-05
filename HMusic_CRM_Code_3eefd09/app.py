@@ -19153,6 +19153,7 @@ def invoices():
         return redirect("/owner_login")
 
     ensure_v321_schema()
+    ensure_guardian_billing_schema()
 
     status_filter = (request.args.get("status") or "all").strip().lower()
     search = (request.args.get("q") or "").strip()
@@ -19186,6 +19187,22 @@ def invoices():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+
+    cursor.execute("""
+    UPDATE invoices
+    SET status = 'pending_confirmation'
+    WHERE status IN ('payment_processing', 'stripe_processing')
+      AND EXISTS (SELECT 1 FROM invoice_allocations ia
+                  WHERE ia.invoice_id = invoices.id AND ia.status = 'pending_confirmation')
+      AND NOT EXISTS (SELECT 1 FROM invoice_allocations ia
+                      WHERE ia.invoice_id = invoices.id AND ia.status IN ('processing', 'paid'))
+    """)
+    conn.commit()
+    cursor.execute("""
+    SELECT DISTINCT invoice_id FROM invoice_allocations
+    WHERE status = 'processing' AND payment_method = 'Stripe ACH'
+    """)
+    ach_processing_invoice_ids = {row[0] for row in cursor.fetchall()}
 
     for column_name, column_sql in (
         ("payment_reminder_sent_at", "payment_reminder_sent_at TEXT"),
@@ -19376,7 +19393,7 @@ def invoices():
         )
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
-        elif status in ("payment_processing", "stripe_processing"):
+        elif status in ("payment_processing", "stripe_processing") and invoice_id in ach_processing_invoice_ids:
             action_html += f"""
             <form class="inline-action-form" method="POST" action="/sync_invoice_payment/{invoice_id}">
                 <button class="row-action reminder" type="submit">Check payment status</button>
@@ -19384,6 +19401,13 @@ def invoices():
             <span class="paid-text">ACH in transit</span>
             <a class="row-action" href="/parent_invoice/{invoice_id}">Review</a>
             """
+        elif status == "pending_confirmation":
+            action_html += (
+                '<span class="paid-text">Awaiting owner confirmation</span>'
+                f'<a class="row-action primary" href="/pay_invoice/{invoice_id}">Confirm received</a>'
+            )
+        elif status in ("payment_processing", "stripe_processing"):
+            action_html += f'<a class="row-action" href="/pay_invoice/{invoice_id}">Review payment</a>'
         elif not has_sendable_parent_email:
             action_html += (
                 f'<a class="row-action reminder" href="/edit_parent_admin/{parent_id}">Add real email</a>'
@@ -19813,10 +19837,10 @@ def repair_paid_invoice_credit(cursor, invoice):
     SELECT id
     FROM payments
     WHERE enrollment_id = ?
-      AND notes = ?
+      AND (notes = ? OR notes LIKE ?)
       AND COALESCE(lessons_added, 0) > 0
     LIMIT 1
-    """, (enrollment_id, f"Invoice #{invoice_id} paid"))
+    """, (enrollment_id, f"Invoice #{invoice_id} paid", f"Invoice #{invoice_id} share paid by parent #%"))
     if cursor.fetchone():
         return 0
 
@@ -19893,7 +19917,7 @@ def pay_invoice(invoice_id):
             conn.commit()
         conn.close()
         repair_note = (
-            f"<p>Missing course credit repaired: +{hmusic_number(repaired_lessons)} lesson(s).</p>"
+            f"<p>Missing course credit repaired: +{hmusic_lesson_count_label(repaired_lessons)} lesson(s).</p>"
             if repaired_lessons else ""
         )
         return f"""
@@ -21280,8 +21304,10 @@ def refresh_invoice_status_from_allocations(cursor, invoice_id):
         status = "paid"
     elif any(status == "paid" for status in statuses):
         status = "partially_paid"
-    elif any(status in ("pending_confirmation", "processing") for status in statuses):
+    elif any(status == "processing" for status in statuses):
         status = "payment_processing"
+    elif any(status == "pending_confirmation" for status in statuses):
+        status = "pending_confirmation"
     elif any(status == "failed" for status in statuses):
         status = "payment_failed"
     else:
@@ -35857,12 +35883,16 @@ def stripe_webhook():
                         stripe_checkout_session_id = ?, stripe_payment_intent_id = ?,
                         updated_at = ?
                     WHERE id = ? AND invoice_id = ?
+                      AND payment_method = 'Stripe ACH'
+                      AND status IN ('unpaid', 'failed', 'processing')
+                      AND stripe_checkout_session_id = ?
                     """, (
                         data_object.get("id"),
                         data_object.get("payment_intent"),
                         now,
                         allocation_id,
                         invoice_id,
+                        data_object.get("id"),
                     ))
                     refresh_invoice_status_from_allocations(cursor, invoice_id)
                 else:
@@ -36531,6 +36561,9 @@ def stripe_invoice_success():
         stripe_checkout_session_id = ?, stripe_payment_intent_id = ?,
         lock_token = NULL, locked_at = NULL, updated_at = ?
     WHERE id = ? AND invoice_id = ? AND parent_id = ?
+      AND payment_method = 'Stripe ACH'
+      AND status IN ('unpaid', 'failed', 'processing')
+      AND stripe_checkout_session_id = ?
     """, (
         session_id,
         payment_intent_id,
@@ -36538,6 +36571,7 @@ def stripe_invoice_success():
         allocation_id,
         invoice_id,
         session.get("parent_id"),
+        session_id,
     ))
     if cursor.rowcount != 1:
         conn.rollback()
@@ -36898,7 +36932,8 @@ def parent_invoice(invoice_id):
             cursor.execute("""
             UPDATE invoice_allocations
             SET status = 'pending_confirmation', payment_method = 'Zelle',
-                manual_payment_status = ?, lock_token = ?, locked_at = ?, updated_at = ?
+                manual_payment_status = ?, lock_token = ?, locked_at = ?, updated_at = ?,
+                stripe_checkout_session_id = NULL, stripe_payment_intent_id = NULL
             WHERE id = ? AND status IN ('unpaid', 'failed')
             """, (
                 f"Zelle notice sent by parent #{parent_id}",
@@ -37010,7 +37045,7 @@ def parent_invoice(invoice_id):
             payment_status_alert = "<div class='alert'>Payment received. This invoice is paid.</div>"
         else:
             payment_status_alert = "<div class='alert'>Your payment share is complete. The invoice is waiting for the other assigned share.</div>"
-    elif request.args.get("stripe_processing") == "1" or own_status == "processing":
+    elif own_status == "processing" and own_allocation[4] == "Stripe ACH":
         payment_status_alert = "<div class='alert'>ACH payment is processing. Bank transfers can take several business days to fully settle.</div>"
     elif own_status == "pending_confirmation":
         payment_status_alert = "<div class='alert'>Payment notice sent. H-Music will confirm and add lesson credits after review.</div>"
