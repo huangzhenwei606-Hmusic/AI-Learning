@@ -2392,7 +2392,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 <label>Weekday<select name="weekday"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option></select></label>
                 <label>Time<input type="time" name="lesson_time" required></label>
                 <label>Schedule Type<select name="schedule_type"><option value="weekly">Weekly</option><option value="one_time">One time</option></select></label>
-                <label>Package<select name="package_type"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option></select></label>
+                <label>Package<select name="package_type"><option value="unlimited" selected>Ongoing weekly</option><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option></select></label>
                 <label>Custom Count<input type="number" name="custom_lesson_count" min="1" max="260" placeholder="Only if package is custom"></label>
                 <label>Start Date<input type="date" name="start_date" value="{date.today().strftime('%Y-%m-%d')}" required></label>
                 <label>Course<select name="course_type_id" id="teacherCourseSelect" onchange="syncTeacherLessonFormat()" required>{course_options}</select><button class="teacher-course-duration-action" type="button" onclick="toggleTeacherAddScheduleDuration()">+ Add a new duration to this course</button></label>
@@ -10226,7 +10226,7 @@ def calendar():
                       <option value="12">12 lessons</option>
                       <option value="24">24 lessons</option>
                       <option value="custom">Custom count</option>
-                      <option value="unlimited">Ongoing weekly</option>
+                      <option value="unlimited" selected>Ongoing weekly</option>
                     </select>
                   </div>
                   <div>
@@ -10267,7 +10267,7 @@ def calendar():
                   <option value="12">12 lessons</option>
                   <option value="24">24 lessons</option>
                   <option value="custom">Custom count</option>
-                  <option value="unlimited">Ongoing weekly</option>
+                  <option value="unlimited" selected>Ongoing weekly</option>
                 </select>
               </div>
               <div>
@@ -10403,7 +10403,7 @@ def calendar():
             <label><span class="detail-label">Student rate</span><input class="panel-field" type="number" id="panelStudentRate" min="0" step="0.01" onchange="updatePanelChargePreview()"></label>
             <label><span class="detail-label">Format</span><select class="panel-field" id="panelDetailFormat"><option value="private">Private</option><option value="group">Group</option></select></label>
             <label><span class="detail-label">Date</span><input class="panel-field" type="date" id="panelDetailDate"></label>
-            <label class="full"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited">Ongoing weekly</option></select></label>
+            <label class="full"><span class="detail-label">Package</span><select class="panel-field" id="panelDetailPackage" onchange="updatePanelPackageFields()"><option value="10">10 lessons</option><option value="12">12 lessons</option><option value="24">24 lessons</option><option value="custom">Custom count</option><option value="unlimited" selected>Ongoing weekly</option></select></label>
             <label><span class="detail-label">Custom count</span><input class="panel-field" type="number" id="panelDetailCustomCount" min="1" max="260" step="1"></label>
             <label><span class="detail-label">Billing decision</span><select class="panel-field" id="panelBillingDecision" onchange="updatePanelChargePreview()"><option value="existing_credits">Use existing credits</option><option value="new_package">Create new package</option><option value="trial_free">Free trial</option><option value="makeup_credit">Use makeup credit</option><option value="no_charge">No charge</option><option value="invoice_later">Invoice later</option><option value="custom_price">Custom price</option></select></label>
             <label class="full"><span class="detail-label">Apply to</span><select class="panel-field" id="panelDetailScope"><option value="once">Only this lesson</option><option value="following">This and all following lessons</option></select></label>
@@ -11192,7 +11192,7 @@ def calendar():
       const uniqueNames = Array.from(new Set(names));
       const mode = (document.getElementById('popGroupBillingMode') || {{value:'per_student'}}).value;
       const defaultRule = (document.getElementById('popGroupDefaultBilling') || {{value:'existing_credits'}}).value;
-      const defaultPackage = (document.getElementById('popGroupDefaultPackage') || {{value:'10'}}).value;
+      const defaultPackage = (document.getElementById('popGroupDefaultPackage') || {{value:'unlimited'}}).value;
       const defaultRate = (document.getElementById('popGroupDefaultRate') || {{value:'0'}}).value || '0';
       const existing = {{}};
       billingRows.querySelectorAll('tr[data-student-key]').forEach(row => {{
@@ -11227,7 +11227,7 @@ def calendar():
         const trial = QUICK_COURSE_DATA.find(c => String(c.name || '').toLowerCase().includes('trial'));
         if (trial) courseSelect.value = trial.id;
         document.getElementById('popScheduleType').value = 'one_time';
-        document.getElementById('popPackageType').value = '10';
+        document.getElementById('popPackageType').value = 'unlimited';
         document.getElementById('popBillingDecision').value = 'trial_free';
       }}
       if (kind === 'makeup') {{
@@ -11430,7 +11430,7 @@ def calendar():
       setValue('panelDetailDate', lesson.date || '');
       setValue('panelDetailTime', inputTimeValue(lesson.time || ''));
       setValue('panelDetailScheduleType', lesson.schedule_type || 'one_time');
-      setValue('panelDetailPackage', lesson.package_type || '10');
+      setValue('panelDetailPackage', lesson.package_type || 'unlimited');
       setValue('panelDetailCustomCount', lesson.custom_lesson_count || '');
       setValue('panelBillingBasis', methodToBillingBasis(lesson.student_billing_method));
       setValue('panelStudentRate', Number(lesson.student_price || lesson.student_charge_amount || 0).toFixed(2));
@@ -11841,7 +11841,7 @@ def add_schedule():
         weekday = request.form.get("weekday")
         lesson_time = request.form.get("lesson_time")
         schedule_type = request.form.get("schedule_type")
-        package_type = request.form.get("package_type") or "10"
+        package_type = request.form.get("package_type") or "unlimited"
         billing_decision = request.form.get("billing_decision") or "existing_credits"
         custom_lesson_count = request.form.get("custom_lesson_count")
         custom_student_price = request.form.get("custom_student_price")
@@ -12783,7 +12783,7 @@ def add_schedule():
                 <select name="package_type">
                     <option value="10">10 Lessons</option>
                     <option value="12">12 Lessons</option>
-                    <option value="unlimited">Unlimited</option>
+                    <option value="unlimited" selected>Ongoing weekly</option>
                 </select>
 
                 Start Date:<br>
@@ -14833,7 +14833,7 @@ def teacher_dashboard():
                                     <option value="12">12 lessons</option>
                                     <option value="24">24 lessons</option>
                                     <option value="custom">Custom count</option>
-                                    <option value="unlimited">Ongoing no package</option>
+                                    <option value="unlimited" selected>Ongoing no package</option>
                                 </select>
                             </label>
                             <label>
@@ -18002,7 +18002,7 @@ def calendar_lesson_action():
                 lesson_time_detail = (data.get("lesson_time") or row[4] or "").strip()
                 classroom_detail = (data.get("classroom") or row[5] or "").strip()
                 schedule_type_detail = (data.get("schedule_type") or row[8] or "one_time").strip()
-                package_type_detail = (data.get("package_type") or row[9] or "10").strip()
+                package_type_detail = (data.get("package_type") or row[9] or "unlimited").strip()
                 billing_decision_detail = (data.get("billing_decision") or "existing_credits").strip()
                 billing_basis_detail = (data.get("billing_basis") or "per_class").strip()
                 student_billing_method_detail = "Hourly" if billing_basis_detail == "hourly" else "Per Lesson"
