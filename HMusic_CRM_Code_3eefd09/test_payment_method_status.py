@@ -47,6 +47,18 @@ class PaymentMethodStatusTest(unittest.TestCase):
         self.assertEqual(scope['repair_paid_invoice_credit'](db.cursor(), invoice), 0)
         self.assertEqual(db.execute('SELECT lessons_left FROM enrollments').fetchone()[0], 0)
 
+    def test_legacy_share_repair_updates_receipt_once(self):
+        from datetime import datetime
+        scope = {'datetime': datetime}
+        exec(compile(ast.Module(body=[function('invoice_credit_to_grant'), function('repair_paid_invoice_credit')], type_ignores=[]), '<billing>', 'exec'), scope)
+        db = sqlite3.connect(':memory:')
+        db.executescript("CREATE TABLE enrollments(id,lessons_left,updated_at); CREATE TABLE payments(id,enrollment_id,notes,lessons_added); CREATE TABLE invoices(id,credits_applied); INSERT INTO enrollments VALUES(48,0,NULL); INSERT INTO invoices VALUES(55,1); INSERT INTO payments VALUES(106,48,'Invoice #55 share paid by parent #4765 · Owner confirmed',0);")
+        invoice = (55, 'Max Ling', 10, 600, 'paid', 'initial_tuition', '2026-09-08', 48)
+        self.assertEqual(scope['repair_paid_invoice_credit'](db.cursor(), invoice), 10)
+        self.assertEqual(db.execute('SELECT lessons_added FROM payments').fetchone()[0], 10)
+        db.execute('UPDATE enrollments SET lessons_left=0')
+        self.assertEqual(scope['repair_paid_invoice_credit'](db.cursor(), invoice), 0)
+
     def test_old_zelle_status_repairs_without_changing_paid_or_ach(self):
         statements = [n.value for n in ast.walk(function('invoices')) if isinstance(n, ast.Constant) and isinstance(n.value,str) and "SET status = 'pending_confirmation'" in n.value]
         self.assertEqual(len(statements),1)

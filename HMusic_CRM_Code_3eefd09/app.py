@@ -19857,11 +19857,11 @@ def repair_paid_invoice_credit(cursor, invoice):
     WHERE id = (
         SELECT id
         FROM payments
-        WHERE enrollment_id = ? AND notes = ?
+        WHERE enrollment_id = ? AND (notes = ? OR notes LIKE ?)
         ORDER BY id DESC
         LIMIT 1
     )
-    """, (lessons_to_grant, enrollment_id, f"Invoice #{invoice_id} paid"))
+    """, (lessons_to_grant, enrollment_id, f"Invoice #{invoice_id} paid", f"Invoice #{invoice_id} share paid by parent #%"))
     cursor.execute("UPDATE invoices SET credits_applied = 1 WHERE id = ?", (invoice_id,))
     return lessons_to_grant
 
