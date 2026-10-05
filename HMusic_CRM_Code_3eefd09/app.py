@@ -11422,7 +11422,12 @@ def calendar():
     }}
     function fillPanelDetails(lesson) {{
       const setValue = (id, value) => {{ const el = document.getElementById(id); if (el) el.value = value == null ? '' : value; }};
-      setValue('panelDetailStudent', lesson.student || '');
+      const savedStudent = String(lesson.student || '').trim();
+      const studentOptions = Array.from(document.querySelectorAll('#popStudentList option'));
+      const savedStudentOption = studentOptions.find(option =>
+        option.value.split(' · Parent:')[0].trim() === savedStudent
+      );
+      setValue('panelDetailStudent', savedStudentOption ? savedStudentOption.value : savedStudent);
       setValue('panelDetailTeacher', lesson.teacher || '');
       setValue('panelDetailCourse', resolvePanelCourseId(lesson));
       setValue('panelDetailDuration', lesson.duration || 30);
