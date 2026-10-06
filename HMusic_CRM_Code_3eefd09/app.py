@@ -19893,6 +19893,39 @@ def repair_paid_invoice_credit(cursor, invoice):
     return lessons_to_grant
 
 
+def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_method,
+                                    payment_date, lessons_added=0, parent_id=None,
+                                    allocation_id=None, invoice_status="paid"):
+    """Notify only after the payment transaction has committed."""
+    try:
+        if not parent_id:
+            with sqlite3.connect("hmusic.db") as conn:
+                parent_id = get_primary_parent_for_student(conn.cursor(), student_name)
+        if not parent_id:
+            return
+        title = f"Payment confirmed | Invoice #{invoice_id}"
+        body = (f"Thank you. H-Music has confirmed payment for {student_name}.\n"
+                f"Invoice: #{invoice_id}\nAmount received: ${hmusic_money(amount)}\n"
+                f"Payment method: {payment_method}\nPayment date: {payment_date}")
+        if lessons_added:
+            body += f"\nLessons added: {hmusic_number(lessons_added)}."
+        elif invoice_status != "paid":
+            body += "\nYour share is paid. Lesson credits will be added once all guardian shares are received."
+        link = f"/parent_invoice/{invoice_id}"
+        related_type = "payment_confirmation_share" if allocation_id else "payment_confirmation"
+        related_id = allocation_id or invoice_id
+        create_notification("parent", str(parent_id), title, body, link,
+                            related_type=related_type, related_id=related_id,
+                            send_email_now=False)
+        queue_id = queue_notification_delivery(
+            "parent", str(parent_id), title, body, link, "email",
+            related_type=related_type, related_id=related_id)
+        if queue_id:
+            send_queued_email_now(queue_id)
+    except Exception:
+        app.logger.exception("Payment confirmation notification failed for invoice %s", invoice_id)
+
+
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def pay_invoice(invoice_id):
     if not require_owner():
@@ -19972,6 +20005,14 @@ def pay_invoice(invoice_id):
             conn.commit()
             conn.close()
             if result.get("ok"):
+                if not result.get("already_paid"):
+                    notify_parent_payment_confirmed(
+                        invoice_id, result["student_name"], result["amount"],
+                        request.form.get("payment_method") or "Zelle",
+                        request.form.get("payment_date") or date.today().isoformat(),
+                        lessons_added=result.get("lessons_added", 0),
+                        parent_id=result["parent_id"], allocation_id=allocation_id,
+                        invoice_status=result.get("invoice_status", "paid"))
                 return redirect(f"/pay_invoice/{invoice_id}?share_confirmed=1")
             return f"<h1>Payment could not be confirmed</h1><p>{escape(result.get('error') or 'Unknown error')}</p>", 400
 
@@ -20080,6 +20121,10 @@ def pay_invoice(invoice_id):
 
         conn.commit()
         conn.close()
+
+        notify_parent_payment_confirmed(
+            invoice_id, student_name, amount, payment_method, payment_date,
+            lessons_added=lessons_added)
 
         return f"""
         <h1>Invoice Paid!</h1>
