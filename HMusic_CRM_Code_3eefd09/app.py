@@ -19400,7 +19400,7 @@ def invoices():
         type_safe = escape(type_label(invoice_type))
         action_html = (
             f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
-            f'<a class="row-action" href="/review_invoice_notice/{invoice_id}">Review &amp; send</a>'
+            f'<a class="row-action" href="/notification_center?invoice_id={invoice_id}">Notify</a>'
         )
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
