@@ -1,0 +1,6 @@
+**
+!Dockerfile.postgres-backup
+!Dockerfile.postgres-backup.dockerignore
+!requirements.postgres-backup.txt
+!postgres_backup.py
+!run_postgres_backup.py

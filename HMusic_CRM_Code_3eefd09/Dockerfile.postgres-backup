@@ -1,0 +1,17 @@
+FROM postgres:18-bookworm
+
+# The official PostgreSQL image supplies matching pg_dump and pg_restore.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/backup-venv
+COPY requirements.postgres-backup.txt /tmp/requirements.postgres-backup.txt
+RUN /opt/backup-venv/bin/pip install --no-cache-dir -r /tmp/requirements.postgres-backup.txt \
+    && pg_dump --version | grep -E 'PostgreSQL\) 18\.' \
+    && pg_restore --version | grep -E 'PostgreSQL\) 18\.'
+ENV PATH="/opt/backup-venv/bin:$PATH" PYTHONUNBUFFERED=1
+WORKDIR /opt/hmusic-backup
+COPY postgres_backup.py run_postgres_backup.py ./
+USER postgres
+# Override the database image's entrypoint: never initialize or start a server.
+ENTRYPOINT ["python", "run_postgres_backup.py"]

@@ -14,9 +14,9 @@ an atomic combined backup. Preserve attachment versions separately.
 2. Verify a direct connection, not PgBouncer/another transaction pooler. The command
    rejects obvious `pgbouncer` hostnames but cannot detect all poolers. Use the
    database's direct internal address from a job in the same Render region/network.
-3. Package PostgreSQL **18** `pg_dump` and `pg_restore` plus the existing boto3
-   dependency. A Python dependency on psycopg does not install these binaries.
-   No client installation or image deployment is included here.
+3. Build and validate `Dockerfile.postgres-backup`, which packages PostgreSQL
+   **18** clients, Python and the dedicated boto3 dependency. A Python dependency
+   on psycopg does not install these binaries. No image deployment is applied here.
 4. Verify the destination is the existing HMusic account bucket
    `hmusic-crm-backups-xu`, region `us-east-1`. Do not create a Xutrading bucket.
    The existing optional custom endpoint is supported only if it implements
@@ -27,10 +27,109 @@ an atomic combined backup. Preserve attachment versions separately.
 
 ## Configuration and execution
 
-Run `python postgres_backup.py` from this directory in an explicitly authorized
+Run `python run_postgres_backup.py` from this directory in an explicitly authorized
 job. Importing the module does nothing and importing Flask/app.py is unnecessary.
 Provide existing credentials through the hosting platform's secure configuration;
 the command uses boto3's standard credential provider chain without printing them.
+
+### Dedicated cron container
+
+Build from this directory with:
+
+```sh
+docker build -f Dockerfile.postgres-backup -t hmusic-postgres-backup .
+docker run --rm --entrypoint sh hmusic-postgres-backup -c 'python --version; pg_dump --version; pg_restore --version'
+```
+
+The Dockerfile uses the official `postgres:18-bookworm` image, installs Python in
+a virtual environment, and overrides the image entrypoint so it never starts a
+database server. It runs as the non-root `postgres` OS user. Docker's matching
+`Dockerfile.postgres-backup.dockerignore` excludes all context files except the
+five necessary build/runtime files; no `.env`, application data, or other source
+is sent in the build context. Pin an image digest after the actual image is built
+and verified; the major-version tag itself can receive upstream patches.
+
+For an independently approved Render Docker cron, set the root directory to
+`HMusic_CRM_Code_3eefd09`, Dockerfile path to `Dockerfile.postgres-backup`, and
+Docker context to this directory (paths are relative to the configured root).
+Keep Docker Command empty so the image entrypoint runs the supervisor. Do not
+use the native Python draft's build command or bypass the supervisor by overriding
+the image entrypoint. Verify the resolved paths in Render before submission.
+
+`run_postgres_backup.py` imposes a fixed 3,600-second wall-clock deadline on the
+entire child process group, including dumping, catalog validation, hashing,
+SDK retries and uploads. It sends TERM at the deadline, escalates to KILL within
+10 seconds, and returns 124 with a fixed redacted timeout message. It preserves
+normal child exit codes. This bound is independent of environment configuration.
+Termination may leave a dump or an ambiguously committed manifest in S3; use job
+exit status and verification together. Ephemeral local files disappear with the
+container. Scheduling/platform startup and shutdown overhead is outside this bound.
+
+### Proposed access policy — requires separate approval; never applied by code
+
+Copying or referencing the app's database URL preserves the app role's permissions;
+it does not create read-only access. For a dedicated login, an administrator should
+first verify the exact production database, schemas, object owners and RLS use,
+then securely create a password outside chat. The target grants are:
+
+```sql
+-- Templates only; replace identifiers after privately verifying the database.
+-- CREATE ROLE hmusic_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+--   NOREPLICATION NOBYPASSRLS; set its password through a secure admin prompt.
+GRANT CONNECT ON DATABASE target_database TO hmusic_backup;
+GRANT USAGE ON SCHEMA target_schema TO hmusic_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA target_schema TO hmusic_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA target_schema TO hmusic_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE object_owner IN SCHEMA target_schema
+    GRANT SELECT ON TABLES TO hmusic_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE object_owner IN SCHEMA target_schema
+    GRANT SELECT ON SEQUENCES TO hmusic_backup;
+```
+
+Repeat schema and default grants for every intended schema and each actual object
+creator; default privileges are not retroactive. Do not grant sequence USAGE
+(which permits `nextval`), ownership, write roles, or server-file/program access.
+Audit role membership and effective PUBLIC grants (including schema CREATE,
+database TEMP, and write-capable function EXECUTE). Per-role grants cannot negate
+PUBLIC privileges: removing shared privileges can affect the app and needs its
+own review. A read-only transaction default is defense in depth, not permission
+enforcement. Large objects need separate SELECT grants if present. RLS causes
+the full dump to fail unless the role can read all required rows; do not silently
+enable partial row-security dumps or grant BYPASSRLS without specific approval.
+Do not use cluster-wide `pg_read_all_data` as an unexplained shortcut.
+
+For the existing SSE-S3 bucket, the job's dedicated AWS identity needs only:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:PutObject", "s3:GetObject"],
+    "Resource": "arn:aws:s3:::hmusic-crm-backups-xu/hmusic-crm/postgresql/*"
+  }]
+}
+```
+
+Verify that no additional identity, group or resource policies broaden access.
+No ListBucket, ACL, deletion, bucket management, old SQLite/attachment prefix,
+or GetObjectVersion grant is required by this job. HeadObject uses GetObject,
+which also allows object downloads; do not describe it as metadata-only access.
+PutObject allows overwriting a key: unique UUID keys reduce accidents but this
+policy does not enforce append-only storage or immutability. A stronger policy
+would require separately approved conditional writes/Object Lock and matching
+code, not a claim that versioning prevents overwrite.
+
+Render Blueprint `fromService`/`envVarKey` references preserve existing credential
+permissions. `fromDatabase`/`connectionString` references the default DB user,
+not a dedicated SQL-created role. Render's New default credential changes the
+default user, so avoid it for this backup login. A dedicated SQL-created login
+URL should be entered by the human into `HMUSIC_BACKUP_DIRECT_DATABASE_URL` via
+secure Render configuration, never copied into chat or logs. Dedicated AWS key
+entry likewise requires human handoff. If the workspace already supports Render
+AWS OIDC (Pro or higher), a service-specific trust policy and the prefix policy
+can use temporary credentials via AWS_ROLE_ARN; do not upgrade the plan or create
+provider/role/trust configuration without exact authorization.
 
 | Variable | Purpose |
 | --- | --- |
@@ -86,6 +185,14 @@ approved retention policy should scope both current and noncurrent versions to
 the PostgreSQL subprefix only, retaining historical SQLite objects and attachments.
 Storage continues growing until retention is deliberately configured.
 
+At the observed $0.00016/min compute price, daily runs bounded to 60 minutes plus
+10 seconds are approximately $0.30/month before the $1/month cron minimum and
+platform overhead. Extra/manual runs add cost. This bounds active script runtime,
+not total spend: S3 current/noncurrent versions and orphan dumps accumulate,
+Render outbound traffic and restore costs remain unmeasured. The 5 GiB per-dump
+limit does not enforce a $20 monthly cap. Measure actual dump size and egress and
+agree retention before describing the arrangement as within a lasting budget.
+
 Costs: job runtime/minimum service charge, Render outbound transfer to us-east-1,
 S3 dump and version storage, PUT/HEAD requests, and isolated restore compute/storage.
 Database size, compression, duration, other account charges, and incremental totals
@@ -94,7 +201,7 @@ spending are authorized by this code change.
 
 ## Verification and isolated restore
 
-Offline unit tests: `python -m unittest -v test_postgres_backup.py`.
+Offline unit tests: `python -m unittest -v test_postgres_backup.py test_run_postgres_backup.py`.
 Explicit synthetic local PostgreSQL 18 test (requires preinstalled tools only):
 `python check_postgres_backup_roundtrip.py`. This creates a temporary localhost
 cluster with synthetic data and fake S3, then stops/removes it. Neither test uses
