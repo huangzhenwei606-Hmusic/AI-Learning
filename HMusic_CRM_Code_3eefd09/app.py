@@ -46974,8 +46974,8 @@ def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
         return []
     if str(enrollment[1] or "").startswith("owner_review:"):
         return []
-    now = "owner_review:" + datetime.now().strftime("%Y-%m-%d %H:%M")
-    cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = ?, updated_at = ? WHERE id = ?", (now, now, enrollment_id))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = ?, updated_at = ? WHERE id = ?", ("owner_review:" + now, now, enrollment_id))
     return [{
         "title": "Invoice approval needed",
         "body": f"{student_name} has {lessons_left:g} lesson(s) left. Review the package and confirm before creating the next invoice.",
