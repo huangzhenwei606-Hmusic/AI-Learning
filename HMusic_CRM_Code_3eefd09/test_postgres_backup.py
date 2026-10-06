@@ -107,8 +107,17 @@ class BackupTests(unittest.TestCase):
     def test_dump_upload_failure_no_manifest(self):
         s3 = FakeS3()
         s3.put_object = lambda **kwargs: (_ for _ in ()).throw(RuntimeError(SECRET))
-        self.assert_failed_clean(s3=s3, code="s3_upload_or_verification_failed")
+        self.assert_failed_clean(s3=s3, code="s3_put_failed:unknown")
         self.assertEqual(s3.objects, {})
+
+    def test_safe_s3_diagnostics_never_emit_sdk_details(self):
+        error = RuntimeError(SECRET)
+        error.response = {"Error": {"Code": "AccessDenied", "Message": SECRET}, "secret": SECRET}
+        self.assertEqual(module.safe_s3_failure(error, "put"), "s3_put_failed:AccessDenied")
+        error.response["Error"]["Code"] = SECRET
+        self.assertEqual(module.safe_s3_failure(error, "head"), "s3_head_failed:unknown")
+        missing = type("NoCredentialsError", (Exception,), {})(SECRET)
+        self.assertEqual(module.safe_s3_failure(missing, "put"), "s3_put_failed:credentials_missing")
 
     def test_integrity_mismatch_no_manifest(self):
         for field, value in [("ContentLength", -1), ("ChecksumSHA256", "wrong"), ("Metadata", {})]:
@@ -131,13 +140,13 @@ class BackupTests(unittest.TestCase):
                 raise RuntimeError(SECRET)
             return original(**kwargs)
         s3.put_object = fail
-        self.assert_failed_clean(s3=s3, code="s3_upload_or_verification_failed")
+        self.assert_failed_clean(s3=s3, code="s3_put_failed:unknown")
         self.assertEqual(len(s3.objects), 1)  # preserve orphan dump, no delete needed
 
     def test_head_failure_no_manifest(self):
         s3 = FakeS3()
         s3.head_object = lambda **kwargs: (_ for _ in ()).throw(RuntimeError(SECRET))
-        self.assert_failed_clean(s3=s3, code="s3_upload_or_verification_failed")
+        self.assert_failed_clean(s3=s3, code="s3_head_failed:unknown")
         self.assertFalse(any(key.endswith("success.json") for key in s3.objects))
 
     def test_manifest_verification_failure_cli_nonzero(self):

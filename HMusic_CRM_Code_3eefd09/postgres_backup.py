@@ -111,6 +111,29 @@ def digest_file(path):
     return digest.hexdigest(), base64.b64encode(digest.digest()).decode("ascii")
 
 
+def safe_s3_failure(error, stage):
+    """Allowlisted diagnostics only: never emit SDK messages, URLs or keys."""
+    classes = {"NoCredentialsError": "credentials_missing",
+               "PartialCredentialsError": "credentials_incomplete",
+               "EndpointConnectionError": "endpoint_connection_failed",
+               "ConnectTimeoutError": "connect_timeout",
+               "ReadTimeoutError": "read_timeout", "SSLError": "tls_failed"}
+    reason = classes.get(type(error).__name__, "unknown")
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        details = response.get("Error", {})
+        code = details.get("Code") if isinstance(details, dict) else None
+        allowed = {"AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch",
+                   "AuthorizationHeaderMalformed", "NoSuchBucket", "InvalidToken",
+                   "ExpiredToken", "PermanentRedirect", "IncorrectEndpoint",
+                   "RequestTimeout", "InvalidRequest", "InvalidArgument",
+                   "AllAccessDisabled", "InvalidDigest", "BadDigest", "AccountProblem",
+                   "EntityTooLarge", "SlowDown", "ServiceUnavailable", "InternalError"}
+        if isinstance(code, str) and code in allowed:
+            reason = code
+    return "s3_" + stage + "_failed:" + reason
+
+
 def put_verified(client, bucket, key, path, content_type):
     size = path.stat().st_size
     # Single PUT keeps checksum verification unambiguous; multipart needs a
@@ -123,9 +146,12 @@ def put_verified(client, bucket, key, path, content_type):
             client.put_object(Bucket=bucket, Key=key, Body=source,
                               ContentLength=size, ContentType=content_type,
                               ChecksumSHA256=checksum, Metadata={"sha256": sha256})
+    except Exception as error:
+        raise BackupError(safe_s3_failure(error, "put")) from None
+    try:
         head = client.head_object(Bucket=bucket, Key=key, ChecksumMode="ENABLED")
-    except Exception:
-        raise BackupError("s3_upload_or_verification_failed") from None
+    except Exception as error:
+        raise BackupError(safe_s3_failure(error, "head")) from None
     if (head.get("ContentLength") != size or head.get("ChecksumSHA256") != checksum
             or head.get("Metadata", {}).get("sha256") != sha256):
         raise BackupError("s3_integrity_mismatch")
