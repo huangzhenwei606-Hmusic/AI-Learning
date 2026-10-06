@@ -17225,6 +17225,11 @@ def calendar_parent_ids(cursor, student_name):
 
 
 def calendar_queue_parent_notice(student_name, title, body, related_type, related_id):
+    if related_type == "low_balance_alert":
+        create_notification("owner", "owner", "Low balance reminder — approval to send needed",
+                            body, f"/review_renewal_email/{quote(str(student_name), safe='')}",
+                            related_type="low_balance_send_review", related_id=related_id)
+        return 0
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     parent_ids = calendar_parent_ids(cursor, student_name)
@@ -19395,7 +19400,7 @@ def invoices():
         type_safe = escape(type_label(invoice_type))
         action_html = (
             f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
-            f'<a class="row-action" href="/notification_center?invoice_id={invoice_id}">Notify</a>'
+            f'<a class="row-action" href="/review_invoice_notice/{invoice_id}">Review &amp; send</a>'
         )
         if status == "paid":
             action_html += '<span class="paid-text">Paid</span>'
@@ -26285,6 +26290,9 @@ def notification_center():
             conn.close()
             return redirect("/notification_center?state=error&message=Unknown+notice+type")
 
+        if notice_kind == "invoice":
+            cursor.execute("UPDATE invoices SET status = 'unpaid' WHERE id = ? AND status = 'pending_owner_approval'", (related_id,))
+            conn.commit()
         conn.close()
         totals = hmusic_send_selected_parent_notice(
             parent_id,
@@ -33318,7 +33326,7 @@ def parent_dashboard():
     cursor.execute("""
     SELECT id, amount, status, invoice_type, created_at
     FROM invoices
-    WHERE student_name = ?
+    WHERE COALESCE(status, '') != 'pending_owner_approval' AND student_name = ?
     ORDER BY id DESC
     LIMIT 10
     """, (current_student,))
@@ -36363,7 +36371,7 @@ def stripe_invoice_checkout(invoice_id):
     cursor.execute("""
     SELECT id, student_name, amount, status
     FROM invoices
-    WHERE id = ?
+    WHERE COALESCE(status, '') != 'pending_owner_approval' AND id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
 
@@ -36608,7 +36616,7 @@ def square_invoice_checkout(invoice_id):
     cursor.execute("""
     SELECT id, student_name, amount, status
     FROM invoices
-    WHERE id = ?
+    WHERE COALESCE(status, '') != 'pending_owner_approval' AND id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
 
@@ -36702,7 +36710,7 @@ def square_invoice_success():
     cursor.execute("""
     SELECT student_name, square_order_id
     FROM invoices
-    WHERE id = ?
+    WHERE COALESCE(status, '') != 'pending_owner_approval' AND id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
     if not invoice:
@@ -36817,7 +36825,7 @@ def parent_invoice(invoice_id):
     FROM invoices i
     LEFT JOIN enrollments e
         ON i.enrollment_id = e.id
-    WHERE i.id = ?
+    WHERE i.id = ? AND COALESCE(i.status, '') != 'pending_owner_approval'
     """, (invoice_id,))
     invoice = cursor.fetchone()
 
@@ -37258,7 +37266,7 @@ def parent_invoice(invoice_id):
                     <input type="hidden" name="action" value="save_autorenew">
                     <select name="auto_renew_enabled">
                         <option value="0" {checked_no}>No - remind me first</option>
-                        <option value="1" {checked_yes}>Owner review reminder only</option>
+                        <option value="1" {checked_yes}>Auto-generate invoice; owner approves sending</option>
                     </select>
                     <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
                     <button type="submit">Save Auto-Renew</button>
@@ -37413,7 +37421,7 @@ def parent_profile():
                i.created_at, {due_expr}, {lesson_date_expr}, {lesson_time_expr}
         FROM invoices i
         {join_sql}
-        WHERE i.student_name IN ({placeholders})
+        WHERE i.student_name IN ({placeholders}) AND COALESCE(i.status, '') != 'pending_owner_approval'
         ORDER BY COALESCE(i.created_at, '') DESC, i.id DESC
         LIMIT 12
         """, linked_student_names)
@@ -44753,15 +44761,15 @@ def add_enrollment():
 
         enrollment_id = cursor.lastrowid
 
+        invoice_id = None
+        if package_amount > 0:
+            invoice_id = create_enrollment_invoice(cursor, enrollment_id, "initial_tuition",
+                "Automatically prepared from enrollment; owner approval required before sending.",
+                grant_credit_on_payment=True, approval_required=True)
         conn.commit()
         conn.close()
-        if package_amount > 0:
-            create_notification(
-                "owner", "owner", "Invoice approval needed",
-                f"New enrollment for {student_name}: review tuition and confirm before creating the invoice.",
-                f"/create_enrollment_invoice/{enrollment_id}",
-                related_type="enrollment_invoice_review", related_id=enrollment_id,
-            )
+        if invoice_id:
+            notify_parent_tuition_due(student_name, None, invoice_id, package_amount, "Tuition invoice ready")
 
         return redirect(f"/enrollment/{enrollment_id}")
 
@@ -44872,9 +44880,9 @@ def add_enrollment():
                 Auto-Renew / Auto Tuition Reminder:<br>
                 <select name="auto_renew_enabled">
                     <option value="0">No - remind only</option>
-                    <option value="1">Owner review reminder only</option>
+                    <option value="1">Auto-generate invoice; owner approves sending</option>
                 </select>
-                <div class="hint">The owner receives a reminder when the package needs renewal. Invoices are created only after owner confirmation.</div><br>
+                <div class="hint">Invoices are generated automatically when auto-renew is enabled. The owner must approve all parent notifications before sending.</div><br>
 
                 Auto-Renew Lessons:<br>
                 <input type="number" step="0.5" name="auto_renew_lessons" value="10">
@@ -45700,7 +45708,7 @@ def edit_enrollment(enrollment_id):
         Auto-Renew:<br>
         <select name="auto_renew_enabled">
             <option value="0" {selected(0, e[5])}>No - remind only</option>
-            <option value="1" {selected(1, e[5])}>Owner review reminder only</option>
+            <option value="1" {selected(1, e[5])}>Auto-generate invoice; owner approves sending</option>
         </select><br><br>
 
         Auto-Renew Lessons:<br>
@@ -46635,6 +46643,8 @@ def create_enrollment_invoice_route(enrollment_id):
     parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
     default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=invoice_id, amount=invoice[1]) if invoice else ""
 
+    if invoice and request.form.get("action") == "send":
+        cursor.execute("UPDATE invoices SET status = 'unpaid' WHERE id = ? AND status = 'pending_owner_approval'", (invoice_id,))
     conn.commit()
     conn.close()
 
@@ -46812,7 +46822,7 @@ def prefer_real_parent_for_student(cursor, parent_id, student_name=None):
     return matched[0] if matched else parent_id
 
 
-def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", grant_credit_on_payment=False):
+def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", grant_credit_on_payment=False, approval_required=False):
     cursor.execute("""
     SELECT
         id,
@@ -46872,7 +46882,7 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", gra
         None,
         lessons,
         amount,
-        "unpaid",
+        "pending_owner_approval" if approval_required else "unpaid",
         invoice_type,
         now,
         enrollment_id,
@@ -46886,7 +46896,12 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", gra
     return invoice_id
 
 
-def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title):
+def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title, owner_approved=False):
+    if not owner_approved:
+        create_notification("owner", "owner", "Invoice ready — approval to send needed",
+                            f"Invoice #{invoice_id} for {student_name}: ${hmusic_money(amount)}. Review and confirm before notifying the parent.",
+                            f"/review_invoice_notice/{invoice_id}", related_type="invoice_send_review", related_id=invoice_id)
+        return
     if not parent_id:
         return
 
@@ -46962,25 +46977,67 @@ def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title
 
 
 def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
-    """Notify the owner for approval; never create invoices or grant credits."""
-    cursor.execute("SELECT lessons_left, renewal_reminder_sent_at FROM enrollments WHERE id = ?", (enrollment_id,))
+    """Prepare renewal invoices automatically; only notify the owner for send approval."""
+    cursor.execute("SELECT lessons_left, renewal_reminder_sent_at, auto_renew_enabled FROM enrollments WHERE id = ?", (enrollment_id,))
     enrollment = cursor.fetchone()
     if not enrollment:
         return []
     lessons_left = float(enrollment[0] or 0)
+    marker = str(enrollment[1] or "")
     if lessons_left > 1:
-        if enrollment[1]:
+        if marker:
             cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = NULL WHERE id = ?", (enrollment_id,))
         return []
-    if str(enrollment[1] or "").startswith("owner_review:"):
+    invoice_id = None
+    if lessons_left <= 0 and int(enrollment[2] or 0):
+        invoice_id = create_enrollment_invoice(cursor, enrollment_id, "auto_renewal",
+            "Automatically prepared; owner approval required before sending to the parent.",
+            grant_credit_on_payment=True, approval_required=True)
+    review_marker = f"send_review:{invoice_id}" if invoice_id else "send_review:low_balance"
+    if marker == review_marker:
         return []
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = ?, updated_at = ? WHERE id = ?", ("owner_review:" + now, now, enrollment_id))
+    cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = ?, updated_at = ? WHERE id = ?", (review_marker, now, enrollment_id))
     return [{
-        "title": "Invoice approval needed",
-        "body": f"{student_name} has {lessons_left:g} lesson(s) left. Review the package and confirm before creating the next invoice.",
-        "link": f"/create_enrollment_invoice/{enrollment_id}",
+        "title": "Invoice ready — approval to send needed" if invoice_id else "Renewal reminder — approval to send needed",
+        "body": f"{student_name} has {lessons_left:g} lesson(s) left. " + (f"Invoice #{invoice_id} was automatically prepared. Confirm before sending to the parent." if invoice_id else "Review before sending a renewal reminder to the parent."),
+        "link": f"/review_invoice_notice/{invoice_id}" if invoice_id else f"/create_enrollment_invoice/{enrollment_id}",
     }]
+
+
+@app.route("/review_invoice_notice/<int:invoice_id>", methods=["GET", "POST"])
+def review_invoice_notice(invoice_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_name, amount, status FROM invoices WHERE id = ?", (invoice_id,))
+    invoice = cursor.fetchone()
+    if not invoice:
+        conn.close()
+        return "Invoice not found", 404
+    if invoice[2] in ("paid", "cancelled", "canceled", "void", "waived"):
+        conn.close()
+        return "This invoice does not need a payment notice.", 400
+    parent_id = get_primary_parent_for_student(cursor, invoice[0])
+    if request.method == "POST":
+        if not parent_id:
+            conn.close()
+            return "Link a parent before sending this invoice.", 400
+        cursor.execute("UPDATE invoices SET status = 'unpaid' WHERE id = ? AND status = 'pending_owner_approval'", (invoice_id,))
+        conn.commit()
+        conn.close()
+        notify_parent_tuition_due(invoice[0], parent_id, invoice_id, invoice[1], "Tuition invoice ready", owner_approved=True)
+        return redirect("/invoices?notice_sent=1")
+    conn.close()
+    return f"""<html><head><title>Review invoice notification</title></head><body style="font-family:system-ui;max-width:720px;margin:40px auto;padding:24px">
+    <h1>Review invoice #{invoice_id}</h1><p>Student: {escape(str(invoice[0]))}</p><p>Amount: ${hmusic_money(invoice[1])}</p>
+    <p>The invoice has been generated. No parent notification is sent until you confirm.</p>
+    <p>Confirming makes the invoice available to the parent and queues their invoice notification.</p>
+    <a href="/edit_invoice/{invoice_id}">Edit invoice</a>
+    <form method="POST"><button type="submit">Confirm and send to parent</button></form>
+    <a href="/invoices">Keep pending — back to invoices</a></body></html>"""
 
     # =========================
 # V25 Business Rules Engine

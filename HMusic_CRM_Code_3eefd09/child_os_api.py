@@ -203,7 +203,7 @@ def register_child_os_api(app, db_path, api_token=None):
             return response({"error": "forbidden"}, 403)
         rows = conn.execute(
             """SELECT id, amount, status, invoice_type, created_at, due_date, notes
-               FROM invoices WHERE lower(student_name)=lower(?) ORDER BY id DESC LIMIT 100""",
+               FROM invoices WHERE COALESCE(status,'') != 'pending_owner_approval' AND lower(student_name)=lower(?) ORDER BY id DESC LIMIT 100""",
             (student_name,),
         ).fetchall()
         conn.close()

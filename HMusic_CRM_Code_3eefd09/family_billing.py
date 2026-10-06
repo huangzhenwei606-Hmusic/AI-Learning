@@ -59,7 +59,7 @@ def snapshot(cursor, allocation_id, parent_id, api):
     row = cursor.fetchone()
     if not row:
         raise FamilyPaymentError("An invoice share is not assigned to this family.")
-    if row[6] not in ('unpaid', 'failed') or row[8] in ('paid', 'cancelled', 'canceled', 'void', 'waived') or row[12]:
+    if row[6] not in ('unpaid', 'failed') or row[8] in ('paid', 'cancelled', 'canceled', 'void', 'waived', 'pending_owner_approval') or row[12]:
         raise FamilyPaymentError("An invoice is already paid or has a payment in progress.")
     if row[14]:
         raise FamilyPaymentError("This invoice already has course credit applied.")
@@ -138,7 +138,7 @@ def settle_batch(cursor, batch_id, method, reference, paid_cents, api, payment_d
             LEFT JOIN enrollments e ON e.id=i.enrollment_id WHERE ia.id=? AND ia.parent_id=? AND i.id=?""",
             (allocation_id, batch[0], invoice_id))
         current = cursor.fetchone()
-        if not current or current[1] == 'paid' or current[8] in ('paid','cancelled','canceled','void','waived') or cents(current[0]) != amount or current[2] != student_name or current[3] != enrollment_id:
+        if not current or current[1] == 'paid' or current[8] in ('paid','cancelled','canceled','void','waived','pending_owner_approval') or cents(current[0]) != amount or current[2] != student_name or current[3] != enrollment_id:
             raise FamilyPaymentError("An invoice changed after checkout. No course credits were applied; review payment.")
         cursor.execute('SELECT amount FROM invoice_allocations WHERE invoice_id=?', (invoice_id,))
         if sum(cents(r[0]) for r in cursor.fetchall()) != cents(current[7]):
@@ -209,7 +209,7 @@ def install_family_billing(app, api):
         conn = connect(); cur = conn.cursor()
         cur.execute("""SELECT DISTINCT i.id,i.student_name,i.amount,i.status FROM invoices i
             JOIN parent_students ps ON ps.student_name=i.student_name
-            WHERE ps.parent_id=? AND ps.active=1 AND i.status NOT IN ('paid','cancelled','canceled','void','waived')""", (parent_id,))
+            WHERE ps.parent_id=? AND ps.active=1 AND i.status NOT IN ('paid','cancelled','canceled','void','waived','pending_owner_approval')""", (parent_id,))
         invoices = cur.fetchall()
         for invoice_id, student, amount, status in invoices:
             api['sync_invoice_allocations'](cur, invoice_id, student, amount, status)
@@ -234,7 +234,7 @@ def install_family_billing(app, api):
             ia.amount,i.charge_lessons,ia.status,ia.lock_token,i.invoice_type FROM invoice_allocations ia
             JOIN invoices i ON i.id=ia.invoice_id LEFT JOIN enrollments e ON e.id=i.enrollment_id
             WHERE ia.parent_id=? AND ia.status IN ('unpaid','failed')
-            AND i.status NOT IN ('paid','cancelled','canceled','void','waived')
+            AND i.status NOT IN ('paid','cancelled','canceled','void','waived','pending_owner_approval')
             ORDER BY i.student_name,e.id,i.id""", (parent_id,))
         rows = ''
         for a,i,s,c,t,amount,lessons,status,lock,kind in cur.fetchall():
