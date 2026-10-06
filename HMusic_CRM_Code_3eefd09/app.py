@@ -5654,6 +5654,7 @@ def edit_student(name):
         course_credit_forms_html += f"""
                 <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url_name}">
                     <input type="hidden" name="enrollment_id" value="{enrollment_id}">
+                    <input type="hidden" name="expected_lessons_left" value="{lessons_value}">
                 </form>
                 <form id="{quick_edit_form_id}" method="POST" action="/quick_edit_course_credit/{enrollment_id}">
                     <input type="hidden" name="return_to" value="/edit_student/{student_url_name}">
@@ -6170,6 +6171,11 @@ def update_student_course_credit(name):
     except (TypeError, ValueError):
         return credit_redirect("credit_error")
 
+    try:
+        expected_balance = float(request.form["expected_lessons_left"])
+    except (KeyError, TypeError, ValueError):
+        return "Course balance changed or this page is outdated. Reload before saving.", 409
+
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -6186,12 +6192,17 @@ def update_student_course_credit(name):
     UPDATE enrollments
     SET lessons_left = ?,
         updated_at = ?
-    WHERE id = ?
+    WHERE id = ? AND COALESCE(lessons_left, 0) = ?
     """, (
         lessons_left_value,
         datetime.now().strftime("%Y-%m-%d %H:%M"),
-        enrollment_id_int
+        enrollment_id_int,
+        expected_balance
     ))
+    if cursor.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        return "Course balance changed. Reload to see the current credits before saving.", 409
     conn.commit()
     conn.close()
     return credit_redirect("credit_saved")
@@ -8574,7 +8585,7 @@ def edit_payment(payment_id):
     if lesson_delta and enrollment_id:
         cursor.execute("""
         UPDATE enrollments
-        SET lessons_left = MAX(COALESCE(lessons_left, 0) + ?, 0),
+        SET lessons_left = COALESCE(lessons_left, 0) + ?,
             updated_at = ?
         WHERE id = ?
         """, (
@@ -8730,7 +8741,7 @@ def delete_payment(payment_id):
     if enrollment_id:
         cursor.execute("""
         UPDATE enrollments
-        SET lessons_left = MAX(COALESCE(lessons_left, 0) - ?, 0),
+        SET lessons_left = COALESCE(lessons_left, 0) - ?,
             updated_at = ?
         WHERE id = ?
         """, (
@@ -19835,6 +19846,11 @@ def repair_paid_invoice_credit(cursor, invoice):
     if not enrollment_id or not lessons_to_grant:
         return 0
 
+    cursor.execute("SELECT COALESCE(credits_applied, 0) FROM invoices WHERE id = ?", (invoice_id,))
+    applied = cursor.fetchone()
+    if not applied or applied[0]:
+        return 0
+
     cursor.execute("""
     SELECT COALESCE(lessons_left, 0)
     FROM enrollments
@@ -19910,6 +19926,15 @@ def pay_invoice(invoice_id):
         conn.close()
         return "<h1>Invoice not found</h1>"
 
+    if invoice[4] == "paid":
+        # Viewing an invoice must never change course credits.
+        conn.close()
+        return f"""
+        <h1>Invoice Already Paid</h1>
+        <p>Invoice #{invoice_id} is already marked as paid.</p>
+        <p><a href="/invoices">Back to Invoices</a></p>
+        """
+
     sync_invoice_allocations(cursor, invoice_id, invoice[1], invoice[3], invoice[4])
     cursor.execute("""
     SELECT ia.id, ia.parent_id, COALESCE(p.parent_name, p.email, 'Parent'),
@@ -19921,22 +19946,6 @@ def pay_invoice(invoice_id):
     ORDER BY ia.id
     """, (invoice_id,))
     allocations = cursor.fetchall()
-
-    if invoice[4] == "paid":
-        repaired_lessons = repair_paid_invoice_credit(cursor, invoice)
-        if repaired_lessons:
-            conn.commit()
-        conn.close()
-        repair_note = (
-            f"<p>Missing course credit repaired: +{hmusic_lesson_count_label(repaired_lessons)} lesson(s).</p>"
-            if repaired_lessons else ""
-        )
-        return f"""
-        <h1>Invoice Already Paid</h1>
-        <p>Invoice #{invoice_id} is already marked as paid.</p>
-        {repair_note}
-        <p><a href="/invoices">Back to Invoices</a></p>
-        """
 
     if request.method == "POST":
         action = request.form.get("action") or "confirm_full_invoice"
@@ -21426,6 +21435,17 @@ def record_invoice_allocation_paid(cursor, allocation_id, payment_method, paymen
             """, (lessons_added, now, enrollment_id))
         cursor.execute("UPDATE invoices SET credits_applied = 1 WHERE id = ?", (invoice_id,))
         cursor.execute("UPDATE payments SET lessons_added = ? WHERE id = ?", (lessons_added, payment_id))
+        if lessons_added and enrollment_id:
+            cursor.execute("SELECT lessons_left FROM enrollments WHERE id = ?", (enrollment_id,))
+            balance_row = cursor.fetchone()
+            if balance_row:
+                after = float(balance_row[0] or 0)
+                before = after - float(lessons_added)
+                cursor.execute("""
+                UPDATE student_ledger SET description = description || ?
+                WHERE related_payment_id = ? AND related_invoice_id = ?
+                """, (f" | Course credits: {before:g} + {float(lessons_added):g} = {after:g}", payment_id, invoice_id))
+
 
     return {
         "ok": True,
@@ -22121,6 +22141,7 @@ def parent_admin(parent_id):
             family_credit_forms_html += f"""
             <form id="{credit_form_id}" method="POST" action="/update_student_course_credit/{student_url}">
                 <input type="hidden" name="enrollment_id" value="{enrollment_id}">
+                <input type="hidden" name="expected_lessons_left" value="{float(lessons_left or 0):g}">
                 <input type="hidden" name="return_to" value="/parent_admin/{parent[0]}">
                 <input type="hidden" name="return_anchor" value="family-credits">
             </form>
@@ -45630,6 +45651,12 @@ def edit_enrollment(enrollment_id):
             conn.close()
             return "<h1>Enrollment not found</h1>"
 
+        try:
+            expected_balance = float(request.form["expected_lessons_left"])
+        except (KeyError, TypeError, ValueError):
+            conn.close()
+            return "Course balance changed or this page is outdated. Reload before saving.", 409
+
         cursor.execute("""
         UPDATE enrollments
         SET discount_type = ?,
@@ -45640,7 +45667,7 @@ def edit_enrollment(enrollment_id):
             auto_renew_lessons = ?,
             notes = ?,
             updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND COALESCE(lessons_left, 0) = ?
         """, (
             discount_type,
             float(discount_value or 0),
@@ -45650,8 +45677,13 @@ def edit_enrollment(enrollment_id):
             auto_renew_lessons,
             notes,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            enrollment_id
+            enrollment_id,
+            expected_balance
         ))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            conn.close()
+            return "Course balance changed. Reload before saving enrollment details.", 409
 
         conn.commit()
         conn.close()
@@ -45696,6 +45728,7 @@ def edit_enrollment(enrollment_id):
         <input type="number" step="0.01" name="discount_value" value="{e[1]}"><br><br>
 
         Lessons Left:<br>
+        <input type="hidden" name="expected_lessons_left" value="{e[2]}">
         <input type="number" step="0.5" name="lessons_left" value="{e[2]}"><br><br>
 
         Status:<br>
