@@ -10212,7 +10212,7 @@ def calendar():
                       <option value="existing_credits">Use existing credits</option>
                       <option value="new_package">Create new package</option>
                       <option value="invoice_later">Invoice later</option>
-                      <option value="auto_invoice_per_lesson">Auto invoice per lesson</option>
+                      <option value="auto_invoice_per_lesson">Invoice review per lesson</option>
                       <option value="makeup_credit">Use makeup credit</option>
                       <option value="no_charge">No charge</option>
                     </select>
@@ -10256,7 +10256,7 @@ def calendar():
               <option value="makeup_credit">Use makeup credit</option>
               <option value="no_charge">No charge</option>
               <option value="invoice_later">Invoice later</option>
-              <option value="auto_invoice_per_lesson">Auto invoice per lesson - generate 12h before class</option>
+              <option value="auto_invoice_per_lesson">Invoice review per lesson - owner confirmation required</option>
               <option value="custom_price">Custom price</option>
             </select>
             <div class="pop-row">
@@ -10985,7 +10985,7 @@ def calendar():
         makeup_credit: 'Use makeup credit',
         no_charge: 'No charge',
         invoice_later: 'Invoice later',
-        auto_invoice_per_lesson: 'Auto invoice per lesson',
+        auto_invoice_per_lesson: 'Invoice review per lesson',
         custom_price: 'Custom price'
       }}[value] || value || 'Use existing credits';
     }}
@@ -11173,7 +11173,7 @@ def calendar():
         ['existing_credits', 'Use existing credits'],
         ['new_package', 'Create new package'],
         ['invoice_later', 'Invoice later'],
-        ['auto_invoice_per_lesson', 'Auto invoice per lesson'],
+        ['auto_invoice_per_lesson', 'Invoice review per lesson'],
         ['makeup_credit', 'Use makeup credit'],
         ['no_charge', 'No charge']
       ];
@@ -12038,7 +12038,7 @@ def add_schedule():
             "makeup_credit": "Use makeup credit",
             "no_charge": "No charge",
             "invoice_later": "Invoice later",
-            "auto_invoice_per_lesson": "Auto invoice per lesson",
+            "auto_invoice_per_lesson": "Invoice review per lesson",
             "custom_price": "Custom price",
         }
         if schedule_type == "one_time":
@@ -12746,14 +12746,14 @@ def add_schedule():
                                     <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
                                     <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
                                     <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Invoice review per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
                                     <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
                                 </tr>
                                 <tr>
                                     <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
                                     <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
                                     <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                                    <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Invoice review per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
                                     <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
                                 </tr>
                             </tbody>
@@ -12877,7 +12877,7 @@ def add_schedule():
                         <td><input class="student-picker-compact" name="group_student_name" list="scheduleStudentList" placeholder="Search student"></td>
                         <td><input name="group_credit_units" type="number" step="0.5" min="0" value="1"></td>
                         <td><input name="group_student_rate" type="number" step="0.01" min="0" placeholder="0.00"></td>
-                        <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Auto invoice per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
+                        <td><select name="group_billing_rule"><option value="existing_credits">Use credits</option><option value="invoice_later">Invoice later</option><option value="auto_invoice_per_lesson">Invoice review per lesson</option><option value="makeup_credit">Makeup</option><option value="no_charge">No charge</option></select></td>
                         <td><button class="danger-mini" type="button" onclick="removeFullGroupStudentRow(this)">&times;</button></td>
                     </tr>`;
             }}
@@ -37258,7 +37258,7 @@ def parent_invoice(invoice_id):
                     <input type="hidden" name="action" value="save_autorenew">
                     <select name="auto_renew_enabled">
                         <option value="0" {checked_no}>No - remind me first</option>
-                        <option value="1" {checked_yes}>Yes - generate next tuition invoice automatically</option>
+                        <option value="1" {checked_yes}>Owner review reminder only</option>
                     </select>
                     <input type="number" step="0.5" name="auto_renew_lessons" value="{auto_lessons}">
                     <button type="submit">Save Auto-Renew</button>
@@ -44753,45 +44753,14 @@ def add_enrollment():
 
         enrollment_id = cursor.lastrowid
 
-        invoice_id = None
-        parent_id = None
-        invoice_message_body = ""
-        if package_amount > 0:
-            invoice_id = create_enrollment_invoice(
-                cursor,
-                enrollment_id,
-                "initial_tuition",
-                "Initial tuition invoice created from new enrollment.",
-                grant_credit_on_payment=True
-            )
-            parent_id = get_primary_parent_for_student(cursor, student_name)
-            invoice_message_body = hmusic_enrollment_invoice_message_body(
-                cursor,
-                (
-                    enrollment_id,
-                    student_name,
-                    course_type_name,
-                    teacher_name,
-                    final_price,
-                    package_amount,
-                    package_lessons,
-                    auto_renew_lessons,
-                ),
-                invoice_id=invoice_id,
-                amount=package_amount,
-            )
-
         conn.commit()
         conn.close()
-
-        if package_amount > 0 and invoice_id:
-            create_invoice_message_event(
-                invoice_id,
-                "sent",
-                invoice_message_body,
-                parent_id=parent_id,
-                student_name=student_name,
-                amount=package_amount
+        if package_amount > 0:
+            create_notification(
+                "owner", "owner", "Invoice approval needed",
+                f"New enrollment for {student_name}: review tuition and confirm before creating the invoice.",
+                f"/create_enrollment_invoice/{enrollment_id}",
+                related_type="enrollment_invoice_review", related_id=enrollment_id,
             )
 
         return redirect(f"/enrollment/{enrollment_id}")
@@ -44903,9 +44872,9 @@ def add_enrollment():
                 Auto-Renew / Auto Tuition Reminder:<br>
                 <select name="auto_renew_enabled">
                     <option value="0">No - remind only</option>
-                    <option value="1">Yes - auto-generate next package invoice</option>
+                    <option value="1">Owner review reminder only</option>
                 </select>
-                <div class="hint">When enabled, the system creates the next tuition invoice after the last lesson is completed. Real card charging requires Stripe later.</div><br>
+                <div class="hint">The owner receives a reminder when the package needs renewal. Invoices are created only after owner confirmation.</div><br>
 
                 Auto-Renew Lessons:<br>
                 <input type="number" step="0.5" name="auto_renew_lessons" value="10">
@@ -45731,7 +45700,7 @@ def edit_enrollment(enrollment_id):
         Auto-Renew:<br>
         <select name="auto_renew_enabled">
             <option value="0" {selected(0, e[5])}>No - remind only</option>
-            <option value="1" {selected(1, e[5])}>Yes - generate next tuition invoice</option>
+            <option value="1" {selected(1, e[5])}>Owner review reminder only</option>
         </select><br><br>
 
         Auto-Renew Lessons:<br>
@@ -46993,121 +46962,25 @@ def notify_parent_tuition_due(student_name, parent_id, invoice_id, amount, title
 
 
 def maybe_handle_enrollment_renewal(cursor, enrollment_id, student_name):
-    cursor.execute("""
-    SELECT
-        id,
-        lessons_left,
-        package_amount,
-        package_lessons,
-        auto_renew_enabled,
-        auto_renew_lessons,
-        renewal_reminder_sent_at,
-        auto_renewed_at,
-        first_lesson_autopay_reminder_sent_at
-    FROM enrollments
-    WHERE id = ?
-    """, (enrollment_id,))
-    e = cursor.fetchone()
-
-    if not e:
+    """Notify the owner for approval; never create invoices or grant credits."""
+    cursor.execute("SELECT lessons_left, renewal_reminder_sent_at FROM enrollments WHERE id = ?", (enrollment_id,))
+    enrollment = cursor.fetchone()
+    if not enrollment:
         return []
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    lessons_left = e[1] or 0
-    package_lessons = e[3] or e[5] or 10
-    auto_renew_enabled = e[4] == 1
-    events = []
-    parent_id = get_primary_parent_for_student(cursor, student_name)
-
-    if auto_renew_enabled and package_lessons and lessons_left == package_lessons - 1 and not e[8]:
-        cursor.execute("""
-        UPDATE enrollments
-        SET first_lesson_autopay_reminder_sent_at = ?,
-            updated_at = ?
-        WHERE id = ?
-        """, (now, now, enrollment_id))
-        events.append({
-            "parent_id": parent_id,
-            "title": "AutoPay payment reminder",
-            "body": f"{student_name}'s package is set to AutoPay. H-Music will remind you again when one lesson remains before the next package renews.",
-            "link": "/parent_billing"
-        })
-
-    if auto_renew_enabled and lessons_left <= 1 and not e[6]:
-        cursor.execute("""
-        UPDATE enrollments
-        SET renewal_reminder_sent_at = ?,
-            updated_at = ?
-        WHERE id = ?
-        """, (now, now, enrollment_id))
-        events.append({
-            "parent_id": parent_id,
-            "title": "AutoPay payment reminder",
-            "body": f"{student_name} has {lessons_left} lesson(s) left. This package is set to AutoPay, and the next package will be prepared soon.",
-            "link": "/parent_billing" if auto_renew_enabled else "/parent_dashboard"
-        })
-
-    if lessons_left <= 0 and auto_renew_enabled:
-        invoice_id = create_enrollment_invoice(
-            cursor,
-            enrollment_id,
-            "auto_renewal",
-            "Auto-renewal invoice generated after package completion. Stripe AutoPay will be triggered on the next package first lesson date."
-        )
-
-        if invoice_id:
-            cursor.execute("""
-            SELECT lesson_date
-            FROM schedule
-            WHERE enrollment_id = ?
-            AND student_name = ?
-            AND lesson_date >= ?
-            AND COALESCE(status, 'scheduled') = 'scheduled'
-            ORDER BY lesson_date, lesson_time
-            LIMIT 1
-            """, (
-                enrollment_id,
-                student_name,
-                date.today().strftime("%Y-%m-%d")
-            ))
-            next_lesson = cursor.fetchone()
-            autopay_due_date = next_lesson[0] if next_lesson else date.today().strftime("%Y-%m-%d")
-
-            cursor.execute("""
-            UPDATE enrollments
-            SET lessons_left = lessons_left + ?,
-                auto_renewed_at = ?,
-                first_lesson_autopay_reminder_sent_at = NULL,
-                renewal_reminder_sent_at = NULL,
-                autopay_pending_invoice_id = ?,
-                autopay_charge_due_date = ?,
-                autopay_charge_status = 'pending',
-                updated_at = ?
-            WHERE id = ?
-            """, (
-                e[5] or e[3] or 10,
-                now,
-                invoice_id,
-                autopay_due_date,
-                now,
-                enrollment_id
-            ))
-
-            cursor.execute("""
-            SELECT amount
-            FROM invoices
-            WHERE id = ?
-            """, (invoice_id,))
-            invoice_amount = cursor.fetchone()[0]
-
-            events.append({
-                "parent_id": parent_id,
-                "title": "AutoPay payment scheduled",
-                "body": f"{student_name}'s next package invoice for ${invoice_amount} is ready. AutoPay is scheduled for {autopay_due_date}, the next package first lesson date.",
-                "link": f"/parent_invoice/{invoice_id}"
-            })
-
-    return events
+    lessons_left = float(enrollment[0] or 0)
+    if lessons_left > 1:
+        if enrollment[1]:
+            cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = NULL WHERE id = ?", (enrollment_id,))
+        return []
+    if str(enrollment[1] or "").startswith("owner_review:"):
+        return []
+    now = "owner_review:" + datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("UPDATE enrollments SET renewal_reminder_sent_at = ?, updated_at = ? WHERE id = ?", (now, now, enrollment_id))
+    return [{
+        "title": "Invoice approval needed",
+        "body": f"{student_name} has {lessons_left:g} lesson(s) left. Review the package and confirm before creating the next invoice.",
+        "link": f"/create_enrollment_invoice/{enrollment_id}",
+    }]
 
     # =========================
 # V25 Business Rules Engine
