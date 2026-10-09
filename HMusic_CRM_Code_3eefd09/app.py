@@ -16374,6 +16374,31 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     }
 
 
+def notify_teacher_parent_cancellation(request_id, teacher_name, student_name, lesson_date, lesson_time, state):
+    """Put cancellation updates in the teacher inbox as well as delivery queue."""
+    if not teacher_name:
+        return
+    updates = {
+        "pending": ("Parent cancellation request", "Parent requested cancellation. Waiting for studio approval; cancellation is not confirmed yet."),
+        "approved": ("Parent cancellation confirmed", "The studio confirmed cancellation. The calendar has been updated; do not teach this lesson."),
+        "rejected": ("Parent cancellation rejected", "The studio rejected the cancellation request. The lesson remains scheduled."),
+        "withdrawn": ("Cancellation request withdrawn", "The parent withdrew the cancellation request. The lesson remains scheduled."),
+    }
+    title, explanation = updates[state]
+    body = f"{student_name} · {lesson_date} {lesson_time}. {explanation}"
+    thread_id = get_or_create_message_thread(
+        f"Cancellation - {student_name} - {lesson_date} {lesson_time}",
+        student_name=student_name, teacher_name=teacher_name,
+        thread_type="parent_cancel_request", related_type="lesson_change_request",
+        related_id=request_id
+    )
+    add_message(thread_id, "system", "H-Music", "teacher", body)
+    create_notification(
+        "teacher", teacher_name, title, body, f"/message_thread/{thread_id}",
+        related_type="lesson_change_request", related_id=request_id
+    )
+
+
 @app.route("/parent_cancel", methods=["GET", "POST"])
 def parent_cancel():
     if not require_parent():
@@ -16465,16 +16490,9 @@ def parent_cancel():
                 related_type="lesson_change_request",
                 related_id=request_id
             )
-            if lesson[3]:
-                create_notification(
-                    "teacher",
-                    lesson[3],
-                    "Cancellation request withdrawn",
-                    f"{student_name} withdrew the cancellation request for {lesson[1]} {lesson[2]}. The lesson remains scheduled.",
-                    "/teacher_messages",
-                    related_type="lesson_change_request",
-                    related_id=request_id
-                )
+            notify_teacher_parent_cancellation(
+                request_id, lesson[3], student_name, lesson[1], lesson[2], "withdrawn"
+            )
             return redirect("/parent_schedule?cancel=withdrawn")
 
         if existing_request:
@@ -16547,16 +16565,9 @@ def parent_cancel():
             related_type="lesson_change_request",
             related_id=request_id
         )
-        if lesson[3]:
-            create_notification(
-                "teacher",
-                lesson[3],
-                "Parent cancellation request",
-                f"{student_name} requested cancellation for {lesson[1]} {lesson[2]}. Owner approval is pending.",
-                "/teacher_messages",
-                related_type="lesson_change_request",
-                related_id=request_id
-            )
+        notify_teacher_parent_cancellation(
+            request_id, lesson[3], student_name, lesson[1], lesson[2], "pending"
+        )
 
         return redirect("/parent_schedule?cancel=pending")
 
@@ -16729,6 +16740,9 @@ def lesson_change_request_detail(request_id):
         conn.commit()
         conn.close()
 
+        notify_teacher_parent_cancellation(
+            request_id, req[7], req[2], req[5], req[6], new_status
+        )
         if req[1]:
             create_notification(
                 "parent",
@@ -24814,7 +24828,11 @@ def save_message_attachments(message_id, files):
 
 
 def hmusic_should_send_message_email_now(user_role, title):
-    return user_role == "parent" and "message" in (title or "").lower()
+    title_lower = (title or "").lower()
+    return (
+        (user_role == "parent" and "message" in title_lower)
+        or (user_role in ("teacher", "owner") and "cancellation" in title_lower)
+    )
 
 
 def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True, send_email_now=True):
