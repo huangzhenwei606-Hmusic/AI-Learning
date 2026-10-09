@@ -29886,7 +29886,7 @@ def message_upload(filename):
     return send_from_directory(HMUSIC_UPLOAD_DIR, filename)
 
 
-def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_schedule_id=None, duration=30):
+def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_schedule_id=None, duration=30, room_id=None, location_id=None, location=None):
     target_start = minutes_from_time_text(lesson_time)
     if target_start is None:
         return {"has_conflict": False, "message": ""}
@@ -29899,19 +29899,14 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, student_name, teacher, classroom, lesson_time, duration, status
+    SELECT id, student_name, teacher, classroom, lesson_time, duration, status,
+           COALESCE(room_id, 0), COALESCE(location_id, 0), COALESCE(location, '')
     FROM schedule
     WHERE lesson_date = ?
     AND id != ?
-    AND (
-        teacher = ?
-        OR classroom = ?
-    )
     """, (
         lesson_date,
-        exclude_schedule_id or -1,
-        teacher,
-        classroom
+        exclude_schedule_id or -1
     ))
 
     rows = cursor.fetchall()
@@ -29919,7 +29914,18 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
 
     for row in rows:
         status = row[6] or "scheduled"
-        if str(status).startswith("cancel") or status in ("excused_24h", "teacher_cancelled"):
+        if str(status).startswith("cancel") or status in ("excused", "excused_24h", "last_min_cancel", "teacher_cancelled"):
+            continue
+
+        same_teacher = bool(teacher) and row[2] == teacher
+        same_room = bool(classroom) and row[3] == classroom
+        if room_id and row[7]:
+            same_room = int(room_id) == int(row[7])
+        elif location_id and row[8]:
+            same_room = same_room and int(location_id) == int(row[8])
+        elif location and row[9]:
+            same_room = same_room and str(location).strip().casefold() == str(row[9]).strip().casefold()
+        if not same_teacher and not same_room:
             continue
 
         row_start = minutes_from_time_text(row[4])
@@ -29931,7 +29937,7 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
         row_end = row_start + row_duration
 
         if max(target_start, row_start) < min(target_end, row_end):
-            conflict_type = "teacher" if row[2] == teacher else "classroom"
+            conflict_type = "teacher" if same_teacher else "classroom"
             return {
                 "has_conflict": True,
                 "message": f"{conflict_type.title()} conflict with {row[1]} at {row[4]} in {row[3]}."
@@ -30426,7 +30432,7 @@ def parent_booking_request_review(request_id):
             return "<h1>Course type not found.</h1><p><a href='/owner_booking_requests'>Back</a></p>", 404
 
         duration = course[2] or 30
-        conflict = schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, duration=duration)
+        conflict = schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, duration=duration, room_id=room_id, location_id=location_id, location=location)
         if conflict.get("has_conflict"):
             conn.close()
             return f"""
@@ -32644,7 +32650,10 @@ def approve_reschedule(request_id):
         approved_date,
         approved_time,
         exclude_schedule_id=r[3],
-        duration=r[7]
+        duration=r[7],
+        room_id=actual_room_id,
+        location_id=actual_location_id,
+        location=actual_location
     )
 
     if conflict["has_conflict"]:
