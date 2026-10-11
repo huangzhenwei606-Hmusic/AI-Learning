@@ -16140,6 +16140,56 @@ def hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=None, teac
     return None
 
 
+def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_id=None):
+    """Resolve one course wallet; never silently pick another student's wallet."""
+    if enrollment_id:
+        cursor.execute("SELECT id FROM enrollments WHERE id = ? AND student_name = ?", (enrollment_id, student_name))
+        if cursor.fetchone():
+            return enrollment_id
+    cursor.execute("SELECT course_type_id, course_type_name, duration, teacher FROM schedule WHERE id = ?", (schedule_id,))
+    lesson = cursor.fetchone()
+    if not lesson:
+        return None
+    course_id, course_name, duration, teacher = lesson
+    if not course_id and not course_name:
+        return None
+    cursor.execute("""
+        SELECT id, teacher_name, duration FROM enrollments
+        WHERE student_name = ?
+        AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive','cancelled','canceled','archived','deleted')
+        AND (course_type_id = ? OR LOWER(TRIM(course_type_name)) = LOWER(TRIM(?)))
+    """, (student_name, course_id, course_name or ''))
+    matches = cursor.fetchall()
+    if duration:
+        matches = [row for row in matches if not row[2] or float(row[2]) == float(duration)]
+    teacher_matches = [row for row in matches if hmusic_teacher_name_matches(row[1], teacher)]
+    if teacher_matches:
+        matches = teacher_matches
+    return matches[0][0] if len(matches) == 1 else None
+
+
+def hmusic_apply_group_attendance_credit(cursor, schedule_id, student_name, status):
+    """Track the actual deduction, so repeated Present saves are idempotent."""
+    cursor.execute("""SELECT id, COALESCE(credit_units,1), COALESCE(billing_rule,'existing_credits'),
+        COALESCE(attendance_credit_applied,0), attendance_enrollment_id
+        FROM group_schedule_students WHERE schedule_id = ? AND student_name = ?""", (schedule_id, student_name))
+    row = cursor.fetchone()
+    if not row:
+        return
+    row_id, units, rule, applied, enrollment_id = row
+    target = max(0, float(units)) if status == 'present' and rule == 'existing_credits' else 0
+    # No-show policy is separate; retain any credit already consumed by attendance.
+    if status == 'no_show':
+        target = applied
+    delta = target - float(applied)
+    if delta:
+        enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_id)
+        if not enrollment_id:
+            raise ValueError(f"Cannot update attendance: select an unambiguous course credit account for {student_name}.")
+        cursor.execute("UPDATE enrollments SET lessons_left = COALESCE(lessons_left,0) - ?, updated_at = ? WHERE id = ?", (delta, datetime.now().strftime('%Y-%m-%d %H:%M'), enrollment_id))
+        cursor.execute("UPDATE group_schedule_students SET attendance_credit_applied = ?, attendance_enrollment_id = ? WHERE id = ?", (target, enrollment_id, row_id))
+
+
 def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowed_student_name=None, use_policy_waiver=True):
     ensure_v321_schema()
 
@@ -16158,7 +16208,8 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         lesson_time,
         COALESCE(duration, 30),
         COALESCE(policy_waiver_applied, 0),
-        COALESCE(pending_fee_amount, 0)
+        COALESCE(pending_fee_amount, 0),
+        COALESCE(is_group, 0)
     FROM schedule
     WHERE id = ?
     """, (schedule_id,))
@@ -16176,7 +16227,12 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         return {"ok": False, "error": "Permission denied"}
 
     previous_charge_lessons = lesson[1] if lesson[1] is not None else 0
-    enrollment_id = lesson[2]
+    enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, lesson[2])
+    if status == "present" and not int(lesson[10] or 0) and not enrollment_id:
+        conn.close()
+        return {"ok": False, "error": "Cannot mark Present: no unambiguous course credit account is linked. Please select the student's course account."}
+    if enrollment_id != lesson[2]:
+        cursor.execute("UPDATE schedule SET enrollment_id = ? WHERE id = ?", (enrollment_id, schedule_id))
     student_charge_amount = lesson[3] or 0
     teacher_pay_amount = lesson[4] or 0
     lesson_date = lesson[5] or ""
@@ -16231,6 +16287,8 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
             pending_fee_description = f"Last Min Cancel fee pending · ${hmusic_money(pending_fee_amount)}"
     else:
         new_charge_lessons = 1 if deduct_lesson == 1 else 0
+    if int(lesson[10] or 0):
+        new_charge_lessons = 0  # Group wallets are charged per participant.
     lesson_delta = new_charge_lessons - previous_charge_lessons
 
     cancelled_at = None
@@ -17192,6 +17250,8 @@ def ensure_calendar_lesson_panel_schema():
         ("student_name", "student_name TEXT"),
         ("parent_name", "parent_name TEXT"),
         ("credit_units", "credit_units REAL DEFAULT 1"),
+        ("attendance_credit_applied", "attendance_credit_applied REAL DEFAULT 0"),
+        ("attendance_enrollment_id", "attendance_enrollment_id INTEGER"),
         ("student_rate", "student_rate REAL DEFAULT 0"),
         ("billing_rule", "billing_rule TEXT DEFAULT 'existing_credits'"),
         ("billing_status", "billing_status TEXT DEFAULT 'planned'"),
@@ -17564,6 +17624,7 @@ def update_calendar_group_lesson(cursor, schedule_ids, group_name=None, attendan
                 )
                 VALUES (?, ?, ?, 1, ?, ?, ?)
                 """, (int(schedule_id), student_name, parent_row[0] if parent_row else "", status, now, now))
+            hmusic_apply_group_attendance_credit(cursor, int(schedule_id), student_name, status)
             updated += 1
     return updated
 
@@ -17636,6 +17697,7 @@ def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_sc
 
         for key, row in stored_by_key.items():
             if key not in target_keys:
+                hmusic_apply_group_attendance_credit(cursor, schedule_id, row[1], "scheduled")
                 cursor.execute("DELETE FROM group_schedule_students WHERE id = ?", (row[0],))
 
         cursor.execute("""
@@ -17691,6 +17753,8 @@ def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_sc
                     now,
                     now,
                 ))
+
+            hmusic_apply_group_attendance_credit(cursor, schedule_id, item["student_name"], status)
 
         names = [item["student_name"] for item in normalized]
         cursor.execute("""
@@ -18024,7 +18088,12 @@ def calendar_lesson_action():
                     conn.close()
                     return {"ok": False, "error": str(exc)}, 400
             elif has_group_attendance_update:
-                update_calendar_group_lesson(cursor, [int(schedule_id)], attendance_items=group_attendance_items)
+                try:
+                    update_calendar_group_lesson(cursor, [int(schedule_id)], attendance_items=group_attendance_items)
+                except ValueError as exc:
+                    conn.rollback()
+                    conn.close()
+                    return {"ok": False, "error": str(exc)}, 400
 
         if is_owner:
             if any(key in data for key in (
@@ -49796,12 +49865,19 @@ def api_teacher_lesson_save():
         roster_schedule_ids = [int(schedule_id)]
         if roster_scope == "following":
             roster_schedule_ids += calendar_following_lesson_ids(cursor, calendar_row, schedule_id)
-        update_calendar_group_lesson(
-            cursor,
-            roster_schedule_ids,
-            group_name=group_name if group_name else None,
-            attendance_items=group_attendance if isinstance(group_attendance, list) and not isinstance(group_roster, list) else None,
-        )
+        try:
+            update_calendar_group_lesson(
+                cursor,
+                roster_schedule_ids,
+                group_name=group_name if group_name else None,
+                attendance_items=None,
+            )
+            if isinstance(group_attendance, list) and not isinstance(group_roster, list):
+                update_calendar_group_lesson(cursor, [int(schedule_id)], attendance_items=group_attendance)
+        except ValueError as exc:
+            conn.rollback()
+            conn.close()
+            return {"ok": False, "error": str(exc)}, 400
         if isinstance(group_roster, list):
             try:
                 roster_change_summary = sync_calendar_group_roster(
