@@ -50337,11 +50337,28 @@ for _schema_name in _runtime_schema_names:
         globals()[_schema_name] = hmusic_schema_once(_schema_func)
 
 
+def ensure_postgres_attendance_credit_schema():
+    """PostgreSQL skips legacy SQLite schema helpers; migrate credit tracking explicitly."""
+    if not using_postgres():
+        return
+    conn = sqlite3.connect("hmusic.db")
+    try:
+        conn.execute("ALTER TABLE group_schedule_students ADD COLUMN IF NOT EXISTS attendance_credit_applied DOUBLE PRECISION DEFAULT 0")
+        conn.execute("ALTER TABLE group_schedule_students ADD COLUMN IF NOT EXISTS attendance_enrollment_id INTEGER")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def initialize_runtime_database():
     """Finish schema work before Gunicorn starts accepting production traffic."""
     started_at = time.perf_counter()
     if using_postgres():
         ensure_postgres_teacher_permission_schema()
+        ensure_postgres_attendance_credit_schema()
     else:
         ensure_production_schema()
         for schema_name in _runtime_schema_names:
