@@ -12,6 +12,8 @@ class AttendanceCreditsTest(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.db.executescript('''
+        CREATE TABLE students(name,lessons_left);
+        INSERT INTO students VALUES('Legacy',-2);
         CREATE TABLE schedule(id,course_type_id,course_type_name,duration,teacher);
         CREATE TABLE enrollments(id,student_name,course_type_id,course_type_name,duration,teacher_name,status,lessons_left,updated_at);
         CREATE TABLE group_schedule_students(id,schedule_id,student_name,credit_units,billing_rule,attendance_credit_applied,attendance_enrollment_id);
@@ -82,7 +84,30 @@ class AttendanceCreditsTest(unittest.TestCase):
         self.db.execute("UPDATE schedule SET course_type_id=2,course_type_name='Piano'")
         self.assertIsNone(self.resolve(self.db.cursor(),1,'B'))
 
+    def test_legacy_group_repeat_and_refund(self):
+        self.db.execute("INSERT INTO group_schedule_students VALUES(3,1,'Legacy',1,'existing_credits',0,NULL)")
+        for _ in range(2): self.apply(self.db.cursor(),1,'Legacy','present')
+        self.assertEqual(self.db.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0],-3)
+        # Creating a course account later must not redirect the historical refund.
+        self.db.execute("INSERT INTO enrollments VALUES(20,'Legacy',5,'Ensemble',60,'Mike','active',10,NULL)")
+        for _ in range(2): self.apply(self.db.cursor(),1,'Legacy','scheduled')
+        self.assertEqual(self.db.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0],-2)
+        self.assertEqual(self.balance(20),10)
+
+    def test_archived_wallet_does_not_fall_back_to_legacy_balance(self):
+        self.db.execute("INSERT INTO enrollments VALUES(20,'Legacy',5,'Ensemble',60,'Mike','archived',10,NULL)")
+        self.assertIsNone(self.resolve(self.db.cursor(),1,'Legacy'))
+
+    def test_unknown_student_has_no_legacy_credit_account(self):
+        self.assertIsNone(self.resolve(self.db.cursor(),1,'Unknown'))
+
+    def test_legacy_private_present_repeat_and_refund(self):
+        self._check_private_attendance(legacy=True)
+
     def test_private_present_links_debits_once_and_cancel_refunds(self):
+        self._check_private_attendance(legacy=False)
+
+    def _check_private_attendance(self, legacy):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'credits.db')
             db = sqlite3.connect(path)
@@ -96,6 +121,8 @@ class AttendanceCreditsTest(unittest.TestCase):
                 db.execute('ALTER TABLE schedule ADD COLUMN '+column)
             db.execute("UPDATE schedule SET student_name='A',charge_lessons=0,is_group=0,lesson_date='2026-10-10'")
             db.execute('CREATE TABLE student_ledger(student_name,entry_type,amount,description,related_invoice_id,related_payment_id,related_schedule_id,created_at)')
+            if legacy:
+                db.execute("UPDATE schedule SET student_name='Legacy'")
             db.commit(); db.close()
             scope = dict(datetime=datetime, sqlite3=SimpleNamespace(connect=lambda _:sqlite3.connect(path)),
                          ensure_v321_schema=lambda:None, is_payroll_locked=lambda _:False,
@@ -105,16 +132,19 @@ class AttendanceCreditsTest(unittest.TestCase):
                          maybe_handle_enrollment_renewal=lambda *args:[],
                          hmusic_policy_status_label=lambda s:s, app=SimpleNamespace(logger=Mock()))
             tree = ast.parse(Path(__file__).with_name('app.py').read_text())
-            for name in ('hmusic_attendance_enrollment','apply_lesson_status'):
+            for name in ('hmusic_attendance_enrollment','apply_lesson_status','teacher_safe_lesson_status_result','api_teacher_lesson_status'):
                 node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
+                node.decorator_list=[]
                 exec(compile(ast.Module(body=[node],type_ignores=[]),'<private-attendance>','exec'),scope)
-            for _ in range(2): self.assertTrue(scope['apply_lesson_status'](1,'present')['ok'])
+            scope.update(teacher_api_identity=lambda:('Mike',None), teacher_has_permission=lambda *args:True,
+                         request=SimpleNamespace(get_json=lambda **kwargs:dict(schedule_id=1,status='present')))
+            for _ in range(2): self.assertTrue(scope['api_teacher_lesson_status']()['ok'])
             with sqlite3.connect(path) as check:
-                self.assertEqual(check.execute('SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],9)
-                self.assertEqual(check.execute('SELECT enrollment_id FROM schedule').fetchone()[0],8)
+                self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-3 if legacy else 9)
+                self.assertEqual(check.execute('SELECT enrollment_id FROM schedule').fetchone()[0],-1 if legacy else 8)
             self.assertTrue(scope['apply_lesson_status'](1,'scheduled')['ok'])
             with sqlite3.connect(path) as check:
-                self.assertEqual(check.execute('SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],10)
+                self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-2 if legacy else 10)
 
     def tearDown(self):
         self.db.close()

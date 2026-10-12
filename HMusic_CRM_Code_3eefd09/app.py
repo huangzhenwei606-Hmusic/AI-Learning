@@ -15911,7 +15911,7 @@ def hmusic_get_setting(cursor, key, default=""):
 
 
 def hmusic_waiver_holder(cursor, student_name, enrollment_id):
-    if enrollment_id:
+    if enrollment_id and enrollment_id > 0:
         cursor.execute("""
         SELECT COALESCE(package_lessons, 10), COALESCE(policy_waiver_used, 0)
         FROM enrollments
@@ -16142,6 +16142,15 @@ def hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=None, teac
 
 def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_id=None):
     """Use course identity first; legacy metadata and duration are optional hints."""
+    # -1 pins an attendance deduction to the legacy student balance, so later
+    # creation of a course wallet cannot redirect a refund to another account.
+    if enrollment_id == -1:
+        cursor.execute("SELECT name FROM students WHERE name = ?", (student_name,))
+        return -1 if cursor.fetchone() else None
+    cursor.execute("SELECT COUNT(*) FROM enrollments WHERE student_name = ?", (student_name,))
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("SELECT name FROM students WHERE name = ?", (student_name,))
+        return -1 if cursor.fetchone() else None
     if enrollment_id:
         cursor.execute("SELECT id FROM enrollments WHERE id = ? AND student_name = ?", (enrollment_id, student_name))
         if cursor.fetchone():
@@ -16205,7 +16214,10 @@ def hmusic_apply_group_attendance_credit(cursor, schedule_id, student_name, stat
         enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_id)
         if not enrollment_id:
             raise ValueError(f"Cannot update attendance: select an unambiguous course credit account for {student_name}.")
-        cursor.execute("UPDATE enrollments SET lessons_left = COALESCE(lessons_left,0) - ?, updated_at = ? WHERE id = ?", (delta, datetime.now().strftime('%Y-%m-%d %H:%M'), enrollment_id))
+        if enrollment_id == -1:
+            cursor.execute("UPDATE students SET lessons_left = COALESCE(lessons_left,0) - ? WHERE name = ?", (delta, student_name))
+        else:
+            cursor.execute("UPDATE enrollments SET lessons_left = COALESCE(lessons_left,0) - ?, updated_at = ? WHERE id = ?", (delta, datetime.now().strftime('%Y-%m-%d %H:%M'), enrollment_id))
         cursor.execute("UPDATE group_schedule_students SET attendance_credit_applied = ?, attendance_enrollment_id = ? WHERE id = ?", (target, enrollment_id, row_id))
 
 
@@ -16346,7 +16358,9 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     ))
 
     if lesson_delta != 0:
-        if enrollment_id:
+        if enrollment_id == -1:
+            cursor.execute("UPDATE students SET lessons_left = COALESCE(lessons_left,0) - ? WHERE name = ?", (lesson_delta, student_name))
+        elif enrollment_id:
             cursor.execute("""
             UPDATE enrollments
             SET lessons_left = lessons_left - ?,
@@ -17885,6 +17899,11 @@ def calendar_lesson_detail(schedule_id):
     row = calendar_lesson_row(cursor, schedule_id)
     group_roster = calendar_group_roster(cursor, schedule_id, row) if row and int(row[18] or 0) else []
     resolved_course = resolve_calendar_course_type(cursor, row[19] if row else 0, row[7] if row else "", row[10] if row else 0, row[18] if row else 0) if row else None
+    attendance_account = None
+    if row and require_owner() and not int(row[18] or 0):
+        cursor.execute("SELECT enrollment_id FROM schedule WHERE id = ?", (schedule_id,))
+        linked_account = cursor.fetchone()
+        attendance_account = hmusic_attendance_enrollment(cursor, schedule_id, row[1], linked_account[0] if linked_account else None)
     conn.close()
     if not row:
         return {"ok": False, "error": "Lesson not found"}, 404
@@ -17916,6 +17935,8 @@ def calendar_lesson_detail(schedule_id):
     }
     if require_owner():
         response["lesson"].update({
+            "attendance_credit_ready": bool(attendance_account),
+            "attendance_credit_source": "legacy_student_balance" if attendance_account == -1 else ("course_account" if attendance_account else "needs_review"),
             "package_type": row[9] or "unlimited",
             "student_billing_method": row[22] or "",
             "student_price": float(row[23] or 0),
