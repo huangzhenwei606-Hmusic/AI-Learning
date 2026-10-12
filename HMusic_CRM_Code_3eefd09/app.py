@@ -16145,6 +16145,7 @@ def owner_attendance_credit_snapshot():
     """Read-only owner diagnostic: bulk reads avoid thousands of DB round trips."""
     if not require_owner():
         return {"ok": False, "error": "Owner login required"}, 403
+    ensure_calendar_lesson_panel_schema()
     conn = sqlite3.connect("hmusic.db")
     try:
         cursor = conn.cursor()
@@ -16161,6 +16162,9 @@ def owner_attendance_credit_snapshot():
         response = make_response(snapshot, 200)
         response.headers["Cache-Control"] = "no-store"
         return response
+    except Exception as exc:
+        app.logger.exception("Attendance audit snapshot failed")
+        return {"ok": False, "error": str(exc), "query": key if "key" in locals() else "snapshot"}, 500
     finally:
         conn.close()
 
