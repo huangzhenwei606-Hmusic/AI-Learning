@@ -14729,6 +14729,7 @@ def teacher_dashboard():
         cancel_label = "Cancel lesson" if direct_cancel else "Cancel request"
         delete_button_html = '<button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button>' if delete_allowed else ''
         owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
+        copy_button_html = '<button class="panel-action" onclick="teacherCopyLesson()">Copy lesson</button>' if teacher_perms.get("add_own_schedule") else ''
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
         mobile_add_button = f'<button type="button" id="teacherMobileAddButton" data-selected-date="{mobile_selected_date}" onclick="teacherAddOnDate(this.dataset.selectedDate || \'{today}\')"><i class="ti ti-plus"></i> Add lesson</button>' if teacher_perms.get("add_own_schedule") else ''
@@ -14891,7 +14892,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
-            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button>{delete_button_html}</div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><div class="panel-scope-row"><label class="panel-scope-option active" id="tPanelScopeOnce" onclick="setTeacherRescheduleScope('once')"><input type="radio" name="tPanelRescheduleScope" value="once" checked><span><b>Only this lesson</b><small>Apply changes only to this class.</small></span></label><label class="panel-scope-option" id="tPanelScopeFollowing" onclick="setTeacherRescheduleScope('following')"><input type="radio" name="tPanelRescheduleScope" value="following"><span><b>This and following lessons</b><small>Apply to this recurring series forward.</small></span></label></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
+            <div class="panel-section"><h3>Actions</h3><div class="panel-actions"><button class="panel-action" onclick="teacherRequestReschedule()">{reschedule_label}</button>{sub_button_html}{copy_button_html}<button class="panel-action" onclick="teacherLessonHistory()">Lesson history</button><button class="panel-action" onclick="teacherCancelRequest()">{cancel_label}</button>{delete_button_html}</div><div class="panel-row"><input class="panel-field" type="date" id="tPanelNewDate"><input class="panel-field" type="time" id="tPanelNewTime"></div><div class="panel-scope-row"><label class="panel-scope-option active" id="tPanelScopeOnce" onclick="setTeacherRescheduleScope('once')"><input type="radio" name="tPanelRescheduleScope" value="once" checked><span><b>Only this lesson</b><small>Apply changes only to this class.</small></span></label><label class="panel-scope-option" id="tPanelScopeFollowing" onclick="setTeacherRescheduleScope('following')"><input type="radio" name="tPanelRescheduleScope" value="following"><span><b>This and following lessons</b><small>Apply to this recurring series forward.</small></span></label></div><input class="panel-field" style="margin-top:10px" id="tPanelReason" placeholder="Reason / note for owner"><div class="owner-strip">{owner_policy_copy}</div></div>
             <div class="panel-toast" id="tPanelToast"></div>
           </div><div class="panel-footer"><button class="panel-discard" onclick="closeTeacherLessonPanel()">Discard</button><button class="panel-save" id="tPanelSaveButton" onclick="saveTeacherLessonPanel(false, true)">Save changes</button></div>
         </aside>
@@ -15129,6 +15130,19 @@ def teacher_dashboard():
         function teacherSelectedCourse(selectId) {{ const select = document.getElementById(selectId); const id = Number(select ? select.value : 0); return TEACHER_COURSES.find(course => Number(course.id) === id) || null; }}
         function toggleTeacherQuickDuration(boxId, courseSelectId, formatId) {{ const box = document.getElementById(boxId); if (!box) return; box.classList.toggle('show'); const course = teacherSelectedCourse(courseSelectId); const format = document.getElementById(formatId); if (course && format) format.value = course.is_group ? 'group' : 'private'; }}
         function teacherAddCourseDuration(courseSelectId, durationInputId, formatId) {{ const course = teacherSelectedCourse(courseSelectId); const durationInput = document.getElementById(durationInputId); const duration = Number(durationInput ? durationInput.value : 0); const lessonFormat = (document.getElementById(formatId) || {{value:'private'}}).value; if (!course || !duration) {{ alert('Choose a course and enter the new duration.'); if (durationInput) durationInput.focus(); return; }} fetch('/add_course_duration_quick', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify({{course_type_id:course.id, duration:duration, lesson_format:lessonFormat}})}}).then(async r => {{ const d = await r.json().catch(() => ({{ok:false,error:'Server returned an unreadable response.'}})); if (!r.ok || !d.ok) throw new Error(d.error || 'Could not add duration.'); teacherPanelToast('Added ' + (d.label || 'new duration') + '.'); setTimeout(() => location.reload(), 800); }}).catch(e => alert(e.message)); }}
+        function teacherCopyLesson() {{
+            if (!activeTeacherLesson) return;
+            const d = new Date(activeTeacherLesson.date + 'T12:00:00');
+            d.setDate(d.getDate() + 7);
+            const defaultDate = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+            const copyDate = prompt('Copy lesson to date (YYYY-MM-DD):', defaultDate);
+            if (!copyDate) return;
+            const copyTime = prompt('Lesson time (HH:MM):', teacherInputTime(activeTeacherLesson.time || ''));
+            if (!copyTime) return;
+            teacherLessonAction({{action:'duplicate',schedule_id:activeTeacherLesson.id,date:copyDate.trim(),time:copyTime.trim()}})
+                .then(result => {{ teacherPanelToast(result.message || 'Lesson copied.'); setTimeout(() => location.reload(),800); }})
+                .catch(error => alert(error.message));
+        }}
         function teacherLessonAction(payload) {{ return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}}).then(async r => {{ const text = await r.text(); let d = null; try {{ d = text ? JSON.parse(text) : {{ok:false,error:'Empty response from server.'}}; }} catch (_) {{ const looksLoggedOut = text.includes('owner_login') || text.includes('teacher_login') || text.includes('<html'); d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh this page, then log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}}; }} if (!r.ok || !d.ok) {{ const msg = d.error || d.message || 'Action failed'; if (r.status === 403 && msg.toLowerCase().includes('csrf')) throw new Error('Session expired. Please refresh this page, then save again.'); throw new Error(msg); }} return d; }}); }}
         function openTeacherLessonPanel(scheduleId) {{ if (teacherMultiOn) return; fetch('/calendar_lesson_detail/' + scheduleId).then(r => r.json()).then(d => {{ if (!d.ok) throw new Error(d.error || 'Lesson not found'); activeTeacherLesson = d.lesson; teacherPanelCourseChanged = false; teacherPanelRoomChanged = false; teacherGroupRosterDirty = false; document.getElementById('tPanelStudent').textContent = teacherGroupTitle(d.lesson); document.getElementById('tPanelCourse').textContent = (d.lesson.course_name || 'Lesson') + ' · ' + (d.lesson.teacher || ''); document.getElementById('tPanelDate').textContent = d.lesson.date || ''; document.getElementById('tPanelTime').textContent = d.lesson.time_range || d.lesson.time || ''; document.getElementById('tPanelRoom').textContent = d.lesson.location ? d.lesson.location + ' - ' + (d.lesson.classroom || '') : (d.lesson.classroom || '-'); document.getElementById('tPanelType').textContent = d.lesson.is_group ? 'Group lesson' : (d.lesson.schedule_type || 'Lesson'); document.getElementById('tPanelLessonNote').value = d.lesson.lesson_note || ''; document.getElementById('tPanelPrivateNote').value = d.lesson.private_note || ''; document.getElementById('tPanelHomework').value = d.lesson.homework || ''; document.getElementById('tPanelPracticeReminder').checked = !!d.lesson.practice_reminder_enabled; const roomSelect = document.getElementById('tPanelRoomSelect'); if (roomSelect) {{ let matched = false; Array.from(roomSelect.options).forEach(opt => {{ const byId = Number(d.lesson.room_id || 0) && Number(opt.dataset.roomId || 0) === Number(d.lesson.room_id || 0); const byName = !matched && opt.value === (d.lesson.classroom || ''); if (!matched && (byId || byName)) {{ opt.selected = true; matched = true; }} }}); if (!matched && d.lesson.classroom) {{ const opt = document.createElement('option'); opt.value = d.lesson.classroom || ''; opt.textContent = d.lesson.location ? d.lesson.location + ' - ' + d.lesson.classroom : d.lesson.classroom; opt.dataset.roomId = d.lesson.room_id || ''; opt.dataset.locationId = d.lesson.location_id || ''; opt.dataset.locationName = d.lesson.location || ''; roomSelect.insertBefore(opt, roomSelect.firstChild); opt.selected = true; }} }} const courseSelect = document.getElementById('tPanelCourseType'); if (courseSelect) courseSelect.value = String(d.lesson.course_type_id || ''); if (courseSelect && !courseSelect.value && TEACHER_COURSES.length) {{ const fallback = TEACHER_COURSES.find(course => Number(course.duration || 0) === Number(d.lesson.duration || 0) && Number(course.is_group || 0) === Number(d.lesson.is_group || 0)); if (fallback) courseSelect.value = String(fallback.id); }} document.getElementById('tPanelNewDate').value = d.lesson.date || ''; document.getElementById('tPanelNewTime').value = teacherInputTime(d.lesson.time || ''); document.getElementById('tPanelReason').value = ''; setTeacherRescheduleScope('once'); paintTeacherStatus(d.lesson.status || 'scheduled'); renderTeacherGroupRoster(d.lesson); document.getElementById('teacherLessonScrim').classList.add('show'); document.getElementById('teacherLessonPanel').classList.add('show'); }}).catch(e => alert(e.message)); }}
         function closeTeacherLessonPanel() {{ document.getElementById('teacherLessonScrim').classList.remove('show'); document.getElementById('teacherLessonPanel').classList.remove('show'); activeTeacherLesson = null; }}
@@ -17975,6 +17989,40 @@ def calendar_lesson_detail(schedule_id):
     return response
 
 
+def hmusic_copy_lesson(cursor, schedule_id, target_date, target_time=None):
+    """Copy schedule configuration, never attendance charges or applied credits."""
+    cursor.execute("PRAGMA table_info(schedule)")
+    available = {row[1] for row in cursor.fetchall()}
+    fields = [name for name in (
+        'student_name','teacher','classroom','duration','course_type_id','course_type_name',
+        'schedule_type','package_type','enrollment_id','student_billing_method','student_price',
+        'teacher_billing_method','teacher_pay','student_charge_amount','teacher_pay_amount',
+        'final_price','location_id','room_id','location','is_group','group_name',
+        'group_student_names','billing_decision','custom_lesson_count',
+        'parent_lesson_reminder_enabled','practice_reminder_enabled','low_balance_alert_enabled',
+        'notes','lesson_time') if name in available]
+    cursor.execute('SELECT '+','.join(fields)+' FROM schedule WHERE id = ?', (schedule_id,))
+    source = cursor.fetchone()
+    if not source:
+        raise ValueError('Lesson not found')
+    values = dict(zip(fields, source))
+    values.update(lesson_date=target_date, status='scheduled', schedule_type='one_time')
+    if target_time:
+        values['lesson_time'] = target_time
+    if 'start_date' in available: values['start_date'] = target_date
+    if 'weekday' in available: values['weekday'] = datetime.strptime(target_date,'%Y-%m-%d').strftime('%A')
+    for name in ('charge_lessons','policy_waiver_applied','pending_fee_amount','revenue_amount','payroll_amount','profit_amount'):
+        if name in available: values[name] = 0
+    cursor.execute('INSERT INTO schedule ('+','.join(values)+') VALUES ('+','.join('?' for _ in values)+')', tuple(values.values()))
+    new_id = cursor.lastrowid
+    if values.get('is_group'):
+        cursor.execute("""INSERT INTO group_schedule_students
+            (schedule_id,student_name,parent_name,credit_units,student_rate,billing_rule,billing_status,attendance_status,attendance_credit_applied,attendance_enrollment_id)
+            SELECT ?,student_name,parent_name,credit_units,student_rate,billing_rule,'planned','scheduled',0,NULL
+            FROM group_schedule_students WHERE schedule_id = ?""", (new_id,schedule_id))
+    return new_id
+
+
 @app.route("/calendar_lesson_action", methods=["POST"])
 def calendar_lesson_action():
     ensure_calendar_lesson_panel_schema()
@@ -18699,20 +18747,36 @@ def calendar_lesson_action():
         create_notification("owner", "owner", "Teacher cancellation request", f"{row[2]} requested cancellation for {row[1]} on {row[3]} {row[4]}.", f"/message_thread/{thread_id}", related_type="schedule", related_id=int(schedule_id))
         return {"ok": True, "message": "Cancellation request sent to owner."}
 
-    if action == "duplicate":
-        if not is_owner:
+    if action in ("duplicate", "copy"):
+        if is_teacher and not teacher_permissions.get("add_own_schedule"):
             conn.close()
-            return {"ok": False, "error": "Only owner can duplicate lessons."}, 403
-        next_date = (datetime.strptime(row[3], "%Y-%m-%d").date() + timedelta(days=7)).strftime("%Y-%m-%d")
-        cursor.execute("""
-        INSERT INTO schedule (student_name, teacher, lesson_date, lesson_time, classroom, duration, course_type_name, schedule_type, package_type, status, notes, private_note, homework_assignment)
-        SELECT student_name, teacher, ?, lesson_time, classroom, duration, course_type_name, schedule_type, package_type, 'scheduled', notes, private_note, homework_assignment
-        FROM schedule WHERE id = ?
-        """, (next_date, schedule_id))
-        new_id = cursor.lastrowid
-        conn.commit()
+            return {"ok": False, "error": "Add own schedule permission is not enabled."}, 403
+        try:
+            next_date = data.get("date") or (datetime.strptime(row[3], "%Y-%m-%d").date() + timedelta(days=7)).strftime("%Y-%m-%d")
+            datetime.strptime(next_date, "%Y-%m-%d")
+            target_time = str(data.get("time") or row[4] or "").strip()
+            if minutes_from_time_text(target_time) is None:
+                raise ValueError("Enter a valid lesson time.")
+        except (TypeError, ValueError):
+            conn.close()
+            return {"ok": False, "error": "Enter a valid copy date and time."}, 400
+        if is_payroll_locked(next_date[:7]):
+            conn.close()
+            return {"ok": False, "error": "Payroll is locked for this month."}, 400
+        conflict = schedule_has_conflict(row[2], row[5], next_date, target_time, duration=row[10] or 30, room_id=row[21], location_id=row[20], location=row[27])
+        if conflict.get("has_conflict"):
+            conn.close()
+            return {"ok": False, "error": conflict.get("message") or "Schedule conflict found. Choose another date or time."}, 409
+        try:
+            new_id = hmusic_copy_lesson(cursor, schedule_id, next_date, target_time)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            conn.close()
+            app.logger.exception("Copy lesson failed")
+            return {"ok": False, "error": "Could not copy this lesson. Please retry."}, 500
         conn.close()
-        return {"ok": True, "message": "Duplicated to next week.", "new_id": new_id}
+        return {"ok": True, "message": f"Copied to {next_date} at {target_time}.", "new_id": new_id}
 
     if action == "delete":
         if not (is_owner or is_teacher):
