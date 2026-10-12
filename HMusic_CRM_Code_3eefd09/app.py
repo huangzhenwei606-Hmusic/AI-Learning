@@ -101,7 +101,7 @@ OWNER_PASSWORD = "1234"
 
 @app.route("/healthz")
 def healthz():
-    response = make_response({"ok": True, "service": "hmusic-crm"}, 200)
+    response = make_response({"ok": True, "service": "hmusic-crm", "commit": os.environ.get("RENDER_GIT_COMMIT", "")}, 200)
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -16141,7 +16141,7 @@ def hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=None, teac
 
 
 def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_id=None):
-    """Resolve one course wallet; never silently pick another student's wallet."""
+    """Use course identity first; legacy metadata and duration are optional hints."""
     if enrollment_id:
         cursor.execute("SELECT id FROM enrollments WHERE id = ? AND student_name = ?", (enrollment_id, student_name))
         if cursor.fetchone():
@@ -16151,20 +16151,39 @@ def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_i
     if not lesson:
         return None
     course_id, course_name, duration, teacher = lesson
-    if not course_id and not course_name:
-        return None
     cursor.execute("""
-        SELECT id, teacher_name, duration FROM enrollments
+        SELECT id, teacher_name, duration, course_type_id, course_type_name FROM enrollments
         WHERE student_name = ?
         AND COALESCE(LOWER(TRIM(status)), 'active') NOT IN ('inactive','cancelled','canceled','archived','deleted')
-        AND (course_type_id = ? OR LOWER(TRIM(course_type_name)) = LOWER(TRIM(?)))
-    """, (student_name, course_id, course_name or ''))
+    """, (student_name,))
     matches = cursor.fetchall()
-    if duration:
-        matches = [row for row in matches if not row[2] or float(row[2]) == float(duration)]
+    normalized_name = str(course_name or '').strip().casefold()
+    # IDs are authoritative; identical display names must not introduce ambiguity.
+    if course_id:
+        exact = [row for row in matches if str(row[3] or '') == str(course_id)]
+        matches = exact or [row for row in matches if normalized_name and str(row[4] or '').strip().casefold() == normalized_name]
+    elif normalized_name:
+        matches = [row for row in matches if str(row[4] or '').strip().casefold() == normalized_name]
+    # Missing legacy course metadata is safe only when a single active wallet exists.
+    elif len(matches) != 1:
+        return None
+    if len(matches) <= 1:
+        return matches[0][0] if matches else None
     teacher_matches = [row for row in matches if hmusic_teacher_name_matches(row[1], teacher)]
     if teacher_matches:
         matches = teacher_matches
+    if len(matches) == 1:
+        return matches[0][0]
+    def minutes(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    lesson_minutes = minutes(duration)
+    if lesson_minutes:
+        duration_matches = [row for row in matches if minutes(row[2]) == lesson_minutes]
+        if duration_matches:
+            matches = duration_matches
     return matches[0][0] if len(matches) == 1 else None
 
 
@@ -16230,7 +16249,7 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, lesson[2])
     if status == "present" and not int(lesson[10] or 0) and not enrollment_id:
         conn.close()
-        return {"ok": False, "error": "Cannot mark Present: no unambiguous course credit account is linked. Please select the student's course account."}
+        return {"ok": False, "error": f"Cannot mark Present for {student_name}: the course credit account needs owner review. Please ask the owner to link this lesson to the correct course account."}
     if enrollment_id != lesson[2]:
         cursor.execute("UPDATE schedule SET enrollment_id = ? WHERE id = ?", (enrollment_id, schedule_id))
     student_charge_amount = lesson[3] or 0

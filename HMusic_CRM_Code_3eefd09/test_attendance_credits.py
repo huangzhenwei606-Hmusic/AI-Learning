@@ -59,6 +59,29 @@ class AttendanceCreditsTest(unittest.TestCase):
         with self.assertRaises(ValueError): self.apply(self.db.cursor(),1,'A','present')
         self.assertEqual(self.balance(),10)
 
+    def test_missing_legacy_course_metadata_single_wallet(self):
+        self.db.execute("UPDATE schedule SET course_type_id=NULL,course_type_name=NULL")
+        self.assertEqual(self.resolve(self.db.cursor(),1,'B'),10)
+        self.assertIsNone(self.resolve(self.db.cursor(),1,'A'))
+
+    def test_duration_change_does_not_discard_unique_course_wallet(self):
+        self.db.execute("UPDATE schedule SET duration=45")
+        self.apply(self.db.cursor(),1,'A','present')
+        self.assertEqual(self.balance(),9)
+        self.assertEqual(self.balance(9),20)
+
+    def test_id_takes_precedence_over_duplicate_course_names(self):
+        self.db.execute("INSERT INTO enrollments VALUES(11,'A',7,'Ensemble',60,'Mike','active',3,NULL)")
+        self.assertEqual(self.resolve(self.db.cursor(),1,'A'),8)
+
+    def test_malformed_duration_is_not_a_server_error(self):
+        self.db.execute("UPDATE enrollments SET duration='45 minutes' WHERE id=8")
+        self.assertEqual(self.resolve(self.db.cursor(),1,'A'),8)
+
+    def test_known_different_course_never_uses_single_wallet(self):
+        self.db.execute("UPDATE schedule SET course_type_id=2,course_type_name='Piano'")
+        self.assertIsNone(self.resolve(self.db.cursor(),1,'B'))
+
     def test_private_present_links_debits_once_and_cancel_refunds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'credits.db')
