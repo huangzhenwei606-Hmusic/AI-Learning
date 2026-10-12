@@ -16140,6 +16140,31 @@ def hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=None, teac
     return None
 
 
+@app.route("/owner_attendance_credit_snapshot")
+def owner_attendance_credit_snapshot():
+    """Read-only owner diagnostic: bulk reads avoid thousands of DB round trips."""
+    if not require_owner():
+        return {"ok": False, "error": "Owner login required"}, 403
+    conn = sqlite3.connect("hmusic.db")
+    try:
+        cursor = conn.cursor()
+        snapshot = {"ok": True, "generated_at": hmusic_now().isoformat()}
+        queries = {
+            "students": "SELECT name, COALESCE(lessons_left,0) FROM students",
+            "enrollments": "SELECT id,student_name,course_type_id,course_type_name,duration,teacher_name,status,COALESCE(lessons_left,0) FROM enrollments",
+            "schedule": "SELECT id,student_name,teacher,lesson_date,lesson_time,course_type_id,course_type_name,duration,COALESCE(is_group,0),status,enrollment_id,COALESCE(charge_lessons,0) FROM schedule",
+            "group_students": "SELECT id,schedule_id,student_name,attendance_status,COALESCE(credit_units,1),COALESCE(billing_rule,'existing_credits'),COALESCE(attendance_credit_applied,0),attendance_enrollment_id FROM group_schedule_students",
+        }
+        for key, query in queries.items():
+            cursor.execute(query)
+            snapshot[key] = [list(row) for row in cursor.fetchall()]
+        response = make_response(snapshot, 200)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    finally:
+        conn.close()
+
+
 def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_id=None):
     """Use course identity first; legacy metadata and duration are optional hints."""
     # -1 pins an attendance deduction to the legacy student balance, so later
