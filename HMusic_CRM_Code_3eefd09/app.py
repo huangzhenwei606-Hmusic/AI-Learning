@@ -489,7 +489,8 @@ def inject_csrf_token(response):
             html = hmusic_inject_csrf(html)
             response.set_data(html)
             response.content_length = len(response.get_data())
-    return response
+    from owner_workspace import apply_owner_workspace
+    return apply_owner_workspace(response, request, session.get("user_role") == "owner")
 
 
 def add_column_if_missing(cursor, table, column_name, column_sql):

@@ -1,0 +1,39 @@
+import unittest
+from pathlib import Path
+from flask import Flask, request, Response
+from owner_workspace import apply_owner_workspace
+
+class WorkspaceTest(unittest.TestCase):
+    def setUp(self):
+        self.app=Flask(__name__,template_folder=str(Path(__file__).parent/'templates'))
+    def render(self,path='/',headers=None,owner=True,body=None,status=200,mimetype='text/html',attachment=False):
+        with self.app.test_request_context(path,headers=headers or {}):
+            r=Response(body or '<html><head></head><body><form method="post"><input name="csrf_token" value="safe"></form></body></html>',status=status,mimetype=mimetype)
+            if attachment:r.headers['Content-Disposition']='attachment; filename=report.html'
+            return apply_owner_workspace(r,request,owner).get_data(as_text=True)
+    def test_direct_calendar_has_persistent_navigation_and_preserves_query(self):
+        html=self.render('/calendar?month=2026-10&student=Joanna+Zhao')
+        self.assertIn('name="hmusic-workspace"',html)
+        self.assertIn('month=2026-10&amp;student=Joanna+Zhao&amp;_workspace=1',html)
+        self.assertIn('data-section="/calendar"',html)
+    def test_frame_does_not_nest_shell_and_keeps_form(self):
+        html=self.render('/calendar',{'Sec-Fetch-Dest':'iframe'})
+        self.assertNotIn('<iframe',html)
+        self.assertIn('value="safe"',html)
+        self.assertIn('hmusic-workspace',html)
+    def test_initial_frame_flag_and_overview(self):
+        html=self.render('/?_workspace=1')
+        self.assertNotIn('<iframe',html)
+        self.assertIn('margin-left:0',html)
+    def test_nonowner_and_api_fragments_untouched(self):
+        self.assertNotIn('<iframe',self.render(owner=False))
+        self.assertNotIn('<iframe',self.render(headers={'Sec-Fetch-Dest':'empty'}))
+        self.assertEqual(self.render(body='<div>fragment</div>'),'<div>fragment</div>')
+        self.assertEqual(self.render(body='{"ok":true}',mimetype='application/json'),' {"ok":true}'.strip())
+    def test_auth_print_download_and_errors_untouched(self):
+        for path in ['/owner_login','/print_invoice/1','/export_students','/download']:
+            self.assertNotIn('<iframe',self.render(path))
+        self.assertNotIn('<iframe',self.render(attachment=True))
+        self.assertNotIn('<iframe',self.render(status=403))
+
+if __name__=='__main__':unittest.main()
