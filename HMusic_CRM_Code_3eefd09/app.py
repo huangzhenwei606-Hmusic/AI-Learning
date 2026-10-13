@@ -24210,6 +24210,8 @@ def ensure_v29_schema():
     )
     """)
 
+    add_column_if_missing(cursor, "message_attachments", "content_base64", "content_base64 TEXT")
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS message_participants (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24969,8 +24971,9 @@ ALLOWED_UPLOAD_MIME_TYPES = {
 
 
 def save_message_attachments(message_id, files):
-    ensure_v29_schema()
+    import base64
 
+    ensure_v29_schema()
     if not files:
         return
 
@@ -24979,54 +24982,55 @@ def save_message_attachments(message_id, files):
         os.makedirs(HMUSIC_UPLOAD_DIR, exist_ok=True)
 
     conn = sqlite3.connect("hmusic.db")
-    cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    try:
+        cursor = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for file in files:
+            if not file or not file.filename or file.mimetype not in ALLOWED_UPLOAD_MIME_TYPES:
+                continue
 
-    for file in files:
-        if not file or not file.filename:
-            continue
-        if file.mimetype not in ALLOWED_UPLOAD_MIME_TYPES:
-            continue
+            original_filename = file.filename
+            safe_name = safe_upload_filename(original_filename)
+            stored_filename = f"{message_id}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+            content_base64 = None
+            if s3_config:
+                file.stream.seek(0)
+                content = file.stream.read()
+                file_size = len(content)
+                try:
+                    # Upload a separate stream: transfer clients may close it on failure.
+                    message_upload_s3_client(s3_config).upload_fileobj(
+                        io.BytesIO(content),
+                        s3_config["bucket"],
+                        message_upload_s3_key(s3_config, stored_filename),
+                        ExtraArgs={"ContentType": file.mimetype},
+                    )
+                except Exception as exc:
+                    # Keep files durable on PostgreSQL even without a persistent disk.
+                    content_base64 = base64.b64encode(content).decode("ascii")
+                    app.logger.warning(
+                        "Attachment object storage failed (%s); using database storage for message %s",
+                        type(exc).__name__, message_id,
+                    )
+            else:
+                file_path = os.path.join(HMUSIC_UPLOAD_DIR, stored_filename)
+                file.save(file_path)
+                file_size = os.path.getsize(file_path)
 
-        original_filename = file.filename
-        safe_name = safe_upload_filename(original_filename)
-        stored_filename = f"{message_id}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
-        if s3_config:
-            file.stream.seek(0, os.SEEK_END)
-            file_size = file.stream.tell()
-            file.stream.seek(0)
-            message_upload_s3_client(s3_config).upload_fileobj(
-                file.stream,
-                s3_config["bucket"],
-                message_upload_s3_key(s3_config, stored_filename),
-                ExtraArgs={"ContentType": file.mimetype},
+            cursor.execute("""
+            INSERT INTO message_attachments (
+                message_id, original_filename, stored_filename, mime_type,
+                file_size, created_at, content_base64
             )
-        else:
-            file_path = os.path.join(HMUSIC_UPLOAD_DIR, stored_filename)
-            file.save(file_path)
-            file_size = os.path.getsize(file_path)
-
-        cursor.execute("""
-        INSERT INTO message_attachments (
-            message_id,
-            original_filename,
-            stored_filename,
-            mime_type,
-            file_size,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            message_id,
-            original_filename,
-            stored_filename,
-            file.mimetype,
-            file_size,
-            now
-        ))
-
-    conn.commit()
-    conn.close()
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (message_id, original_filename, stored_filename, file.mimetype,
+                  file_size, now, content_base64))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def hmusic_should_send_message_email_now(user_role, title):
@@ -30071,11 +30075,31 @@ def add_teacher_participant_to_thread(thread_id):
 def message_upload(filename):
     if not (require_owner() or require_parent() or require_teacher()):
         return redirect("/owner_login")
+    import base64
+
+    ensure_v29_schema()
+    conn = sqlite3.connect("hmusic.db")
+    try:
+        attachment = conn.execute("""
+            SELECT content_base64, mime_type, original_filename
+            FROM message_attachments
+            WHERE stored_filename = ? AND content_base64 IS NOT NULL
+            LIMIT 1
+        """, (filename,)).fetchone()
+    finally:
+        conn.close()
+    if attachment:
+        response = Response(base64.b64decode(attachment[0]), mimetype=attachment[1])
+        response.headers.set("Content-Disposition", "attachment", filename=attachment[2])
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     s3_config = get_message_upload_s3_config()
     if s3_config:
-        client = message_upload_s3_client(s3_config)
         key = message_upload_s3_key(s3_config, safe_upload_filename(filename))
         try:
+            client = message_upload_s3_client(s3_config)
             client.head_object(Bucket=s3_config["bucket"], Key=key)
         except Exception:
             app.logger.exception("Message attachment is not available in object storage: %s", filename)
