@@ -17,10 +17,17 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn('month=2026-10&amp;student=Joanna+Zhao&amp;_workspace=1',html)
         self.assertIn('data-section="/calendar"',html)
     def test_frame_does_not_nest_shell_and_keeps_form(self):
-        html=self.render('/calendar',{'Sec-Fetch-Dest':'iframe'})
+        html=self.render('/calendar?_workspace=1',{'Sec-Fetch-Dest':'iframe'})
         self.assertNotIn('<iframe',html)
         self.assertIn('value="safe"',html)
         self.assertIn('hmusic-workspace',html)
+    def test_external_embedding_does_not_skip_owner_shell(self):
+        self.assertIn('<iframe',self.render('/calendar',{'Sec-Fetch-Dest':'iframe'}))
+    def test_frame_post_redirect_preserves_workspace(self):
+        with self.app.test_request_context('/edit_schedule/1?_workspace=1',method='POST'):
+            r=Response(status=302,headers={'Location':'/calendar?month=2026-10'})
+            result=apply_owner_workspace(r,request,True)
+            self.assertEqual(result.headers['Location'],'/calendar?month=2026-10&_workspace=1')
     def test_initial_frame_flag_and_overview(self):
         html=self.render('/?_workspace=1')
         self.assertNotIn('<iframe',html)
