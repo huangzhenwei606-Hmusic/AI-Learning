@@ -47,6 +47,19 @@ class AttendanceCreditsTest(unittest.TestCase):
         self.assertEqual(self.balance(10),5.5)
         self.assertEqual(self.balance(),10)
 
+    def test_course_setup_after_legacy_attendance_uses_course_for_new_deduction(self):
+        self.db.execute("INSERT INTO group_schedule_students VALUES(3,1,'Legacy',1,'existing_credits',0,NULL)")
+        self.apply(self.db.cursor(), 1, 'Legacy', 'present')
+        self.db.execute("INSERT INTO enrollments VALUES(20,'Legacy',5,'Ensemble',60,'Mike','active',10,NULL)")
+        self.apply(self.db.cursor(), 1, 'Legacy', 'scheduled')
+        self.assertEqual(self.db.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0], -2)
+        self.assertEqual(self.balance(20), 10)
+        self.apply(self.db.cursor(), 1, 'Legacy', 'present')
+        self.assertEqual(self.balance(20), 9)
+        self.assertEqual(self.db.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0], -2)
+        self.apply(self.db.cursor(), 1, 'Legacy', 'present')
+        self.assertEqual(self.balance(20), 9)
+
     def test_no_charge(self):
         self.db.execute("UPDATE group_schedule_students SET billing_rule='no_charge' WHERE student_name='A'")
         self.apply(self.db.cursor(),1,'A','present')
@@ -145,6 +158,16 @@ class AttendanceCreditsTest(unittest.TestCase):
             self.assertTrue(scope['apply_lesson_status'](1,'scheduled')['ok'])
             with sqlite3.connect(path) as check:
                 self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-2 if legacy else 10)
+
+            if legacy:
+                with sqlite3.connect(path) as check:
+                    check.execute("INSERT INTO enrollments VALUES(20,'Legacy',5,'Ensemble',60,'Mike','active',10,NULL)")
+                self.assertTrue(scope['apply_lesson_status'](1,'present')['ok'])
+                self.assertTrue(scope['apply_lesson_status'](1,'present')['ok'])
+                with sqlite3.connect(path) as check:
+                    self.assertEqual(check.execute('SELECT lessons_left FROM enrollments WHERE id=20').fetchone()[0],9)
+                    self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0],-2)
+                    self.assertEqual(check.execute('SELECT enrollment_id FROM schedule').fetchone()[0],20)
 
     def tearDown(self):
         self.db.close()
