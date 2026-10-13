@@ -50441,12 +50441,28 @@ def ensure_postgres_attendance_credit_schema():
         conn.close()
 
 
+def ensure_postgres_message_attachment_schema():
+    """Upgrade attachment storage explicitly because PostgreSQL skips legacy helpers."""
+    if not using_postgres():
+        return
+    conn = sqlite3.connect("hmusic.db")
+    try:
+        conn.execute("ALTER TABLE message_attachments ADD COLUMN IF NOT EXISTS content_base64 TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def initialize_runtime_database():
     """Finish schema work before Gunicorn starts accepting production traffic."""
     started_at = time.perf_counter()
     if using_postgres():
         ensure_postgres_teacher_permission_schema()
         ensure_postgres_attendance_credit_schema()
+        ensure_postgres_message_attachment_schema()
     else:
         ensure_production_schema()
         for schema_name in _runtime_schema_names:

@@ -104,5 +104,52 @@ class AttachmentStorageTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM message_attachments').fetchone()[0], 0)
         self.s3.upload_fileobj.assert_not_called()
 
+class AttachmentMigrationTest(unittest.TestCase):
+    def setUp(self):
+        self.connection = Mock()
+        self.scope = dict(
+            using_postgres=lambda: True,
+            sqlite3=Mock(connect=Mock(return_value=self.connection)),
+        )
+        node = next(n for n in SOURCE.body if isinstance(n, ast.FunctionDef)
+                    and n.name == 'ensure_postgres_message_attachment_schema')
+        exec(compile(ast.Module(body=[node], type_ignores=[]), '<migration>', 'exec'), self.scope)
+
+    def test_postgres_migration_is_idempotent_and_committed(self):
+        migrate = self.scope['ensure_postgres_message_attachment_schema']
+        migrate()
+        migrate()
+        self.connection.execute.assert_called_with(
+            'ALTER TABLE message_attachments ADD COLUMN IF NOT EXISTS content_base64 TEXT')
+        self.assertEqual(self.connection.commit.call_count, 2)
+        self.assertEqual(self.connection.close.call_count, 2)
+
+    def test_migration_failure_rolls_back_and_closes(self):
+        self.connection.execute.side_effect = RuntimeError('migration failed')
+        with self.assertRaises(RuntimeError):
+            self.scope['ensure_postgres_message_attachment_schema']()
+        self.connection.rollback.assert_called_once()
+        self.connection.close.assert_called_once()
+        self.connection.commit.assert_not_called()
+
+    def test_sqlite_uses_legacy_schema(self):
+        self.scope['using_postgres'] = lambda: False
+        self.scope['ensure_postgres_message_attachment_schema']()
+        self.scope['sqlite3'].connect.assert_not_called()
+
+    def test_postgres_startup_runs_attachment_migration(self):
+        node = next(n for n in SOURCE.body if isinstance(n, ast.FunctionDef)
+                    and n.name == 'initialize_runtime_database')
+        scope = dict(using_postgres=lambda: True, time=Mock(), app=Mock(),
+                     sqlite3=Mock(connect=Mock(return_value=self.connection)))
+        scope['time'].perf_counter.side_effect = (1.0, 2.0)
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
+                scope.setdefault(call.func.id, Mock())
+        exec(compile(ast.Module(body=[node], type_ignores=[]), '<startup>', 'exec'), scope)
+        scope['initialize_runtime_database']()
+        scope['ensure_postgres_message_attachment_schema'].assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()
