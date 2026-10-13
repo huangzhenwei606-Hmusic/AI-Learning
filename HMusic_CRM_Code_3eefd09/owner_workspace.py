@@ -16,7 +16,9 @@ def apply_owner_workspace(response, request, is_owner):
     if not is_owner or response.status_code != 200 or response.mimetype != "text/html" or response.headers.get("Content-Disposition"):
         return response
     destination = request.headers.get("Sec-Fetch-Dest", "document")
-    if destination not in ("document", "iframe") or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+    if destination not in ("document", "iframe", "empty", "") or request.headers.get("X-Requested-With") == "XMLHttpRequest" or "application/json" in request.headers.get("Accept", ""):
+        return response
+    if request.method != "GET" and request.is_json:
         return response
     if any(word in request.path.lower() for word in ("login", "logout", "print", "export", "download")):
         return response

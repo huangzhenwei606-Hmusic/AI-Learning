@@ -23,6 +23,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn('hmusic-workspace',html)
     def test_external_embedding_does_not_skip_owner_shell(self):
         self.assertIn('<iframe',self.render('/calendar',{'Sec-Fetch-Dest':'iframe'}))
+        self.assertIn('<iframe',self.render('/calendar',{'Sec-Fetch-Dest':'empty'}))
     def test_frame_post_redirect_preserves_workspace(self):
         with self.app.test_request_context('/edit_schedule/1?_workspace=1',method='POST'):
             r=Response(status=302,headers={'Location':'/calendar?month=2026-10'})
@@ -34,7 +35,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn('margin-left:0',html)
     def test_nonowner_and_api_fragments_untouched(self):
         self.assertNotIn('<iframe',self.render(owner=False))
-        self.assertNotIn('<iframe',self.render(headers={'Sec-Fetch-Dest':'empty'}))
+        self.assertNotIn('<iframe',self.render(headers={'Sec-Fetch-Dest':'empty','Accept':'application/json'}))
         self.assertEqual(self.render(body='<div>fragment</div>'),'<div>fragment</div>')
         self.assertEqual(self.render(body='{"ok":true}',mimetype='application/json'),' {"ok":true}'.strip())
     def test_auth_print_download_and_errors_untouched(self):
