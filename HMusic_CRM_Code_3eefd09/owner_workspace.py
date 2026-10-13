@@ -24,7 +24,7 @@ def apply_owner_workspace(response, request, is_owner):
     # Fragment responses belong to their existing client-side caller.
     if not re.search(r"<(?:html|body)\b", html, re.I):
         return response
-    if request.args.get("_workspace") == "1":
+    if request.args.get("_workspace") == "1" or (destination == "iframe" and dict(parse_qsl(urlsplit(request.referrer or "").query)).get("_workspace") == "1"):
         script = """<script>if(window.parent!==window){
 function workspaceURL(raw){const u=new URL(raw,location.href);if(u.origin===location.origin&&!/login|logout|print|export|download/i.test(u.pathname))u.searchParams.set('_workspace','1');return u.href;}
 document.querySelectorAll('a[href]').forEach(a=>{if(!a.hasAttribute('download')&&!a.getAttribute('href').startsWith('#')){a.href=workspaceURL(a.href);if(new URL(a.href).origin===location.origin&&a.target==='_blank')a.target='_self';}});
