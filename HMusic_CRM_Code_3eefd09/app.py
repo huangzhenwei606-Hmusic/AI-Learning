@@ -24268,14 +24268,21 @@ def ensure_message_participant(cursor, thread_id, role, key, display_name=None, 
         active,
         created_at
     )
-    VALUES (?, ?, ?, ?, ?, 1, ?)
+    SELECT ?, ?, ?, ?, ?, 1, ?
+    WHERE NOT EXISTS (
+        SELECT 1 FROM message_participants
+        WHERE thread_id = ? AND participant_role = ? AND participant_key = ?
+    )
     """, (
         thread_id,
         role,
         str(key),
         display_name or str(key),
         1 if is_observer else 0,
-        now
+        now,
+        thread_id,
+        role,
+        str(key)
     ))
     cursor.execute("""
     UPDATE message_participants
@@ -25565,6 +25572,11 @@ def send_email_delivery(destination, title, body, link_url):
     message["Subject"] = title or "H-Music Notification"
     message["From"] = HMUSIC_TRANSACTIONAL_EMAIL
     message["To"] = destination
+    conversation = re.search(r"/message_thread/(\d+)", link_url or "")
+    if conversation:
+        from email.utils import make_msgid
+        message["Message-ID"] = make_msgid(idstring=f"hmusic-thread-{conversation.group(1)}", domain=str(message["From"]).split("@")[-1])
+        message["Reply-To"] = message["From"]
     footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
     message.set_content(f"{body or ''}{footer}")
 
@@ -27171,7 +27183,7 @@ def get_unread_message_count(viewer_role, viewer_key):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT COUNT(*)
+    SELECT COUNT(DISTINCT m.id)
     FROM messages m
     JOIN message_participants mp
         ON mp.thread_id = m.thread_id
@@ -28477,7 +28489,7 @@ def mark_message_thread_read(thread_id):
     if not viewer_role:
         return
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -28513,7 +28525,7 @@ def mark_message_thread_read(thread_id):
 
 def mark_message_inbox_read(viewer_role, viewer_key):
     ensure_v29_schema()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -50493,6 +50505,36 @@ def repair_pending_manual_tuition_credit_flags():
         conn.close()
 
 
+def hmusic_email_reply_api():
+    return {
+        "connect": lambda: sqlite3.connect("hmusic.db"),
+        "sync_participants": sync_thread_default_participants,
+        "safe_filename": safe_upload_filename,
+        "allowed_mime_types": ALLOWED_UPLOAD_MIME_TYPES,
+        "logger": app.logger,
+    }
+
+
+@app.before_request
+def hmusic_start_email_reply_sync():
+    if session.get("user_role") in {"owner", "parent", "teacher"} and request.path != "/owner_sync_email_replies":
+        from email_reply_sync import start_worker
+        start_worker(hmusic_email_reply_api())
+
+
+@app.route("/owner_sync_email_replies", methods=["POST"])
+def owner_sync_email_replies():
+    if not require_owner():
+        return {"ok": False, "error": "Owner access required"}, 403
+    from email_reply_sync import sync_mailbox
+    try:
+        result = sync_mailbox(hmusic_email_reply_api())
+        return {"ok": True, **result}
+    except Exception as exc:
+        app.logger.warning("Owner email reply sync failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "Email inbox connection failed. Check the mailbox configuration."}, 503
+
+
 def initialize_runtime_database():
     """Finish schema work before Gunicorn starts accepting production traffic."""
     started_at = time.perf_counter()
@@ -50508,6 +50550,12 @@ def initialize_runtime_database():
             schema_initializer = globals().get(schema_name)
             if schema_initializer is not None:
                 schema_initializer()
+    from email_reply_sync import ensure_schema as ensure_email_reply_schema
+    email_reply_connection = sqlite3.connect("hmusic.db")
+    try:
+        ensure_email_reply_schema(email_reply_connection)
+    finally:
+        email_reply_connection.close()
     repair_pending_manual_tuition_credit_flags()
     ensure_event_room_booking_schema()
     ensure_guardian_billing_schema()
