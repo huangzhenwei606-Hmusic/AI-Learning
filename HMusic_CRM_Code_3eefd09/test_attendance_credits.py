@@ -69,9 +69,9 @@ class AttendanceCreditsTest(unittest.TestCase):
         self.assertEqual(self.resolve(self.db.cursor(),1,'A'),8)
         self.assertEqual(self.resolve(self.db.cursor(),1,'A',10),8)
 
-    def test_ambiguous_wallet_rejects_without_debit(self):
+    def test_ambiguous_wallet_marks_without_debit(self):
         self.db.execute("INSERT INTO enrollments VALUES(11,'A',5,'Ensemble',60,'Mike','active',3,NULL)")
-        with self.assertRaises(ValueError): self.apply(self.db.cursor(),1,'A','present')
+        self.apply(self.db.cursor(),1,'A','present')
         self.assertEqual(self.balance(),10)
 
     def test_missing_legacy_course_metadata_single_wallet(self):
@@ -100,7 +100,10 @@ class AttendanceCreditsTest(unittest.TestCase):
     def test_legacy_group_repeat_and_refund(self):
         self.db.execute("INSERT INTO group_schedule_students VALUES(3,1,'Legacy',1,'existing_credits',0,NULL)")
         for _ in range(2): self.apply(self.db.cursor(),1,'Legacy','present')
-        self.assertEqual(self.db.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0],-3)
+        self.assertEqual(self.db.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0],-2)
+        # Simulate a historical deduction so its refund stays in the legacy wallet.
+        self.db.execute("UPDATE students SET lessons_left=-3 WHERE name='Legacy'")
+        self.db.execute("UPDATE group_schedule_students SET attendance_credit_applied=1,attendance_enrollment_id=-1 WHERE student_name='Legacy'")
         # Creating a course account later must not redirect the historical refund.
         self.db.execute("INSERT INTO enrollments VALUES(20,'Legacy',5,'Ensemble',60,'Mike','active',10,NULL)")
         for _ in range(2): self.apply(self.db.cursor(),1,'Legacy','scheduled')
@@ -153,8 +156,9 @@ class AttendanceCreditsTest(unittest.TestCase):
                          request=SimpleNamespace(get_json=lambda **kwargs:dict(schedule_id=1,status='present')))
             for _ in range(2): self.assertTrue(scope['api_teacher_lesson_status']()['ok'])
             with sqlite3.connect(path) as check:
-                self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-3 if legacy else 9)
-                self.assertEqual(check.execute('SELECT enrollment_id FROM schedule').fetchone()[0],-1 if legacy else 8)
+                self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-2 if legacy else 9)
+                self.assertEqual(check.execute('SELECT enrollment_id FROM schedule').fetchone()[0],None if legacy else 8)
+                self.assertEqual(check.execute('SELECT status,charge_lessons FROM schedule').fetchone(),('present',0 if legacy else 1))
             self.assertTrue(scope['apply_lesson_status'](1,'scheduled')['ok'])
             with sqlite3.connect(path) as check:
                 self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-2 if legacy else 10)

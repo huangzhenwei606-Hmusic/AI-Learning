@@ -15418,8 +15418,8 @@ def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_i
         return -1 if cursor.fetchone() else None
     cursor.execute("SELECT COUNT(*) FROM enrollments WHERE student_name = ?", (student_name,))
     if cursor.fetchone()[0] == 0:
-        cursor.execute("SELECT name FROM students WHERE name = ?", (student_name,))
-        return -1 if cursor.fetchone() else None
+        # A new attendance mark without a course wallet is status-only.
+        return None
     if enrollment_id:
         cursor.execute("SELECT id FROM enrollments WHERE id = ? AND student_name = ?", (enrollment_id, student_name))
         if cursor.fetchone():
@@ -15483,6 +15483,9 @@ def hmusic_apply_group_attendance_credit(cursor, schedule_id, student_name, stat
         attendance_account = None if enrollment_id == -1 and not applied else enrollment_id
         enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, attendance_account)
         if not enrollment_id:
+            if not applied:
+                # Record attendance without debiting an unrelated course wallet.
+                return
             raise ValueError(f"Cannot update attendance: select an unambiguous course credit account for {student_name}.")
         if enrollment_id == -1:
             cursor.execute("UPDATE students SET lessons_left = COALESCE(lessons_left,0) - ? WHERE name = ?", (delta, student_name))
@@ -15532,9 +15535,6 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     # uncharged lesson should use a course wallet once the owner has set it up.
     attendance_account = None if lesson[2] == -1 and not previous_charge_lessons else lesson[2]
     enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, attendance_account)
-    if status == "present" and not int(lesson[10] or 0) and not enrollment_id:
-        conn.close()
-        return {"ok": False, "error": f"Cannot mark Present for {student_name}: the course credit account needs owner review. Please ask the owner to link this lesson to the correct course account."}
     if enrollment_id != lesson[2]:
         cursor.execute("UPDATE schedule SET enrollment_id = ? WHERE id = ?", (enrollment_id, schedule_id))
     student_charge_amount = lesson[3] or 0
@@ -15593,6 +15593,9 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         new_charge_lessons = 1 if deduct_lesson == 1 else 0
     if int(lesson[10] or 0):
         new_charge_lessons = 0  # Group wallets are charged per participant.
+    elif status == "present" and not enrollment_id:
+        # Attendance does not imply a credit deduction when no wallet exists.
+        new_charge_lessons = previous_charge_lessons
     lesson_delta = new_charge_lessons - previous_charge_lessons
 
     cancelled_at = None
