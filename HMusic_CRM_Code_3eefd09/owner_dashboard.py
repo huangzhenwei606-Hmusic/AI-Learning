@@ -23,7 +23,7 @@ def low_credit_accounts(students, accounts, near_students):
             result.append(dict(student=name, course='Student credits', teacher='', left=float(left or 0), url='/student/'+quote(name, safe='')))
     return sorted(result, key=lambda item:(item['left'],item['student'].casefold(),item['course']))
 
-def load_owner_dashboard(connect, today, homework_rows, selected_date=None):
+def load_owner_dashboard(connect, today, homework_rows, selected_date=None, unread_message_count=None):
     selected = today
     if selected_date:
         try: selected = datetime.strptime(selected_date,'%Y-%m-%d').date()
@@ -67,7 +67,7 @@ def load_owner_dashboard(connect, today, homework_rows, selected_date=None):
         if cancellations: add('Cancellation','Cancellation requests','Review student requests','/owner_cancel_requests',cancellations)
         events = scalar("SELECT COUNT(*) FROM event_room_bookings WHERE status='pending'")
         if events: add('Room booking','Event room requests','Review room bookings','/owner_event_room_bookings',events)
-        messages = scalar("SELECT COUNT(*) FROM messages WHERE recipient_role='owner' AND read_at IS NULL")
+        messages = unread_message_count if unread_message_count is not None else scalar("SELECT COUNT(*) FROM messages WHERE recipient_role='owner' AND read_at IS NULL")
         if messages: add('Message','Unread messages','Open the owner inbox','/messages',messages)
         intake = scalar("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead','Inquiry') OR COALESCE(owner_verified,0)=0")
         if intake: add('Intake','New student intake','Review trial scheduling and family setup','/new_students',intake)
@@ -77,6 +77,6 @@ def load_owner_dashboard(connect, today, homework_rows, selected_date=None):
         return dict(today=today.isoformat(),day=selected.isoformat(),day_label=selected.strftime('%A, %b %d'),previous_day=(selected-timedelta(days=1)).isoformat(),next_day=(selected+timedelta(days=1)).isoformat(),month_label=today.strftime('%B %Y'),lessons=lessons,lesson_count=sum(not l['cancelled'] for l in lessons),present_count=sum(l['style']=='present' for l in lessons),tasks=tasks,pending_count=pending_count,monthly_payments=float(monthly_payments),open_invoice_count=invoice_summary[0],open_invoice_total=float(invoice_summary[1] or 0),renewals=renewals[:6],renewal_count=len(renewals),renewal_students=len({r['student'] for r in renewals}),payments=payments,homework_recent=len(recent_homework),homework_history=len(homework_rows)-len(recent_homework),messages=messages)
     finally: conn.close()
 
-def render_owner_dashboard(connect,today,homework_rows,display_name,selected_date=None):
-    data=load_owner_dashboard(connect,today,homework_rows,selected_date)
+def render_owner_dashboard(connect,today,homework_rows,display_name,selected_date=None, unread_message_count=None):
+    data=load_owner_dashboard(connect,today,homework_rows,selected_date,unread_message_count)
     return render_template('owner_home.html',**data,display_name=display_name or 'Owner')

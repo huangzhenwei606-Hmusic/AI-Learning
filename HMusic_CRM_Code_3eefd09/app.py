@@ -2596,7 +2596,7 @@ def home():
             return redirect("/parent_portal")
         return redirect("/owner_login")
     from owner_dashboard import render_owner_dashboard
-    return render_owner_dashboard(sqlite3.connect, hmusic_today(), get_missing_homework_lessons(), session.get("display_name"), request.args.get("day"))
+    return render_owner_dashboard(sqlite3.connect, hmusic_today(), get_missing_homework_lessons(), session.get("display_name"), request.args.get("day"), unread_message_count=get_unread_message_count("owner", "owner"))
 
 
 @app.route("/owner_message_templates", methods=["GET", "POST"])
@@ -28201,6 +28201,18 @@ def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=No
             )
 
     return thread_id
+
+
+@app.route("/owner_unread_counts")
+def owner_unread_counts():
+    if not require_owner():
+        return {"error": "Owner login required"}, 401
+    response = make_response({
+        "messages": get_unread_message_count("owner", "owner"),
+        "notifications": get_unread_notification_count("owner", "owner"),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/messages")

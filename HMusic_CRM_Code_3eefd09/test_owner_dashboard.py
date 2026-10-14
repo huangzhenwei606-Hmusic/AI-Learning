@@ -25,6 +25,10 @@ class OwnerDashboardTest(unittest.TestCase):
   INSERT INTO inquiries VALUES('New Lead',0);
   ''');db.commit();db.close()
   self.homework=[(1,'A','Teacher A','2026-10-12','10:00','Room 1'),(5,'B','Teacher A','2026-01-01','10:00','Room 1')]
+ def test_owner_inbox_count_includes_participant_messages(self):
+  data=load_owner_dashboard(lambda _:sqlite3.connect(self.path),date(2026,10,13),self.homework,unread_message_count=4)
+  self.assertEqual(data['messages'],4)
+  self.assertTrue(any(t['kind']=='Message' and t['count']==4 for t in data['tasks']))
  def tearDown(self):self.tmp.cleanup()
  def data(self,selected=None):return load_owner_dashboard(lambda _:sqlite3.connect(self.path),date(2026,10,13),self.homework,selected)
  def test_credits_use_course_account_and_do_not_count_inactive_or_stale_students(self):
