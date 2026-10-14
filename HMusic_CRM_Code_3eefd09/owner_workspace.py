@@ -6,7 +6,11 @@ from flask import render_template
 NAV = [("/", "Overview"), ("/calendar", "Calendar"), ("/students", "Students & families"), ("/invoices", "Billing"), ("/teachers", "Teachers"), ("/messages", "Messages"), ("/owner_event_room_bookings", "Events & rooms"), ("/owner_settings", "Settings")]
 
 def apply_owner_workspace(response, request, is_owner):
-    if is_owner and request.args.get("_workspace") == "1" and response.status_code in (301,302,303,307,308):
+    destination = request.headers.get("Sec-Fetch-Dest", "document")
+    referrer = urlsplit(request.referrer or "")
+    from_workspace = referrer.netloc == request.host and dict(parse_qsl(referrer.query)).get("_workspace") == "1"
+    in_workspace = request.args.get("_workspace") == "1" or destination == "iframe" or from_workspace
+    if is_owner and in_workspace and response.status_code in (301,302,303,307,308):
         location=response.headers.get("Location", "")
         target=urlsplit(location)
         if location and (not target.netloc or target.netloc == request.host):
@@ -15,7 +19,6 @@ def apply_owner_workspace(response, request, is_owner):
         return response
     if not is_owner or response.status_code != 200 or response.mimetype != "text/html" or response.headers.get("Content-Disposition"):
         return response
-    destination = request.headers.get("Sec-Fetch-Dest", "document")
     if destination not in ("document", "iframe", "empty", "") or request.headers.get("X-Requested-With") == "XMLHttpRequest" or "application/json" in request.headers.get("Accept", ""):
         return response
     if request.method != "GET" and request.is_json:
@@ -26,7 +29,7 @@ def apply_owner_workspace(response, request, is_owner):
     # Fragment responses belong to their existing client-side caller.
     if not re.search(r"<(?:html|body)\b", html, re.I):
         return response
-    if request.args.get("_workspace") == "1" or (destination == "iframe" and dict(parse_qsl(urlsplit(request.referrer or "").query)).get("_workspace") == "1"):
+    if in_workspace:
         script = """<script>if(window.parent!==window){
 function workspaceURL(raw){const u=new URL(raw,location.href);if(u.origin===location.origin&&!/login|logout|print|export|download/i.test(u.pathname))u.searchParams.set('_workspace','1');return u.href;}
 document.querySelectorAll('a[href]').forEach(a=>{if(!a.hasAttribute('download')&&!a.getAttribute('href').startsWith('#')){a.href=workspaceURL(a.href);if(new URL(a.href).origin===location.origin&&a.target==='_blank')a.target='_self';}});

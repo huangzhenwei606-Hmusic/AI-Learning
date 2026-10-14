@@ -21,9 +21,18 @@ class WorkspaceTest(unittest.TestCase):
         self.assertNotIn('<iframe',html)
         self.assertIn('value="safe"',html)
         self.assertIn('hmusic-workspace',html)
-    def test_external_embedding_does_not_skip_owner_shell(self):
-        self.assertIn('<iframe',self.render('/calendar',{'Sec-Fetch-Dest':'iframe'}))
+    def test_native_iframe_navigation_does_not_add_another_shell(self):
+        self.assertNotIn('<iframe',self.render('/invoices?status=unpaid',{'Sec-Fetch-Dest':'iframe'}))
         self.assertIn('<iframe',self.render('/calendar',{'Sec-Fetch-Dest':'empty'}))
+    def test_proxy_frame_navigation_with_workspace_referrer(self):
+        html=self.render('/invoices?status=paid',{'Sec-Fetch-Dest':'empty','Referer':'http://localhost/invoices?_workspace=1'})
+        self.assertNotIn('<iframe',html)
+        self.assertIn('hmusic-workspace',html)
+        self.assertIn('<iframe',self.render('/invoices',{'Referer':'https://external.example/?_workspace=1'}))
+    def test_native_iframe_post_redirect_without_flag(self):
+        with self.app.test_request_context('/invoice/1',method='POST',headers={'Sec-Fetch-Dest':'iframe'}):
+            result=apply_owner_workspace(Response(status=302,headers={'Location':'/invoices'}),request,True)
+            self.assertEqual(result.headers['Location'],'/invoices?_workspace=1')
     def test_frame_post_redirect_preserves_workspace(self):
         with self.app.test_request_context('/edit_schedule/1?_workspace=1',method='POST'):
             r=Response(status=302,headers={'Location':'/calendar?month=2026-10'})
