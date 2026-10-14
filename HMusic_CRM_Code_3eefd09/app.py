@@ -9732,6 +9732,7 @@ def calendar():
       </div>
     </div>
 
+    <script src="/static/calendar_scroll.js"></script>
     <script>
     // ---- instrument color helper ----
     function instrClass(courseName) {{
@@ -9780,6 +9781,7 @@ def calendar():
       select.dataset.expanded = '1';
     }}
     function submitCalendarStatus(select) {{
+      rememberCalendarStatusScroll(select);
       const form = document.createElement('form');
       form.method = 'POST';
       form.action = '/update_lesson_status';
