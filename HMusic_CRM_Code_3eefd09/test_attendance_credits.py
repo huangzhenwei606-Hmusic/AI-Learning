@@ -164,6 +164,18 @@ class AttendanceCreditsTest(unittest.TestCase):
                 self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-2 if legacy else 10)
 
             if legacy:
+                scope.update(hmusic_last_min_fee=lambda duration:25, hmusic_money=lambda amount:str(amount))
+                for locked in (False, True):
+                    scope['is_payroll_locked'] = lambda _, locked=locked:locked
+                    for status in ('no_show','last_min_cancel','excused_24h','teacher_cancelled','present','scheduled'):
+                        scope['request'] = SimpleNamespace(get_json=lambda status=status, **kwargs:dict(schedule_id=1,status=status))
+                        for _ in range(2):
+                            self.assertTrue(scope['api_teacher_lesson_status']()['ok'])
+                            self.assertTrue(scope['apply_lesson_status'](1,status,actor='owner')['ok'])
+                        with sqlite3.connect(path) as check:
+                            self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'").fetchone()[0],-2)
+                            self.assertEqual(check.execute('SELECT status,charge_lessons FROM schedule').fetchone(),(status,0))
+                scope['is_payroll_locked'] = lambda _:False
                 with sqlite3.connect(path) as check:
                     check.execute("INSERT INTO enrollments VALUES(20,'Legacy',5,'Ensemble',60,'Mike','active',10,NULL)")
                 self.assertTrue(scope['apply_lesson_status'](1,'present')['ok'])

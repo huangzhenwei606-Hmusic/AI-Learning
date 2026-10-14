@@ -15483,10 +15483,9 @@ def hmusic_apply_group_attendance_credit(cursor, schedule_id, student_name, stat
         attendance_account = None if enrollment_id == -1 and not applied else enrollment_id
         enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, attendance_account)
         if not enrollment_id:
-            if not applied:
-                # Record attendance without debiting an unrelated course wallet.
-                return
-            raise ValueError(f"Cannot update attendance: select an unambiguous course credit account for {student_name}.")
+            # Keep the prior deduction marker for reconciliation, but never
+            # block attendance or change another wallet when its account is missing.
+            return
         if enrollment_id == -1:
             cursor.execute("UPDATE students SET lessons_left = COALESCE(lessons_left,0) - ? WHERE name = ?", (delta, student_name))
         else:
@@ -15535,8 +15534,6 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     # uncharged lesson should use a course wallet once the owner has set it up.
     attendance_account = None if lesson[2] == -1 and not previous_charge_lessons else lesson[2]
     enrollment_id = hmusic_attendance_enrollment(cursor, schedule_id, student_name, attendance_account)
-    if enrollment_id != lesson[2]:
-        cursor.execute("UPDATE schedule SET enrollment_id = ? WHERE id = ?", (enrollment_id, schedule_id))
     student_charge_amount = lesson[3] or 0
     teacher_pay_amount = lesson[4] or 0
     lesson_date = lesson[5] or ""
@@ -15544,12 +15541,25 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
     previous_waiver_applied = int(lesson[8] or 0)
     payroll_month = lesson_date[:7]
 
-    if payroll_month and is_payroll_locked(payroll_month):
-        conn.close()
-        return {"ok": False, "error": f"Payroll is locked for {payroll_month}"}
-
     if status in ("cancel_3h", "cancel_12h", "cancel_24h"):
         status = "last_min_cancel"
+
+    if payroll_month and is_payroll_locked(payroll_month):
+        # Attendance remains editable after payroll closes. Preserve every
+        # financial field and balance in that finalized period.
+        cursor.execute("UPDATE schedule SET status = ?, cancellation_reason = ?, cancelled_at = ? WHERE id = ?", (
+            status,
+            reason if status in ("excused_24h", "last_min_cancel", "no_show") or status.startswith("cancel") else None,
+            datetime.now().strftime("%Y-%m-%d %H:%M") if status in ("excused_24h", "last_min_cancel", "no_show") or status.startswith("cancel") else None,
+            schedule_id,
+        ))
+        conn.commit()
+        conn.close()
+        return {"ok": True, "student_name": student_name, "status": status,
+                "charge_lessons": previous_charge_lessons, "waiver_applied": int(lesson[8] or 0)}
+
+    if enrollment_id != lesson[2]:
+        cursor.execute("UPDATE schedule SET enrollment_id = ? WHERE id = ?", (enrollment_id, schedule_id))
 
     holder = hmusic_waiver_holder(cursor, student_name, enrollment_id)
     if previous_waiver_applied:
@@ -15593,7 +15603,7 @@ def apply_lesson_status(schedule_id, status, actor="system", reason=None, allowe
         new_charge_lessons = 1 if deduct_lesson == 1 else 0
     if int(lesson[10] or 0):
         new_charge_lessons = 0  # Group wallets are charged per participant.
-    elif status == "present" and not enrollment_id:
+    elif not enrollment_id:
         # Attendance does not imply a credit deduction when no wallet exists.
         new_charge_lessons = previous_charge_lessons
     lesson_delta = new_charge_lessons - previous_charge_lessons
