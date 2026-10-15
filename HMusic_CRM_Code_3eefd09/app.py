@@ -6670,11 +6670,28 @@ def link_student_teacher(name):
     return redirect(f"/student/{name}")
 
 
+def invoice_delete_action(invoice_id, student_name, amount, status, return_to="/invoices"):
+    """Render owner deletion only for the statuses accepted by delete_invoice."""
+    if not require_owner() or (status or "unpaid") not in ("unpaid", "payment_failed"):
+        return ""
+    message = f"Delete invoice #{invoice_id} for {student_name or 'Student'} (${hmusic_money(amount)})? This cannot be undone."
+    confirmation = escape(json.dumps(message), quote=True)
+    return f'''<form method="POST" action="/delete_invoice/{int(invoice_id)}" class="inline-form inline-action-form" onsubmit="return confirm({confirmation});">
+        <input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">
+        <button class="button compact row-action" style="color:#b42318;border-color:#fecdca" type="submit">Delete</button>
+    </form>'''
+
+
 @app.route("/delete_invoice/<int:invoice_id>", methods=["POST"])
 def delete_invoice(invoice_id):
     if not require_owner():
         return redirect("/owner_login")
 
+    return_to = request.form.get("return_to", "/invoices")
+    if return_to != "/invoices" and not (
+        return_to.startswith("/parent_admin/") and return_to[len("/parent_admin/"):].isdigit()
+    ):
+        return_to = "/invoices"
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -6686,7 +6703,7 @@ def delete_invoice(invoice_id):
     invoice = cursor.fetchone()
     if not invoice:
         conn.close()
-        return "<h1>Invoice not found</h1>"
+        return "<h1>Invoice not found</h1>", 404
 
     student_name = invoice[1]
     status = invoice[2] or "unpaid"
@@ -6695,13 +6712,13 @@ def delete_invoice(invoice_id):
         return f"""
         <h1>Invoice Cannot Be Deleted</h1>
         <p>Invoice #{invoice_id} is currently {escape(status)}. Only unpaid or failed invoices can be deleted.</p>
-        <p><a href="/student/{quote(student_name)}#payments">Back to Student</a></p>
+        <p><a href="{escape(return_to, quote=True)}">Back to billing</a></p>
         """
 
     cursor.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
     conn.commit()
     conn.close()
-    return redirect(f"/student/{quote(student_name)}#payments")
+    return redirect(return_to)
 
 
 @app.route("/edit_invoice/<int:invoice_id>", methods=["GET", "POST"])
@@ -18904,6 +18921,7 @@ def invoices():
             </form>
             """
             action_html += f'<a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
+        action_html += invoice_delete_action(invoice_id, student_name, amount, status, "/invoices")
         reminder_note = ""
         if reminder_sent_at:
             reminder_note = f'<div class="muted">Reminder sent {escape(str(reminder_sent_at))}</div>'
@@ -21777,6 +21795,7 @@ def parent_admin(parent_id):
                 <div class="row-actions">
                     {reminder_action}
                     <a class="button compact" href="/edit_invoice/{invoice_id}">Edit</a>
+                    {invoice_delete_action(invoice_id, student_name, amount, invoice_status_key, f"/parent_admin/{parent[0]}")}
                 </div>
             </td>
         </tr>
