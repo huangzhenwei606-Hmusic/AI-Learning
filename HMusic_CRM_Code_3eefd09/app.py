@@ -9614,6 +9614,7 @@ def calendar():
           <button class="att-btn" data-status="last_min_cancel" onclick="setPanelStatus('last_min_cancel')">Last min</button>
           <button class="att-btn" data-status="excused_24h" onclick="setPanelStatus('excused_24h')">Cancel >24h</button>
         </div></div>
+        <div class="panel-section"><button type="button" class="lc-detail-link" onclick="HMusicLessonComments.open(activePanelLesson.id,this)"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 10 10 0 0 1-4-.8L3 21l1.6-5.2a8.8 8.8 0 0 1-1.6-4.9A8.6 8.6 0 0 1 12 3a8.6 8.6 0 0 1 9 8.5Z"/></svg>Lesson comments</span><span>Staff only · Open →</span></button></div>
         <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="panelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
         <div class="panel-section"><h3>Homework assignment</h3><textarea class="panel-field" id="panelHomework" placeholder="Add homework. Each line can be one assignment."></textarea></div>
         <div class="panel-section"><h3>Reminders</h3>
@@ -14115,6 +14116,7 @@ def teacher_dashboard():
             <div class="panel-section"><h3>Course & duration</h3><select class="panel-field" id="tPanelCourseType" onchange="syncTeacherPanelCourse()">{teacher_calendar_course_options}</select><button class="teacher-course-duration-action" type="button" onclick="toggleTeacherQuickDuration('tPanelDurationRequest', 'tPanelCourseType', 'tPanelRequestedFormat')">+ Add a new duration to this course</button><div class="teacher-duration-quick" id="tPanelDurationRequest"><div class="panel-row"><input class="panel-field" type="number" id="tPanelRequestedDuration" min="15" max="240" step="5" placeholder="New duration"><select class="panel-field" id="tPanelRequestedFormat"><option value="private">Private</option><option value="group">Group</option></select></div><button class="panel-action" style="margin-top:10px;width:100%;min-height:44px" type="button" onclick="teacherAddCourseDuration('tPanelCourseType', 'tPanelRequestedDuration', 'tPanelRequestedFormat')">Add to course catalog</button></div></div>
             <div class="panel-section teacher-group-panel" id="tPanelGroupSection"><h3>Group</h3><input class="panel-field teacher-group-name" id="tPanelGroupName" placeholder="Group name"><div class="teacher-group-list" id="tPanelGroupRoster"></div>{teacher_group_add_html}</div>
         <div class="panel-section" id="tPanelWholeAttendanceSection"><h3>Attendance</h3><div class="att-row"><button class="att-btn" data-status="present" onclick="setTeacherPanelStatus('present')">Present</button><button class="att-btn" data-status="no_show" onclick="setTeacherPanelStatus('no_show')">No show</button><button class="att-btn" data-status="last_min_cancel" onclick="setTeacherPanelStatus('last_min_cancel')">Last min</button><button class="att-btn" data-status="excused_24h" onclick="setTeacherPanelStatus('excused_24h')">Cancel >24h</button></div></div>
+        <div class="panel-section"><button type="button" class="lc-detail-link" onclick="HMusicLessonComments.open(activeTeacherLesson.id,this)"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 10 10 0 0 1-4-.8L3 21l1.6-5.2a8.8 8.8 0 0 1-1.6-4.9A8.6 8.6 0 0 1 12 3a8.6 8.6 0 0 1 9 8.5Z"/></svg>Lesson comments</span><span>Staff only · Open →</span></button></div>
             <div class="panel-section"><h3>Lesson note</h3><textarea class="panel-field" id="tPanelLessonNote" placeholder="Parent-visible lesson note"></textarea></div>
             <div class="panel-section"><h3>Private note</h3><textarea class="panel-field" id="tPanelPrivateNote" placeholder="Only teacher and owner can see this."></textarea></div>
             <div class="panel-section"><h3>Homework assignments</h3><textarea class="panel-field" id="tPanelHomework" placeholder="One homework item per line"></textarea><label class="panel-toggle" style="margin-top:12px"><span><strong>Practice reminder</strong><br><small>Send homework list to parent after lesson</small></span><input type="checkbox" id="tPanelPracticeReminder"></label></div>
@@ -48692,6 +48694,9 @@ def prepare_database_for_request():
 
 from family_billing import install_family_billing
 install_family_billing(app, globals())
+
+from lesson_comments import install_lesson_comments
+install_lesson_comments(app, globals())
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
