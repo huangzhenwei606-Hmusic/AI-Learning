@@ -40120,22 +40120,26 @@ def v35_registration_form(error="", values=None):
             section {{ border-bottom:1px solid var(--line); padding-bottom:24px; }}
             section:last-of-type {{ border-bottom:0; }}
             .section-title {{ color:var(--muted); font-weight:900; letter-spacing:.08em; font-size:13px; margin:0 0 14px; text-transform:uppercase; }}
-            .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
-            label {{ font-weight:800; font-size:14px; display:grid; gap:7px; color:#2f2f2b; }}
-            input, select, textarea {{ width:100%; border:1px solid var(--line); border-radius:13px; background:#fff; color:var(--text); padding:13px 14px; font-size:16px; font-family:inherit; outline:none; }}
+            .grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px 16px; }}
+            label {{ font-weight:800; font-size:14px; display:grid; gap:8px; min-width:0; line-height:1.5; color:#2f2f2b; }}
+            input, select, textarea {{ width:100%; min-width:0; border:1px solid var(--line); border-radius:13px; background:#fff; color:var(--text); padding:13px 14px; font-size:16px; font-family:inherit; outline:none; }}
             input:focus, select:focus, textarea:focus {{ border-color:#55a8ff; box-shadow:0 0 0 3px rgba(85,168,255,.16); }}
             textarea {{ min-height:104px; resize:vertical; }}
             .full {{ grid-column:1 / -1; }}
             .required {{ color:#ef4444; }}
             .error {{ background:#fee2e2; color:var(--danger); border:1px solid #fecaca; border-radius:12px; padding:12px 14px; font-weight:800; }}
-            .notice {{ background:var(--blue-soft); border:1px solid #bfdbfe; border-radius:14px; padding:13px 15px; color:#174a7c; font-weight:800; }}
+            .notice {{ background:var(--blue-soft); border:1px solid #bfdbfe; border-radius:14px; padding:13px 15px; color:#174a7c; font-weight:600; font-size:14px; line-height:1.6; margin-top:16px; }}
             .submit {{ width:100%; border:0; border-radius:14px; background:var(--blue); color:white; padding:15px 18px; font-size:17px; font-weight:900; cursor:pointer; }}
-            .check {{ display:flex; gap:10px; align-items:flex-start; font-weight:700; color:#4b5563; }}
-            .check input {{ width:auto; margin-top:3px; }}
+            .agreements {{ display:grid; gap:12px; margin-top:18px; }}
+            .check {{ display:grid; grid-template-columns:20px minmax(0,1fr); gap:12px; align-items:start; padding:12px 14px; border:1px solid #e7e3da; border-radius:12px; background:#fff; font-weight:500; font-size:14px; line-height:1.65; color:#4b5563; cursor:pointer; }}
+            .check input[type="checkbox"] {{ width:18px; height:18px; min-height:0; margin:3px 0 0; padding:0; accent-color:var(--blue); }}
+            .check .check-copy {{ display:block; min-width:0; overflow-wrap:anywhere; }}
+            .check a {{ color:var(--blue); text-underline-offset:3px; }}
+            .check:focus-within {{ border-color:#55a8ff; box-shadow:0 0 0 3px rgba(85,168,255,.16); }}
             details.policy {{ border:1px solid var(--line); border-radius:14px; background:#fbfaf7; padding:0; overflow:hidden; }}
             details.policy summary {{ cursor:pointer; list-style:none; padding:15px 16px; font-weight:900; display:flex; justify-content:space-between; gap:12px; align-items:center; }}
             details.policy summary::-webkit-details-marker {{ display:none; }}
-            details.policy summary span {{ color:var(--blue); font-size:14px; }}
+            details.policy summary span {{ color:var(--blue); font-size:14px; flex:0 0 auto; }}
             .policy-body {{ border-top:1px solid var(--line); padding:16px; color:#4b5563; font-size:14px; line-height:1.55; }}
             .policy-body h3 {{ color:#111827; margin:0 0 8px; font-size:16px; }}
             .policy-body p {{ color:#4b5563; font-size:14px; margin:0 0 10px; }}
@@ -40143,7 +40147,9 @@ def v35_registration_form(error="", values=None):
                 .wrap {{ padding:24px 14px 48px; }}
                 h1 {{ font-size:29px; }}
                 form {{ padding:18px; border-radius:18px; }}
-                .grid {{ grid-template-columns:1fr; }}
+                .grid {{ grid-template-columns:minmax(0,1fr); }}
+                .check {{ padding:12px; gap:10px; }}
+                details.policy summary {{ align-items:flex-start; font-size:14px; line-height:1.5; }}
             }}
         </style>
     </head>
@@ -40236,11 +40242,13 @@ def v35_registration_form(error="", values=None):
                             <p>Invoices and account balances will be shown in the H-Music Parent App. Tuition, package, and billing setup are confirmed by H-Music owner/management.</p>
                         </div>
                     </details>
-                    <label class="check"><input type="checkbox" name="policy_ack" value="1" required> I have reviewed and agree to the H-Music lesson, cancellation, makeup, and billing policy.</label>
-                    <label class="check"><input type="checkbox" name="billing_ack" value="1" required> I authorize H-Music to send invoices and secure ACH payment setup links through the parent app or email.</label>
-                    <label class="check"><input type="checkbox" name="sms_consent" value="1" {'checked' if values.get('sms_consent') == '1' else ''}> I agree to receive recurring transactional text messages from H-Music&Art about lessons, schedule changes, cancellations, parent app access, invoices, payments, and account updates at the mobile number provided. Message frequency varies. Message and data rates may apply. Reply <strong>STOP</strong> to opt out or <strong>HELP</strong> for help. Consent is not a condition of enrollment. See the <a href="/terms" target="_blank" rel="noopener">Terms</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</label>
-                    <label class="check"><input type="checkbox" name="media_ok" value="1"> Photo/video permission for studio learning moments and recitals.</label>
-                    <div class="grid" style="margin-top:14px;">
+                    <div class="agreements">
+                    <label class="check"><input type="checkbox" name="policy_ack" value="1" required><span class="check-copy"> I have reviewed and agree to the H-Music lesson, cancellation, makeup, and billing policy.</span></label>
+                    <label class="check"><input type="checkbox" name="billing_ack" value="1" required><span class="check-copy"> I authorize H-Music to send invoices and secure ACH payment setup links through the parent app or email.</span></label>
+                    <label class="check"><input type="checkbox" name="sms_consent" value="1" {'checked' if values.get('sms_consent') == '1' else ''}><span class="check-copy"> I agree to receive recurring transactional text messages from H-Music&Art about lessons, schedule changes, cancellations, parent app access, invoices, payments, and account updates at the mobile number provided. Message frequency varies. Message and data rates may apply. Reply <strong>STOP</strong> to opt out or <strong>HELP</strong> for help. Consent is not a condition of enrollment. See the <a href="/terms" target="_blank" rel="noopener">Terms</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+                    <label class="check"><input type="checkbox" name="media_ok" value="1"><span class="check-copy"> Photo/video permission for studio learning moments and recitals.</span></label>
+                    </div>
+                    <div class="grid" style="margin-top:22px;">
                         <label>Parent / guardian signature<input name="guardian_signature" value="{val('guardian_signature')}" placeholder="Type full name" required></label>
                         <label>Date<input type="date" name="signed_date" value="{val('signed_date')}" required></label>
                     </div>
