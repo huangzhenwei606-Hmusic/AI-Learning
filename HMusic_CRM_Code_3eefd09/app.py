@@ -24333,7 +24333,7 @@ def save_message_attachments(message_id, files):
 def hmusic_should_send_message_email_now(user_role, title):
     title_lower = (title or "").lower()
     return (
-        (user_role == "parent" and "message" in title_lower)
+        (user_role == "parent" and ("message" in title_lower or title_lower == "tuition invoice sent"))
         or (user_role in ("teacher", "owner") and "cancellation" in title_lower)
     )
 
@@ -24705,10 +24705,12 @@ def queue_notification_delivery(user_role, user_key, title, body, link_url, chan
     AND title = ?
     AND COALESCE(related_type, '') = COALESCE(?, '')
     AND COALESCE(related_id, -1) = COALESCE(?, -1)
-    AND status IN ('pending', 'sent')
+    AND COALESCE(link_url, '') = COALESCE(?, '')
+    AND COALESCE(body, '') = COALESCE(?, '')
+    AND status IN ('pending', 'sending', 'sent')
     ORDER BY id DESC
     LIMIT 1
-    """, (user_role, str(user_key), channel, destination, title, related_type, related_id))
+    """, (user_role, str(user_key), channel, destination, title, related_type, related_id, link_url, body))
     existing = cursor.fetchone()
     if existing:
         conn.close()
@@ -25004,16 +25006,24 @@ def send_queued_email_now(queue_id):
     WHERE id = ?
     """, (queue_id,))
     row = cursor.fetchone()
-    conn.close()
-
     if not row:
+        conn.close()
         return False, "Queue item not found."
 
     channel, destination, title, body, link_url, status = row
     if channel != "email":
+        conn.close()
         return False, "Queue item is not an email."
     if status != "pending":
+        conn.close()
         return False, f"Queue item already {status}."
+
+    cursor.execute("UPDATE notification_delivery_queue SET status = 'sending' WHERE id = ? AND channel = 'email' AND status = 'pending'", (queue_id,))
+    claimed = cursor.rowcount == 1
+    conn.commit()
+    conn.close()
+    if not claimed:
+        return False, "Queue item already claimed for delivery."
 
     try:
         sent, response = send_email_delivery(destination, title, body, link_url)
@@ -28365,7 +28375,9 @@ def new_owner_message():
                 "New message from H-Music",
                 body or "New attachment",
                 f"/message_thread/{thread_id}",
-                send_email_now=False
+                related_type="message",
+                related_id=message_id,
+                send_email_now=True
             )
             return redirect(f"/message_thread/{thread_id}")
 
