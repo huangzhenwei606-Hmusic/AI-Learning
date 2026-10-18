@@ -1193,7 +1193,7 @@ def ensure_teacher_management_schema():
 
     owner_username = os.environ.get("HMUSIC_OWNER_USERNAME", OWNER_USERNAME)
     owner_password = os.environ.get("HMUSIC_OWNER_PASSWORD", OWNER_PASSWORD)
-    owner_display_name = os.environ.get("HMUSIC_OWNER_DISPLAY_NAME", "Owner")
+    owner_display_name = os.environ.get("HMUSIC_OWNER_DISPLAY_NAME", "Manager")
 
     cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'owner'")
     owner_count = cursor.fetchone()[0]
@@ -2179,7 +2179,7 @@ def teacher_permissions_admin():
             <h2>Recommended model</h2>
             <div class="policy-grid">
                 <div class="policy"><b>Direct</b>Attendance, notes, homework, messages, history, reminders.</div>
-                <div class="policy"><b>Owner policy</b>Add own schedule and direct reschedule can be enabled per teacher.</div>
+                <div class="policy"><b>Manager policy</b>Add own schedule and direct reschedule can be enabled per teacher.</div>
                 <div class="policy"><b>Restricted</b>Billing, deleting lessons, student profile edits, other teacher calendars.</div>
             </div>
         </div>
@@ -2429,7 +2429,7 @@ def teacher_dashboard_add_schedule_content(teacher_name):
                 <label>New Duration<input type="number" name="requested_duration" min="15" max="240" step="5" placeholder="45" required></label>
                 <label>Format<select name="lesson_format"><option value="private">Private</option><option value="group">Group</option></select></label>
                 <label class="full">Reason<textarea name="reason" placeholder="Example: Parent requested a 45-minute make-up lesson."></textarea></label>
-                <div class="full"><button type="submit">Send to Owner</button></div>
+                <div class="full"><button type="submit">Send to Manager</button></div>
             </form>
         </section>
         <style>
@@ -2563,7 +2563,7 @@ def teacher_dashboard_time_off_content(teacher_name):
     row_html = ''.join(f"<tr><td>{escape(r[0] or '')} to {escape(r[1] or '')}</td><td>{'All day' if r[4] else escape((r[2] or '') + ' - ' + (r[3] or ''))}</td><td>{escape(r[6] or '')}</td><td>{escape(r[5] or '')}</td></tr>" for r in rows) or "<tr><td colspan='4'>No time off requests yet.</td></tr>"
     sent = '<div class="td-success">Time off request sent to owner.</div>' if request.args.get('sent') else ''
     return f"""
-        <div class="schedule-head"><div class="schedule-title"><h1>Time Off</h1><p>Request a date off or a specific unavailable time range. Owner approval is required before schedules change.</p></div></div>
+        <div class="schedule-head"><div class="schedule-title"><h1>Time Off</h1><p>Request a date off or a specific unavailable time range. Manager approval is required before schedules change.</p></div></div>
         {sent}
         <div class="td-layout">
             <section class="td-card"><h2>Request Time Off</h2>
@@ -2766,14 +2766,14 @@ def owner_message_templates():
     <body>
         <div class="topbar">
             <div class="brand">H-Music CRM</div>
-            <nav class="nav" aria-label="Owner navigation">
-                <a href="/">Owner Dashboard</a>
+            <nav class="nav" aria-label="Manager navigation">
+                <a href="/">Manager Dashboard</a>
                 <a href="/students">Students</a>
                 <a href="/calendar">Calendar</a>
                 <a href="/invoices">Billing</a>
                 <a class="active" href="/owner_message_templates">Message Templates</a>
             </nav>
-            <a class="button" href="/">Back to Owner</a>
+            <a class="button" href="/">Back to Manager</a>
         </div>
         <main class="page">
             <section class="head">
@@ -3304,7 +3304,7 @@ def owner_import_students_csv():
             backup_html = "<p style=\"color:#92400e;\"><strong>Backup warning:</strong> Import completed, but the pre-import backup could not be created. " + escape(backup_warning) + "</p>"
         return f"""
         <h1>Student CSV Import Complete</h1>
-        <p><a href="/students">Back to Students</a> | <a href="/owner_dashboard">Owner Dashboard</a></p>
+        <p><a href="/students">Back to Students</a> | <a href="/owner_dashboard">Manager Dashboard</a></p>
         {backup_html}
         <table border="1" cellpadding="8" cellspacing="0">{rows}</table>
         {duplicate_html}
@@ -3492,7 +3492,7 @@ input, select { min-height:34px; border-radius:8px; padding:7px 10px; font-size:
 <main class="owner-wrap">
   <div class="topbar">
     <div>
-      <span class="eyebrow">Owner</span>
+      <span class="eyebrow">Manager</span>
       <h1>Students</h1>
       <p class="subtitle">Search, filter, and open each student's profile, schedule, or parent login info.</p>
     </div>
@@ -3783,7 +3783,7 @@ def missing_homework():
                                     <option>Other</option>
                                 </select>
                             </label>
-                            <label>Owner note
+                            <label>Manager note
                                 <textarea name="skip_note" placeholder="Optional internal note"></textarea>
                             </label>
                             <div class="dialog-actions">
@@ -6252,7 +6252,7 @@ def student_detail(name):
             action_html = f"""
             <form class="inline-pay-form" method="POST" action="/pay_invoice/{invoice_id}">
                 <input type="hidden" name="payment_date" value="{date.today().strftime('%Y-%m-%d')}">
-                <input type="hidden" name="payment_method" value="Owner marked paid">
+                <input type="hidden" name="payment_method" value="Manager marked paid">
                 <button type="submit">Mark paid</button>
             </form>
             """
@@ -6513,7 +6513,7 @@ def student_detail(name):
         <div class="page">
             <div class="topbar">
                 <div>
-                    <div class="crumb">Owner / Students / {escape(student[0])}</div>
+                    <div class="crumb">Manager / Students / {escape(student[0])}</div>
                     <h1>Student Profile</h1>
                 </div>
                 <div class="top-actions">
@@ -6932,7 +6932,7 @@ def edit_invoice(invoice_id):
             <div class="shell">
                 <div class="head">
                     <h1>Edit Invoice</h1>
-                    <div class="sub">Owner can edit billing details from any billing view. Parents will see the updated amount when they open the invoice.</div>
+                    <div class="sub">Manager can edit billing details from any billing view. Parents will see the updated amount when they open the invoice.</div>
                 </div>
                 <div class="summary">
                     <div><span>Invoice</span><b>#{invoice_id}</b></div>
@@ -8818,7 +8818,7 @@ def calendar():
     return f"""
     <html>
     <head>
-        <title>Owner Calendar — H-Music</title>
+        <title>Manager Calendar — H-Music</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
         <style>
@@ -9254,7 +9254,7 @@ def calendar():
       <!-- Top bar -->
       <div class="cal-topbar">
         <div class="cal-brand">
-          <span class="role-pill">Owner</span>
+          <span class="role-pill">Manager</span>
           Calendar — {month_label}
         </div>
         <div class="top-btns">
@@ -10222,7 +10222,7 @@ def calendar():
           setTimeout(() => location.reload(), 1800);
         }} else {{
           if ((d.error || '').toLowerCase().includes('permission') || (d.error || '').toLowerCase().includes('logged')) {{
-            alert('Please log in as Owner again before moving lessons.');
+            alert('Please log in as Manager again before moving lessons.');
             window.location.href = '/owner_login';
             return;
           }}
@@ -10878,7 +10878,7 @@ def add_schedule():
         return redirect("/owner_login")
     if require_teacher() and not require_owner() and not teacher_has_permission(session.get("teacher_name"), "add_own_schedule"):
         return """
-        <h1>Add Schedule Requires Owner Permission</h1>
+        <h1>Add Schedule Requires Manager Permission</h1>
         <p>The owner can enable this from Teacher Permissions.</p>
         <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
         """, 403
@@ -10999,7 +10999,7 @@ def add_schedule():
             conn.close()
             return f"""
             <h1>Request Sent</h1>
-            <p>Owner has been notified to add or assign {requested_student} before you schedule lessons.</p>
+            <p>Manager has been notified to add or assign {requested_student} before you schedule lessons.</p>
             <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
             """
 
@@ -11096,12 +11096,12 @@ def add_schedule():
                 <body>
                     <div class="container">
                         <h1>Student Not In Your Enrollment List</h1>
-                        <p><b>{student_name}</b> is not in your active enrollment list yet. You may create a temporary schedule only if you write the student name and reason in the note below. Owner will be notified automatically.</p>
+                        <p><b>{student_name}</b> is not in your active enrollment list yet. You may create a temporary schedule only if you write the student name and reason in the note below. Manager will be notified automatically.</p>
                         <form method="POST" action="/add_schedule">
                             {hidden_html}
                             Required note to owner:<br>
                             <textarea name="temporary_schedule_note" required placeholder="Example: Student name: {escape(str(student_name or ''))}. This is my new trial student. Please add them to my list / create enrollment."></textarea>
-                            <button type="submit">Create Temporary Schedule + Notify Owner</button>
+                            <button type="submit">Create Temporary Schedule + Notify Manager</button>
                             <a class="button secondary" href="/teacher_dashboard">Back</a>
                         </form>
                     </div>
@@ -11841,7 +11841,7 @@ def add_schedule():
                     Parent Contact:<br>
                     <input name="new_parent_contact" placeholder="Phone or email, optional">
 
-                    Note to Owner:<br>
+                    Note to Manager:<br>
                     <textarea name="new_student_note" placeholder="Please add this student/enrollment so I can schedule lessons."></textarea>
                 </div>
         """
@@ -12207,7 +12207,7 @@ def add_schedule():
                         scheduleFields.style.display = "none";
                         scheduleFields.querySelectorAll("input, select, textarea").forEach(el => el.disabled = true);
                     }}
-                    submitButton.textContent = "Send New Student Request to Owner";
+                    submitButton.textContent = "Send New Student Request to Manager";
                 }} else {{
                     existingBox.style.display = "block";
                     newBox.style.display = "none";
@@ -12474,7 +12474,7 @@ def room_availability():
     if is_teacher and not teacher_has_permission(session.get("teacher_name"), "view_room_availability"):
         content = """
         <section class="td-card">
-            <h2>Room Availability Requires Owner Permission</h2>
+            <h2>Room Availability Requires Manager Permission</h2>
             <p class="muted">The owner can enable this from Teacher Permissions.</p>
         </section>
         """
@@ -12984,7 +12984,7 @@ def event_room_booking():
     <div class="erb-weekends">{weekend_buttons}</div>
     <div class="erb-layout">
         <section class="erb-card"><div class="erb-card-head"><h2>Upcoming bookings</h2><span>Event Room</span></div><div class="erb-list">{booking_cards}</div></section>
-        <section class="erb-card"><div class="erb-card-head"><h2>Request a time</h2><span>Owner approval required</span></div>
+        <section class="erb-card"><div class="erb-card-head"><h2>Request a time</h2><span>Manager approval required</span></div>
             <form method="POST" class="erb-form">
                 <input type="hidden" name="action" value="create">
                 <label>Date<input id="erbBookingDate" type="date" name="booking_date" min="{today_obj.strftime('%Y-%m-%d')}" value="{escape(request.form.get('booking_date') or default_date)}" required></label>
@@ -13161,7 +13161,7 @@ def owner_event_room_bookings():
             <label>Status<select name="status">{state_opts}</select></label>
             <label class="wide">Setup<textarea name="setup_requirements">{escape(str(row[9] or ''))}</textarea></label>
             <label class="wide">Event notes<textarea name="notes">{escape(str(row[10] or ''))}</textarea></label>
-            <label class="wide">Owner note<textarea name="owner_note">{escape(str(row[12] or ''))}</textarea></label>
+            <label class="wide">Manager note<textarea name="owner_note">{escape(str(row[12] or ''))}</textarea></label>
             <div class="wide"><button type="submit">Save booking</button></div>
           </form>
         </details>
@@ -13180,14 +13180,14 @@ def owner_event_room_bookings():
       .oerb-row{{border-bottom:1px solid #E5E9EF}}.oerb-row:last-child{{border-bottom:0}}.oerb-row summary{{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 17px;cursor:pointer;list-style:none}}.oerb-row summary::-webkit-details-marker{{display:none}}.oerb-row summary b,.oerb-row summary small{{display:block}}.oerb-row summary small{{color:#667085;margin-top:4px}}.oerb-row summary em{{font-style:normal;border-radius:999px;padding:5px 8px;background:#FFF4E5;color:#A15C07;font-size:11px;font-weight:900}}.oerb-row summary em.approved{{background:#EAF7F0;color:#1E7A50}}.oerb-row summary em.rejected,.oerb-row summary em.cancelled{{background:#FEE4E2;color:#B42318}}.oerb-edit{{border-top:1px solid #E5E9EF;background:#FAFBFC}}.oerb-empty{{padding:24px;color:#667085}}
       @media(max-width:760px){{.oerb-wrap{{padding:16px 12px}}.oerb-head{{display:block}}.oerb-back{{display:inline-block;margin-top:12px}}.oerb-create,.oerb-edit{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.oerb-row summary{{align-items:flex-start}}}}
     </style></head><body><main class="oerb-wrap">
-      <div class="oerb-head"><div><h1>Event Room Bookings</h1><p>Review teacher requests and manage weekend studio events.</p></div><a class="oerb-back" href="/">Owner Dashboard</a></div>
+      <div class="oerb-head"><div><h1>Event Room Bookings</h1><p>Review teacher requests and manage weekend studio events.</p></div><a class="oerb-back" href="/">Manager Dashboard</a></div>
       {notice_html}{error_html}
       <datalist id="oerbTeachers">{teacher_options}</datalist>
-      <section class="oerb-card"><div class="oerb-card-head"><h2>Create booking</h2><span>Owner-created bookings are approved by default</span></div>
+      <section class="oerb-card"><div class="oerb-card-head"><h2>Create booking</h2><span>Manager-created bookings are approved by default</span></div>
         <form method="POST" class="oerb-create"><input type="hidden" name="action" value="create">
           <label>Teacher / host<input name="teacher_name" list="oerbTeachers" required></label><label>Event type<select name="event_type">{event_type_options}</select></label><label>Status<select name="status">{status_options}</select></label>
           <label class="wide">Title<input name="title" placeholder="Piano Salon & Class" required></label><label>Date<input type="date" name="booking_date" value="{default_date}" required></label><label>Start<input type="time" name="start_time" step="1800" value="18:30" required></label><label>End<input type="time" name="end_time" step="1800" value="20:00" required></label>
-          <label>Attendance<input type="number" name="expected_attendance" min="0" max="500" value="20"></label><label>Audience<select name="audience_type">{audience_options}</select></label><label>Owner note<input name="owner_note"></label>
+          <label>Attendance<input type="number" name="expected_attendance" min="0" max="500" value="20"></label><label>Audience<select name="audience_type">{audience_options}</select></label><label>Manager note<input name="owner_note"></label>
           <label class="wide">Setup requirements<textarea name="setup_requirements"></textarea></label><label class="wide">Event notes<textarea name="notes"></textarea></label><div class="wide"><button type="submit">Create booking</button></div>
         </form>
       </section>
@@ -13866,7 +13866,7 @@ def teacher_dashboard():
         if not teacher_perms.get("add_own_schedule"):
             content = """
             <section class='td-card'>
-                <h2>Add Schedule Requires Owner Permission</h2>
+                <h2>Add Schedule Requires Manager Permission</h2>
                 <p class='muted'>The owner can enable this from Teacher Permissions.</p>
             </section>
             """
@@ -13995,7 +13995,7 @@ def teacher_dashboard():
         reschedule_label = "Reschedule" if direct_reschedule else "Request reschedule"
         cancel_label = "Cancel lesson" if direct_cancel else "Cancel request"
         delete_button_html = '<button class="panel-action danger" onclick="teacherDeleteLesson()">Delete lesson</button>' if delete_allowed else ''
-        owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Owner approval required for final reschedule. Parents are notified only after owner confirmation."
+        owner_policy_copy = "Schedule changes are enabled for your own lessons. Billing and student profile changes stay owner-managed." if direct_reschedule else "Manager approval required for final reschedule. Parents are notified only after owner confirmation."
         copy_button_html = '<button class="panel-action" onclick="teacherCopyLesson()">Copy lesson</button>' if teacher_perms.get("add_own_schedule") else ''
         sub_button_html = '<button class="panel-action" onclick="teacherSubRequest()">Sub request</button>' if sub_allowed else ''
         reminder_note_html = '<span class="reminder-pill">Schedule reminders on</span>' if reminder_allowed else '<span class="reminder-pill off">Schedule reminders off</span>'
@@ -15426,7 +15426,7 @@ def hmusic_resolve_enrollment_id(cursor, student_name, course_type_id=None, teac
 def owner_attendance_credit_snapshot():
     """Read-only owner diagnostic: bulk reads avoid thousands of DB round trips."""
     if not require_owner():
-        return {"ok": False, "error": "Owner login required"}, 403
+        return {"ok": False, "error": "Manager login required"}, 403
     ensure_calendar_lesson_panel_schema()
     conn = sqlite3.connect("hmusic.db")
     try:
@@ -16198,11 +16198,11 @@ def lesson_change_request_detail(request_id):
         "reject": "Cancellation request rejected",
     }
     decision_label = decision_labels.get(req[14] or "", "Cancellation request reviewed")
-    owner_note_html = f'<p><b>Owner note:</b> {escape(req[15])}</p>' if req[15] else ""
+    owner_note_html = f'<p><b>Manager note:</b> {escape(req[15])}</p>' if req[15] else ""
     if request_is_actionable:
         decision_panel = f"""
             <form class="card" method="POST">
-                <label class="muted">Owner note</label>
+                <label class="muted">Manager note</label>
                 <textarea name="owner_note" placeholder="Optional note for parent / internal record">{escape(req[15] or '')}</textarea>
                 <div class="actions">
                     <button class="primary" name="action" value="apply_policy" type="submit">Confirm cancellation</button>
@@ -16281,7 +16281,7 @@ def lesson_change_request_detail(request_id):
 @app.route("/owner_multi_select_action", methods=["POST"])
 def owner_multi_select_action():
     if not require_owner():
-        return {"ok": False, "error": "Owner login required"}, 401
+        return {"ok": False, "error": "Manager login required"}, 401
 
     data = request.get_json(silent=True) or {}
     raw_ids = data.get("schedule_ids") or data.get("ids") or []
@@ -16333,7 +16333,7 @@ def owner_multi_select_action():
             schedule_id,
             status,
             actor="owner:bulk_status",
-            reason="Owner bulk status update"
+            reason="Manager bulk status update"
         )
         if result.get("ok"):
             updated += 1
@@ -17949,7 +17949,7 @@ def calendar_lesson_action():
             if following_count:
                 msg = f"Moved this lesson and {following_count} following lesson(s)."
             else:
-                msg = "Lesson rescheduled." if is_owner else "Lesson moved. Owner was notified."
+                msg = "Lesson rescheduled." if is_owner else "Lesson moved. Manager was notified."
             return {"ok": True, "message": msg}
         requested_date = (data.get("new_date") or row[3] or "").strip()
         requested_time = (data.get("new_time") or row[4] or "").strip()
@@ -17970,7 +17970,7 @@ def calendar_lesson_action():
             return {"ok": False, "error": "Sub request permission is not enabled."}, 403
         if is_owner:
             conn.close()
-            return {"ok": False, "error": "Owner does not need sub approval."}, 400
+            return {"ok": False, "error": "Manager does not need sub approval."}, 400
         reason = (data.get("reason") or "Requested from teacher calendar panel").strip()
         ensure_v145_schema()
         cursor.execute("""
@@ -18541,7 +18541,7 @@ def create_package_invoice(name):
                     </div>
                     {pending_fee_html}
                     <div class="span-2">
-                        <label>Owner note</label>
+                        <label>Manager note</label>
                         <textarea name="notes" placeholder="Optional internal / invoice note"></textarea>
                     </div>
                 </div>
@@ -19060,7 +19060,7 @@ def invoices():
                 <div class="head">
                     <div class="head-title">
                         <h1>Invoices</h1>
-                        <div class="sub">Owner billing list for tuition packages and payment status.</div>
+                        <div class="sub">Manager billing list for tuition packages and payment status.</div>
                     </div>
                     <div class="card"><span>Open</span><b>{open_count}</b></div>
                     <div class="card"><span>Amount due</span><b>${hmusic_money(open_amount)}</b></div>
@@ -19505,7 +19505,7 @@ def pay_invoice(invoice_id):
                 allocation_id,
                 request.form.get("payment_method") or "Zelle",
                 payment_date=request.form.get("payment_date") or None,
-                reference="Owner confirmed",
+                reference="Manager confirmed",
             )
             conn.commit()
             conn.close()
@@ -19766,7 +19766,7 @@ def owner_settings():
     return f"""
     <html>
     <head>
-        <title>Owner Settings</title>
+        <title>Manager Settings</title>
         <style>
             body {{
                 font-family: Arial, sans-serif;
@@ -19811,7 +19811,7 @@ def owner_settings():
 
     <body>
         <div class="container">
-            <h1>Owner Billing Settings</h1>
+            <h1>Manager Billing Settings</h1>
 
             <form method="POST">
 
@@ -19830,10 +19830,10 @@ def owner_settings():
                 <label>Cancel Within 24 Hours Charge</label>
                 <input name="cancel_24h_charge" value="{settings.get('cancel_24h_charge', '0.5')}">
 
-                <label>Owner Notification Email</label>
+                <label>Manager Notification Email</label>
                 <input name="owner_email" value="{settings.get('owner_email', '')}">
 
-                <label>Owner Notification Phone</label>
+                <label>Manager Notification Phone</label>
                 <input name="owner_phone" value="{settings.get('owner_phone', '')}">
 
                 <button type="submit">Save Settings</button>
@@ -22501,7 +22501,7 @@ def link_parent_student(parent_id):
         parent_id,
         student_name,
         "owner_link_student",
-        f"Owner linked {student_name} to parent profile.",
+        f"Manager linked {student_name} to parent profile.",
         None,
         now
     ))
@@ -22614,7 +22614,7 @@ def student_guardian_access(student_name):
             """, (
                 parent_id,
                 student_name,
-                f"Owner reconnected {student_name} to guardian account {parent[1]}.",
+                f"Manager reconnected {student_name} to guardian account {parent[1]}.",
                 now,
             ))
             notice = f"{parent[1]} was reconnected to {student_name}."
@@ -23000,7 +23000,7 @@ def create_parent_child(parent_id):
             parent_id,
             student_name,
             "owner_create_family_child",
-            f"Owner created new student {student_name} from family workspace.",
+            f"Manager created new student {student_name} from family workspace.",
             None,
             now
         ))
@@ -23059,7 +23059,7 @@ def unlink_parent_student(link_id):
         link[0],
         link[1],
         "owner_unlink_student",
-        f"Owner unlinked {link[1]} from parent profile.",
+        f"Manager unlinked {link[1]} from parent profile.",
         None,
         now
     ))
@@ -23585,7 +23585,7 @@ def ensure_message_participant(cursor, thread_id, role, key, display_name=None, 
 
 def sync_thread_default_participants(cursor, thread_id, parent_id=None, teacher_name=None, owner_observer=1):
     if owner_observer:
-        ensure_message_participant(cursor, thread_id, "owner", "owner", "Owner", is_observer=1)
+        ensure_message_participant(cursor, thread_id, "owner", "owner", "Manager", is_observer=1)
     if parent_id:
         cursor.execute("SELECT parent_name, email FROM parent_profiles WHERE id = ?", (parent_id,))
         parent = cursor.fetchone()
@@ -23693,7 +23693,7 @@ def child_os_copy(lang, key, **kwargs):
         },
         "cancel_done": {
             "en": "Done — I cancelled {student}'s lesson on {date} {time}. Status: {status}. The studio can see this update.",
-            "zh": "已完成。我取消了 {student} 在 {date} {time} 的课程。状态：{status}。Owner 已同步可见。"
+            "zh": "已完成。我取消了 {student} 在 {date} {time} 的课程。状态：{status}。Manager 已同步可见。"
         },
         "reschedule_once": {
             "en": "Yes — I can help with a one-time reschedule. Please choose the new time in the reschedule form.",
@@ -23709,7 +23709,7 @@ def child_os_copy(lang, key, **kwargs):
         },
         "red": {
             "en": "I’ll ask the studio owner to review this. They will follow up with you within 24 hours.",
-            "zh": "这个请求已发送给 Owner。Owner 会在 24 小时内跟进。"
+            "zh": "这个请求已发送给 Manager。Manager 会在 24 小时内跟进。"
         },
         "fallback": {
             "en": "I’m not fully sure what you mean yet. Please choose one option, or I’ll ask the studio to confirm and reply to you.",
@@ -25951,7 +25951,7 @@ def notification_center():
     @media(max-width:700px){{body{{padding:12px}}.grid{{grid-template-columns:1fr}}}}
     </style></head><body><div class="shell">
     <div class="top"><div><h1>Parent Notification Center</h1><div class="muted">Manual delivery controls</div></div><div class="status">{escape(sms_label)}</div></div>{notice}
-    <nav class="page-nav" aria-label="Notification navigation"><a class="button secondary" href="/">Owner Dashboard</a><a class="button secondary" href="/invoices">Invoices</a><a class="button secondary" href="/notification_queue">Delivery History</a></nav>
+    <nav class="page-nav" aria-label="Notification navigation"><a class="button secondary" href="/">Manager Dashboard</a><a class="button secondary" href="/invoices">Invoices</a><a class="button secondary" href="/notification_queue">Delivery History</a></nav>
     <section class="section"><h2>Invoice notice</h2><form method="POST" onsubmit="return confirm('Send this invoice notice to the linked parent now?');">
     <input type="hidden" name="notice_kind" value="invoice"><label>Invoice</label><select name="invoice_id" required>{invoice_options}</select>
     <label>Additional SMS message (optional)</label><textarea name="sms_note" maxlength="500" placeholder="Add a short note after the invoice details. The student, invoice number, program, coverage, lessons, amount, due date, and payment link are added automatically."></textarea>
@@ -26051,7 +26051,7 @@ def notification_queue():
     def owner_task_text(title, provider_response, related_type, related_id):
         trial = trial_context(related_type, related_id)
         context_title, context_detail = format_trial_context(trial)
-        task_title = title or "Owner task"
+        task_title = title or "Manager task"
         if trial:
             task_title = f"{task_title}: {context_title}"
         task_detail = context_detail
@@ -26121,7 +26121,7 @@ def notification_queue():
     return f"""
     <html>
     <head>
-        <title>Owner Notifications</title>
+        <title>Manager Notifications</title>
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .container {{ background:white; padding:28px; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); }}
@@ -26163,7 +26163,7 @@ def notification_queue():
     </head>
     <body>
         <div class="container">
-            <h1>Owner Notifications</h1>
+            <h1>Manager Notifications</h1>
             <p class="hint">Parent App, email and SMS delivery records.</p>
 
             <div class="top-grid">
@@ -26187,7 +26187,7 @@ def notification_queue():
                 <div class="card"><div class="label">External sent</div><div class="value">{external_sent}</div></div>
                 <div class="card"><div class="label">External failed</div><div class="value">{external_failed}</div></div>
                 <div class="card"><div class="label">External queued</div><div class="value">{external_queued}</div></div>
-                <div class="card"><div class="label">Owner to-do</div><div class="value">{owner_todo_count}</div></div>
+                <div class="card"><div class="label">Manager to-do</div><div class="value">{owner_todo_count}</div></div>
             </div>
 
             <a class="button" href="/">Home</a>
@@ -26200,7 +26200,7 @@ def notification_queue():
             <p class="hint">Only failed deliveries need owner attention.</p>
             <div class="section">{external_html}</div>
 
-            <h2>Owner To-Do</h2>
+            <h2>Manager To-Do</h2>
             <p class="hint">Internal tasks for you. Complete removes the task from this list.</p>
             <div class="section">{owner_html}</div>
         </div>
@@ -26397,7 +26397,7 @@ def billing_settings():
             <h1>Stripe / ACH Billing Setup</h1>
             <p class="hint">This page tracks which parents requested bank AutoPay. Real bank collection should happen through Stripe-hosted setup or SetupIntent; H-Music should not store bank account numbers.</p>
             <a class="button" href="/">Home</a>
-            <a class="button" href="/owner_settings">Owner Settings</a>
+            <a class="button" href="/owner_settings">Manager Settings</a>
             <a class="button" href="/notification_queue">Notification Queue</a>
             <a class="button" href="/run_autopay_checks">Run AutoPay Checks</a>
             <div class="cards">
@@ -28118,7 +28118,7 @@ def create_reschedule_message_event(request_id, event_type, body, parent_id=None
                 create_notification("teacher", teacher_name, "New student reschedule request", body, f"/message_thread/{thread_id}")
     elif event_type == "approved":
         recipient_role = "parent" if parent_id else "teacher"
-        add_message(thread_id, "owner", "Owner", recipient_role, body)
+        add_message(thread_id, "owner", "Manager", recipient_role, body)
         if parent_id:
             title = "Reschedule approved"
             link_url = f"/message_thread/{thread_id}"
@@ -28143,7 +28143,7 @@ def create_reschedule_message_event(request_id, event_type, body, parent_id=None
             create_notification("teacher", teacher_name, "Reschedule approved", body, f"/message_thread/{thread_id}")
     elif event_type == "rejected":
         recipient_role = "parent" if parent_id else "teacher"
-        add_message(thread_id, "owner", "Owner", recipient_role, body)
+        add_message(thread_id, "owner", "Manager", recipient_role, body)
         if parent_id:
             title = "Reschedule rejected"
             link_url = f"/message_thread/{thread_id}"
@@ -28212,7 +28212,7 @@ def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=No
             f"Amount due: ${amount}. Please open the invoice in the parent app."
         )
         if parent_id:
-            add_message(thread_id, "owner", "Owner", "parent", message_body)
+            add_message(thread_id, "owner", "Manager", "parent", message_body)
             create_notification(
                 "parent",
                 str(parent_id),
@@ -28224,7 +28224,7 @@ def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=No
         parent_name = session.get("parent_name", "Parent")
         message_body = body or (
             f"{parent_name} marked invoice #{invoice_id} for {student_name} as paid / ready for confirmation. "
-            f"Amount: ${amount}. Owner confirmation: /pay_invoice/{invoice_id}"
+            f"Amount: ${amount}. Manager confirmation: /pay_invoice/{invoice_id}"
         )
         add_message(thread_id, "parent", parent_name, "owner", message_body)
         create_notification(
@@ -28262,7 +28262,7 @@ def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=No
 @app.route("/owner_unread_counts")
 def owner_unread_counts():
     if not require_owner():
-        return {"error": "Owner login required"}, 401
+        return {"error": "Manager login required"}, 401
     response = make_response({
         "messages": get_unread_message_count("owner", "owner"),
         "notifications": get_unread_notification_count("owner", "owner"),
@@ -28347,7 +28347,7 @@ def new_owner_message():
                 return "<h1>Parent not found.</h1><a href='/new_owner_message'>Back</a>"
 
             parent_label = parent[0] or parent[1] or f"Parent #{parent_id}"
-            subject = subject_input or f"Owner / Parent Message - {student_name or parent_label}"
+            subject = subject_input or f"Manager / Parent Message - {student_name or parent_label}"
             conn.close()
 
             thread_id = get_or_create_message_thread(
@@ -28357,7 +28357,7 @@ def new_owner_message():
                 teacher_name=None,
                 thread_type="owner_parent"
             )
-            message_id = add_message(thread_id, "owner", "Owner", "parent", body)
+            message_id = add_message(thread_id, "owner", "Manager", "parent", body)
             save_message_attachments(message_id, files)
             create_notification(
                 "parent",
@@ -28377,7 +28377,7 @@ def new_owner_message():
                 conn.close()
                 return "<h1>Please choose a teacher.</h1><a href='/new_owner_message'>Back</a>"
 
-            subject = subject_input or f"Owner / Teacher Message - {student_name or teacher_name}"
+            subject = subject_input or f"Manager / Teacher Message - {student_name or teacher_name}"
             conn.close()
 
             thread_id = get_or_create_message_thread(
@@ -28387,12 +28387,12 @@ def new_owner_message():
                 teacher_name=teacher_name,
                 thread_type="owner_teacher"
             )
-            message_id = add_message(thread_id, "owner", "Owner", "teacher", body)
+            message_id = add_message(thread_id, "owner", "Manager", "teacher", body)
             save_message_attachments(message_id, files)
             create_notification(
                 "teacher",
                 teacher_name,
-                "New message from Owner",
+                "New message from Manager",
                 body or "New attachment",
                 f"/message_thread/{thread_id}"
             )
@@ -28560,7 +28560,7 @@ def new_owner_message():
     return f"""
     <html>
     <head>
-        <title>New Owner Message</title>
+        <title>New Manager Message</title>
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; padding:32px; color:#111827; }}
             .container {{ background:white; padding:32px; border-radius:16px; max-width:820px; box-shadow:0 2px 10px rgba(0,0,0,0.08); }}
@@ -28641,7 +28641,7 @@ def new_owner_message():
     </head>
     <body onload="toggleOwnerRecipient()">
         <div class="container">
-            <h1>New Owner Message</h1>
+            <h1>New Manager Message</h1>
             <form method="POST" enctype="multipart/form-data">
                 Send To:<br>
                 <div class="recipient-options">
@@ -28756,7 +28756,7 @@ def new_parent_message():
                 related_id=None,
                 participants=[
                     {"role": "parent", "key": str(parent_id), "display_name": session.get("parent_name", "Parent")},
-                    {"role": "owner", "key": "owner", "display_name": "Owner"}
+                    {"role": "owner", "key": "owner", "display_name": "Manager"}
                 ],
                 is_group=0,
                 owner_observer=0
@@ -28787,7 +28787,7 @@ def new_parent_message():
         subject = f"{'Group' if is_group else 'Parent / Teacher'} Message - {student_name}"
         participants = [
             {"role": "parent", "key": str(parent_id), "display_name": session.get("parent_name", "Parent")},
-            {"role": "owner", "key": "owner", "display_name": "Owner", "is_observer": 1}
+            {"role": "owner", "key": "owner", "display_name": "Manager", "is_observer": 1}
         ] + [
             {"role": "teacher", "key": teacher, "display_name": teacher}
             for teacher in teacher_names
@@ -28919,7 +28919,7 @@ def new_parent_message():
                     <div class="teacher-grid">
                         {teacher_checks}
                     </div>
-                    <p class="hint">You can choose one teacher for 1-on-1, or multiple teachers for a group chat. Owner can see every chat and join anytime.</p>
+                    <p class="hint">You can choose one teacher for 1-on-1, or multiple teachers for a group chat. Manager can see every chat and join anytime.</p>
                 </div>
 
                 Message:<br>
@@ -29138,7 +29138,7 @@ def message_thread(thread_id):
         if body or any([f and f.filename for f in files]):
             if require_owner():
                 sender_role = "owner"
-                sender_name = "Owner"
+                sender_name = "Manager"
                 sender_key = "owner"
                 recipient_role = "participants"
             elif require_parent():
@@ -29245,7 +29245,7 @@ def message_thread(thread_id):
     observer_banner = ""
     if owner_observer and not require_owner():
         observer_banner = """
-        <div class="observer-banner">Owner can see this chat and can join anytime.</div>
+        <div class="observer-banner">Manager can see this chat and can join anytime.</div>
         """
 
     owner_manage_html = ""
@@ -29372,12 +29372,12 @@ def add_teacher_participant_to_thread(thread_id):
     conn.commit()
     conn.close()
 
-    add_message(thread_id, "owner", "Owner", "participants", f"Owner added {teacher_name} to this conversation.")
+    add_message(thread_id, "owner", "Manager", "participants", f"Manager added {teacher_name} to this conversation.")
     create_notification(
         "teacher",
         teacher_name,
         "Added to message thread",
-        f"Owner added you to a conversation about {thread[0] or 'a student'}.",
+        f"Manager added you to a conversation about {thread[0] or 'a student'}.",
         f"/message_thread/{thread_id}"
     )
     return redirect(f"/message_thread/{thread_id}")
@@ -29842,7 +29842,7 @@ def owner_booking_requests():
     return f"""
     <html>
     <head>
-        <title>Owner Booking Requests</title>
+        <title>Manager Booking Requests</title>
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:30px; color:#111827; }}
             .container {{ max-width:1180px; margin:0 auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
@@ -30175,7 +30175,7 @@ def parent_booking_request_review(request_id):
                         <option value="no_charge">No charge</option>
                     </select></div>
                 </div>
-                <label style="margin-top:12px;">Owner note</label>
+                <label style="margin-top:12px;">Manager note</label>
                 <textarea name="owner_note" placeholder="Optional note for parent/internal record">{escape(str(req[11] or ''))}</textarea>
                 <div class="actions">
                     <button class="primary" name="action" value="confirm" type="submit">Confirm + add to calendar</button>
@@ -30248,7 +30248,7 @@ def owner_cancel_requests():
     return f"""
     <html>
     <head>
-        <title>Owner Cancel Requests</title>
+        <title>Manager Cancel Requests</title>
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:30px; color:#111827; }}
             .container {{ max-width:1240px; margin:0 auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 8px 24px rgba(15,23,42,.06); }}
@@ -30982,7 +30982,7 @@ def parent_reschedule_group():
     if not lesson_rows:
         lesson_rows = "<p class='muted'>No upcoming scheduled lessons found.</p>"
 
-    sent = "<section class='app-card success-card'><b>Request sent</b><p>Owner will review your note and coordinate the final schedule change.</p></section>" if request.args.get("sent") == "1" else ""
+    sent = "<section class='app-card success-card'><b>Request sent</b><p>Manager will review your note and coordinate the final schedule change.</p></section>" if request.args.get("sent") == "1" else ""
     notes_required = "<section class='app-card warn-card'><b>Notes required</b><p>Please write what needs to change before submitting.</p></section>" if request.args.get("notes_required") == "1" else ""
 
     body = f"""
@@ -31023,7 +31023,7 @@ def parent_reschedule_group():
     {notes_required}
     <section class="app-card lead-card">
         <b>Tell us what to adjust</b>
-        <p class="muted">Write the full request here. Owner will review lessons, teachers, rooms, policy, and available times before anything changes on the calendar.</p>
+        <p class="muted">Write the full request here. Manager will review lessons, teachers, rooms, policy, and available times before anything changes on the calendar.</p>
     </section>
     <form method="POST" class="app-card">
         <label>Student / scope</label>
@@ -32037,7 +32037,7 @@ def reschedule_request_detail(request_id):
             </select>
             <div class="field-help">Each option includes the studio, full address, and room.</div>
 
-            Owner Note:<br>
+            Manager Note:<br>
             <textarea name="owner_note" rows="3"></textarea>
 
             <button type="submit">Approve and Update Schedule</button>
@@ -32089,7 +32089,7 @@ def reschedule_request_detail(request_id):
             </div>
 
             <p><b>Reason:</b> {r[10] or ''}</p>
-            <p><b>Owner Note:</b> {r[12] or ''}</p>
+            <p><b>Manager Note:</b> {r[12] or ''}</p>
             <p><b>Reviewed:</b> {r[13] or ''} {r[14] or ''}</p>
 
             {pending_actions}
@@ -32262,7 +32262,7 @@ def approve_reschedule(request_id):
         r[1],
         r[2],
         "reschedule_approved",
-        f"Owner approved reschedule request #{request_id}; teacher {actual_teacher}; location {approved_place}; new time {approved_date} {approved_time}.",
+        f"Manager approved reschedule request #{request_id}; teacher {actual_teacher}; location {approved_place}; new time {approved_date} {approved_time}.",
         r[3]
     )
 
@@ -32331,7 +32331,7 @@ def reject_reschedule(request_id):
         r[1],
         r[2],
         "reschedule_rejected",
-        f"Owner rejected reschedule request #{request_id}.",
+        f"Manager rejected reschedule request #{request_id}.",
         r[3]
     )
 
@@ -33714,7 +33714,7 @@ def parent_agent():
             risk_label = {
                 "teal": "Handled",
                 "amber": "Checking with studio",
-                "red": "Owner follow-up",
+                "red": "Manager follow-up",
             }.get(risk, "Received")
             risk_detail = {
                 "teal": "The studio can see this update.",
@@ -33958,7 +33958,7 @@ def parent_notification_preferences():
         <div class="toggle-row"><div><h3>Billing alerts</h3><p class="muted">Invoices, renewals, and low balance messages.</p></div><label class="switch"><input type="checkbox" name="billing_alerts" value="1" {checked(2)}><span class="slider"></span></label></div>
         <div class="toggle-row"><div><h3>Event updates</h3><p class="muted">Recital, studio events, and RSVP reminders.</p></div><label class="switch"><input type="checkbox" name="event_updates" value="1" {checked(3)}><span class="slider"></span></label></div>
         <div class="toggle-row"><div><h3>Schedule changes</h3><p class="muted">Teacher changes, room changes, reschedules, cancellations.</p></div><label class="switch"><input type="checkbox" name="schedule_changes" value="1" {checked(4)}><span class="slider"></span></label></div>
-        <div class="toggle-row"><div><h3>Message alerts</h3><p class="muted">Owner and teacher messages.</p></div><label class="switch"><input type="checkbox" name="message_alerts" value="1" {checked(5)}><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><h3>Message alerts</h3><p class="muted">Manager and teacher messages.</p></div><label class="switch"><input type="checkbox" name="message_alerts" value="1" {checked(5)}><span class="slider"></span></label></div>
         <label>Quiet hours start</label><input type="time" name="quiet_hours_start" value="{escape(str(prefs[6] or ''))}">
         <label>Quiet hours end</label><input type="time" name="quiet_hours_end" value="{escape(str(prefs[7] or ''))}">
         <button class="full" type="submit">Save preferences</button>
@@ -34211,7 +34211,7 @@ def parent_schedule():
                 <div class="primary-schedule-actions">
                     <form class="schedule-cancel-form" method="POST" action="/parent_cancel">
                         <input type="hidden" name="schedule_id" value="{next_lesson[0]}">
-                        <button class="schedule-action cancel" type="submit"><strong>Cancel class</strong><span>Owner confirmation pending after submission</span></button>
+                        <button class="schedule-action cancel" type="submit"><strong>Cancel class</strong><span>Manager confirmation pending after submission</span></button>
                     </form>
                     <a class="schedule-action reschedule" href="/parent_reschedule?schedule_id={next_lesson[0]}"><strong>Request reschedule</strong><span>Choose preferred times for approval</span></a>
                 </div>
@@ -34312,7 +34312,7 @@ def parent_schedule():
         for item in recent_items[:8]
     ) or "<p class='muted'>No schedule requests yet.</p>"
 
-    sent = "<div class='schedule-feedback good'><b>Request sent</b><span>Owner review is required before the schedule changes.</span></div>" if request.args.get("sent") == "1" else ""
+    sent = "<div class='schedule-feedback good'><b>Request sent</b><span>Manager review is required before the schedule changes.</span></div>" if request.args.get("sent") == "1" else ""
     cancel_pending_notice = "<div class='schedule-feedback pending'><b>Cancellation requested</b><span>The lesson remains scheduled while owner confirmation is pending.</span></div>" if request.args.get("cancel") == "pending" else ""
     cancel_withdrawn_notice = "<div class='schedule-feedback good'><b>Cancellation withdrawn</b><span>The lesson remains scheduled.</span></div>" if request.args.get("cancel") == "withdrawn" else ""
     cancel_already_reviewed_notice = "<div class='schedule-feedback pending'><b>Cancellation already reviewed</b><span>This request can no longer be withdrawn.</span></div>" if request.args.get("cancel") == "already_reviewed" else ""
@@ -34500,7 +34500,7 @@ def parent_booking_request():
 
     body = f"""
     <h1>{page_title}</h1>
-    <p class="muted">Submit a request. Owner approval is required before anything changes on the calendar.</p>
+    <p class="muted">Submit a request. Manager approval is required before anything changes on the calendar.</p>
     <form method="POST" class="app-card">
         <label>Student</label><select name="student_name">{student_options}</select>
         <label>Request type</label>
@@ -34586,13 +34586,13 @@ def parent_family():
         f"<div class='list-row'><div><b>{escape(str(row[0] or 'Guardian'))}</b><p class='muted'>{escape(str(row[1] or ''))} · {escape(str(row[2] or 'Guardian'))} · {escape(str(row[5] or 'Student'))}</p></div><span class='pill warn'>{escape(str(row[3] or 'pending'))}</span></div>"
         for row in invites
     ) or "<p class='muted'>No extra guardians requested yet.</p>"
-    sent = "<div class='app-card'><span class='pill good'>Request sent</span><p>Owner will review and activate guardian access.</p></div>" if request.args.get("sent") == "1" else ""
+    sent = "<div class='app-card'><span class='pill good'>Request sent</span><p>Manager will review and activate guardian access.</p></div>" if request.args.get("sent") == "1" else ""
 
     body = f"""
     <h1>Family Account</h1>
     <p class="muted">Manage students and request access for another guardian.</p>
     {sent}
-    <section class="app-card"><h2>Primary Guardian</h2><div class="list-row"><div><b>{escape(str(profile[0] or 'Parent'))}</b><p class="muted">{escape(str(profile[1] or ''))} · {escape(str(profile[2] or ''))}</p></div><span class="pill good">Owner-visible</span></div></section>
+    <section class="app-card"><h2>Primary Guardian</h2><div class="list-row"><div><b>{escape(str(profile[0] or 'Parent'))}</b><p class="muted">{escape(str(profile[1] or ''))} · {escape(str(profile[2] or ''))}</p></div><span class="pill good">Manager-visible</span></div></section>
     <section class="app-card"><div class="section-head"><h2>Students</h2></div>{student_rows}</section>
     <form method="POST" class="app-card">
         <h2>Add Guardian</h2>
@@ -35668,7 +35668,7 @@ HMUSIC_MESSAGE_TEMPLATE_DEFAULTS = [
     ("reschedule_approved", "Reschedule / Cancellation", "Reschedule approved", "Sent when owner approves a reschedule request.", "H-Music Reschedule Approved for {student_name}", "Hi {parent_name},\n\nYour reschedule request for {student_name} has been approved.\n\nNew date: {new_date}\nNew time: {new_time}\nTeacher: {teacher_name}\n\nPlease open the H-Music Parent App for the updated schedule.\n\nThank you,\nH-Music", "H-Music reschedule approved for {student_name}: {new_date} at {new_time}.", "Reschedule approved", "Your reschedule request for {student_name} has been approved.", "parent_name, student_name, new_date, new_time, teacher_name"),
     ("reschedule_rejected", "Reschedule / Cancellation", "Reschedule rejected", "Sent when owner rejects a reschedule request.", "H-Music Reschedule Update for {student_name}", "Hi {parent_name},\n\nWe could not approve the reschedule request for {student_name}.\n\nReason: {reason}\n\nPlease open the H-Music Parent App or reply to this message if you need help finding another option.\n\nThank you,\nH-Music", "H-Music reschedule update for {student_name}: {reason}", "Reschedule rejected", "We could not approve the reschedule request for {student_name}.", "parent_name, student_name, reason"),
     ("cancellation_notice", "Reschedule / Cancellation", "Cancellation notice", "Used for cancellation, makeup, no-credit, or late-fee notices.", "H-Music Lesson Cancellation Update for {student_name}", "Hi {parent_name},\n\nThis is an update about {student_name}'s lesson on {lesson_date} at {lesson_time}.\n\nStatus: {cancellation_status}\nCredit result: {credit_result}\nFee: {fee_amount}\n\nPlease open the H-Music Parent App for details.\n\nThank you,\nH-Music", "H-Music cancellation update for {student_name}: {cancellation_status}. Credit: {credit_result}.", "Lesson cancellation update", "{student_name}'s lesson cancellation has been updated.", "parent_name, student_name, lesson_date, lesson_time, cancellation_status, credit_result, fee_amount"),
-    ("teacher_lesson_reminder", "Teacher / Owner Alerts", "Teacher lesson reminder", "Sent to teachers before lessons.", "Lesson reminder", "Hi {teacher_name},\n\n{student_name} has a lesson on {lesson_date} at {lesson_time} in {classroom}.\n\nThank you,\nH-Music", "Lesson reminder: {student_name} on {lesson_date} at {lesson_time} in {classroom}.", "Lesson reminder", "{student_name} has a lesson on {lesson_date} at {lesson_time} in {classroom}.", "teacher_name, student_name, lesson_date, lesson_time, classroom"),
+    ("teacher_lesson_reminder", "Teacher / Manager Alerts", "Teacher lesson reminder", "Sent to teachers before lessons.", "Lesson reminder", "Hi {teacher_name},\n\n{student_name} has a lesson on {lesson_date} at {lesson_time} in {classroom}.\n\nThank you,\nH-Music", "Lesson reminder: {student_name} on {lesson_date} at {lesson_time} in {classroom}.", "Lesson reminder", "{student_name} has a lesson on {lesson_date} at {lesson_time} in {classroom}.", "teacher_name, student_name, lesson_date, lesson_time, classroom"),
     ("studio_event", "Studio Event", "Studio event / RSVP", "For recital, studio event, and RSVP reminders.", "H-Music Event: {event_title}", "Hi {parent_name},\n\nYou are invited to {event_title}.\n\nDate: {event_date}\nTime: {event_time}\nLocation: {event_location}\n\nPlease open the H-Music Parent App to view details or RSVP.\n\nThank you,\nH-Music", "H-Music event: {event_title} on {event_date} at {event_time}. Details/RSVP: {event_link}", "Studio event", "{event_title} is coming up. Please view details or RSVP.", "parent_name, event_title, event_date, event_time, event_location, event_link"),
 ]
 
@@ -36622,7 +36622,7 @@ def parent_invoice(invoice_id):
             conn.close()
             message_body = (
                 f"{session.get('parent_name', 'Parent')} marked invoice #{invoice_id} for {invoice[1]} as paid / ready for confirmation. "
-                f"Assigned share: ${own_allocation[2]}. Method: {payment_method}. Invoice status: {invoice_status}. Owner confirmation: /pay_invoice/{invoice_id}"
+                f"Assigned share: ${own_allocation[2]}. Method: {payment_method}. Invoice status: {invoice_status}. Manager confirmation: /pay_invoice/{invoice_id}"
             )
             if payment_note:
                 message_body += f"\n\nParent note: {payment_note}"
@@ -37813,7 +37813,7 @@ def executive_dashboard():
             <div class="header">
                 <div>
                     <h1>Executive Dashboard Pro</h1>
-                    <p>Owner command center for H-Music operations</p>
+                    <p>Manager command center for H-Music operations</p>
                 </div>
 
                 <div>
@@ -37912,7 +37912,7 @@ def executive_dashboard():
             </div>
 
             <div class="section">
-                <h2>Child OS Owner Oversight</h2>
+                <h2>Child OS Manager Oversight</h2>
                 <div class="card-grid">
                     <div class="card">
                         <div class="label">Live Feed</div>
@@ -37941,13 +37941,13 @@ def executive_dashboard():
                         <th>Student</th>
                         <th>Intent</th>
                         <th>Status</th>
-                        <th>Owner</th>
+                        <th>Manager</th>
                         <th>Request</th>
                         <th>Time</th>
                     </tr>
                     {child_os_rows}
                 </table>
-                <p><a class="button" href="/owner_child_os">Open Owner Control Panel</a></p>
+                <p><a class="button" href="/owner_child_os">Open Manager Control Panel</a></p>
             </div>
 
             <div class="section">
@@ -38054,7 +38054,7 @@ def update_child_os_owner_status(request_id, owner_status, status=None, note=Non
             "parent",
             str(parent_id),
             "Child OS update",
-            note or "Owner reviewed your request.",
+            note or "Manager reviewed your request.",
             f"/parent_agent?request_id={request_id}",
             "child_os_request",
             request_id
@@ -38121,7 +38121,7 @@ def owner_child_os():
             <div class="request-text">{escape(item[3] or '')}</div>
             <div class="outcome">{escape(item[9] or '')}</div>
             <div class="request-meta">
-                Parent: {escape(item[1] or '')} · Status: {escape(item[8] or '')} · Owner: {escape(owner_status)}
+                Parent: {escape(item[1] or '')} · Status: {escape(item[8] or '')} · Manager: {escape(owner_status)}
             </div>
             <form class="edit-form" method="POST" action="/owner_child_os/{request_id}/edit">
                 <textarea name="outcome" rows="3">{escape(item[9] or '')}</textarea>
@@ -38147,7 +38147,7 @@ def owner_child_os():
     return f"""
     <html>
     <head>
-        <title>Child OS Owner Control</title>
+        <title>Child OS Manager Control</title>
         <style>
             * {{ box-sizing:border-box; }}
             body {{ margin:0; background:#f7f7fb; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; }}
@@ -38195,8 +38195,8 @@ def owner_child_os():
         <div class="shell">
             <div class="header">
                 <div>
-                    <h1>Child OS Owner Control</h1>
-                    <div class="sub">Every parent AI request is visible here. Owner can block, escalate, or resolve at any point.</div>
+                    <h1>Child OS Manager Control</h1>
+                    <div class="sub">Every parent AI request is visible here. Manager can block, escalate, or resolve at any point.</div>
                 </div>
                 <div>
                     <a class="button" href="/executive_dashboard">Dashboard</a>
@@ -38204,7 +38204,7 @@ def owner_child_os():
                 </div>
             </div>
 
-            <div class="notice">Owner is the parallel oversight lane: live feed, override/block, edit outcome, follow-up, calendar sync, revenue alert, daily summary.</div>
+            <div class="notice">Manager is the parallel oversight lane: live feed, override/block, edit outcome, follow-up, calendar sync, revenue alert, daily summary.</div>
 
             <div class="grid">
                 <div class="metric"><div class="label">Live Feed Today</div><div class="value">{today_count}</div></div>
@@ -38228,7 +38228,7 @@ def owner_child_os_block(request_id):
         request_id,
         "blocked",
         "blocked",
-        "Owner blocked this request before further processing. H-Music will follow up manually."
+        "Manager blocked this request before further processing. H-Music will follow up manually."
     )
     return redirect("/owner_child_os")
 
@@ -38257,7 +38257,7 @@ def owner_child_os_edit(request_id):
             "parent",
             str(row[0]),
             "Child OS update",
-            "Owner updated the result for your request.",
+            "Manager updated the result for your request.",
             f"/parent_agent?request_id={request_id}",
             "child_os_request",
             request_id
@@ -38273,7 +38273,7 @@ def owner_child_os_escalate(request_id):
         request_id,
         "follow_up",
         "human_follow_up",
-        "Owner marked this request for human follow-up. H-Music will contact the family."
+        "Manager marked this request for human follow-up. H-Music will contact the family."
     )
     return redirect("/owner_child_os")
 
@@ -38286,7 +38286,7 @@ def owner_child_os_resolve(request_id):
         request_id,
         "resolved",
         None,
-        "Owner reviewed and marked this request resolved."
+        "Manager reviewed and marked this request resolved."
     )
     return redirect("/owner_child_os")
 
@@ -38341,7 +38341,7 @@ def owner_login():
         """
 
     return """
-    <h1>Owner Login</h1>
+    <h1>Manager Login</h1>
 
     <form method="POST">
         Username:<br>
@@ -38473,9 +38473,9 @@ def change_owner_password():
         new_password = request.form.get("new_password") or ""
         confirm_password = request.form.get("confirm_password") or ""
         if len(new_password) < 8:
-            return password_change_page("Change Owner Password", "/change_owner_password", "/executive_dashboard", "Password must be at least 8 characters.")
+            return password_change_page("Change Manager Password", "/change_owner_password", "/executive_dashboard", "Password must be at least 8 characters.")
         if new_password != confirm_password:
-            return password_change_page("Change Owner Password", "/change_owner_password", "/executive_dashboard", "Passwords do not match.")
+            return password_change_page("Change Manager Password", "/change_owner_password", "/executive_dashboard", "Passwords do not match.")
 
         conn = sqlite3.connect("hmusic.db")
         cursor = conn.cursor()
@@ -38492,7 +38492,7 @@ def change_owner_password():
         session["must_change_password"] = False
         return redirect("/executive_dashboard")
 
-    return password_change_page("Change Owner Password", "/change_owner_password", "/executive_dashboard")
+    return password_change_page("Change Manager Password", "/change_owner_password", "/executive_dashboard")
 
 
 @app.route("/reset_teacher_password/<int:teacher_id>", methods=["POST"])
@@ -39115,7 +39115,7 @@ def review_renewal_email(student_name):
         <div class="shell">
             <div class="head">
                 <div>
-                    <div class="eyebrow">Owner review required</div>
+                    <div class="eyebrow">Manager review required</div>
                     <h1>Review Renewal Email</h1>
                     <p>Nothing sends until you review the package count and confirm.</p>
                 </div>
@@ -39323,7 +39323,7 @@ def teacher_sub_request():
 
         return """
         <h1>Sub Request Submitted</h1>
-        <p>Owner will review and assign a substitute teacher.</p>
+        <p>Manager will review and assign a substitute teacher.</p>
         <p><a href="/teacher_dashboard">Back to Teacher Dashboard</a></p>
         """
 
@@ -39440,7 +39440,7 @@ def owner_sub_requests():
         """
 
     return f"""
-    <h1>Owner Sub Requests</h1>
+    <h1>Manager Sub Requests</h1>
 
     <table border="1" cellpadding="8">
         <tr>
@@ -39702,7 +39702,7 @@ def v35_insert_trial_lead(data, public=False):
     clean = {key: (data.get(key, "") or "").strip() for key in fields}
     clean["existing_family"] = "1" if str(data.get("existing_family") or "").strip() in ("1", "true", "True", "yes") else "0"
     if not clean["source"]:
-        clean["source"] = "Existing H-Music Family" if clean["existing_family"] == "1" else ("Public Trial Form" if public else "Owner Entry")
+        clean["source"] = "Existing H-Music Family" if clean["existing_family"] == "1" else ("Public Trial Form" if public else "Manager Entry")
     if not clean["lead_temperature"]:
         clean["lead_temperature"] = "Warm"
 
@@ -40910,7 +40910,7 @@ def inquiries():
             <div class="hero">
                 <div class="hero-top">
                     <h1>New Students / Intake</h1>
-                    <a class="owner-home" href="/owner_dashboard">Back to Owner Home</a>
+                    <a class="owner-home" href="/owner_dashboard">Back to Manager Home</a>
                 </div>
                 <p class="subtitle">Dense list view for fast owner review. Expand a row only when detail is needed.</p>
                 <div class="actions">
@@ -41185,7 +41185,7 @@ def inquiry_detail(inquiry_id):
                 <p>New Student Intake #{inquiry_id}</p>
             </div>
             <div class="top-actions">
-                <a class="btn secondary" href="/owner_dashboard">Back to Owner Home</a>
+                <a class="btn secondary" href="/owner_dashboard">Back to Manager Home</a>
                 <a class="btn secondary" href="/new_students">Back to Intake</a>
                 <a class="btn" href="/new_student_intake">Manual Entry</a>
             </div>
@@ -41209,7 +41209,7 @@ def inquiry_detail(inquiry_id):
         </div>
 
         <div class="panel ai">
-            <h2>Intake Plan - Owner Verification Required</h2>
+            <h2>Intake Plan - Manager Verification Required</h2>
             <p><b>Summary:</b> {v35_safe(inquiry['ai_summary'], 'No AI summary yet.')}</p>
             <p><b>Recommendation:</b> {v35_safe(inquiry['ai_recommendation'], 'No AI recommendation yet.')}</p>
             <p><b>Follow-up Draft:</b> {v35_safe(inquiry['ai_follow_up_draft'], 'No follow-up draft yet.')}</p>
@@ -41249,7 +41249,7 @@ def inquiry_detail(inquiry_id):
                 </div>
                 <label>Lead Notes</label><textarea name="notes">{v35_safe(inquiry['notes'])}</textarea>
                 <label>Follow-up Notes</label><textarea name="follow_up_notes">{v35_safe(inquiry['follow_up_notes'])}</textarea>
-                <label class="inline-check"><input type="checkbox" name="owner_verified" value="1" {verified_checked}> Owner verified trial plan and schedule</label>
+                <label class="inline-check"><input type="checkbox" name="owner_verified" value="1" {verified_checked}> Manager verified trial plan and schedule</label>
                 <button type="submit" name="action" value="save">Save Lead / Trial Plan</button>
                 <button class="success" type="submit" name="action" value="confirm_trial">Confirm Trial + Notify Parent</button>
             </form>
@@ -41929,7 +41929,7 @@ def create_course_duration_from_base(cursor, course_type_id, requested_duration,
 @app.route("/add_course_duration_quick", methods=["POST"])
 def add_course_duration_quick():
     if not (require_owner() or require_teacher()):
-        return {"ok": False, "error": "Owner or teacher login required."}, 403
+        return {"ok": False, "error": "Manager or teacher login required."}, 403
 
     ensure_v18_schema()
     data = request.get_json(silent=True) or {}
@@ -46947,7 +46947,7 @@ def lesson_status_rules():
     <body>
         <div class="container">
             <h1>Lesson Status Rules</h1>
-            <p>Owner can control student charge units and teacher pay units for each lesson status.</p>
+            <p>Manager can control student charge units and teacher pay units for each lesson status.</p>
 
             <a class="button" href="/">Home</a>
             <a class="button" href="/enrollments">Enrollments</a>
@@ -47080,7 +47080,7 @@ def edit_lesson_status_rule(rule_id):
     <p><a href="/lesson_status_rules">Back to Rules</a></p>
     """
 # =========================
-# V25.2 Owner Business Rules Settings
+# V25.2 Manager Business Rules Settings
 # =========================
 
 def ensure_v252_schema():
@@ -47193,7 +47193,7 @@ def v252_setup():
 
     return """
     <h1>V25.2 Setup Complete</h1>
-    <p>Owner Business Rules are ready.</p>
+    <p>Manager Business Rules are ready.</p>
     <p><a href="/business_rules">Business Rules</a></p>
     <p><a href="/">Back Home</a></p>
     """
@@ -47288,7 +47288,7 @@ def business_rules():
     <body>
         <div class="container">
             <h1>Business Rules</h1>
-            <p>Owner can edit student charge, teacher pay, and lesson deduction rules.</p>
+            <p>Manager can edit student charge, teacher pay, and lesson deduction rules.</p>
 
             <a class="button" href="/">Home</a>
             <a class="button" href="/lesson_status_rules">Lesson Status Rules</a>
@@ -48630,7 +48630,7 @@ def owner_backup():
     return f"""
     <html>
     <head>
-        <title>Owner Backup</title>
+        <title>Manager Backup</title>
         <style>
             body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; padding:32px; color:#111827; }}
             .container {{ max-width:980px; background:white; padding:28px; border-radius:16px; box-shadow:0 8px 28px rgba(15,23,42,.08); }}
@@ -48648,7 +48648,7 @@ def owner_backup():
     </head>
     <body>
         <div class="container">
-            <h1>Owner Backup</h1>
+            <h1>Manager Backup</h1>
             <p class="meta">
                 Database source: <b>{escape(HMUSIC_DB_PATH)}</b><br>
                 Uploads source: <b>{escape(HMUSIC_UPLOAD_DIR)}</b><br>
@@ -48793,7 +48793,7 @@ def reschedule_schedule():
             return {"ok": False, "error": "Permission denied"}, 403
         if not teacher_has_permission(session.get("teacher_name"), "direct_reschedule"):
             conn.close()
-            return {"ok": False, "error": "Owner approval required. Ask the owner to enable Direct reschedule in Teacher Permissions."}, 403
+            return {"ok": False, "error": "Manager approval required. Ask the owner to enable Direct reschedule in Teacher Permissions."}, 403
 
     old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
     day_delta    = (new_date_obj - old_date_obj).days
@@ -48849,7 +48849,7 @@ def reschedule_schedule():
             )
             add_message(
                 thread_id, "owner", "owner", "teacher",
-                f"Owner moved {lesson[1]}'s lesson from {lesson[3]} to {new_date}"
+                f"Manager moved {lesson[1]}'s lesson from {lesson[3]} to {new_date}"
                 + (" (this and all future lessons)" if scope == "forward"
                    else " (this lesson only)")
                 + f". Time: {lesson[4]}, Room: {lesson[5] or '-'}."
@@ -49830,13 +49830,13 @@ def hmusic_start_email_reply_sync():
 @app.route("/owner_sync_email_replies", methods=["POST"])
 def owner_sync_email_replies():
     if not require_owner():
-        return {"ok": False, "error": "Owner access required"}, 403
+        return {"ok": False, "error": "Manager access required"}, 403
     from email_reply_sync import sync_mailbox
     try:
         result = sync_mailbox(hmusic_email_reply_api())
         return {"ok": True, **result}
     except Exception as exc:
-        app.logger.warning("Owner email reply sync failed (%s)", type(exc).__name__)
+        app.logger.warning("Manager email reply sync failed (%s)", type(exc).__name__)
         return {"ok": False, "error": "Email inbox connection failed. Check the mailbox configuration."}, 503
 
 
@@ -49876,6 +49876,10 @@ def initialize_runtime_database():
 
 if os.environ.get("HMUSIC_PREPARE_DB_ON_STARTUP") == "1":
     initialize_runtime_database()
+
+
+from manager_labels import install_manager_labels
+install_manager_labels(app)
 
 
 # Child OS service API is isolated from the parent web session and requires

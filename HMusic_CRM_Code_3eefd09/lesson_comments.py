@@ -50,7 +50,7 @@ def install_lesson_comments(app, api):
 
     def identity():
         if api['require_owner']():
-            return 'owner', 'Owner'
+            return 'owner', 'Manager'
         if session.get('user_role') == 'teacher' and session.get('teacher_name'):
             name = str(session['teacher_name']).strip()
             return 'teacher:' + name.casefold(), name
