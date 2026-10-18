@@ -9676,7 +9676,7 @@ def calendar():
         </div>
         <div class="panel-toast" id="panelToast"></div>
       </div>
-      <div class="panel-footer"><button class="panel-discard" onclick="closeLessonPanel()">Discard</button><button class="panel-save" onclick="saveLessonPanel()">Save changes</button></div>
+      <div class="panel-footer"><button class="panel-discard" onclick="closeLessonPanel()">Discard</button><button class="panel-save" id="ownerPanelSaveButton" onclick="saveLessonPanel()">Save changes</button></div>
     </aside>
 
     <!-- Reschedule modal -->
@@ -9825,6 +9825,7 @@ def calendar():
 
     // ---- owner lesson panel ----
     let activePanelLesson = null;
+    let ownerPanelSaving = false;
     let activePanelStatus = 'scheduled';
     let panelDetailBaseline = null;
     let panelReminderBaseline = null;
@@ -9845,7 +9846,7 @@ def calendar():
       badge.className = 'panel-status ' + statusClass(activePanelStatus);
       document.querySelectorAll('.att-btn').forEach(b => b.classList.toggle('active', b.dataset.status === activePanelStatus));
     }}
-    function setPanelStatus(st) {{ paintPanelStatus(st); saveLessonPanel(true); }}
+    function setPanelStatus(st) {{ if (ownerPanelSaving) return; paintPanelStatus(st); saveLessonPanel(true); }}
     function showPanelToast(msg) {{ const t = document.getElementById('panelToast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }}
     function lessonAction(payload) {{
       return fetch('/calendar_lesson_action', {{method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}}, body:JSON.stringify(payload)}})
@@ -9950,7 +9951,7 @@ def calendar():
         document.getElementById('lessonPanel').classList.add('show');
       }}).catch(e => alert(e.message));
     }}
-    function closeLessonPanel() {{ document.getElementById('lessonScrim').classList.remove('show'); document.getElementById('lessonPanel').classList.remove('show'); activePanelLesson = null; }}
+    function closeLessonPanel() {{ if (ownerPanelSaving) return; document.getElementById('lessonScrim').classList.remove('show'); document.getElementById('lessonPanel').classList.remove('show'); activePanelLesson = null; }}
     function panelDetailValues() {{
       updatePanelRoomId();
       return {{
@@ -10014,7 +10015,29 @@ def calendar():
         ...detailValues
       }};
     }}
-    function saveLessonPanel(quiet) {{ if (!activePanelLesson) return; lessonAction(panelSavePayload()).then(d => {{ if (!quiet) {{ showPanelToast(d.message || 'Saved.'); setTimeout(() => location.reload(), 900); }} }}).catch(e => alert(e.message)); }}
+    function setOwnerPanelSaving(busy) {{
+      ownerPanelSaving = busy;
+      const panel = document.getElementById('lessonPanel');
+      if (panel) {{
+        panel.setAttribute('aria-busy', String(busy));
+        panel.querySelectorAll('button, input, select, textarea').forEach(el => {{
+          if (busy) {{ el.dataset.saveWasDisabled = el.disabled ? '1' : '0'; el.disabled = true; }}
+          else {{ if (el.dataset.saveWasDisabled !== undefined) el.disabled = el.dataset.saveWasDisabled === '1'; delete el.dataset.saveWasDisabled; }}
+        }});
+      }}
+      const btn = document.getElementById('ownerPanelSaveButton');
+      if (btn) btn.textContent = busy ? 'Saving...' : 'Save changes';
+    }}
+    function saveLessonPanel(quiet) {{
+      if (!activePanelLesson || ownerPanelSaving) return;
+      const payload = panelSavePayload();
+      setOwnerPanelSaving(true);
+      showPanelToast(payload.detail_scope === 'following' ? 'Saving this and following lessons...' : 'Saving...');
+      lessonAction(payload).then(d => {{
+        if (!quiet) {{ showPanelToast(d.message || 'Saved.'); location.reload(); }}
+        else {{ setOwnerPanelSaving(false); showPanelToast(d.message || 'Saved.'); }}
+      }}).catch(e => {{ setOwnerPanelSaving(false); alert(e.message); }});
+    }}
     function ownerReschedule() {{ if (!activePanelLesson) return; lessonAction({{action:'reschedule', schedule_id:activePanelLesson.id, new_date:document.getElementById('panelNewDate').value, new_time:document.getElementById('panelNewTime').value, classroom:document.getElementById('panelNewRoom').value, reason:document.getElementById('panelReason').value}}).then(d => {{ showPanelToast(d.message || 'Rescheduled.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
     function ownerDuplicateLesson() {{ if (!activePanelLesson) return; lessonAction({{action:'duplicate', schedule_id:activePanelLesson.id}}).then(d => {{ showPanelToast(d.message || 'Duplicated.'); setTimeout(() => location.reload(), 900); }}).catch(e => alert(e.message)); }}
     function setDeleteScope(scope) {{
@@ -17285,6 +17308,15 @@ def hmusic_copy_lesson(cursor, schedule_id, target_date, target_time=None):
     return new_id
 
 
+def calendar_update_schedule_ids(cursor, update_sql, values, schedule_ids):
+    """Update identical following-lesson fields in bounded batches, in caller's transaction."""
+    ids = list(dict.fromkeys(int(value) for value in schedule_ids))
+    for start in range(0, len(ids), 200):
+        batch = ids[start:start + 200]
+        placeholders = ",".join("?" for _ in batch)
+        cursor.execute(update_sql + f" WHERE id IN ({placeholders})", (*values, *batch))
+
+
 @app.route("/calendar_lesson_action", methods=["POST"])
 def calendar_lesson_action():
     ensure_calendar_lesson_panel_schema()
@@ -17671,7 +17703,7 @@ def calendar_lesson_action():
                 schedule_id
             ))
             if detail_update and following_ids:
-                cursor.executemany("""
+                calendar_update_schedule_ids(cursor, """
                 UPDATE schedule
                 SET student_name = COALESCE(?, student_name),
                     teacher = COALESCE(?, teacher),
@@ -17692,50 +17724,40 @@ def calendar_lesson_action():
                     billing_decision = COALESCE(?, billing_decision),
                     custom_lesson_count = ?,
                     owner_calendar_updated_at = ?
-                WHERE id = ?
-                """, [
-                    (
-                        detail_update.get("student_name"),
-                        detail_update.get("teacher"),
-                        detail_update.get("course_type_id"),
-                        detail_update.get("course_type_name"),
-                        detail_update.get("duration"),
-                        detail_update.get("is_group"),
-                        detail_update.get("location_id"),
-                        detail_update.get("room_id"),
-                        detail_update.get("location"),
-                        detail_update.get("classroom"),
-                        detail_update.get("lesson_time"),
-                        detail_update.get("schedule_type"),
-                        detail_update.get("package_type"),
-                        detail_update.get("student_billing_method"),
-                        detail_update.get("student_price"),
-                        detail_update.get("student_charge_amount"),
-                        detail_update.get("billing_decision"),
-                        detail_update.get("custom_lesson_count"),
-                        now,
-                        following_id,
-                    )
-                    for following_id in following_ids
-                ])
+                """, (
+                    detail_update.get('student_name'),
+                    detail_update.get('teacher'),
+                    detail_update.get('course_type_id'),
+                    detail_update.get('course_type_name'),
+                    detail_update.get('duration'),
+                    detail_update.get('is_group'),
+                    detail_update.get('location_id'),
+                    detail_update.get('room_id'),
+                    detail_update.get('location'),
+                    detail_update.get('classroom'),
+                    detail_update.get('lesson_time'),
+                    detail_update.get('schedule_type'),
+                    detail_update.get('package_type'),
+                    detail_update.get('student_billing_method'),
+                    detail_update.get('student_price'),
+                    detail_update.get('student_charge_amount'),
+                    detail_update.get('billing_decision'),
+                    detail_update.get('custom_lesson_count'),
+                    now,
+                ), following_ids)
             if reminder_following_ids:
-                cursor.executemany("""
+                calendar_update_schedule_ids(cursor, """
                 UPDATE schedule
                 SET parent_lesson_reminder_enabled = ?,
                     practice_reminder_enabled = ?,
                     low_balance_alert_enabled = ?,
                     owner_calendar_updated_at = ?
-                WHERE id = ?
-                """, [
-                    (
-                        parent_reminder,
-                        practice_reminder,
-                        low_balance_alert,
-                        now,
-                        reminder_following_id,
-                    )
-                    for reminder_following_id in reminder_following_ids
-                ])
+                """, (
+                    parent_reminder,
+                    practice_reminder,
+                    low_balance_alert,
+                    now,
+                ), reminder_following_ids)
         else:
             update_ids = [int(schedule_id)] + teacher_following_ids
             placeholders = ",".join(["?"] * len(update_ids))
