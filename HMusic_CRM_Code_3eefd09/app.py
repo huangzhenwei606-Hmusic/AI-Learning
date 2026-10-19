@@ -410,6 +410,7 @@ def hmusic_validate_csrf():
     if request.path.startswith("/api/child-os/v1/"):
         return True
     csrf_exempt_paths = {
+        "/api/website/trial",  # Public JSON intake validates its own origin and fields.
         "/owner_login",
         "/teacher_login",
         "/parent_login",
@@ -48675,6 +48676,9 @@ install_family_billing(app, globals())
 
 from lesson_comments import install_lesson_comments
 install_lesson_comments(app, globals())
+
+from website_trial_api import register_website_trial_api
+register_website_trial_api(app, globals())
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
