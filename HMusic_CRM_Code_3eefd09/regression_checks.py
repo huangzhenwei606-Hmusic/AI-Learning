@@ -17,7 +17,7 @@ CHECKS = {
     "smtp 465 ssl support": 'smtp_security = "ssl" if smtp_port == 465 else "starttls"',
     "smtp ssl client": "smtplib.SMTP_SSL if smtp_security == \"ssl\" else smtplib.SMTP",
     "smtp connection timeout": "smtp_port, timeout=30",
-    "transactional email account": 'HMUSIC_TRANSACTIONAL_EMAIL = "hmusicjustplay@gmail.com"',
+    "transactional email account": 'HMUSIC_TRANSACTIONAL_EMAIL = "info@h-musicandarts.com"',
     "transactional sender enforcement": 'smtp_user.casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold()',
     "transactional from header": 'message["From"] = HMUSIC_TRANSACTIONAL_EMAIL',
     "invoice reminder action": "Email reminder",

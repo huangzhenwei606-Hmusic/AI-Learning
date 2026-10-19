@@ -31821,7 +31821,7 @@ def hmusic_template_preview_context():
         "trial_duration": "30 minutes",
         "trial_fee": "$40.00",
         "payment_method": "Zelle",
-        "payment_line": "Please send the trial payment by Zelle to hmusicjustplay@gmail.com. Please include the student name in the payment note.",
+        "payment_line": "Please send the trial payment by Zelle to info@h-musicandarts.com. Please include the student name in the payment note.",
         "lesson_date": "Friday, September 4, 2026",
         "lesson_date_short": "Sep 4",
         "lesson_time": "4:30 PM",
@@ -32867,8 +32867,8 @@ def parent_invoice(invoice_id):
                     <div class="method-head"><h3>Zelle</h3><span class="badge">Manual confirm</span></div>
                     <p>Send from your bank app, then mark the invoice as paid.</p>
                     <div class="account-box">
-                        <span class="copy-account-text">hmusicjustplay@gmail.com</span>
-                        <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
+                        <span class="copy-account-text">info@h-musicandarts.com</span>
+                        <button type="button" class="copy-account-button" data-copy-value="info@h-musicandarts.com">Copy</button>
                     </div>
                     <form method="POST">
                         <input type="hidden" name="action" value="notify_paid">
@@ -32885,8 +32885,8 @@ def parent_invoice(invoice_id):
                     <div class="method-head"><h3>PayPal</h3><span class="badge">Manual confirm</span></div>
                     <p>Use the H-Music PayPal email, then notify the owner.</p>
                     <div class="account-box">
-                        <span class="copy-account-text">hmusicjustplay@gmail.com</span>
-                        <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
+                        <span class="copy-account-text">info@h-musicandarts.com</span>
+                        <button type="button" class="copy-account-button" data-copy-value="info@h-musicandarts.com">Copy</button>
                     </div>
                     <form method="POST">
                         <input type="hidden" name="action" value="notify_paid">
@@ -36243,13 +36243,13 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                             <input type="radio" name="payment_method" value="PayPal" required {'checked' if values.get('payment_method') == 'PayPal' else ''}>
                             <div class="pay-title">PayPal</div>
                             <p>Send online after confirmation.</p>
-                            <div class="payment-note">hmusicjustplay@gmail.com</div>
+                            <div class="payment-note">info@h-musicandarts.com</div>
                         </label>
                         <label class="pay-card">
                             <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
                             <div class="pay-title">Zelle</div>
                             <p>Send from your bank app.</p>
-                            <div class="payment-note">hmusicjustplay@gmail.com</div>
+                            <div class="payment-note">info@h-musicandarts.com</div>
                         </label>
                     </div>
                 </section>
@@ -36298,7 +36298,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
             {payment_html}
-            <p>Trial payment can be made by ACH, PayPal, or Zelle. Credit cards are not accepted for trial lessons. PayPal/Zelle: hmusicjustplay@gmail.com.</p>
+            <p>Trial payment can be made by ACH, PayPal, or Zelle. Credit cards are not accepted for trial lessons. PayPal/Zelle: info@h-musicandarts.com.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/trial">Submit another trial request</a></p>
         </div></div>
@@ -36659,7 +36659,7 @@ def v35_trial_confirmation_body(inquiry):
     payment_method = inquiry["payment_method"] or "your selected payment method"
     if payment_method.lower() in ("paypal", "zelle"):
         payment_line = (
-            f"Please send the trial payment by {payment_method} to hmusicjustplay@gmail.com. "
+            f"Please send the trial payment by {payment_method} to info@h-musicandarts.com. "
             "Please include the student name in the payment note."
         )
     else:

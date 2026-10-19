@@ -65,7 +65,7 @@ HMUSIC_BACKUP_DIR = os.environ.get(
 )
 HMUSIC_TIMEZONE_NAME = os.environ.get("HMUSIC_TIMEZONE", "America/Los_Angeles")
 HMUSIC_TIMEZONE = ZoneInfo(HMUSIC_TIMEZONE_NAME) if ZoneInfo else None
-HMUSIC_TRANSACTIONAL_EMAIL = "hmusicjustplay@gmail.com"
+HMUSIC_TRANSACTIONAL_EMAIL = "info@h-musicandarts.com"
 DB_NAME = "hmusic.db"
 _v27_schema_ready = False
 _v29_schema_ready = False
@@ -1004,7 +1004,7 @@ def terms_of_use():
 
         <h2>H-Music Family Updates SMS Program</h2>
         <p>Families who separately opt in may receive recurring transactional text messages from H-Music&Art about lesson reminders, schedule changes, cancellations, parent app access, invoices, payment status, and studio account updates. Message frequency varies. Message and data rates may apply.</p>
-        <p>Reply <strong>STOP</strong> to unsubscribe. Reply <strong>HELP</strong> for help, or contact <a href="mailto:hmusicjustplay@gmail.com">hmusicjustplay@gmail.com</a>. Consent to receive text messages is not a condition of enrollment or purchase. Carriers are not liable for delayed or undelivered messages.</p>
+        <p>Reply <strong>STOP</strong> to unsubscribe. Reply <strong>HELP</strong> for help, or contact <a href="mailto:info@h-musicandarts.com">info@h-musicandarts.com</a>. Consent to receive text messages is not a condition of enrollment or purchase. Carriers are not liable for delayed or undelivered messages.</p>
         <p>See our <a href="/privacy">Privacy Policy</a> for information about how H-Music handles personal information and mobile opt-in data.</p>
 
         <h2>Changes</h2>
@@ -35814,6 +35814,20 @@ def ensure_message_template_schema(seed=True):
                 "INSERT INTO message_template_migrations (migration_key, applied_at) VALUES (?, ?)",
                 (subject_key, now),
             )
+        email_key = "school_email_info_20261019"
+        cursor.execute("SELECT 1 FROM message_template_migrations WHERE migration_key = ?", (email_key,))
+        if not cursor.fetchone():
+            # Update reusable public templates, preserving previously sent messages and receipts.
+            cursor.execute("""
+                UPDATE message_templates SET
+                    email_subject = REPLACE(email_subject, ?, ?),
+                    email_body = REPLACE(email_body, ?, ?),
+                    sms_body = REPLACE(sms_body, ?, ?),
+                    app_body = REPLACE(app_body, ?, ?),
+                    updated_at = ?
+            """, ("hmusicjustplay@gmail.com", HMUSIC_TRANSACTIONAL_EMAIL) * 4 + (now,))
+            cursor.execute("INSERT INTO message_template_migrations (migration_key, applied_at) VALUES (?, ?)", (email_key, now))
+
     conn.commit()
     conn.close()
 
@@ -35892,7 +35906,7 @@ def hmusic_template_preview_context():
         "trial_duration": "30 minutes",
         "trial_fee": "$40.00",
         "payment_method": "Zelle",
-        "payment_line": "Please send the trial payment by Zelle to hmusicjustplay@gmail.com. Please include the student name in the payment note.",
+        "payment_line": "Please send the trial payment by Zelle to info@h-musicandarts.com. Please include the student name in the payment note.",
         "lesson_date": "Friday, September 4, 2026",
         "lesson_date_short": "Sep 4",
         "lesson_time": "4:30 PM",
@@ -39963,7 +39977,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                             <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
                             <div class="pay-title">Zelle</div>
                             <p>Send from your bank app.</p>
-                            <div class="payment-note">hmusicjustplay@gmail.com</div>
+                            <div class="payment-note">info@h-musicandarts.com</div>
                         </label>
                     </div>
                 </section>
@@ -40012,7 +40026,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
             {payment_html}
-            <p>Trial payment can be made by ACH or Zelle. Zelle: hmusicjustplay@gmail.com.</p>
+            <p>Trial payment can be made by ACH or Zelle. Zelle: info@h-musicandarts.com.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/">Back to H-Music</a></p>
         </div></div>
@@ -40381,7 +40395,7 @@ def v35_trial_confirmation_body(inquiry):
     payment_method = inquiry["payment_method"] or "your selected payment method"
     if payment_method.lower() in ("paypal", "zelle"):
         payment_line = (
-            f"Please send the trial payment by {payment_method} to hmusicjustplay@gmail.com. "
+            f"Please send the trial payment by {payment_method} to info@h-musicandarts.com. "
             "Please include the student name in the payment note."
         )
     else:
