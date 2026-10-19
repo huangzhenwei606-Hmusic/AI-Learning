@@ -34,7 +34,7 @@ INSERT INTO invoice_allocations VALUES(1,120,7,825,'unpaid','','','','','','',''
   h=self.render()
   for t in ('Coverage from','Oct 24, 2026','Oct 23, 2026','Chloe Lu','10 lessons × $82.50','Note from H-Music'):self.assertIn(t,h)
   for t in ('PRIVATE INTERNAL NOTE','Payment responsibility','Selected'):self.assertNotIn(t,h)
-  self.assertIn('info@h-musicandarts.com',h);self.assertNotIn('hmusicjustplay@gmail.com',h);self.assertLess(h.index('ach-choice'),h.index('zelle-choice'));self.assertIn('Pay $825.00 by bank transfer',h);self.assertIn('name="autopay" value="1"',h);self.assertNotIn('name="autopay" value="1" checked',h)
+  self.assertIn('6507977125',h);self.assertIn('data-copy-value="6507977125"',h);self.assertIn('Copy Zelle phone number',h);self.assertNotIn('Copy recipient email',h);self.assertNotIn('hmusicjustplay@gmail.com',h);self.assertLess(h.index('ach-choice'),h.index('zelle-choice'));self.assertIn('Pay $825.00 by bank transfer',h);self.assertIn('name="autopay" value="1"',h);self.assertNotIn('name="autopay" value="1" checked',h)
  def test_escaping_and_missing_fields(self):
   self.db.execute("UPDATE invoices SET coverage_title='<script>x</script>',coverage_note='<img onerror=x>',coverage_start='',due_date=''")
   h=self.render();self.assertIn('&lt;script&gt;',h);self.assertNotIn('<img onerror',h);self.assertNotIn('Coverage from',h);self.assertNotIn('Payment due</dt>',h)

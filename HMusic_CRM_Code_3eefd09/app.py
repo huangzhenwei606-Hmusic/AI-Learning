@@ -35907,7 +35907,7 @@ def hmusic_template_preview_context():
         "trial_duration": "30 minutes",
         "trial_fee": "$40.00",
         "payment_method": "Zelle",
-        "payment_line": "Please send the trial payment by Zelle to info@h-musicandarts.com. Please include the student name in the payment note.",
+        "payment_line": "Please send the trial payment by Zelle to 6507977125. Please include the student name in the payment note.",
         "lesson_date": "Friday, September 4, 2026",
         "lesson_date_short": "Sep 4",
         "lesson_time": "4:30 PM",
@@ -39978,7 +39978,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                             <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
                             <div class="pay-title">Zelle</div>
                             <p>Send from your bank app.</p>
-                            <div class="payment-note">info@h-musicandarts.com</div>
+                            <div class="payment-note">6507977125</div>
                         </label>
                     </div>
                 </section>
@@ -40027,7 +40027,7 @@ def v35_public_trial_thank_you(inquiry_id, data):
             <h1>Thank you!</h1>
             <p>We received the trial lesson request for <b>{v35_safe(data.get('student_name', 'your student'))}</b>. H-Music will review teacher availability and follow up soon.</p>
             {payment_html}
-            <p>Trial payment can be made by ACH or Zelle. Zelle: info@h-musicandarts.com.</p>
+            <p>Trial payment can be made by ACH or Zelle. Zelle: 6507977125.</p>
             <div class="box">Request #{inquiry_id}</div>
             <p><a href="/">Back to H-Music</a></p>
         </div></div>
@@ -40396,7 +40396,7 @@ def v35_trial_confirmation_body(inquiry):
     payment_method = inquiry["payment_method"] or "your selected payment method"
     if payment_method.lower() in ("paypal", "zelle"):
         payment_line = (
-            f"Please send the trial payment by {payment_method} to info@h-musicandarts.com. "
+            f"Please send the trial payment by {payment_method} to {'6507977125' if payment_method.lower() == 'zelle' else HMUSIC_TRANSACTIONAL_EMAIL}. "
             "Please include the student name in the payment note."
         )
     else:

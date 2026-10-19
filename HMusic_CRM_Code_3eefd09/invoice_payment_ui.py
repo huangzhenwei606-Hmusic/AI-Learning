@@ -66,9 +66,9 @@ def payment_choices_html(invoice_id, student, amount, allowed_methods, ach_ready
             <summary><b>Pay with Zelle instead</b><span class="chevron" aria-hidden="true">⌄</span></summary>
             <div class="method-body"><ol class="payment-steps">
                 <li><h3>Open your banking app</h3><p>Find Zelle and send <strong>${money}</strong> to:</p>
-                    <div class="account-box"><span class="copy-account-text">info@h-musicandarts.com</span></div>
-                    <button type="button" class="copy-account-button" data-copy-value="info@h-musicandarts.com">Copy recipient email</button>
-                    <p class="copy-help" role="status" aria-live="polite">Copying the email does not send payment.</p></li>
+                    <div class="account-box"><span class="copy-account-text">6507977125</span></div>
+                    <button type="button" class="copy-account-button" data-copy-value="6507977125">Copy Zelle phone number</button>
+                    <p class="copy-help" role="status" aria-live="polite">Copying the phone number does not send payment.</p></li>
                 <li><h3>Complete your transfer</h3><p>Send ${money} in your banking app. Add <strong>{student} / Invoice #{int(invoice_id)}</strong> in the memo.</p></li>
                 <li><h3>Let H-Music know</h3><form method="POST">
                     <input type="hidden" name="action" value="notify_paid"><input type="hidden" name="payment_method" value="Zelle">
