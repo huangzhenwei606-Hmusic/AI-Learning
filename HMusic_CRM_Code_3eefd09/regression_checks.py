@@ -221,7 +221,7 @@ CHECKS = {
     "owner status check restores abandoned checkout": "Stripe confirms no ACH payment was submitted. The invoice was restored to unpaid.",
     "stale stripe allocation recovery": "CAST(locked_at AS TIMESTAMP) < CURRENT_TIMESTAMP - INTERVAL '15 minutes'",
     "pre-checkout ACH failure restores invoice": "SET status = 'unpaid', payment_method = NULL, lock_token = NULL",
-    "invoice autopay consent": "Use AutoPay for future tuition",
+    "invoice payment UI renderer": "from invoice_payment_ui import invoice_details_html, payment_choices_html",
     "stripe saves ACH for off-session use": 'payment_intent_data["setup_future_usage"] = "off_session"',
     "invoice autopay activation helper": "def enable_invoice_autopay_from_payment",
     "autopay verifies settled payment": 'payment_intent.get("status") != "succeeded"',

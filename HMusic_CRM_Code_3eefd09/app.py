@@ -36460,6 +36460,8 @@ def square_webhook():
 
 @app.route("/parent_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def parent_invoice(invoice_id):
+    from invoice_payment_ui import invoice_details_html, payment_choices_html
+
     if not require_parent():
         return redirect("/parent_login")
 
@@ -36490,7 +36492,14 @@ def parent_invoice(invoice_id):
         COALESCE(i.discount_amount, 0),
         COALESCE(i.payment_methods, ''),
         COALESCE(i.manual_payment_status, ''),
-        COALESCE(i.package_options, '')
+        COALESCE(i.package_options, ''),
+        COALESCE(i.coverage_title, ''),
+        COALESCE(i.coverage_class, ''),
+        COALESCE(i.coverage_start, ''),
+        COALESCE(i.coverage_note, ''),
+        COALESCE(e.course_type_name, ''),
+        COALESCE(e.teacher_name, ''),
+        COALESCE(e.duration, 0)
     FROM invoices i
     LEFT JOIN enrollments e
         ON i.enrollment_id = e.id
@@ -36646,7 +36655,7 @@ def parent_invoice(invoice_id):
                 student_name=invoice[1],
                 amount=own_allocation[2]
             )
-            return redirect("/parent_dashboard?payment_notice=sent")
+            return redirect(f"/parent_invoice/{invoice_id}?payment_notice=sent")
 
     conn.close()
 
@@ -36662,7 +36671,7 @@ def parent_invoice(invoice_id):
         allowed_methods = {"ach", "zelle"}
     package_options = hmusic_invoice_package_options(invoice[17], invoice[2], subtotal_amount)
     package_options_html = ""
-    if package_options:
+    if len(package_options) > 1:
         package_cards = []
         for option in package_options:
             lessons_label = hmusic_lesson_count_label(option["lessons"])
@@ -36714,7 +36723,7 @@ def parent_invoice(invoice_id):
     allocation_summary_html = f"""
     <div class="section-title">Payment responsibility</div>
     <div class="allocation-list">{allocation_summary_rows}</div>
-    """ if allocation_summary_rows else ""
+    """ if allocation_summary_rows and (len(allocation_display_rows) > 1 or not own_allocation) else ""
 
     payment_status_alert = ""
     if request.args.get("stripe_missing") == "1":
@@ -36731,7 +36740,7 @@ def parent_invoice(invoice_id):
     elif own_status == "processing" and own_allocation[4] == "Stripe ACH":
         payment_status_alert = "<div class='alert'>ACH payment is processing. Bank transfers can take several business days to fully settle.</div>"
     elif own_status == "pending_confirmation":
-        payment_status_alert = "<div class='alert'>Payment notice sent. H-Music will confirm and add lesson credits after review.</div>"
+        payment_status_alert = "<div class='warn'>Transfer reported · Awaiting verification. H-Music will verify your Zelle transfer before marking this invoice paid.</div>"
     elif own_status == "failed":
         payment_status_alert = "<div class='warn'>The previous ACH payment did not complete. Please try again or use Zelle.</div>"
     elif not own_allocation:
@@ -36741,139 +36750,39 @@ def parent_invoice(invoice_id):
     elif request.args.get("cancelled") == "1":
         payment_status_alert = "<div class='warn'>ACH checkout was cancelled. You can try again or use Zelle.</div>"
 
+    course_display = invoice[19] or invoice[22]
+    if invoice[24] and not invoice[19]:
+        course_display += f" · {hmusic_lesson_count_label(invoice[24])} min"
+    details_html = invoice_details_html(
+        invoice_id, invoice[2], subtotal_amount, invoice[8], invoice[18],
+        course_display, invoice[20], invoice[21], invoice[23], discount_amount, discount_code,
+    )
     online_payment_html = ""
     if can_pay_invoice and own_allocation and own_status in ("unpaid", "failed"):
-        payment_choices = []
-        if "zelle" in allowed_methods:
-            payment_choices.append("""
-                <div class="payment-choice">
-                    <div class="method-head"><h3>Zelle</h3><span class="badge">Manual confirm</span></div>
-                    <p>Send from your bank app, then mark the invoice as paid.</p>
-                    <div class="account-box">
-                        <span class="copy-account-text">hmusicjustplay@gmail.com</span>
-                        <button type="button" class="copy-account-button" data-copy-value="hmusicjustplay@gmail.com">Copy</button>
-                    </div>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="notify_paid">
-                        <input type="hidden" name="payment_method" value="Zelle">
-                        <textarea name="payment_note" rows="2" placeholder="Optional: confirmation name or screenshot note"></textarea>
-                        <button type="submit">I Paid by Zelle</button>
-                    </form>
-                </div>
-            """)
-
-        if "ach" in allowed_methods and stripe_is_configured():
-            autopay_consent_html = ""
-            if can_enable_autopay:
-                autopay_consent_html = f"""
-                    <label class="autopay-consent">
-                        <input type="checkbox" name="autopay" value="1">
-                        <span><b>Use AutoPay for future tuition</b><small>Save this bank account and authorize H-Music to automatically charge future tuition invoices for {escape(str(invoice[1]))}. You can turn AutoPay off later.</small></span>
-                    </label>
-                """
-            payment_choices.append(f"""
-                <div class="payment-choice">
-                    <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
-                    <p>Pay securely by bank transfer through Stripe. Processing may take several business days.</p>
-                    <div class="pay-summary">
-                        <span>Your amount due</span><b>${hmusic_money(own_amount)}</b>
-                    </div>
-                    <form method="GET" action="/stripe/invoice/{invoice_id}/checkout">
-                        <input type="hidden" name="method" value="ach">
-                        {autopay_consent_html}
-                        <button class="primary-action" type="submit">Continue to secure ACH</button>
-                    </form>
-                </div>
-            """)
-        elif "ach" in allowed_methods:
-            payment_choices.append("""
-                <div class="payment-choice disabled">
-                    <div class="method-head"><h3>ACH</h3><span class="badge">Online</span></div>
-                    <p>ACH online payment is being set up. Please use Zelle for now.</p>
-                    <button type="button" class="primary-action" disabled>Pay by ACH</button>
-                </div>
-            """)
-
-        if payment_choices:
-            online_payment_html = f"""
-            <div class="section-title">Pay With</div>
-            <div class="payment-choice-grid">
-                {''.join(payment_choices)}
-            </div>
-            """
-        else:
-            online_payment_html = """
-            <p class="hint">No payment method is enabled for this invoice yet. Please contact H-Music.</p>
-            """
+        online_payment_html = payment_choices_html(
+            invoice_id, invoice[1], own_amount, allowed_methods,
+            stripe_is_configured(), can_enable_autopay,
+        )
+    status_labels = {
+        "unpaid": "Unpaid", "failed": "Payment failed", "payment_failed": "Payment failed",
+        "pending_confirmation": "Awaiting verification", "payment_processing": "Processing",
+        "stripe_processing": "Processing", "square_processing": "Processing",
+        "paid": "Paid", "partially_paid": "Partially paid",
+    }
+    status_label = status_labels.get(invoice[4], str(invoice[4] or "unpaid").replace("_", " ").title())
+    amount_label = "Amount paid" if own_status == "paid" else "Your share" if len(allocation_display_rows) > 1 else "Amount due"
 
     return f"""
     <html>
     <head>
         {parent_app_meta("Tuition Invoice")}
-        <style>
-            * {{ box-sizing:border-box; }}
-            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#fff; margin:0; color:#111827; }}
-            .container {{ background:white; min-height:100vh; padding:max(24px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); max-width:520px; margin:0 auto; }}
-            .top-row {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }}
-            h1 {{ font-size:32px; line-height:1.05; margin:0; letter-spacing:0; }}
-            h3 {{ margin:0; font-size:17px; }}
-            .status-pill {{ border-radius:999px; padding:7px 10px; background:#fff7ed; color:#9a3412; font-size:12px; font-weight:900; white-space:nowrap; }}
-            .subcopy {{ color:#6b7280; margin:0 0 16px; font-size:15px; line-height:1.35; font-weight:650; }}
-            .summary {{ display:grid; grid-template-columns:1fr auto; gap:8px 16px; padding:14px; border:1px solid #d8dee9; border-radius:18px; background:#f5f7fb; margin-bottom:14px; }}
-            .summary-label {{ color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
-            .summary-value {{ font-size:15px; font-weight:900; }}
-            .amount {{ font-size:28px; font-weight:950; line-height:1; }}
-            .section-title {{ margin:16px 0 8px; color:#6b7280; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.05em; }}
-            .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
-            .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
-            .hint {{ color:#6b7280; line-height:1.45; }}
-            .package-row {{ display:grid; grid-template-columns:1fr 1fr; gap:9px; }}
-            .package-choice {{ min-height:86px; padding:12px; border:1px solid #d8dee9; border-radius:16px; background:#fff; display:flex; flex-direction:column; justify-content:space-between; gap:8px; }}
-            .package-choice.active {{ border:2px solid #5747e8; background:#eef2ff; padding:11px; }}
-            .package-name {{ font-size:16px; line-height:1.1; font-weight:900; }}
-            .package-price {{ color:#6b7280; font-size:13px; font-weight:800; }}
-            .selected-chip {{ color:#5747e8; font-size:12px; font-weight:900; }}
-            .choose-package {{ min-height:34px; width:100%; background:#eef2ff; color:#5747e8; }}
-            .payment-choice-grid {{ display:grid; gap:9px; }}
-            .payment-choice {{ border:1px solid #d8dee9; border-radius:17px; padding:12px; background:#fff; }}
-            .payment-choice.disabled {{ opacity:.72; }}
-            .payment-choice p {{ color:#6b7280; line-height:1.35; font-size:13px; font-weight:650; margin:7px 0 8px; }}
-            .method-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; }}
-            .badge {{ background:#dcfce7; color:#166534; border-radius:999px; padding:5px 8px; font-size:11px; font-weight:900; white-space:nowrap; }}
-            .account-box {{ background:#f5f7fb; border-radius:12px; padding:9px; font-weight:900; margin:8px 0; display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; font-size:12px; }}
-            .copy-account-text {{ word-break:break-all; }}
-            input, select, textarea {{ width:100%; min-height:44px; padding:10px 12px; margin:8px 0; font-size:15px; border:1px solid #d1d5db; border-radius:12px; }}
-            .autopay-consent {{ display:grid; grid-template-columns:22px 1fr; gap:10px; align-items:start; margin:12px 0 4px; padding:11px; border:1px solid #c7d2fe; border-radius:12px; background:#eef2ff; cursor:pointer; }}
-            .autopay-consent input {{ width:20px; min-height:20px; margin:1px 0 0; accent-color:#5747e8; }}
-            .autopay-consent span {{ display:grid; gap:3px; font-size:13px; line-height:1.3; }}
-            .autopay-consent small {{ color:#4b5563; font-size:12px; line-height:1.35; }}
-            textarea {{ min-height:64px; resize:vertical; }}
-            button, a.button {{ display:inline-block; border:none; border-radius:13px; padding:11px 14px; font-weight:900; text-decoration:none; min-height:42px; font-size:14px; }}
-            button {{ background:#eef2ff; color:#5747e8; }}
-            .copy-account-button {{ min-height:30px; margin:0; padding:6px 9px; border-radius:10px; background:#fff; color:#5747e8; border:1px solid #d8dee9; font-size:12px; }}
-            .primary-action {{ width:100%; margin-top:8px; color:#fff !important; background:#5747e8 !important; text-align:center; }}
-            .primary-action:disabled {{ background:#d8dee9 !important; color:#6b7280 !important; }}
-            .pay-summary {{ display:grid; grid-template-columns:1fr auto; gap:6px 12px; background:#f5f7fb; border-radius:10px; padding:10px; margin:8px 0; }}
-            .pay-summary span {{ color:#6b7280; }}
-            .pay-summary b {{ text-align:right; }}
-            .allocation-list {{ display:grid; gap:8px; }}
-            .allocation-row {{ display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid #d8dee9; border-radius:13px; padding:11px 12px; background:#fff; }}
-            .allocation-row div {{ display:grid; gap:2px; }} .allocation-row span {{ color:#6b7280; font-size:12px; font-weight:800; }}
-            .allocation-status {{ border-radius:999px; background:#eef6ff; color:#1d65ad !important; padding:5px 8px; white-space:nowrap; text-transform:capitalize; }}
-            .auto-renew-panel {{ margin-top:14px; border-top:1px solid #e5e7eb; padding-top:12px; }}
-            .auto-renew-panel summary {{ font-weight:900; color:#111827; cursor:pointer; }}
-            .back-link {{ display:inline-block; margin-top:14px; color:#5747e8; font-weight:900; text-decoration:none; }}
-            @media(max-width:360px) {{ .package-row {{ grid-template-columns:1fr; }} h1 {{ font-size:28px; }} }}
-            .parent-bottom-nav {{ position:fixed; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.96); border-top:1px solid #e5e7eb; box-shadow:0 -4px 18px rgba(0,0,0,.08); z-index:20; }}
-            .parent-bottom-nav a {{ text-align:center; text-decoration:none; color:#6b7280; font-size:12px; font-weight:800; padding:9px 4px; border-radius:8px; }}
-            .parent-bottom-nav a.active {{ color:#4f46e5; background:#eef2ff; }}
-        </style>
+        <link rel="stylesheet" href="/static/parent_invoice.css?v=20261019">
         <script>
             function copyParentPaymentAccount(button) {{
                 const value = button.getAttribute("data-copy-value") || "";
                 const originalText = button.textContent;
                 function showCopied() {{
-                    button.textContent = "Copied";
+                    button.textContent = "Email copied";
                     setTimeout(function() {{
                         button.textContent = originalText;
                     }}, 1600);
@@ -36894,9 +36803,11 @@ def parent_invoice(invoice_id):
                 input.style.opacity = "0";
                 document.body.appendChild(input);
                 input.select();
-                try {{ document.execCommand("copy"); }} catch (error) {{}}
+                let copied = false;
+                try {{ copied = document.execCommand("copy"); }} catch (error) {{}}
                 document.body.removeChild(input);
-                onDone();
+                if (copied) onDone();
+                else window.alert("Please copy this recipient email manually: " + value);
             }}
             window.addEventListener("DOMContentLoaded", function() {{
                 document.querySelectorAll(".copy-account-button").forEach(function(button) {{
@@ -36909,22 +36820,14 @@ def parent_invoice(invoice_id):
     </head>
     <body>
         <div class="container">
-            <div class="top-row">
-                <h1>Invoice</h1>
-                <div class="status-pill">{escape(str(invoice[4] or "unpaid")).replace("_", " ")}</div>
-            </div>
-            <p class="subcopy">{escape(str(invoice[1]))} lesson package from H-Music. Choose a package and payment method.</p>
-            {payment_status_alert}
+            <a class="header-back" href="/parent_profile">‹ H-Music</a>
+            <h1>Tuition payment</h1>
             <div class="summary">
-                <div>
-                    <div class="summary-label">Student</div>
-                    <div class="summary-value">{escape(str(invoice[1]))}</div>
-                </div>
-                <div>
-                    <div class="summary-label">Your amount due</div>
-                    <div class="amount">${hmusic_money(own_amount)}</div>
-                </div>
+                <div><div class="summary-value">{escape(str(invoice[1]))}</div><div class="invoice-number">Invoice #{invoice_id}</div></div>
+                <div class="amount-block"><div class="status-pill">{escape(status_label)}</div><div class="summary-label">{amount_label}</div><div class="amount">${hmusic_money(own_amount)}</div></div>
             </div>
+            {payment_status_alert}
+            {details_html}
             {allocation_summary_html}
             {package_options_html}
             {online_payment_html}
