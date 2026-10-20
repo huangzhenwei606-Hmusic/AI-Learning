@@ -18944,6 +18944,8 @@ def invoices():
             </form>
             """
             action_html += f'<a class="row-action primary" href="/pay_invoice/{invoice_id}">Mark Paid</a>'
+        if status not in ("paid", "pending_owner_approval", "draft", "cancelled", "canceled", "void", "waived"):
+            action_html += f'<a class="row-action" href="/owner/invoice/{invoice_id}/quick-pay">Quick pay link</a>'
         action_html += invoice_delete_action(invoice_id, student_name, amount, status, "/invoices")
         reminder_note = ""
         if reminder_sent_at:
@@ -26405,7 +26407,7 @@ def billing_settings():
     </head>
     <body>
         <div class="container">
-            <h1>Stripe / ACH Billing Setup</h1>
+            <h1>Stripe / ACH Billing Setup</h1><p><a href="/owner/quick-pay-settings">Quick payment settings</a> · <a href="/owner/quick-pay-guide">Payment link guide</a></p>
             <p class="hint">This page tracks which parents requested bank AutoPay. Real bank collection should happen through Stripe-hosted setup or SetupIntent; H-Music should not store bank account numbers.</p>
             <a class="button" href="/">Home</a>
             <a class="button" href="/owner_settings">Manager Settings</a>
@@ -35438,6 +35440,10 @@ def stripe_webhook():
         parent_id=metadata.get("parent_id")
     )
 
+    quick_pay_result = handle_quick_pay_event(event)
+    if quick_pay_result is not None:
+        return quick_pay_result
+
     if event_type == "checkout.session.completed" and data_object.get("mode") == "setup":
         parent_id = metadata.get("parent_id")
         if parent_id:
@@ -36016,6 +36022,9 @@ def reopen_unsubmitted_stripe_allocation(cursor, invoice_id, parent_id):
         return False
 
     metadata = checkout_session.get("metadata", {}) or {}
+    # Guest checkouts keep their reservation until payment or confirmed expiry.
+    if metadata.get("quick_pay"):
+        return False
     session_status = str(checkout_session.get("status") or "").strip().lower()
     if (
         session_status not in ("open", "expired")
@@ -48676,6 +48685,9 @@ install_family_billing(app, globals())
 
 from lesson_comments import install_lesson_comments
 install_lesson_comments(app, globals())
+
+from quick_pay import install_quick_pay
+install_quick_pay(app, globals())
 
 from website_trial_api import register_website_trial_api
 register_website_trial_api(app, globals())
