@@ -100,7 +100,7 @@ def create_batch(cursor, parent_id, allocation_ids, method, request_key, api):
     for item in items:
         if active_batch(cursor, item[0]):
             raise FamilyPaymentError("This invoice is already included in a combined payment.")
-        cursor.execute("""UPDATE invoice_allocations SET status='processing',
+        cursor.execute("""UPDATE invoice_allocations SET status='unpaid',
             payment_method=?, lock_token=?, locked_at=?, updated_at=?
             WHERE id=? AND status IN ('unpaid','failed') AND lock_token IS NULL""",
             (method, 'family:' + str(batch_id), now, now, item[0]))
@@ -159,7 +159,7 @@ def release_batch(cursor, batch_id, api):
     cursor.execute("UPDATE family_payments SET status=status WHERE id=?", (batch_id,))
     cursor.execute("SELECT status FROM family_payments WHERE id=?", (batch_id,))
     row = cursor.fetchone()
-    if not row or row[0] == 'paid':
+    if not row or row[0] in ('paid','submitted'):
         raise FamilyPaymentError('A settled payment cannot be cancelled.')
     cursor.execute("UPDATE family_payments SET status='cancelled' WHERE id=?", (batch_id,))
     cursor.execute('SELECT allocation_id,invoice_id FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
@@ -263,6 +263,13 @@ def install_family_billing(app, api):
         conn = connect(); cur = conn.cursor()
         try:
             batch = load(cur,batch_id); authorize(batch[1])
+            if request.method == 'GET' and batch[2] in ('Stripe ACH','Square') and batch[5] and batch[3] not in ('paid','cancelled'):
+                try:
+                    reconcile(batch_id)
+                except Exception:
+                    app.logger.exception('Unable to verify family checkout %s',batch_id)
+                    return error('Payment status could not be verified. Retry this same bill shortly; do not start another payment.',503)
+                batch=load(cur,batch_id)
             if request.method == 'POST':
                 action = request.form.get('action')
                 cur.execute('BEGIN IMMEDIATE')
@@ -278,6 +285,11 @@ def install_family_billing(app, api):
                     if batch[2] not in ('Zelle','Check','Cash') or batch[3] not in ('creating','pending_confirmation'):
                         raise FamilyPaymentError('This payment cannot be marked as sent.')
                     cur.execute("UPDATE family_payments SET status='pending_confirmation', reference=? WHERE id=?",(request.form.get('reference') or '',batch_id))
+                    cur.execute('SELECT allocation_id,invoice_id FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
+                    for aid,iid in cur.fetchall():
+                        cur.execute("UPDATE invoice_allocations SET status='pending_confirmation' WHERE id=? AND lock_token=? AND status IN ('unpaid','processing')",
+                                    (aid,'family:'+str(batch_id)))
+                        api['refresh_invoice_status_from_allocations'](cur,iid)
                     # Still no payment records or credit until owner confirmation.
                 elif action == 'cancel':
                     if not api['require_owner']() or batch[2] not in ('Zelle','Check','Cash') or batch[3] == 'paid':
@@ -290,7 +302,12 @@ def install_family_billing(app, api):
             actions = ''
             if batch[3] != 'paid' and batch[3] != 'cancelled':
                 if batch[2] in ('Stripe ACH','Square'):
-                    actions = f'<form method="post" action="/family_payment/{batch_id}/checkout"><button>Pay ${batch[4]/100:,.2f} via {escape(batch[2])}</button></form><form method="post" action="/family_payment/{batch_id}/check"><button>Check payment status</button></form><p>Bank payments may take several days. Credit is added after settlement. Keep this bill to resume an interrupted checkout.</p>'
+                    actions = f'<form method="post" action="/family_payment/{batch_id}/check"><button>Check payment status</button></form>'
+                    if batch[3] in ('processing','submitted'):
+                        actions += '<p>Your payment was submitted and is processing. Do not submit another payment. Credits are added after settlement.</p>'
+                    else:
+                        actions = f'<form method="post" action="/family_payment/{batch_id}/checkout"><button>Continue payment · ${batch[4]/100:,.2f} via {escape(batch[2])}</button></form>' + actions
+                        actions += '<p>Payment has not been confirmed. Continue this same bill to resume an interrupted checkout.</p>'
                 else:
                     instructions = '<p>Send Zelle to <strong>6507977125</strong>.</p>' if batch[2]=='Zelle' else '<p>Provide one payment to the studio using the selected method.</p>'
                     actions = instructions + f'<p>Payment note: Family payment #{batch_id}</p><form method="post"><input type="hidden" name="action" value="notify"><input name="reference" placeholder="Payment reference"><button>I sent the combined payment</button></form>'
@@ -334,7 +351,7 @@ def install_family_billing(app, api):
                     'payment_note':f'H-Music family payment #{batch_id}'})
                 link=result.get('payment_link') or {};pid,url=link.get('order_id'),link.get('url')
             if not pid or not url: raise FamilyPaymentError('Provider response is incomplete. Retry this same combined bill.')
-            cur.execute("UPDATE family_payments SET provider_id=?,provider_url=?,status=CASE WHEN status='paid' THEN 'paid' ELSE 'processing' END WHERE id=?",(pid,url,batch_id))
+            cur.execute("UPDATE family_payments SET provider_id=?,provider_url=?,status=CASE WHEN status='paid' THEN 'paid' ELSE 'checkout' END WHERE id=?",(pid,url,batch_id))
             conn.commit();return redirect(url)
         except FamilyPaymentError as exc:
             conn.rollback();return error(exc)
@@ -359,6 +376,22 @@ def install_family_billing(app, api):
                     if obj.get('status')=='expired' and not obj.get('payment_intent'):
                         cur.execute('BEGIN IMMEDIATE')
                         release_batch(cur,batch_id,api)
+                        conn.commit()
+                    elif obj.get('status') in ('open','complete'):
+                        if obj.get('currency')!='usd' or obj.get('amount_total')!=batch[4]:
+                            raise FamilyPaymentError('Provider amount mismatch.')
+                        submitted=obj.get('status')=='complete' and bool(obj.get('payment_intent'))
+                        cur.execute('BEGIN IMMEDIATE')
+                        cur.execute("""UPDATE family_payments SET status=? WHERE id=?
+                            AND status NOT IN ('paid','cancelled') AND (status!='submitted' OR ?=1)""",
+                                    ('submitted' if submitted else 'checkout',batch_id,int(submitted)))
+                        if cur.rowcount!=1:
+                            raise FamilyPaymentError('Payment submission changed. Check this bill again before continuing.')
+                        cur.execute('SELECT allocation_id,invoice_id FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
+                        for aid,iid in cur.fetchall():
+                            cur.execute("UPDATE invoice_allocations SET status=? WHERE id=? AND lock_token=? AND status IN ('unpaid','processing')",
+                                        ('processing' if submitted else 'unpaid',aid,'family:'+str(batch_id)))
+                            api['refresh_invoice_status_from_allocations'](cur,iid)
                         conn.commit()
                     return False
                 if obj.get('currency')!='usd' or obj.get('amount_total')!=batch[4] or (stripe_session_id and stripe_session_id!=pid): raise FamilyPaymentError('Provider amount or session mismatch.')
@@ -388,6 +421,18 @@ def install_family_billing(app, api):
         except Exception:
             conn.rollback();raise
         finally:conn.close()
+
+    def sync_family_payment_status(batch_id):
+        reconcile(batch_id)
+        conn=connect()
+        try:
+            state=load(conn.cursor(),batch_id)[3]
+            if state=='submitted':return 'processing'
+            return state if state in ('paid','processing','pending_confirmation') else 'unpaid'
+        finally:
+            conn.close()
+
+    api['sync_family_payment_status']=sync_family_payment_status
 
     @app.route('/family_payment/<int:batch_id>/check',methods=['POST'])
     def check(batch_id):

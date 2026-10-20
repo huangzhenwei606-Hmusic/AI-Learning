@@ -33,6 +33,9 @@ def ensure_schema(cur):
         if name not in existing:
             cur.execute(f'ALTER TABLE quick_payment_links ADD COLUMN {name} {definition}')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_quick_payment_allocation ON quick_payment_links(allocation_id)')
+    cur.execute('''CREATE TABLE IF NOT EXISTS quick_payment_closed_attempts (
+        checkout_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL,
+        attempt_key TEXT NOT NULL, outcome TEXT NOT NULL)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS quick_payment_sms (
         token_hash TEXT PRIMARY KEY, destination TEXT NOT NULL, status TEXT NOT NULL,
         provider_response TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)''')
@@ -64,6 +67,7 @@ def install_quick_pay(app, api):
         response.headers['Cache-Control'] = 'no-store'
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['X-Robots-Tag'] = 'noindex, nofollow'
+        response.headers['X-Hmusic-Payment-Submission'] = 'confirmed-only-v1'
         return response
 
     def unavailable(message='This payment link is unavailable. Please contact H-Music for a new link.', status=409):
@@ -145,12 +149,18 @@ def install_quick_pay(app, api):
         digest = meta.get('quick_pay')
         if not digest:
             return False
+        prepare()
         conn = connect(); cur = conn.cursor()
         try:
             cur.execute('BEGIN IMMEDIATE')
             link = load(cur, digest)
             if not link:
                 raise ValueError('Unknown quick payment')
+            cur.execute('''SELECT 1 FROM quick_payment_closed_attempts
+                WHERE checkout_id=? AND token_hash=? AND attempt_key=? AND outcome=?''',
+                (obj.get('id'), digest, meta.get('attempt_key'), outcome))
+            if cur.fetchone():
+                conn.rollback(); return True
             # Serialize with other callbacks and invoice mutations on both DB backends.
             cur.execute('UPDATE invoices SET status=status WHERE id=?', (link['invoice_id'],))
             link = load(cur, digest); row = context(cur, link)
@@ -167,9 +177,17 @@ def install_quick_pay(app, api):
                 raise ValueError('Quick payment verification mismatch')
             if link['status'] == 'paid' or (link['status'] in ('expired', 'failed') and outcome == link['status']):
                 conn.rollback(); return True
-            if outcome == 'paid' and obj.get('payment_status') != 'paid':
+            if str(row[5]).lower() in CLOSED:
+                raise ValueError('Closed invoice needs owner review')
+            if link['status'] == 'submitted' and outcome in ('incomplete', 'expired'):
+                raise ValueError('A submitted payment cannot be reopened by an older checkout response')
+            if outcome == 'paid' and (obj.get('status') != 'complete' or obj.get('payment_status') != 'paid'):
                 raise ValueError('Payment is not confirmed')
-            if row[2] != link['attempt_key'] or row[1] != 'processing':
+            if outcome == 'processing' and (obj.get('status') != 'complete' or not obj.get('payment_intent')):
+                raise ValueError('Bank payment has not been submitted')
+            if outcome == 'incomplete' and obj.get('status') != 'open':
+                raise ValueError('Checkout is not open')
+            if row[2] != link['attempt_key'] or row[1] not in ('unpaid', 'processing'):
                 raise ValueError('Payment reservation changed; owner review required')
             if outcome == 'paid':
                 if str(row[5]).lower() in CLOSED and row[5] != 'paid':
@@ -196,11 +214,28 @@ def install_quick_pay(app, api):
                 cur.execute("""UPDATE invoice_allocations SET status='unpaid',lock_token=NULL,
                     locked_at=NULL,stripe_checkout_session_id=NULL WHERE id=? AND lock_token=?""",
                     (link['allocation_id'], link['attempt_key']))
-                cur.execute('UPDATE quick_payment_links SET status=?,checkout_id=? WHERE token_hash=?',
-                            (outcome, obj.get('id'), digest))
+                if outcome == 'expired':
+                    # The provider-confirmed expired checkout cannot collect funds.
+                    # Keep the seven-day guest link usable for a fresh attempt.
+                    cur.execute("""UPDATE quick_payment_links SET status='ready',checkout_id=NULL,
+                        attempt_key=NULL,attempt_started=NULL,method=NULL WHERE token_hash=?""", (digest,))
+                    cur.execute('''INSERT INTO quick_payment_closed_attempts
+                        (checkout_id,token_hash,attempt_key,outcome) VALUES (?,?,?,?)
+                        ON CONFLICT(checkout_id) DO NOTHING''',
+                        (obj.get('id'), digest, link['attempt_key'], outcome))
+                else:
+                    cur.execute('UPDATE quick_payment_links SET status=?,checkout_id=? WHERE token_hash=?',
+                                (outcome, obj.get('id'), digest))
                 api['refresh_invoice_status_from_allocations'](cur, link['invoice_id'])
             else:
-                cur.execute('UPDATE quick_payment_links SET checkout_id=? WHERE token_hash=?', (obj.get('id'), digest))
+                cur.execute("""UPDATE invoice_allocations SET status=?,stripe_checkout_session_id=?,
+                    stripe_payment_intent_id=? WHERE id=? AND lock_token=?""",
+                    ('processing' if outcome == 'processing' else 'unpaid', obj.get('id'),
+                     obj.get('payment_intent') if outcome == 'processing' else None,
+                     link['allocation_id'], link['attempt_key']))
+                cur.execute('UPDATE quick_payment_links SET checkout_id=?,status=? WHERE token_hash=?',
+                            (obj.get('id'), 'submitted' if outcome == 'processing' else 'checkout', digest))
+                api['refresh_invoice_status_from_allocations'](cur, link['invoice_id'])
             conn.commit()
             return True
         except Exception:
@@ -231,6 +266,27 @@ def install_quick_pay(app, api):
 
     api['handle_quick_pay_event'] = handle_event
 
+    def sync_quick_pay_checkout(obj, expected_digest=None):
+        """Reconcile provider state without dropping an open checkout's reservation."""
+        if expected_digest and (obj.get('metadata') or {}).get('quick_pay') != expected_digest:
+            raise ValueError('Checkout does not match this payment link')
+        state = obj.get('status')
+        if state == 'complete' and obj.get('payment_status') == 'paid':
+            outcome = 'paid'
+        elif state == 'complete' and obj.get('payment_intent'):
+            outcome = 'processing'
+        elif state == 'open':
+            outcome = 'incomplete'
+        elif state == 'expired':
+            outcome = 'expired'
+        else:
+            raise ValueError('Checkout submission could not be confirmed')
+        if not settle(obj, outcome):
+            raise ValueError('Unknown quick payment checkout')
+        return 'unpaid' if outcome in ('incomplete', 'expired') else outcome
+
+    api['sync_quick_pay_checkout'] = sync_quick_pay_checkout
+
     @app.before_request
     def protect_quick_payment_reservations():
         # Owner edits/manual confirmation and legacy payment routes must not race
@@ -251,7 +307,7 @@ def install_quick_pay(app, api):
             cur.execute("""SELECT q.token_hash FROM quick_payment_links q
                 JOIN invoice_allocations ia ON ia.id=q.allocation_id
                 WHERE q.invoice_id=? AND q.attempt_key=ia.lock_token
-                AND ia.status='processing' AND q.status='checkout' LIMIT 1""", (invoice_id,))
+                AND ia.status IN ('unpaid','processing') AND q.status IN ('checkout','submitted') LIMIT 1""", (invoice_id,))
             if cur.fetchone():
                 return unavailable('A quick payment is in progress. Check or revoke its checkout before changing this invoice.')
         finally:
@@ -459,14 +515,21 @@ def install_quick_pay(app, api):
         if link['checkout_id'] and api['configure_stripe']():
             try:
                 obj = api['stripe'].checkout.Session.retrieve(link['checkout_id'])
-                if obj.get('payment_status') == 'paid':
-                    settle(obj, 'paid')
+                outcome = sync_quick_pay_checkout(obj, digest)
+                if outcome == 'paid':
                     return receipt(link, paid=True)
-                if obj.get('status') == 'complete':
+                if outcome == 'processing':
                     return receipt(link, paid=False)
                 if obj.get('status') == 'expired':
-                    settle(obj, 'expired')
-                    return unavailable('This checkout expired. Please ask H-Music for a new link.')
+                    return redirect('/p/' + token, code=303)
+                # Also repairs old premature processing flags while preserving
+                # the same Checkout Session and lock for safe resumption.
+                conn = connect()
+                try:
+                    link = load(conn.cursor(), digest)
+                    row = context(conn.cursor(), link)
+                finally:
+                    conn.close()
             except Exception:
                 app.logger.exception('Quick payment status verification failed')
                 return unavailable('Payment status could not be verified. Please try again shortly.', 503)
@@ -476,7 +539,7 @@ def install_quick_pay(app, api):
             return unavailable('This invoice changed. Please ask H-Music for a new payment link.')
         if link['status'] in ('expired','failed'):
             return unavailable('This checkout ended. Please ask H-Music for a new link.')
-        if row[1] == 'processing' and row[2] != link['attempt_key']:
+        if row[2] and row[2] != link['attempt_key']:
             return unavailable('A payment is already in progress. Please contact H-Music before paying again.')
         if row[1] not in ('unpaid','failed','processing'):
             return unavailable('This payment is awaiting confirmation. Please contact H-Music before paying again.')
@@ -486,7 +549,7 @@ def install_quick_pay(app, api):
             <input type="hidden" name="_csrf_token" value="{escape(csrf)}"><input type="hidden" name="method" value="{method}">{consent}<button>{label}</button></form>'''
         if link['attempt_key']:
             buttons = form(link['method'], 'Continue / check payment')
-            note = 'If you already submitted a bank payment, it may take several business days. Please do not pay again.'
+            note = 'Payment has not been submitted. Continue securely using the same checkout; no payment has been confirmed.'
         else:
             buttons = form('ach', f'Pay ${link["amount_cents"]/100:,.2f} by bank · ACH')
             if link['card_rate_bps']:
@@ -531,7 +594,7 @@ def install_quick_pay(app, api):
                     return unavailable('An existing payment needs review before starting another payment.')
                 key = secrets.token_urlsafe(24)
                 started = int(time.time())
-                cur.execute('''UPDATE invoice_allocations SET status='processing',lock_token=?,locked_at=?,
+                cur.execute('''UPDATE invoice_allocations SET status='unpaid',lock_token=?,locked_at=?,
                     payment_method=? WHERE id=? AND status IN ('unpaid','failed') AND lock_token IS NULL''',
                     (key, api['datetime'].now().strftime('%Y-%m-%d %H:%M'),
                      'Stripe Card' if method == 'card' else 'Stripe ACH', link['allocation_id']))
@@ -541,7 +604,7 @@ def install_quick_pay(app, api):
                     WHERE token_hash=?""", (key, started, method, digest))
                 api['refresh_invoice_status_from_allocations'](cur, link['invoice_id'])
                 conn.commit(); link = load(cur, digest)
-            elif row[2] != link['attempt_key'] or row[1] != 'processing':
+            elif row[2] != link['attempt_key'] or row[1] not in ('unpaid', 'processing'):
                 return unavailable('This payment reservation changed. Please contact H-Music.')
             if link['checkout_id']:
                 obj = api['stripe'].checkout.Session.retrieve(link['checkout_id'])
