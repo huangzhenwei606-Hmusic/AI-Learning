@@ -441,7 +441,8 @@ def install_quick_pay(app, api):
             conn.close()
 
     @app.route('/p/<token>', methods=['GET'])
-    @app.route('/https://hmusic-crm.onrender.com/p/<token>', methods=['GET'])
+    @app.route('/https://hmusic-crm.onrender.com/p/<token>', methods=['GET'], merge_slashes=False)
+    @app.route('/https:/hmusic-crm.onrender.com/p/<token>', methods=['GET'], merge_slashes=False)
     def quick_pay_page(token):
         prepare()
         digest = hashlib.sha256(token.encode()).hexdigest()

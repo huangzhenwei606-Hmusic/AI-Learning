@@ -95,6 +95,7 @@ class QuickPayTest(unittest.TestCase):
         self.assertEqual(r.status_code,200)
         self.assertIn('Pay $550.00',r.text)
         self.assertIn('action="/p/'+t+'/checkout"',r.text)
+        self.assertEqual(self.client.get('/https:/hmusic-crm.onrender.com/p/'+t).status_code,200)
         self.assertEqual(self.client.get('/https://hmusic-crm.onrender.com/p/invalid').status_code,404)
     def test_sms_rejects_changed_invoice_and_permission(self):
         self.setup_sms(); t=self.make_link(); self.permission=False
