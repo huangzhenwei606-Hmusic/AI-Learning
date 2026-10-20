@@ -1,4 +1,4 @@
-"""Owner-selected, invoice-share-scoped guest checkout. No SMS is sent here."""
+"""Owner-selected guest checkout and explicit, guardian-scoped SMS delivery."""
 import hashlib
 import secrets
 import time
@@ -33,6 +33,9 @@ def ensure_schema(cur):
         if name not in existing:
             cur.execute(f'ALTER TABLE quick_payment_links ADD COLUMN {name} {definition}')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_quick_payment_allocation ON quick_payment_links(allocation_id)')
+    cur.execute('''CREATE TABLE IF NOT EXISTS quick_payment_sms (
+        token_hash TEXT PRIMARY KEY, destination TEXT NOT NULL, status TEXT NOT NULL,
+        provider_response TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)''')
 
 
 def load(cur, digest):
@@ -297,7 +300,7 @@ def install_quick_pay(app, api):
 <h2>2. 准备账单</h2><p>打开 <a href="/invoices">Billing → Invoices</a>，找到或创建正确学生、课程的已批准未付账单。点 Edit 核对 Amount、课次、Coverage title（覆盖内容标题）、Course（课程）、Coverage starts（开始日期）、Payment due（到期日）及家长可见备注。内部 Notes 不会自动作为付款说明展示。</p>
 <h2>3. 填写付款说明，生成链接</h2><p>在该账单行点 <b>Quick pay link</b>。选择正确的 Guardian / assigned amount（付款家长和应付份额）。在 <b>What this payment covers (parent visible)</b> 中填写学生、课程、老师、每节时长、节数、覆盖日期和特殊安排。金额来自账单，不能由家长自行修改。需要提供信用卡选项时，勾选 Also offer credit card payment；最后点 <b>Generate payment link</b>。</p>
 <p>说明示例：Mia — 10 private piano lessons with Ms. Chen, 30 minutes each. Saturdays 3:30–4:00 PM, Oct 24–Dec 26, 2026. Tuition: 10 × $55 = $550. Only this piano package is covered. 请按真实课表填写，并核实节假日，不要直接套用示例日期。</p>
-<h2>4. 发给指定家长</h2><p>复制页面中的 <b>Payment link</b>，或复制完整 <b>Text message</b>，手动发短信或微信。家长链接的路径是 <b>/p/…</b>，不需要安装 App、打开 App 或登录。不要发送后台网址、/pay_invoice/ 或需要登录的 /parent_invoice/ 地址。生成链接不会自动发送消息，目前自动短信服务尚未接通。</p>
+<h2>4. 发给指定家长</h2><p>核对显示的家长手机号，然后点击 <b>Send SMS to …</b>，系统会通过短信服务发送付款链接。生成链接本身不会发送短信。页面会提示服务商是否接受发送；接受不代表手机已收到。每个链接只发送一次，状态不明确时请先检查服务商记录。也可以使用 <b>Copy text message</b> 复制后发微信。家长无需安装 App 或登录。</p>
 <h2>5. 家长付款流程</h2><p>短信/微信 → 点击专属链接 → 查看固定金额、课程和本次付款说明 → 选择 ACH 或已开启的信用卡 → 在 Stripe 页面完成付款。信用卡会单列学费、手续费及总金额，家长明确同意后才继续。这是一次性付款，不会自动开通未来扣费。</p>
 <h2>6. 如何看付款结果</h2><p><b>Processing = 银行付款处理中，尚未确认到账；Paid = 已确认付款。</b> 系统在 Stripe 确认后更新账单并按既有规则增加课时。多人分摊账单须全额收齐才增加课时；手续费不计入课程课时。不要把处理中 ACH 手工标为 Paid，也不要让家长重复付款。</p>
 <h2>7. 修改、过期或撤销链接</h2><p>链接有效期为 7 天。金额或课程信息修改后，请重新生成链接。同一账单的 Quick pay 页面可以点 <b>Revoke link</b> 撤销未使用的链接。已有付款正在进行时，须先核实或关闭对应 Checkout；银行已经提交的付款需要等待核实，不能直接取消后重新收取。</p>
@@ -325,6 +328,44 @@ def install_quick_pay(app, api):
             sample_link = dict(invoice_id=invoice_id,allocation_id=rows[0][0],parent_id=rows[0][1]) if rows else None
             default_html, default_description = coverage(cur,sample_link) if sample_link else ('','')
             generated = ''
+            token = None
+            sms_notice = ''
+            if request.method == 'POST' and request.form.get('action') == 'send_sms':
+                token = request.form.get('token', '')
+                digest = hashlib.sha256(token.encode()).hexdigest()
+                link = load(cur, digest)
+                row = next((r for r in rows if link and r[0] == link['allocation_id']), None)
+                ctx = context(cur, link) if link else None
+                if (not link or link['invoice_id'] != invoice_id or not row or not ctx
+                        or link['revoked'] or link['expires_at'] <= int(time.time())
+                        or row[4] not in ('unpaid', 'failed') or str(invoice[2]).lower() in CLOSED
+                        or cents(row[3]) != link['amount_cents'] or snapshot(ctx) != link['invoice_snapshot']):
+                    return unavailable('This link is no longer ready to send. Generate a current payment link.')
+                ready, missing = api['sms_config_status']()
+                phone = api['hmusic_normalize_sms_phone'](row[5])
+                if not ready:
+                    return unavailable('SMS service is not configured. Contact the manager.', 503)
+                if not phone:
+                    return unavailable('Add a valid phone number to this guardian profile before sending.', 400)
+                # Reserve before contacting the provider: double clicks and uncertain responses must not resend.
+                cur.execute('''INSERT INTO quick_payment_sms(token_hash,destination,status,created_at)
+                    VALUES (?,?,'sending',?) ON CONFLICT(token_hash) DO NOTHING''', (digest, phone, int(time.time())))
+                reserved_sms = cur.rowcount == 1
+                conn.commit()
+                if reserved_sms:
+                    url = api['public_url_for']('/p/' + token)
+                    try:
+                        ok, detail = api['send_sms_delivery'](phone, 'Tuition invoice',
+                            f"{invoice[0]}'s invoice #{invoice_id} for ${row[3]:,.2f} is ready. View course details and pay securely without app login:", url)
+                    except Exception:
+                        ok, detail = False, 'Delivery could not be confirmed. Check provider records before sending another link.'
+                    cur.execute('UPDATE quick_payment_sms SET status=?,provider_response=? WHERE token_hash=?',
+                                ('accepted' if ok else 'unconfirmed', str(detail)[:500], digest))
+                    conn.commit()
+                cur.execute('SELECT status FROM quick_payment_sms WHERE token_hash=?', (digest,))
+                sms_status = cur.fetchone()[0]
+                sms_notice = ('SMS accepted by the provider for ' + phone + '. Delivery to the phone is not yet confirmed.'
+                              if sms_status == 'accepted' else 'SMS delivery is unconfirmed. Check provider records before retrying. This link will not be sent twice.')
             if request.method == 'POST' and request.form.get('action') == 'create':
                 if not api['configure_stripe']() or not api['os'].environ.get('STRIPE_WEBHOOK_SECRET'):
                     return unavailable('Stripe and its webhook signing secret must be configured first.', 503)
@@ -346,6 +387,7 @@ def install_quick_pay(app, api):
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (digest, invoice_id, row[1], row[0], cents(row[3]), int(time.time())+7*86400,
                     snapshot(context(cur, dict(allocation_id=row[0], invoice_id=invoice_id, parent_id=row[1]))), description, coverage_html, fee, card_rate))
                 conn.commit()
+            if token:
                 url = api['public_url_for']('/p/' + token)
                 text = f'H-Music: {invoice[0]}\'s invoice #{invoice_id} for ${row[3]:,.2f} is ready. View course details & pay securely without app login: {url} Thank you!'
                 generated = f'''<h2>Ready to share</h2><p>Recipient: {escape(str(row[2] or 'Guardian'))} · {escape(str(row[5]))}</p>
@@ -353,13 +395,19 @@ def install_quick_pay(app, api):
                     <button type="button" onclick="copyQuickPay('quick-pay-url',this)">Copy payment link</button>
                     <label>Text message<textarea id="quick-pay-text" readonly onclick="this.select()">{escape(text)}</textarea></label>
                     <button type="button" onclick="copyQuickPay('quick-pay-text',this)">Copy text message</button>
+                    <p class="notice">{escape(sms_notice) if sms_notice else 'Nothing has been sent yet.'}</p>
+                    <form method="post"><input type="hidden" name="action" value="send_sms">
+                    <input type="hidden" name="token" value="{escape(token, quote=True)}">
+                    <button {'disabled' if sms_notice else ''}>Send SMS to {escape(str(row[5] or 'guardian — phone missing'))}</button></form>
                     <script>async function copyQuickPay(id,button){{const field=document.getElementById(id);try{{await navigator.clipboard.writeText(field.value);button.textContent='Copied';}}catch(error){{field.select();button.textContent='Selected — copy manually';}}}}</script>
-                    <p class="muted">Link valid for 7 days. Nothing has been sent. Copy and send only to this guardian. Anyone with this link can view this invoice share.</p>'''
+                    <p class="muted">Link valid for 7 days. Send only to this guardian. Anyone with this link can view this invoice share.</p>'''
             options = ''.join(f'<option value="{r[0]}">{escape(str(r[2] or "Guardian"))} · ${r[3]:,.2f}</option>'
                               for r in rows if r[4] in ('unpaid','failed') and cents(r[3]) > 0)
-            cur.execute('''SELECT token_hash,parent_id,status,expires_at FROM quick_payment_links
-                WHERE invoice_id=? AND revoked=0 ORDER BY expires_at DESC''', (invoice_id,))
-            history = ''.join(f'''<p>Guardian #{r[1]} · {escape(r[2])}</p><form method="post">
+            cur.execute('''SELECT q.token_hash,q.parent_id,q.status,q.expires_at,
+                COALESCE(s.status,'not sent'),COALESCE(s.destination,'') FROM quick_payment_links q
+                LEFT JOIN quick_payment_sms s ON s.token_hash=q.token_hash
+                WHERE q.invoice_id=? AND q.revoked=0 ORDER BY q.expires_at DESC''', (invoice_id,))
+            history = ''.join(f'''<p>Guardian #{r[1]} · {escape(r[2])} · SMS: {escape(r[4])} {escape(r[5])}</p><form method="post">
                 <input type="hidden" name="action" value="revoke"><input type="hidden" name="digest" value="{r[0]}">
                 <button>Revoke link</button></form>''' for r in cur.fetchall() if r[2] != 'paid')
             if request.method == 'POST' and request.form.get('action') == 'revoke':
@@ -386,7 +434,7 @@ def install_quick_pay(app, api):
                 <label>What this payment covers (parent visible)<textarea name="payment_description" maxlength="2000" required>{escape(default_description)}</textarea></label>
                 <label class="check"><input type="checkbox" name="offer_card" value="1" {'disabled' if not rate else ''}>Also offer credit card payment ({rate/100:g}% surcharge, parent must agree)</label>
                 <button {'disabled' if not options or str(invoice[2]).lower() in CLOSED else ''}>Generate payment link</button></form>
-                <p class="muted">ACH: no added parent fee. Optional credit card surcharge is shown separately. Automatic SMS delivery is not connected.</p>
+                <p class="muted">ACH: no added parent fee. Optional credit card surcharge is shown separately. Generate a link, then click Send SMS to send it to the selected guardian.</p>
                 {history}<p><a href="/invoices">Back to invoices</a></p>''')
         finally:
             conn.close()

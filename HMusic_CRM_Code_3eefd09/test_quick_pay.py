@@ -66,6 +66,41 @@ class QuickPayTest(unittest.TestCase):
         self.assertEqual(self.client.get('/p/'+token).status_code,200)
         return token
     def checkout(self,t,method='card'):return self.client.post('/p/'+t+'/checkout',data={'method':method,'fee_consent':'1'})
+    def setup_sms(self):
+        self.sms_calls=[]
+        self.api.update(sms_config_status=lambda:(True,[]),
+            hmusic_normalize_sms_phone=lambda p:'+16505550100' if p else None,
+            send_sms_delivery=lambda *args:(self.sms_calls.append(args) or (True,'accepted')))
+    def send_link(self,t):
+        with self.client.session_transaction() as s:s['owner']=True
+        return self.client.post('/owner/invoice/1/quick-pay',data={'action':'send_sms','token':t})
+    def test_sms_explicit_recipient_and_double_click(self):
+        self.setup_sms(); t=self.make_link()
+        self.assertEqual(self.sms_calls,[])
+        self.assertIn('SMS accepted',self.send_link(t).text)
+        self.assertEqual(self.send_link(t).status_code,200)
+        self.assertEqual(len(self.sms_calls),1)
+        self.assertEqual(self.sms_calls[0][0],'+16505550100')
+        self.assertEqual(self.sms_calls[0][3],'https://billing.example.invalid/p/'+t)
+    def test_sms_rejects_changed_invoice_and_permission(self):
+        self.setup_sms(); t=self.make_link(); self.permission=False
+        self.assertEqual(self.send_link(t).status_code,409)
+        self.permission=True
+        with self.connect() as c:c.execute('UPDATE invoices SET amount=600')
+        self.assertEqual(self.send_link(t).status_code,409)
+        self.assertEqual(self.sms_calls,[])
+    def test_sms_requires_owner_and_provider(self):
+        self.setup_sms(); t=self.make_link()
+        self.assertEqual(self.client.post('/owner/invoice/1/quick-pay',data={'action':'send_sms','token':t}).status_code,302)
+        self.api['sms_config_status']=lambda:(False,['TWILIO_ACCOUNT_SID'])
+        self.assertEqual(self.send_link(t).status_code,503)
+        self.assertEqual(self.sms_calls,[])
+    def test_sms_uncertain_response_does_not_resend(self):
+        self.setup_sms(); t=self.make_link()
+        def fail(*args):self.sms_calls.append(args); raise TimeoutError()
+        self.api['send_sms_delivery']=fail
+        self.assertIn('unconfirmed',self.send_link(t).text)
+        self.send_link(t); self.assertEqual(len(self.sms_calls),1)
     def paid(self):
         obj=next(iter(self.provider.objects.values())); obj.update(status='complete',payment_status='paid')
         return self.api['handle_quick_pay_event'](dict(type='checkout.session.completed',data={'object':obj}))
