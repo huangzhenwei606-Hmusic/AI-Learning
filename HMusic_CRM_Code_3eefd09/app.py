@@ -27849,7 +27849,7 @@ def mark_message_inbox_read(viewer_role, viewer_key):
     conn.close()
 
 
-def get_message_inbox_threads(viewer_role, viewer_key=None):
+def get_message_inbox_threads(viewer_role, viewer_key=None, search_query=""):
     ensure_v29_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -27886,6 +27886,16 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
         )
         """
         params.extend([viewer_key, str(viewer_key)])
+
+    search_query = str(search_query or "").strip()[:200]
+    if search_query:
+        pattern = '%' + search_query.lower().replace('!', '!!').replace('%', '!%').replace('_', '!_') + '%'
+        fields = ['t.subject', 't.student_name', 'p.parent_name', 't.teacher_name', 't.thread_type']
+        matches = [f"LOWER(COALESCE({field}, '')) LIKE ? ESCAPE '!'" for field in fields]
+        matches.append("EXISTS (SELECT 1 FROM messages sm WHERE sm.thread_id=t.id AND LOWER(COALESCE(sm.body,'')) LIKE ? ESCAPE '!')")
+        matches.append("CAST(t.id AS TEXT) = ?")
+        where_sql += (' AND ' if where_sql.strip() else ' WHERE ') + '(' + ' OR '.join(matches) + ')'
+        params.extend([pattern] * 6 + [search_query.lstrip('#')])
 
     cursor.execute(f"""
     SELECT
@@ -27942,7 +27952,7 @@ def get_message_inbox_threads(viewer_role, viewer_key=None):
     return rows
 
 
-def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None, mark_all_read_href=None):
+def render_message_inbox(title, back_href, back_label, rows_data, new_href=None, new_label=None, notifications_href=None, mark_all_read_href=None, search_query=None):
     rows = ""
     for t in rows_data:
         unread_badge = f"<span class='status-badge unread'>{t[10]} unread</span>" if t[10] else "<span class='status-badge read'>Read</span>"
@@ -27966,7 +27976,16 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
         """
 
     if not rows:
-        rows = "<tr><td colspan='8'>No messages yet.</td></tr>"
+        rows = "<tr><td colspan='8'>No matching messages.</td></tr>" if search_query else "<tr><td colspan='8'>No messages yet.</td></tr>"
+
+    search_html = ''
+    if search_query is not None:
+        search_html = f'''<form method="GET" action="/messages" role="search" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:20px 0">
+            <label for="message-search">Search messages</label>
+            <input id="message-search" name="q" type="search" maxlength="200" value="{escape(search_query, quote=True)}"
+                placeholder="Student, parent, teacher, subject or message" style="flex:1;min-width:220px;padding:12px;border:1px solid #cbd5e1;border-radius:8px;font:inherit">
+            <button class="button" type="submit">Search</button><a href="/messages">Clear</a>
+            <span class="subtle">{len(rows_data)} conversation(s)</span></form>'''
 
     action_buttons = f'<a class="button" href="{back_href}">{back_label}</a>'
     if new_href and new_label:
@@ -28038,7 +28057,7 @@ def render_message_inbox(title, back_href, back_label, rows_data, new_href=None,
         <div class="container">
             <h1>{title}</h1>
             <div class="actions">{action_buttons}</div>
-
+            {search_html}
             <table>
                 <tr>
                     <th>Status</th>
@@ -28289,7 +28308,8 @@ def messages():
     if not require_owner():
         return redirect("/owner_login")
 
-    rows = get_message_inbox_threads("owner", "owner")
+    search_query = (request.args.get("q") or "").strip()[:200]
+    rows = get_message_inbox_threads("owner", "owner", search_query=search_query)
     return render_message_inbox(
         "Message Center",
         "/",
@@ -28298,7 +28318,8 @@ def messages():
         new_href="/new_owner_message",
         new_label="New Message",
         notifications_href="/notifications",
-        mark_all_read_href="/messages/mark_all_read"
+        mark_all_read_href="/messages/mark_all_read",
+        search_query=search_query
     )
 
 
