@@ -81,7 +81,22 @@ class QuickPayTest(unittest.TestCase):
         self.assertEqual(self.send_link(t).status_code,200)
         self.assertEqual(len(self.sms_calls),1)
         self.assertEqual(self.sms_calls[0][0],'+16505550100')
-        self.assertEqual(self.sms_calls[0][3],'https://billing.example.invalid/p/'+t)
+        self.assertEqual(self.sms_calls[0][3],'/p/'+t)
+        # Exercise the actual production URL expander, not a permissive provider mock.
+        tree=ast.parse(Path(__file__).with_name('app.py').read_text())
+        node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='hmusic_public_app_url')
+        scope={'os':os}
+        exec(compile(ast.Module(body=[node],type_ignores=[]),'app.py','exec'),scope)
+        with patch.dict(os.environ,{'HMUSIC_PUBLIC_URL':'https://hmusic-crm.onrender.com'}):
+            self.assertEqual(scope['hmusic_public_app_url'](self.sms_calls[0][3]),'https://hmusic-crm.onrender.com/p/'+t)
+    def test_previous_double_domain_sms_link_still_opens(self):
+        t=self.make_link()
+        r=self.client.get('/https://hmusic-crm.onrender.com/p/'+t)
+        self.assertEqual(r.status_code,200)
+        self.assertIn('Pay $550.00',r.text)
+        self.assertIn('action="/p/'+t+'/checkout"',r.text)
+        self.assertEqual(self.client.get('/https:/hmusic-crm.onrender.com/p/'+t).status_code,200)
+        self.assertEqual(self.client.get('/https://hmusic-crm.onrender.com/p/invalid').status_code,404)
     def test_sms_rejects_changed_invoice_and_permission(self):
         self.setup_sms(); t=self.make_link(); self.permission=False
         self.assertEqual(self.send_link(t).status_code,409)
