@@ -353,7 +353,8 @@ def install_quick_pay(app, api):
                 reserved_sms = cur.rowcount == 1
                 conn.commit()
                 if reserved_sms:
-                    url = api['public_url_for']('/p/' + token)
+                    # The shared SMS provider expands relative paths to the public domain.
+                    url = '/p/' + token
                     try:
                         ok, detail = api['send_sms_delivery'](phone, 'Tuition invoice',
                             f"{invoice[0]}'s invoice #{invoice_id} for ${row[3]:,.2f} is ready. View course details and pay securely without app login:", url)
@@ -440,6 +441,7 @@ def install_quick_pay(app, api):
             conn.close()
 
     @app.route('/p/<token>', methods=['GET'])
+    @app.route('/https://hmusic-crm.onrender.com/p/<token>', methods=['GET'])
     def quick_pay_page(token):
         prepare()
         digest = hashlib.sha256(token.encode()).hexdigest()
