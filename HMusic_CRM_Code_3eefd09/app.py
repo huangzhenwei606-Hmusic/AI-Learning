@@ -27344,7 +27344,7 @@ def sync_stripe_invoice_payment(invoice_id):
     cursor = conn.cursor()
     cursor.execute("""
     SELECT id, parent_id, COALESCE(status, 'unpaid'),
-           stripe_checkout_session_id, stripe_payment_intent_id
+           stripe_checkout_session_id, stripe_payment_intent_id, lock_token
     FROM invoice_allocations
     WHERE invoice_id = ? AND status = 'processing'
     ORDER BY id
@@ -27363,14 +27363,26 @@ def sync_stripe_invoice_payment(invoice_id):
     if invoice[0] == "paid":
         return "paid"
 
-    targets = allocations or [(None, None, invoice[0], invoice[1], invoice[2])]
+    targets = allocations or [(None, None, invoice[0], invoice[1], invoice[2], None)]
     results = []
     try:
-        for allocation_id, parent_id, _status, checkout_session_id, payment_intent_id in targets:
+        for allocation_id, parent_id, _status, checkout_session_id, payment_intent_id, lock_token in targets:
+            if str(lock_token or '').startswith('family:'):
+                results.append(sync_family_payment_status(int(lock_token.split(':',1)[1])))
+                continue
             checkout_session = None
             if checkout_session_id:
                 checkout_session = stripe.checkout.Session.retrieve(checkout_session_id)
                 payment_intent_id = payment_intent_id or checkout_session.get("payment_intent")
+
+            if checkout_session and (checkout_session.get("metadata") or {}).get("quick_pay"):
+                metadata = checkout_session.get("metadata") or {}
+                if (str(metadata.get("invoice_id")) != str(invoice_id)
+                        or (allocation_id and str(metadata.get("allocation_id")) != str(allocation_id))
+                        or (parent_id and str(metadata.get("parent_id")) != str(parent_id))):
+                    raise ValueError("Quick checkout does not match this invoice share")
+                results.append(sync_quick_pay_checkout(checkout_session))
+                continue
 
             if checkout_session and checkout_session.get("payment_status") == "paid":
                 finalize_stripe_invoice_payment(
@@ -27392,7 +27404,7 @@ def sync_stripe_invoice_payment(invoice_id):
                 if allocation_id:
                     cursor.execute("""
                     UPDATE invoice_allocations
-                    SET status = 'unpaid', payment_method = NULL,
+                    SET status = 'unpaid',
                         lock_token = NULL, locked_at = NULL, updated_at = ?
                     WHERE id = ? AND invoice_id = ? AND status = 'processing'
                     """, (now, allocation_id, invoice_id))
@@ -36026,6 +36038,20 @@ def stripe_checkout_payment_outcome(checkout_session):
     return "incomplete"
 
 
+def stripe_checkout_resume_url(checkout_session, invoice_id, parent_id, allocation_id, amount):
+    metadata = checkout_session.get("metadata") or {}
+    if (metadata.get("quick_pay") or metadata.get("family_payment_id")
+            or str(metadata.get("invoice_id")) != str(invoice_id)
+            or str(metadata.get("parent_id")) != str(parent_id)
+            or str(metadata.get("allocation_id")) != str(allocation_id)
+            or checkout_session.get("currency") != "usd"
+            or checkout_session.get("amount_total") != int(round(float(amount) * 100))):
+        raise ValueError("Existing checkout does not match this invoice share")
+    if checkout_session.get("status") == "open" and checkout_session.get("payment_status") == "unpaid":
+        return checkout_session.get("url")
+    return None
+
+
 def reopen_unsubmitted_stripe_allocation(cursor, invoice_id, parent_id):
     cursor.execute("""
     SELECT id, status, stripe_checkout_session_id
@@ -36108,7 +36134,7 @@ def stripe_invoice_checkout(invoice_id):
         conn.close()
         return "<h1>Only the primary billing guardian can enable AutoPay.</h1>", 403
     cursor.execute("""
-    SELECT id, amount, status
+    SELECT id, amount, status, stripe_checkout_session_id
     FROM invoice_allocations
     WHERE invoice_id = ? AND parent_id = ?
     """, (invoice_id, parent_id))
@@ -36117,6 +36143,30 @@ def stripe_invoice_checkout(invoice_id):
         conn.rollback()
         conn.close()
         return "<h1>No payment share is assigned to this account.</h1>", 403
+    if allocation[3] and allocation[2] in ("unpaid", "processing"):
+        try:
+            existing_checkout = stripe.checkout.Session.retrieve(allocation[3])
+            resume_url = stripe_checkout_resume_url(
+                existing_checkout, invoice_id, parent_id, allocation[0], allocation[1])
+            if resume_url:
+                cursor.execute("""UPDATE invoice_allocations SET status='unpaid',
+                    payment_method='Stripe ACH',lock_token=NULL,locked_at=NULL WHERE id=?""", (allocation[0],))
+                refresh_invoice_status_from_allocations(cursor, invoice_id)
+                conn.commit(); conn.close()
+                return redirect(resume_url)
+            if existing_checkout.get("status") == "expired":
+                cursor.execute("""UPDATE invoice_allocations SET status='unpaid',
+                    stripe_checkout_session_id=NULL,lock_token=NULL,locked_at=NULL WHERE id=?""", (allocation[0],))
+                refresh_invoice_status_from_allocations(cursor, invoice_id)
+                allocation = (allocation[0], allocation[1], "unpaid", None)
+            else:
+                conn.rollback(); conn.close()
+                sync_stripe_invoice_payment(invoice_id)
+                return redirect(f"/parent_invoice/{invoice_id}?already_processing=1")
+        except Exception:
+            conn.rollback(); conn.close()
+            app.logger.exception("Unable to resume invoice checkout %s", invoice_id)
+            return redirect(f"/parent_invoice/{invoice_id}?stripe_incomplete=1")
     if (allocation[2] or "unpaid") not in ("unpaid", "failed"):
         conn.rollback()
         conn.close()
