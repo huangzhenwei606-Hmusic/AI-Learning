@@ -6,7 +6,8 @@ from pathlib import Path
 from datetime import datetime, date
 from types import SimpleNamespace
 from unittest.mock import Mock
-from flask import Flask
+from flask import Flask, session
+import re
 import family_billing as fb
 
 
@@ -214,6 +215,54 @@ class FamilyBillingTests(unittest.TestCase):
         obj['payment_status']='paid';event['type']='checkout.session.async_payment_succeeded'
         self.assertEqual(client.post('/stripe/webhook',json=event).status_code,200)
         self.assertEqual(client.post('/stripe/webhook',json=event).status_code,200);self.assertEqual(self.balances(),[7,7,9,8])
+
+    def setup_guest_client(self):
+        self.conn.execute('CREATE TABLE parent_profiles(id INTEGER,parent_name TEXT,phone TEXT)')
+        self.conn.execute("INSERT INTO parent_profiles VALUES(1,'Parent','6505550100')");self.conn.commit()
+        client,api=self.setup_client()
+        api.update(require_owner=lambda:session.get('owner',False),require_parent=lambda:False,
+            hmusic_normalize_sms_phone=lambda p:'+16505550100' if p else None,
+            sms_config_status=lambda:(True,[]),send_sms_delivery=Mock(return_value=(True,'accepted')))
+        with client.session_transaction() as s:s.clear();s['owner']=True
+        return client,api
+
+    def guest_link(self,client,bid):
+        response=client.post(f'/family_payment/{bid}/share',data={'action':'create'})
+        self.assertEqual(response.status_code,200,response.text)
+        return re.search(r'https://example.test/f/([A-Za-z0-9_-]+)',response.text)[1]
+
+    def test_guest_link_requires_token_and_is_scoped(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        token=self.guest_link(client,bid)
+        with client.session_transaction() as s:s.clear()
+        self.assertEqual(client.get(f'/family_payment/{bid}').status_code,403)
+        self.assertEqual(client.get('/f/invalid').status_code,404)
+        r=client.get('/f/'+token);self.assertEqual(r.status_code,200)
+        self.assertIn('Seth',r.text);self.assertIn('Valerie',r.text);self.assertIn('$1,550.00',r.text)
+        self.assertEqual(client.get('/family_billing/1').status_code,403)
+        self.assertEqual(client.get(f'/family_payment/{bid}/share').status_code,302)
+        api['stripe'].checkout.Session.create.return_value=SimpleNamespace(id='cs_guest',url='https://stripe.test/pay')
+        self.assertEqual(client.post(f'/family_payment/{bid}/checkout').status_code,302)
+        self.assertEqual(api['stripe'].checkout.Session.create.call_args.kwargs['success_url'],'https://example.test/f/'+token)
+        self.assertEqual(self.balances(),[-3,-3,-1,8])
+        self.conn.execute('UPDATE family_payment_links SET expires_at=0');self.conn.commit()
+        self.assertEqual(client.post(f'/family_payment/{bid}/checkout').status_code,403)
+
+    def test_guest_sms_uses_relative_link_and_never_double_sends(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        token=self.guest_link(client,bid);api['send_sms_delivery'].assert_not_called()
+        for _ in range(2):
+            r=client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token})
+            self.assertEqual(r.status_code,200);self.assertIn('accepted',r.text)
+        api['send_sms_delivery'].assert_called_once()
+        self.assertEqual(api['send_sms_delivery'].call_args.args[0],'+16505550100')
+        self.assertEqual(api['send_sms_delivery'].call_args.args[3],'/f/'+token)
+
+    def test_guest_link_permission_revoked(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client();token=self.guest_link(client,bid)
+        with client.session_transaction() as s:s.clear()
+        api['parent_has_student_permission']=lambda *a:False
+        self.assertEqual(client.get('/f/'+token).status_code,403)
 
     def test_webhook_cannot_fake_provider_amount(self):
         bid=self.create(method='Stripe ACH');self.conn.execute("UPDATE family_payments SET provider_id='cs_test' WHERE id=?",(bid,));self.conn.commit()
