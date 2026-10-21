@@ -5,10 +5,10 @@ from billing_workspace import billing_workspace_html
 class BillingWorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.c=sqlite3.connect(':memory:')
-        self.c.executescript("""CREATE TABLE parent_profiles(id INTEGER PRIMARY KEY,parent_name TEXT,email TEXT,active INTEGER);
+        self.c.executescript("""CREATE TABLE parent_profiles(id INTEGER PRIMARY KEY,parent_name TEXT,email TEXT,active INTEGER,phone TEXT);
         CREATE TABLE invoices(id INTEGER PRIMARY KEY,status TEXT);
         CREATE TABLE invoice_allocations(id INTEGER PRIMARY KEY,parent_id INTEGER,invoice_id INTEGER,status TEXT);
-        INSERT INTO parent_profiles VALUES(1,'A <Family>','a@example.invalid',1),(2,'Inactive','b@example.invalid',0),(3,'Paid only','c@example.invalid',1);
+        INSERT INTO parent_profiles VALUES(1,'A <Family>','a@example.invalid',1,'6505550100'),(2,'Inactive','b@example.invalid',0,''),(3,'Paid only','c@example.invalid',1,'');
         INSERT INTO invoices VALUES(1,'unpaid'),(2,'paid');
         INSERT INTO invoice_allocations VALUES(1,1,1,'unpaid'),(2,2,1,'unpaid'),(3,3,2,'paid');""")
         billing_workspace_html(self.c.cursor())
