@@ -294,7 +294,7 @@ class FamilyBillingTests(unittest.TestCase):
         token=self.guest_link(client,bid);api['send_sms_delivery'].assert_not_called()
         for _ in range(2):
             r=client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token})
-            self.assertEqual(r.status_code,200);self.assertIn('accepted',r.text)
+            self.assertEqual(r.status_code,200);self.assertIn('SMS submitted successfully',r.text)
         api['send_sms_delivery'].assert_called_once()
         self.assertEqual(api['send_sms_delivery'].call_args.args[0],'+16505550100')
         self.assertEqual(api['send_sms_delivery'].call_args.args[3],'/f/'+token)

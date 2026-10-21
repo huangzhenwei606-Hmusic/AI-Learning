@@ -49,6 +49,16 @@ def ensure_schema(cursor):
         cursor.execute("ALTER TABLE family_payment_links ADD COLUMN sms_body TEXT NOT NULL DEFAULT ''")
 
 
+def sms_status_notice(status, phone):
+    title, detail, color, background = {
+        'accepted': ('SMS submitted successfully', 'The SMS provider accepted this message. Delivery to the parent phone is not yet confirmed.', '#166534', '#dcfce7'),
+        'sending': ('SMS submission in progress', 'Do not send again while the result is being checked.', '#854d0e', '#fef9c3'),
+        'unconfirmed': ('SMS result not confirmed', 'Check provider records before retrying to avoid a duplicate message.', '#9a3412', '#ffedd5'),
+        'not sent': ('Draft — SMS not sent', 'Review the text and recipient, then click Send family payment SMS.', '#1e40af', '#dbeafe'),
+    }.get(status, ('SMS result not confirmed', 'Check provider records before retrying.', '#9a3412', '#ffedd5'))
+    return f'<div role="status" aria-live="polite" style="padding:18px;margin:16px 0;border-radius:10px;background:{background};color:{color}"><strong style="font-size:20px">{title}</strong><p>To: {escape(phone or "phone missing")}</p><p>{detail}</p></div>'
+
+
 def active_batch(cursor, allocation_id):
     ensure_schema(cursor)
     cursor.execute("""SELECT fp.id FROM family_payments fp JOIN family_payment_items fi
@@ -297,7 +307,8 @@ def install_family_billing(app, api):
             parent=cur.execute('SELECT parent_name,phone FROM parent_profiles WHERE id=?',(batch[1],)).fetchone()
             phone=api['hmusic_normalize_sms_phone'](parent[1] if parent else '')
             default_body=f"Hi {parent[0] if parent else ''}, your H-Music family invoices total ${batch[4]/100:,.2f}. View the courses covered and pay once by ACH using the link below. No app login is needed. Thank you!"
-            result=''
+            latest=cur.execute("SELECT sms_status,destination FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY expires_at DESC,rowid DESC LIMIT 1",(batch_id,)).fetchone()
+            result=sms_status_notice(*latest) if latest else ''
             if request.method=='POST':
                 action=request.form.get('action')
                 if action not in ('create','send'):return error('Unknown action.',400)
@@ -327,13 +338,12 @@ def install_family_billing(app, api):
                 if status!='not sent':body=stored_body or default_body
                 url=api['public_url_for']('/f/'+token)
                 preview='H-Music: Combined family invoice\n'+body+'\n\nPay here:\n'+url
-                result=f'''<label>Family payment link<input aria-label="Family payment link" readonly style="width:100%;box-sizing:border-box" value="{escape(url,quote=True)}" onclick="this.select()"></label>
-                    <p>SMS: {escape(status)}. Accepted means the provider accepted the message; delivery is not confirmed. Unconfirmed messages must be checked before retrying.</p>
+                result=sms_status_notice(status,phone)+f'''<label>Family payment link<input aria-label="Family payment link" readonly style="width:100%;box-sizing:border-box" value="{escape(url,quote=True)}" onclick="this.select()"></label>
                     <form method="post"><input type="hidden" name="action" value="send"><input type="hidden" name="token" value="{escape(token,quote=True)}">
                     <label for="sms-body">SMS text (editable)</label><textarea id="sms-body" name="sms_body" maxlength="1000" required rows="6" style="width:100%;box-sizing:border-box" {'readonly' if status!='not sent' else ''}>{escape(body)}</textarea>
                     <p class="muted">The heading and payment link are included automatically. Amounts and course credits come from the selected invoices.</p>
                     <h2>Parent SMS preview</h2><pre id="sms-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f7fb;padding:16px">{escape(preview)}</pre>
-                    <button {'disabled' if status!='not sent' or not phone else ''}>Send family payment SMS</button></form>
+                    <button {'disabled' if status!='not sent' or not phone else ''} style="{'background:#94a3b8;cursor:default' if status!='not sent' else ''}">{'SMS submitted' if status=='accepted' else 'Check SMS status before retrying' if status!='not sent' else 'Send family payment SMS'}</button></form>
                     <script>document.getElementById('sms-body').addEventListener('input',function(){{document.getElementById('sms-preview').textContent=['H-Music: Combined family invoice',this.value.trim(),'','Pay here:',document.querySelector('[aria-label="Family payment link"]').value].join(String.fromCharCode(10));}});</script>'''
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in cur.fetchall())
