@@ -173,10 +173,14 @@ def install_quick_pay(app, api):
                     or obj.get('currency') != 'usd'
                     or obj.get('amount_total') != link['amount_cents'] + (link['fee_cents'] if link['method']=='card' else 0)
                     or cents(row[0]) != link['amount_cents']
-                    or snapshot(row) != link['invoice_snapshot']):
+                    # Coverage edits must block settlement, but not release of a
+                    # provider-confirmed expired attempt that cannot collect funds.
+                    or (snapshot(row) != link['invoice_snapshot'] and outcome != 'expired')):
                 raise ValueError('Quick payment verification mismatch')
             if link['status'] == 'paid' or (link['status'] in ('expired', 'failed') and outcome == link['status']):
                 conn.rollback(); return True
+            if outcome == 'expired' and obj.get('status') != 'expired':
+                raise ValueError('Checkout expiration is not confirmed')
             if str(row[5]).lower() in CLOSED:
                 raise ValueError('Closed invoice needs owner review')
             if link['status'] == 'submitted' and outcome in ('incomplete', 'expired'):
