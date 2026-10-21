@@ -134,6 +134,77 @@ class QuickPayTest(unittest.TestCase):
         with self.connect() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
         self.paid()
         with self.connect() as c:self.assertEqual(c.execute('SELECT payment_method FROM payments').fetchone()[0],'Stripe ACH')
+
+    def test_abandoned_bank_checkout_stays_unpaid_and_resumes_same_session(self):
+        t=self.make_link(); first=self.checkout(t,'ach')
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status FROM invoices').fetchone()[0],'unpaid')
+            state,lock=c.execute('SELECT status,lock_token FROM invoice_allocations').fetchone()
+            self.assertEqual(state,'unpaid');self.assertTrue(lock)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
+        page=self.client.get('/p/'+t)
+        self.assertIn('Payment has not been submitted',page.text)
+        self.assertEqual(self.checkout(t,'ach').location,first.location)
+        self.assertEqual(len(self.provider.keys),1)
+
+    def test_owner_check_repairs_old_processing_without_unlocking_open_checkout(self):
+        t=self.make_link();self.checkout(t,'ach')
+        with self.connect() as c:
+            c.execute("UPDATE invoice_allocations SET status='processing'")
+            c.execute("UPDATE invoices SET status='payment_processing'")
+            lock=c.execute('SELECT lock_token FROM invoice_allocations').fetchone()[0]
+        obj=next(iter(self.provider.objects.values()))
+        self.assertEqual(self.api['sync_quick_pay_checkout'](obj),'unpaid')
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status,lock_token FROM invoice_allocations').fetchone(),('unpaid',lock))
+            self.assertEqual(c.execute('SELECT status FROM invoices').fetchone()[0],'unpaid')
+        self.assertEqual(self.checkout(t,'ach').status_code,303)
+        self.assertEqual(len(self.provider.keys),1)
+
+    def test_existing_link_status_check_creates_attempt_history_after_upgrade(self):
+        t=self.make_link();self.checkout(t,'ach')
+        with self.connect() as c:c.execute('DROP TABLE quick_payment_closed_attempts')
+        self.assertEqual(self.api['sync_quick_pay_checkout'](next(iter(self.provider.objects.values()))),'unpaid')
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM quick_payment_closed_attempts').fetchone()[0],0)
+
+    def test_submitted_bank_payment_blocks_repayment_and_only_settlement_adds_credit(self):
+        t=self.make_link();self.checkout(t,'ach')
+        obj=next(iter(self.provider.objects.values()));obj['status']='complete'
+        self.assertIn('Bank payment processing',self.client.get('/p/'+t).text)
+        self.assertEqual(self.checkout(t,'ach').location,'/p/'+t)
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status FROM invoices').fetchone()[0],'payment_processing')
+            self.assertEqual(c.execute('SELECT lessons_left FROM enrollments').fetchone()[0],0)
+        self.assertEqual(len(self.provider.keys),1)
+        self.paid();self.paid()
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT lessons_left FROM enrollments').fetchone()[0],10)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],1)
+
+    def test_expired_unsubmitted_checkout_can_retry_same_guest_link(self):
+        t=self.make_link();self.checkout(t,'ach')
+        obj=next(iter(self.provider.objects.values())).copy();obj['status']='expired'
+        self.provider.objects[obj['id']]=obj
+        self.assertEqual(self.client.get('/p/'+t).status_code,303)
+        self.assertIn('Pay $550.00',self.client.get('/p/'+t).text)
+        self.assertEqual(self.checkout(t,'ach').status_code,303)
+        self.assertEqual(len(self.provider.keys),2)
+        event=dict(type='checkout.session.expired',data={'object':obj})
+        self.assertEqual(self.api['handle_quick_pay_event'](event),('ok',200))
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status FROM invoices').fetchone()[0],'unpaid')
+            self.assertTrue(c.execute('SELECT lock_token FROM invoice_allocations').fetchone()[0])
+
+    def test_older_open_checkout_response_cannot_reopen_submitted_bank_payment(self):
+        t=self.make_link();self.checkout(t,'ach')
+        obj=next(iter(self.provider.objects.values()))
+        old_open=obj.copy();obj['status']='complete'
+        self.assertEqual(self.api['sync_quick_pay_checkout'](obj),'processing')
+        with self.assertRaises(ValueError):self.api['sync_quick_pay_checkout'](old_open)
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status FROM invoices').fetchone()[0],'payment_processing')
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
     def test_timeout_retry_reuses_identical_session(self):
         t=self.make_link(); self.provider.timeout=True
         self.assertEqual(self.checkout(t).status_code,503); self.assertEqual(self.checkout(t).status_code,303)

@@ -182,6 +182,46 @@ class FamilyBillingTests(unittest.TestCase):
 
     def test_payment_processing_does_not_grant(self):
         self.create(method='Stripe ACH');self.assertEqual(self.balances(),[-3,-3,-1,8]);self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
+        self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')), [('unpaid',)]*3)
+
+    def test_bank_checkout_reservation_is_not_a_submitted_payment(self):
+        bid=self.create(method='Stripe ACH')
+        self.conn.execute("UPDATE family_payments SET provider_id='cs_test',provider_url='https://checkout.stripe.com/test' WHERE id=?",(bid,));self.conn.commit()
+        client,api=self.setup_client()
+        obj={'id':'cs_test','metadata':{'family_payment_id':str(bid),'parent_id':'1'},'status':'open','payment_status':'unpaid','currency':'usd','amount_total':155000,'payment_intent':'pi_test'}
+        api['stripe'].checkout.Session.retrieve.return_value=obj
+        self.conn.execute("UPDATE invoice_allocations SET status='processing'")
+        self.conn.execute("UPDATE family_payments SET status='processing' WHERE id=?",(bid,));self.conn.commit()
+        self.assertIn('Continue payment',client.get(f'/family_payment/{bid}').text)
+        self.assertEqual(api['sync_family_payment_status'](bid),'unpaid')
+        self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')), [('unpaid',)]*3)
+        self.assertEqual(client.post(f'/family_payment/{bid}/checkout').location,'https://checkout.stripe.com/test')
+        api['stripe'].checkout.Session.create.assert_not_called()
+        obj['status']='complete'
+        self.assertEqual(api['sync_family_payment_status'](bid),'processing')
+        submitted_page=client.get(f'/family_payment/{bid}').text
+        self.assertIn('Your payment was submitted',submitted_page)
+        self.assertNotIn('Continue payment',submitted_page)
+        self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')), [('payment_processing',)]*3)
+        self.assertEqual(self.balances(),[-3,-3,-1,8])
+
+    def test_stale_open_response_does_not_reopen_submitted_family_payment(self):
+        bid=self.create(method='Stripe ACH')
+        self.conn.execute("UPDATE family_payments SET provider_id='cs_test' WHERE id=?",(bid,));self.conn.commit()
+        client,api=self.setup_client()
+        obj={'id':'cs_test','metadata':{'family_payment_id':str(bid),'parent_id':'1'},'status':'complete','payment_status':'unpaid','currency':'usd','amount_total':155000,'payment_intent':'pi_test'}
+        api['stripe'].checkout.Session.retrieve.return_value=obj
+        self.assertEqual(api['sync_family_payment_status'](bid),'processing')
+        obj['status']='open'
+        self.assertEqual(client.get(f'/family_payment/{bid}').status_code,503)
+        self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')),[('payment_processing',)]*3)
+
+    def test_manual_payment_only_awaits_confirmation_after_parent_reports_sent(self):
+        bid=self.create(method='Zelle');client,api=self.setup_client()
+        self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')), [('unpaid',)]*3)
+        self.assertEqual(client.post(f'/family_payment/{bid}',data={'action':'notify'}).status_code,302)
+        self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')), [('pending_confirmation',)]*3)
+        self.assertEqual(self.balances(),[-3,-3,-1,8])
 
     def test_sql_translation_schema(self):
         from database_backend import _translate_sql
