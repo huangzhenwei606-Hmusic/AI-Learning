@@ -307,7 +307,7 @@ class FamilyBillingTests(unittest.TestCase):
         self.assertEqual(r.status_code,200)
         self.assertIn(body,r.text)
         self.assertIn('join(String.fromCharCode(10))',r.text)
-        self.assertEqual(api['send_sms_delivery'].call_args.args[2],body+'\n\n付款在这里：')
+        self.assertEqual(api['send_sms_delivery'].call_args.args[2],body+'\n\nPay here:')
         self.assertEqual(self.conn.execute('SELECT sms_body FROM family_payment_links').fetchone()[0],body)
         client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token,'sms_body':'Changed'})
         api['send_sms_delivery'].assert_called_once()

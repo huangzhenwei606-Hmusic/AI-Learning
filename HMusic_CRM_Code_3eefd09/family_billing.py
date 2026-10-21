@@ -319,14 +319,14 @@ def install_family_billing(app, api):
                     send=cur.rowcount==1;conn.commit()
                     if send:
                         try:
-                            ok,_=api['send_sms_delivery'](phone,'Combined family invoice',body+'\n\n付款在这里：', '/f/'+token)
+                            ok,_=api['send_sms_delivery'](phone,'Combined family invoice',body+'\n\nPay here:', '/f/'+token)
                         except Exception:ok=False
                         cur.execute('UPDATE family_payment_links SET sms_status=? WHERE token_hash=?',('accepted' if ok else 'unconfirmed',digest));conn.commit()
                 status=cur.execute('SELECT sms_status FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
                 stored_body=cur.execute('SELECT sms_body FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
                 if status!='not sent':body=stored_body or default_body
                 url=api['public_url_for']('/f/'+token)
-                preview='H-Music: Combined family invoice\n'+body+'\n\n付款在这里：\n'+url
+                preview='H-Music: Combined family invoice\n'+body+'\n\nPay here:\n'+url
                 result=f'''<label>Family payment link<input aria-label="Family payment link" readonly style="width:100%;box-sizing:border-box" value="{escape(url,quote=True)}" onclick="this.select()"></label>
                     <p>SMS: {escape(status)}. Accepted means the provider accepted the message; delivery is not confirmed. Unconfirmed messages must be checked before retrying.</p>
                     <form method="post"><input type="hidden" name="action" value="send"><input type="hidden" name="token" value="{escape(token,quote=True)}">
@@ -334,7 +334,7 @@ def install_family_billing(app, api):
                     <p class="muted">The heading and payment link are included automatically. Amounts and course credits come from the selected invoices.</p>
                     <h2>Parent SMS preview</h2><pre id="sms-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f7fb;padding:16px">{escape(preview)}</pre>
                     <button {'disabled' if status!='not sent' or not phone else ''}>Send family payment SMS</button></form>
-                    <script>document.getElementById('sms-body').addEventListener('input',function(){{document.getElementById('sms-preview').textContent=['H-Music: Combined family invoice',this.value.trim(),'','付款在这里：',document.querySelector('[aria-label="Family payment link"]').value].join(String.fromCharCode(10));}});</script>'''
+                    <script>document.getElementById('sms-body').addEventListener('input',function(){{document.getElementById('sms-preview').textContent=['H-Music: Combined family invoice',this.value.trim(),'','Pay here:',document.querySelector('[aria-label="Family payment link"]').value].join(String.fromCharCode(10));}});</script>'''
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in cur.fetchall())
             return page('Send combined invoice by SMS',f'''<p>Recipient: {escape(str(parent[0] if parent else ''))} · {escape(phone or 'phone missing')}</p><table><tr><th>Invoice</th><th>Student</th><th>Course / teacher</th><th>Credits</th><th>Amount</th></tr>{items}</table><h2>Total ${batch[4]/100:,.2f}</h2>{result}
