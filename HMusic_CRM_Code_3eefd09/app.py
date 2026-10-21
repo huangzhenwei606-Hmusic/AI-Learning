@@ -18794,6 +18794,9 @@ def invoices():
     GROUP BY COALESCE(status, 'unpaid')
     """)
     summary_rows = cursor.fetchall()
+    from billing_workspace import billing_workspace_html
+    billing_tools = billing_workspace_html(cursor)
+    conn.commit()
     conn.close()
 
     summary = {row[0]: {"count": row[1], "amount": row[2]} for row in summary_rows}
@@ -19057,6 +19060,8 @@ def invoices():
                     <div class="top-actions">
                         <a class="button" href="/notification_center">Parent Notifications</a>
                         <a class="button" href="/billing_settings">Billing Settings</a>
+                        <a class="button" href="/owner/quick-pay-settings">Payment Link Settings</a>
+                        <a class="button" href="/owner_settings">Tuition & Cancellation Settings</a>
                         <a class="button primary" href="/students">Create Invoice</a>
                     </div>
                 </div>
@@ -19090,6 +19095,7 @@ def invoices():
                         <a class="tab{active_tab('paid')}" href="/invoices?status=paid">Paid</a>
                     </div>
                 </div>
+                {billing_tools}
                 {reminder_notice}
                 <div class="table-wrap">
                     <table>
