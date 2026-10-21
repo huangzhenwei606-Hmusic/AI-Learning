@@ -44,6 +44,9 @@ def ensure_schema(cursor):
     cursor.execute('''CREATE TABLE IF NOT EXISTS family_payment_links (
         token_hash TEXT PRIMARY KEY, batch_id INTEGER NOT NULL, expires_at INTEGER NOT NULL,
         sms_status TEXT NOT NULL DEFAULT 'not sent', destination TEXT NOT NULL DEFAULT '')''')
+    cursor.execute('PRAGMA table_info(family_payment_links)')
+    if 'sms_body' not in {row[1] for row in cursor.fetchall()}:
+        cursor.execute("ALTER TABLE family_payment_links ADD COLUMN sms_body TEXT NOT NULL DEFAULT ''")
 
 
 def active_batch(cursor, allocation_id):
@@ -247,7 +250,7 @@ def install_family_billing(app, api):
                 cur.execute('BEGIN IMMEDIATE')
                 batch_id = create_batch(cur, parent_id, request.form.getlist('allocation_id'), method, key, api)
                 conn.commit()
-                return redirect(f'/family_payment/{batch_id}')
+                return redirect(f'/family_payment/{batch_id}/share' if method == 'Stripe ACH' and api['require_owner']() else f'/family_payment/{batch_id}')
             except (ValueError, FamilyPaymentError) as exc:
                 conn.rollback(); return error(exc)
             finally:
@@ -270,7 +273,7 @@ def install_family_billing(app, api):
         key = api['secrets'].token_urlsafe(24)
         session['family_payment_keys'] = (session.get('family_payment_keys',[]) + [key])[-20:]
         options = '<option>Zelle</option><option value="Check">Check</option><option value="Cash">Cash</option>'
-        if api['configure_stripe'](): options += '<option value="Stripe ACH">Bank payment (Stripe ACH)</option>'
+        if api['configure_stripe'](): options = '<option value="Stripe ACH" selected>Bank payment (ACH) · payment link / SMS</option>' + options
         if api['square_is_configured'](): options += '<option value="Square">Card payment (Square)</option>'
         return page('Combine family payments', f'''<p>Select the invoices to pay together. Each child's course keeps its own credits. Only your assigned share is included.</p>
         <form method="post"><input type="hidden" name="request_key" value="{key}"><div class="table-wrap"><table><tr><th>Select</th><th>Invoice</th><th>Student</th><th>Course / Teacher</th><th>Course credits</th><th>Your share</th></tr>{rows or '<tr><td colspan="6">No eligible unpaid invoices.</td></tr>'}</table></div>
@@ -293,6 +296,7 @@ def install_family_billing(app, api):
                 return error('This payer must have billing and payment permission for every child.',403)
             parent=cur.execute('SELECT parent_name,phone FROM parent_profiles WHERE id=?',(batch[1],)).fetchone()
             phone=api['hmusic_normalize_sms_phone'](parent[1] if parent else '')
+            default_body=f"Hi {parent[0] if parent else ''}, your H-Music family invoices total ${batch[4]/100:,.2f}. View the courses covered and pay once by ACH using the link below. No app login is needed. Thank you!"
             result=''
             if request.method=='POST':
                 action=request.form.get('action')
@@ -304,24 +308,33 @@ def install_family_billing(app, api):
                     expires=int(datetime.fromisoformat(batch[8]).timestamp())+23*3600
                     if expires<=int(time.time()):return error('This combined bill is too old. Review provider records before replacing it.')
                     cur.execute('INSERT INTO family_payment_links(token_hash,batch_id,expires_at) VALUES (?,?,?)',(digest,batch_id,expires));conn.commit()
-                link=cur.execute('SELECT batch_id,expires_at,sms_status FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()
+                link=cur.execute('SELECT batch_id,expires_at,sms_status,sms_body FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()
                 if not link or link[0]!=batch_id or link[1]<=int(time.time()):return error('This payment link is unavailable.')
+                body=request.form.get('sms_body',default_body).strip() if action=='send' else default_body
+                if not body or len(body)>1000:return error('Enter SMS text between 1 and 1000 characters.',400)
                 if action=='send':
                     if not phone:return error('Add a valid phone number to this payer profile before sending.',400)
                     if not api['sms_config_status']()[0]:return error('SMS provider is not configured.',503)
-                    cur.execute("UPDATE family_payment_links SET sms_status='sending',destination=? WHERE token_hash=? AND sms_status='not sent'",(phone,digest))
+                    cur.execute("UPDATE family_payment_links SET sms_status='sending',destination=?,sms_body=? WHERE token_hash=? AND sms_status='not sent'",(phone,body,digest))
                     send=cur.rowcount==1;conn.commit()
                     if send:
                         try:
-                            ok,_=api['send_sms_delivery'](phone,'Combined family invoice',f'Your H-Music family invoices total ${batch[4]/100:,.2f}. View each child\'s courses and pay once by ACH, without app login:', '/f/'+token)
+                            ok,_=api['send_sms_delivery'](phone,'Combined family invoice',body, '/f/'+token)
                         except Exception:ok=False
                         cur.execute('UPDATE family_payment_links SET sms_status=? WHERE token_hash=?',('accepted' if ok else 'unconfirmed',digest));conn.commit()
                 status=cur.execute('SELECT sms_status FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
+                stored_body=cur.execute('SELECT sms_body FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
+                if status!='not sent':body=stored_body or default_body
                 url=api['public_url_for']('/f/'+token)
+                preview='H-Music: Combined family invoice\n'+body+'\n'+url
                 result=f'''<label>Family payment link<input aria-label="Family payment link" readonly style="width:100%;box-sizing:border-box" value="{escape(url,quote=True)}" onclick="this.select()"></label>
                     <p>SMS: {escape(status)}. Accepted means the provider accepted the message; delivery is not confirmed. Unconfirmed messages must be checked before retrying.</p>
                     <form method="post"><input type="hidden" name="action" value="send"><input type="hidden" name="token" value="{escape(token,quote=True)}">
-                    <button {'disabled' if status!='not sent' or not phone else ''}>Send family payment SMS</button></form>'''
+                    <label for="sms-body">SMS text (editable)</label><textarea id="sms-body" name="sms_body" maxlength="1000" required rows="6" style="width:100%;box-sizing:border-box" {'readonly' if status!='not sent' else ''}>{escape(body)}</textarea>
+                    <p class="muted">The heading and payment link are included automatically. Amounts and course credits come from the selected invoices.</p>
+                    <h2>Parent SMS preview</h2><pre id="sms-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f7fb;padding:16px">{escape(preview)}</pre>
+                    <button {'disabled' if status!='not sent' or not phone else ''}>Send family payment SMS</button></form>
+                    <script>document.getElementById('sms-body').addEventListener('input',function(){{document.getElementById('sms-preview').textContent='H-Music: Combined family invoice\n'+this.value.trim()+'\n'+document.querySelector('[aria-label="Family payment link"]').value;}});</script>'''
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in cur.fetchall())
             return page('Send combined invoice by SMS',f'''<p>Recipient: {escape(str(parent[0] if parent else ''))} · {escape(phone or 'phone missing')}</p><table><tr><th>Invoice</th><th>Student</th><th>Course / teacher</th><th>Credits</th><th>Amount</th></tr>{items}</table><h2>Total ${batch[4]/100:,.2f}</h2>{result}
