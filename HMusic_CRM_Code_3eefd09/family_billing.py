@@ -7,7 +7,11 @@ from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, date
 from html import escape
 import json
+import hashlib
+import secrets
+import time
 from flask import request, session, redirect, Response
+from werkzeug.exceptions import HTTPException
 
 
 class FamilyPaymentError(ValueError):
@@ -37,6 +41,9 @@ def ensure_schema(cursor):
         UNIQUE(family_payment_id, allocation_id)
     )""")
     cursor.execute("CREATE INDEX IF NOT EXISTS family_payment_allocation_idx ON family_payment_items(allocation_id)")
+    cursor.execute('''CREATE TABLE IF NOT EXISTS family_payment_links (
+        token_hash TEXT PRIMARY KEY, batch_id INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+        sms_status TEXT NOT NULL DEFAULT 'not sent', destination TEXT NOT NULL DEFAULT '')''')
 
 
 def active_batch(cursor, allocation_id):
@@ -172,6 +179,10 @@ def install_family_billing(app, api):
     @app.after_request
     def family_billing_release_marker(response):
         response.headers['X-Hmusic-Family-Billing'] = '1'
+        if request.path.startswith(('/f/', '/family_payment/')):
+            response.headers['Cache-Control']='no-store'
+            response.headers['Referrer-Policy']='no-referrer'
+            response.headers['X-Robots-Tag']='noindex, nofollow'
         return response
 
     def connect():
@@ -189,9 +200,20 @@ def install_family_billing(app, api):
             raise FamilyPaymentError('Combined payment not found.')
         return row
 
-    def authorize(parent_id):
+    def authorize(parent_id, batch_id=None):
         if api['require_owner']():
             return
+        digest = session.get('family_guest_grant')
+        if digest and batch_id:
+            conn = connect()
+            try:
+                row = conn.execute('SELECT batch_id,expires_at FROM family_payment_links WHERE token_hash=?', (digest,)).fetchone()
+                if row and row[0] == batch_id and row[1] > int(time.time()):
+                    cur=conn.cursor()
+                    cur.execute('SELECT student_name FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
+                    if all(api['parent_has_student_permission'](parent_id,s,'view_billing') and api['parent_has_student_permission'](parent_id,s,'pay') for s, in cur.fetchall()):
+                        return
+            finally: conn.close()
         if not api['require_parent']() or str(session.get('parent_id')) != str(parent_id):
             from flask import abort
             abort(403)
@@ -258,11 +280,77 @@ def install_family_billing(app, api):
 
     app.add_url_rule('/family_billing/<int:parent_id>', 'family_billing', choose, methods=['GET','POST'])
 
+    @app.route('/family_payment/<int:batch_id>/share',methods=['GET','POST'])
+    def family_share(batch_id):
+        if not api['require_owner'](): return redirect('/owner_login')
+        conn=connect();cur=conn.cursor()
+        try:
+            batch=load(cur,batch_id)
+            if batch[2]!='Stripe ACH' or batch[3] not in ('creating','processing'):
+                return error('Only unpaid ACH combined bills can be shared.')
+            cur.execute('SELECT student_name FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
+            if not all(api['parent_has_student_permission'](batch[1],s,'view_billing') and api['parent_has_student_permission'](batch[1],s,'pay') for s, in cur.fetchall()):
+                return error('This payer must have billing and payment permission for every child.',403)
+            parent=cur.execute('SELECT parent_name,phone FROM parent_profiles WHERE id=?',(batch[1],)).fetchone()
+            phone=api['hmusic_normalize_sms_phone'](parent[1] if parent else '')
+            result=''
+            if request.method=='POST':
+                action=request.form.get('action')
+                if action not in ('create','send'):return error('Unknown action.',400)
+                token=request.form.get('token') if action=='send' else secrets.token_urlsafe(32)
+                if not token:return error('Generate a payment link first.',400)
+                digest=hashlib.sha256(token.encode()).hexdigest()
+                if action=='create':
+                    expires=int(datetime.fromisoformat(batch[8]).timestamp())+23*3600
+                    if expires<=int(time.time()):return error('This combined bill is too old. Review provider records before replacing it.')
+                    cur.execute('INSERT INTO family_payment_links(token_hash,batch_id,expires_at) VALUES (?,?,?)',(digest,batch_id,expires));conn.commit()
+                link=cur.execute('SELECT batch_id,expires_at,sms_status FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()
+                if not link or link[0]!=batch_id or link[1]<=int(time.time()):return error('This payment link is unavailable.')
+                if action=='send':
+                    if not phone:return error('Add a valid phone number to this payer profile before sending.',400)
+                    if not api['sms_config_status']()[0]:return error('SMS provider is not configured.',503)
+                    cur.execute("UPDATE family_payment_links SET sms_status='sending',destination=? WHERE token_hash=? AND sms_status='not sent'",(phone,digest))
+                    send=cur.rowcount==1;conn.commit()
+                    if send:
+                        try:
+                            ok,_=api['send_sms_delivery'](phone,'Combined family invoice',f'Your H-Music family invoices total ${batch[4]/100:,.2f}. View each child\'s courses and pay once by ACH, without app login:', '/f/'+token)
+                        except Exception:ok=False
+                        cur.execute('UPDATE family_payment_links SET sms_status=? WHERE token_hash=?',('accepted' if ok else 'unconfirmed',digest));conn.commit()
+                status=cur.execute('SELECT sms_status FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
+                url=api['public_url_for']('/f/'+token)
+                result=f'''<label>Family payment link<input aria-label="Family payment link" readonly style="width:100%;box-sizing:border-box" value="{escape(url,quote=True)}" onclick="this.select()"></label>
+                    <p>SMS: {escape(status)}. Accepted means the provider accepted the message; delivery is not confirmed. Unconfirmed messages must be checked before retrying.</p>
+                    <form method="post"><input type="hidden" name="action" value="send"><input type="hidden" name="token" value="{escape(token,quote=True)}">
+                    <button {'disabled' if status!='not sent' or not phone else ''}>Send family payment SMS</button></form>'''
+            cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
+            items=''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in cur.fetchall())
+            return page('Send combined invoice by SMS',f'''<p>Recipient: {escape(str(parent[0] if parent else ''))} · {escape(phone or 'phone missing')}</p><table><tr><th>Invoice</th><th>Student</th><th>Course / teacher</th><th>Credits</th><th>Amount</th></tr>{items}</table><h2>Total ${batch[4]/100:,.2f}</h2>{result}
+                <form method="post"><input type="hidden" name="action" value="create"><button>Generate family payment link</button></form>
+                <p>Parents can open this link and pay once by ACH without app login. Link expires within 23 hours of creating the combined bill. Generating a link does not send a message.</p><a href="/family_payment/{batch_id}">Back to combined bill</a>''')
+        finally:conn.close()
+
+    @app.route('/f/<token>')
+    def family_guest_payment(token):
+        conn=connect()
+        try:
+            digest=hashlib.sha256(token.encode()).hexdigest()
+            link=conn.execute('SELECT batch_id,expires_at FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()
+            if not link or link[1] <= int(time.time()):
+                return error('This link expired or is unavailable. Please ask H-Music for a new combined bill.',404)
+            session['family_guest_grant']=digest
+            session['family_guest_token']=token
+            response=app.make_response(family_payment(link[0]))
+            response.headers['Cache-Control']='no-store'
+            response.headers['Referrer-Policy']='no-referrer'
+            response.headers['X-Robots-Tag']='noindex, nofollow'
+            return response
+        finally:conn.close()
+
     @app.route('/family_payment/<int:batch_id>', methods=['GET','POST'])
     def family_payment(batch_id):
         conn = connect(); cur = conn.cursor()
         try:
-            batch = load(cur,batch_id); authorize(batch[1])
+            batch = load(cur,batch_id); authorize(batch[1],batch_id)
             if request.method == 'GET' and batch[2] in ('Stripe ACH','Square') and batch[5] and batch[3] not in ('paid','cancelled'):
                 try:
                     reconcile(batch_id)
@@ -313,6 +401,8 @@ def install_family_billing(app, api):
                     actions = instructions + f'<p>Payment note: Family payment #{batch_id}</p><form method="post"><input type="hidden" name="action" value="notify"><input name="reference" placeholder="Payment reference"><button>I sent the combined payment</button></form>'
                     if api['require_owner']():
                         actions += f'<form method="post"><input type="hidden" name="action" value="confirm"><label>Amount received <input name="received_amount" type="number" step="0.01" required></label><label>Date <input type="date" name="payment_date" value="{date.today().isoformat()}" required></label><input name="reference" placeholder="Check / transfer reference"><button>Confirm total received &amp; apply course credits</button></form><form method="post"><input type="hidden" name="action" value="cancel"><button>Cancel — no payment received</button></form>'
+            if api['require_owner']() and batch[2]=='Stripe ACH' and batch[3] not in ('paid','cancelled'):
+                actions += f'<p><a class="button" href="/family_payment/{batch_id}/share">SMS payment link · no app login</a></p>'
             return page(f'Family payment #{batch_id}',f'<p>Status: <strong>{escape(batch[3])}</strong> · {escape(batch[2])}</p><div class="table-wrap"><table><tr><th>Invoice</th><th>Student</th><th>Course / Teacher</th><th>Course credits</th><th>Share</th></tr>{rows}</table></div><h2>Total ${batch[4]/100:,.2f}</h2><p>Each invoice keeps its course binding. Split-guardian invoices receive credit only when all shares have been paid.</p>{actions}<a href="/family_billing/{batch[1]}">Family billing</a>')
         except (ValueError,FamilyPaymentError) as exc:
             conn.rollback(); return error(exc)
@@ -322,12 +412,16 @@ def install_family_billing(app, api):
     def checkout(batch_id):
         conn=connect();cur=conn.cursor()
         try:
-            batch=load(cur,batch_id);authorize(batch[1])
+            batch=load(cur,batch_id);authorize(batch[1],batch_id)
             if batch[3]=='paid': return redirect(f'/family_payment/{batch_id}')
             if batch[2] not in ('Stripe ACH','Square') or batch[3]=='cancelled': raise FamilyPaymentError('This payment cannot use online checkout.')
             if batch[5] and batch[6]: return redirect(batch[6])
             if (datetime.now() - datetime.fromisoformat(batch[8])).total_seconds() > 23 * 3600:
                 raise FamilyPaymentError('The checkout attempt is too old to retry safely. Review provider records before paying again.')
+            return_path=f'/family_payment/{batch_id}'
+            grant=cur.execute('SELECT batch_id,expires_at FROM family_payment_links WHERE token_hash=?',(session.get('family_guest_grant',''),)).fetchone()
+            if grant and grant[0]==batch_id and grant[1]>int(time.time()) and session.get('family_guest_token'):
+                return_path='/f/'+session['family_guest_token']
             # Same immutable batch and provider idempotency key on every retry.
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=cur.fetchall()
@@ -336,7 +430,7 @@ def install_family_billing(app, api):
                 customer=api['get_or_create_stripe_customer'](cur,batch[1]);conn.commit()
                 result=api['stripe'].checkout.Session.create(mode='payment',customer=customer,payment_method_types=['us_bank_account'],
                     line_items=[{'price_data':{'currency':'usd','product_data':{'name':f'{s} · {c or "Fee"} · {t or ""} · Invoice #{i}'},'unit_amount':n},'quantity':1} for i,s,c,t,n in items],
-                    success_url=api['public_url_for'](f'/family_payment/{batch_id}'),cancel_url=api['public_url_for'](f'/family_payment/{batch_id}'),
+                    success_url=api['public_url_for'](return_path),cancel_url=api['public_url_for'](return_path),
                     metadata={'family_payment_id':str(batch_id),'parent_id':str(batch[1])},
                     idempotency_key=f'hmusic-family-{batch_id}')
                 pid,url=result.id,result.url
@@ -355,6 +449,8 @@ def install_family_billing(app, api):
             conn.commit();return redirect(url)
         except FamilyPaymentError as exc:
             conn.rollback();return error(exc)
+        except HTTPException:
+            raise
         except Exception:
             conn.rollback();app.logger.exception('Family checkout interrupted for batch %s',batch_id)
             return error('Checkout could not be confirmed. Your bill is reserved; retry this same bill to avoid duplicate payment.',503)
@@ -437,7 +533,7 @@ def install_family_billing(app, api):
     @app.route('/family_payment/<int:batch_id>/check',methods=['POST'])
     def check(batch_id):
         conn=connect()
-        try: authorize(load(conn.cursor(),batch_id)[1])
+        try: authorize(load(conn.cursor(),batch_id)[1],batch_id)
         finally:conn.close()
         try:reconcile(batch_id)
         except Exception:
