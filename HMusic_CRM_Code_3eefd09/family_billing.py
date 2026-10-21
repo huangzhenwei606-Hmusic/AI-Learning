@@ -307,7 +307,7 @@ def install_family_billing(app, api):
             parent=cur.execute('SELECT parent_name,phone FROM parent_profiles WHERE id=?',(batch[1],)).fetchone()
             phone=api['hmusic_normalize_sms_phone'](parent[1] if parent else '')
             default_body=f"Hi {parent[0] if parent else ''}, your H-Music family invoices total ${batch[4]/100:,.2f}. View the courses covered and pay once by ACH using the link below. No app login is needed. Thank you!"
-            latest=cur.execute("SELECT sms_status,destination FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY expires_at DESC,rowid DESC LIMIT 1",(batch_id,)).fetchone()
+            latest=cur.execute("SELECT sms_status,destination FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY expires_at DESC LIMIT 1",(batch_id,)).fetchone()
             result=sms_status_notice(*latest) if latest else ''
             if request.method=='POST':
                 action=request.form.get('action')
