@@ -226,6 +226,7 @@ class FamilyBillingTests(unittest.TestCase):
     def test_sql_translation_schema(self):
         from database_backend import _translate_sql
         class Recorder:
+            def fetchall(self): return []
             def execute(self,sql,*args):
                 translated=_translate_sql(sql);assert 'AUTOINCREMENT' not in translated
         fb.ensure_schema(Recorder())
@@ -297,6 +298,26 @@ class FamilyBillingTests(unittest.TestCase):
         api['send_sms_delivery'].assert_called_once()
         self.assertEqual(api['send_sms_delivery'].call_args.args[0],'+16505550100')
         self.assertEqual(api['send_sms_delivery'].call_args.args[3],'/f/'+token)
+
+    def test_sms_edits_are_previewed_sent_and_saved_without_resending(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        token=self.guest_link(client,bid)
+        body='Hi family, these lessons cover November. Thank you!'
+        r=client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token,'sms_body':body})
+        self.assertEqual(r.status_code,200)
+        self.assertIn(body,r.text)
+        self.assertEqual(api['send_sms_delivery'].call_args.args[2],body)
+        self.assertEqual(self.conn.execute('SELECT sms_body FROM family_payment_links').fetchone()[0],body)
+        client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token,'sms_body':'Changed'})
+        api['send_sms_delivery'].assert_called_once()
+        self.assertEqual(self.conn.execute('SELECT sms_body FROM family_payment_links').fetchone()[0],body)
+
+    def test_invalid_sms_text_never_sends(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        token=self.guest_link(client,bid)
+        for body in ('   ','x'*1001):
+            self.assertEqual(client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token,'sms_body':body}).status_code,400)
+        api['send_sms_delivery'].assert_not_called()
 
     def test_guest_link_permission_revoked(self):
         bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client();token=self.guest_link(client,bid)
