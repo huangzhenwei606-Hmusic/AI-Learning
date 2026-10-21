@@ -8,9 +8,11 @@ class BillingWorkspaceTests(unittest.TestCase):
         self.c.executescript("""CREATE TABLE parent_profiles(id INTEGER PRIMARY KEY,parent_name TEXT,email TEXT,active INTEGER,phone TEXT);
         CREATE TABLE invoices(id INTEGER PRIMARY KEY,status TEXT);
         CREATE TABLE invoice_allocations(id INTEGER PRIMARY KEY,parent_id INTEGER,invoice_id INTEGER,status TEXT);
+        CREATE TABLE parent_students(parent_id INTEGER,student_name TEXT,active INTEGER);
         INSERT INTO parent_profiles VALUES(1,'A <Family>','a@example.invalid',1,'6505550100'),(2,'Inactive','b@example.invalid',0,''),(3,'Paid only','c@example.invalid',1,'');
         INSERT INTO invoices VALUES(1,'unpaid'),(2,'paid');
         INSERT INTO invoice_allocations VALUES(1,1,1,'unpaid'),(2,2,1,'unpaid'),(3,3,2,'paid');""")
+        self.c.execute('ALTER TABLE invoices ADD COLUMN student_name TEXT')
         billing_workspace_html(self.c.cursor())
     def tearDown(self):self.c.close()
     def test_eligible_payers_and_escaping(self):
@@ -31,3 +33,10 @@ class BillingWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.c.execute('SELECT COUNT(*) FROM family_payment_links').fetchone()[0],0)
     def test_empty_list(self):
         self.assertIn('No combined bills yet.',billing_workspace_html(self.c.cursor()))
+    def test_new_invoice_parent_is_found_before_allocation_created(self):
+        self.c.execute("INSERT INTO parent_profiles VALUES(4,'Hao Qi','hellohaoqi@example.invalid',1,'6505550101')")
+        self.c.execute("INSERT INTO parent_students VALUES(4,'Sophia Yuan',1)")
+        self.c.execute("INSERT INTO invoices VALUES(3,'unpaid','Sophia Yuan')")
+        html=billing_workspace_html(self.c.cursor())
+        self.assertIn('Hao Qi',html)
+        self.assertEqual(self.c.execute('SELECT COUNT(*) FROM invoice_allocations WHERE parent_id=4').fetchone()[0],0)

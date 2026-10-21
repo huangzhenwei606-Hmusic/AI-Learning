@@ -6,10 +6,13 @@ from family_billing import ensure_schema
 def billing_workspace_html(cursor):
     ensure_schema(cursor)
     cursor.execute("""SELECT DISTINCT p.id,p.parent_name,p.email,COALESCE(p.phone,'') FROM parent_profiles p
-        JOIN invoice_allocations a ON a.parent_id=p.id
-        JOIN invoices i ON i.id=a.invoice_id
-        WHERE COALESCE(p.active,1)=1 AND a.status IN ('unpaid','failed')
-        AND i.status NOT IN ('paid','cancelled','canceled','void','waived','pending_owner_approval')
+        WHERE COALESCE(p.active,1)=1 AND (
+          EXISTS (SELECT 1 FROM invoice_allocations a JOIN invoices i ON i.id=a.invoice_id
+            WHERE a.parent_id=p.id AND a.status IN ('unpaid','failed')
+            AND i.status NOT IN ('paid','cancelled','canceled','void','waived','pending_owner_approval'))
+          OR EXISTS (SELECT 1 FROM parent_students ps JOIN invoices i ON i.student_name=ps.student_name
+            WHERE ps.parent_id=p.id AND COALESCE(ps.active,1)=1
+            AND i.status NOT IN ('paid','cancelled','canceled','void','waived','pending_owner_approval')))
         ORDER BY p.parent_name,p.id""")
     options=''.join(f'<option value="{int(i)}">{escape(str(n or "Parent"))} · {escape(str(e or ""))} · {escape(str(phone))}</option>' for i,n,e,phone in cursor.fetchall())
     cursor.execute("""SELECT f.id,p.parent_name,f.total_cents,f.status,f.method
