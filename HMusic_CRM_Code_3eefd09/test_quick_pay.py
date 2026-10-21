@@ -297,6 +297,19 @@ class QuickPayTest(unittest.TestCase):
         with self.connect() as c:c.execute("UPDATE invoices SET coverage_title='Different course'")
         self.assertEqual(self.checkout(t,'ach').status_code,409)
 
+    def test_revoke_expired_checkout_after_coverage_edit(self):
+        t=self.make_link(); self.checkout(t)
+        with self.connect() as c:
+            c.execute("UPDATE invoices SET coverage_note='Owner clarified lesson coverage'")
+        with self.client.session_transaction() as s:s['owner']=True
+        r=self.client.post('/owner/invoice/1/quick-pay',data={'action':'revoke','digest':hashlib.sha256(t.encode()).hexdigest()})
+        self.assertEqual(r.status_code,302,r.text)
+        self.assertEqual(self.client.get('/p/'+t).status_code,404)
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status,lock_token FROM invoice_allocations').fetchone(),('unpaid',None))
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
+            self.assertEqual(c.execute('SELECT lessons_left FROM enrollments').fetchone()[0],0)
+
     def test_revoke_expires_stripe_before_unlock(self):
         t=self.make_link(); self.checkout(t)
         with self.client.session_transaction() as s:s['owner']=True
