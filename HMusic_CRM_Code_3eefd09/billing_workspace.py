@@ -5,13 +5,13 @@ from family_billing import ensure_schema
 
 def billing_workspace_html(cursor):
     ensure_schema(cursor)
-    cursor.execute("""SELECT DISTINCT p.id,p.parent_name,p.email FROM parent_profiles p
+    cursor.execute("""SELECT DISTINCT p.id,p.parent_name,p.email,COALESCE(p.phone,'') FROM parent_profiles p
         JOIN invoice_allocations a ON a.parent_id=p.id
         JOIN invoices i ON i.id=a.invoice_id
         WHERE COALESCE(p.active,1)=1 AND a.status IN ('unpaid','failed')
         AND i.status NOT IN ('paid','cancelled','canceled','void','waived','pending_owner_approval')
         ORDER BY p.parent_name,p.id""")
-    options=''.join(f'<option value="{int(i)}">{escape(str(n or "Parent"))} · {escape(str(e or ""))}</option>' for i,n,e in cursor.fetchall())
+    options=''.join(f'<option value="{int(i)}">{escape(str(n or "Parent"))} · {escape(str(e or ""))} · {escape(str(phone))}</option>' for i,n,e,phone in cursor.fetchall())
     cursor.execute("""SELECT f.id,p.parent_name,f.total_cents,f.status,f.method
         FROM family_payments f JOIN parent_profiles p ON p.id=f.parent_id
         ORDER BY f.id DESC LIMIT 20""")
@@ -22,6 +22,9 @@ def billing_workspace_html(cursor):
     return f'''<section class="billing-tools" aria-label="Family billing">
       <div class="billing-tools-heading"><div><h2>Combined family invoices</h2><p>Select a payer to combine invoices. Review existing bills, generate payment links and send SMS here.</p></div>
       <button class="button" id="refresh-billing" type="button">Refresh billing</button></div>
+      <label for="billing-family-search">Search parents</label>
+      <input id="billing-family-search" type="search" placeholder="Type parent name, email or phone" autocomplete="off" aria-controls="billing-family" style="padding:10px;border:1px solid #d0d5dd;border-radius:8px;width:min(100%,520px);box-sizing:border-box;margin:8px 0 12px;font:inherit">
+      <span id="billing-family-count" role="status" aria-live="polite"></span>
       <form id="combine-family-form"><label for="billing-family">Family / payer</label>
       <select id="billing-family" required><option value="">Choose a family…</option>{options}</select>
       <button class="button primary" type="submit">Combine family invoices</button></form>
