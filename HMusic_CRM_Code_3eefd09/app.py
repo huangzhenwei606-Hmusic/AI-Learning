@@ -4506,6 +4506,18 @@ def edit_student(name):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
 
+    if request.method == "POST" and request.form.get("action") == "set_inactive":
+        # A status-only action must not overwrite unsaved profile/contact/credit fields.
+        try:
+            cursor.execute("SELECT 1 FROM students WHERE name = ?", (name,))
+            if not cursor.fetchone():
+                return "<h1>Student not found</h1>", 404
+            cursor.execute("UPDATE students SET status = 'Inactive' WHERE name = ?", (name,))
+            conn.commit()
+        finally:
+            conn.close()
+        return redirect(f"/edit_student/{quote(name, safe='')}?status_updated=inactive")
+
     if request.method == "POST":
         first_name_input = (request.form.get("first_name") or "").strip()
         last_name_input = (request.form.get("last_name") or "").strip()
@@ -4733,6 +4745,13 @@ def edit_student(name):
     first_name = name_parts[0] if name_parts else ""
     last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
     status_value = student[6] or "Active"
+    student_is_inactive = str(status_value).strip().lower() == "inactive"
+    student_status_badge = "muted" if student_is_inactive else "ok"
+    status_notice_html = (
+        '<p role="status" style="padding:14px 18px;background:#ecfdf3;border:1px solid #abefc6;border-radius:10px;color:#067647">'
+        'Student set inactive. History and course credits are preserved.</p>'
+        if student_is_inactive and request.args.get("status_updated") == "inactive" else ""
+    )
     program_value = student[7] or "Piano private lesson"
     lesson_length_value = student[8] or "30 minutes"
     internal_note_value = student[9] or ""
@@ -5152,7 +5171,7 @@ def edit_student(name):
                         </div>
                         <h1>{escape(str(student_name))}</h1>
                         <div class="subline">
-                            <span class="badge ok">Active</span>
+                            <span class="badge {student_status_badge}">{escape(str(status_value))}</span>
                             <span class="badge {course_lesson_badge_class}">{course_lesson_badge_text}</span>
                             <span>Updated Jul 30</span>
                             <span>Primary teacher: {escape(str(student[1] or 'Unassigned'))}</span>
@@ -5166,6 +5185,7 @@ def edit_student(name):
                     </div>
                 </section>
 
+                {status_notice_html}
                 <form id="editStudentForm" method="POST">
                     <section class="layout">
                         <nav class="side" aria-label="Student edit sections">
@@ -5247,7 +5267,7 @@ def edit_student(name):
                                 <div class="inactive-row">
                                     <span>Student stopped lessons? Set inactive to keep history while hiding from active lists.</span>
                                     <div class="danger-actions">
-                                        <button type="button" onclick="document.getElementById('studentStatusSelect').value='Inactive';">Set inactive</button>
+                                        <button type="submit" name="action" value="set_inactive" formnovalidate {"disabled" if student_is_inactive else ""}>{"Student is inactive" if student_is_inactive else "Set inactive"}</button>
                                         <button
                                             class="delete-student-btn"
                                             type="submit"
