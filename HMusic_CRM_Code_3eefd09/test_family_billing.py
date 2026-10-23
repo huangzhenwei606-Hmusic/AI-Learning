@@ -338,6 +338,43 @@ class FamilyBillingTests(unittest.TestCase):
         self.assertEqual(client.post(f'/family_payment/{bid}',data={'action':'confirm_zelle','received_amount':'100'}).status_code,409)
         self.assertEqual(self.balances(),before)
 
+    def test_repeat_reminder_retains_each_attempt_and_renews_unstarted_bill(self):
+        import re,time
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        self.conn.execute("UPDATE family_payments SET created_at='2000-01-01 00:00:00' WHERE id=?",(bid,));self.conn.commit()
+        first=self.guest_link(client,bid)
+        client.post(f'/family_payment/{bid}/share',data={'action':'send','token':first,'sms_body':'First reminder'})
+        response=client.post(f'/family_payment/{bid}/share',data={'action':'remind'})
+        self.assertEqual(response.status_code,200)
+        second=re.search(r'https://example.test/f/([^"< ]+)',response.text).group(1)
+        self.assertNotEqual(first,second)
+        api['send_sms_delivery'].assert_called_once()
+        client.post(f'/family_payment/{bid}/share',data={'action':'send','token':second,'sms_body':'Second reminder'})
+        self.assertEqual(api['send_sms_delivery'].call_count,2)
+        history=client.get(f'/family_payment/{bid}/share').text
+        self.assertIn('First reminder',history);self.assertIn('Second reminder',history)
+        records=self.conn.execute('SELECT sent_at,sms_status,sms_result,expires_at FROM family_payment_links').fetchall()
+        self.assertTrue(all(row[0] and row[1]=='accepted' and row[2]=='accepted' and row[3]>time.time() for row in records))
+        api['stripe'].checkout.Session.create.return_value=SimpleNamespace(id='cs_renewed',url='https://stripe.test/pay')
+        self.assertEqual(client.post(f'/family_payment/{bid}/checkout').status_code,302)
+        self.assertEqual(self.balances(),[-3,-3,-1,8])
+
+    def test_uncertain_sms_attempt_is_logged_and_blocks_new_reminder(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        token=self.guest_link(client,bid)
+        api['send_sms_delivery'].side_effect=RuntimeError('timeout')
+        response=client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token})
+        self.assertIn('SMS result not confirmed',response.text)
+        self.assertEqual(client.post(f'/family_payment/{bid}/share',data={'action':'remind'}).status_code,409)
+        self.assertEqual(self.conn.execute('SELECT sms_status FROM family_payment_links').fetchone()[0],'unconfirmed')
+
+    def test_paid_and_processing_bills_cannot_be_reminded(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        for state in ('paid','submitted','processing','checkout_starting'):
+            self.conn.execute('UPDATE family_payments SET status=? WHERE id=?',(state,bid));self.conn.commit()
+            self.assertEqual(client.post(f'/family_payment/{bid}/share',data={'action':'remind'}).status_code,409)
+        api['send_sms_delivery'].assert_not_called()
+
     def test_guest_link_permission_revoked(self):
         bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client();token=self.guest_link(client,bid)
         with client.session_transaction() as s:s.clear()
@@ -408,7 +445,7 @@ class FamilyBillingTests(unittest.TestCase):
 
     def test_old_uncertain_checkout_is_not_recreated(self):
         bid=self.create(method='Stripe ACH')
-        self.conn.execute("UPDATE family_payments SET created_at='2000-01-01 00:00:00' WHERE id=?",(bid,));self.conn.commit()
+        self.conn.execute("UPDATE family_payments SET created_at='2000-01-01 00:00:00',status='checkout_starting' WHERE id=?",(bid,));self.conn.commit()
         client,api=self.setup_client()
         self.assertEqual(client.post(f'/family_payment/{bid}/checkout').status_code,409)
         api['stripe'].checkout.Session.create.assert_not_called()

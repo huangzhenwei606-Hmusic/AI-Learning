@@ -20,7 +20,7 @@ def billing_workspace_html(cursor):
         ORDER BY f.id DESC LIMIT 20""")
     rows=''
     for i,n,amount,status,method in cursor.fetchall():
-        share=f'<a class="button" data-billing-title="Send combined invoice by SMS" href="/family_payment/{int(i)}/share">Payment link / SMS</a>' if method=='Stripe ACH' and status in ('creating','processing') else ''
+        share=f'<a class="button" data-billing-title="Send combined invoice by SMS" href="/family_payment/{int(i)}/share">{"SMS history" if status=="paid" else "Payment link / SMS"}</a>' if method=='Stripe ACH' and status in ('creating','processing','checkout','submitted','paid') else ''
         rows+=f'<tr><td>#{int(i)}</td><td>{escape(str(n or "Parent"))}</td><td>${amount/100:,.2f}</td><td>{escape(str(status))}</td><td>{escape(str(method))}</td><td><a class="button" href="/family_payment/{int(i)}">Review</a> {share}</td></tr>'
     return f'''<section class="billing-tools" aria-label="Family billing">
       <div class="billing-tools-heading"><div><h2>Combined family invoices</h2><p>Select a payer to combine invoices. Review existing bills, generate payment links and send SMS here.</p></div>

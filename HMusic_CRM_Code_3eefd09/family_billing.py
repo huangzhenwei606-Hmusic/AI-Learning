@@ -10,6 +10,7 @@ import json
 import hashlib
 import secrets
 import time
+from zoneinfo import ZoneInfo
 from flask import request, session, redirect, Response
 from werkzeug.exceptions import HTTPException
 
@@ -47,6 +48,10 @@ def ensure_schema(cursor):
     cursor.execute('PRAGMA table_info(family_payment_links)')
     if 'sms_body' not in {row[1] for row in cursor.fetchall()}:
         cursor.execute("ALTER TABLE family_payment_links ADD COLUMN sms_body TEXT NOT NULL DEFAULT ''")
+    cursor.execute('PRAGMA table_info(family_payment_links)')
+    columns={row[1] for row in cursor.fetchall()}
+    for name, definition in [('sent_at','INTEGER'),('sms_result',"TEXT NOT NULL DEFAULT ''")]:
+        if name not in columns:cursor.execute(f'ALTER TABLE family_payment_links ADD COLUMN {name} {definition}')
 
 
 def sms_status_notice(status, phone):
@@ -299,7 +304,7 @@ def install_family_billing(app, api):
         conn=connect();cur=conn.cursor()
         try:
             batch=load(cur,batch_id)
-            if batch[2]!='Stripe ACH' or batch[3] not in ('creating','processing'):
+            if batch[2]!='Stripe ACH' or batch[3]=='cancelled':
                 return error('Only unpaid ACH combined bills can be shared.')
             cur.execute('SELECT student_name FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
             if not all(api['parent_has_student_permission'](batch[1],s,'view_billing') and api['parent_has_student_permission'](batch[1],s,'pay') for s, in cur.fetchall()):
@@ -307,32 +312,46 @@ def install_family_billing(app, api):
             parent=cur.execute('SELECT parent_name,phone FROM parent_profiles WHERE id=?',(batch[1],)).fetchone()
             phone=api['hmusic_normalize_sms_phone'](parent[1] if parent else '')
             default_body=f"Hi {parent[0] if parent else ''}, your H-Music family invoices total ${batch[4]/100:,.2f}. View the courses covered and pay once by ACH using the link below. No app login is needed. Thank you!"
-            latest=cur.execute("SELECT sms_status,destination FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY expires_at DESC LIMIT 1",(batch_id,)).fetchone()
+            latest=cur.execute("SELECT sms_status,destination FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY COALESCE(sent_at,0) DESC,expires_at DESC LIMIT 1",(batch_id,)).fetchone()
             result=sms_status_notice(*latest) if latest else ''
+            last_body=cur.execute("SELECT sms_body FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY COALESCE(sent_at,0) DESC,expires_at DESC LIMIT 1",(batch_id,)).fetchone()
+            if last_body and last_body[0]:default_body=last_body[0]
             if request.method=='POST':
+                if batch[3] in ('paid','submitted','processing','checkout_starting'):return error('Payment is paid or being processed. Do not send another payment request.')
+                if batch[5]:
+                    try:reconcile(batch_id)
+                    except Exception:return error('Cannot verify online payment status. No reminder was sent.',503)
+                    batch=load(cur,batch_id)
+                    if batch[3]!='checkout':return error('Payment is closed or processing. Review the combined bill before sending a reminder.')
                 action=request.form.get('action')
-                if action not in ('create','send'):return error('Unknown action.',400)
+                if latest and latest[0] in ('sending','unconfirmed') and action in ('create','remind'):return error('The previous SMS result is uncertain. Check provider records before requesting another send.')
+                if action not in ('create','remind','send'):return error('Unknown action.',400)
                 token=request.form.get('token') if action=='send' else secrets.token_urlsafe(32)
                 if not token:return error('Generate a payment link first.',400)
                 digest=hashlib.sha256(token.encode()).hexdigest()
-                if action=='create':
-                    expires=int(datetime.fromisoformat(batch[8]).timestamp())+23*3600
-                    if expires<=int(time.time()):return error('This combined bill is too old. Review provider records before replacing it.')
+                if action in ('create','remind'):
+                    expires=int(time.time())+7*24*3600
+                    if batch[5]:
+                        provider=api['stripe'].checkout.Session.retrieve(batch[5])
+                        expires=min(expires,int(provider.get('expires_at') or 0))
+                        if expires<=int(time.time()):return error('Online checkout expired. Review this bill and create a new combined bill before reminding.')
+                    elif batch[3]!='creating':return error('A previous checkout attempt needs review before another reminder.')
                     cur.execute('INSERT INTO family_payment_links(token_hash,batch_id,expires_at) VALUES (?,?,?)',(digest,batch_id,expires));conn.commit()
                 link=cur.execute('SELECT batch_id,expires_at,sms_status,sms_body FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()
                 if not link or link[0]!=batch_id or link[1]<=int(time.time()):return error('This payment link is unavailable.')
                 body=request.form.get('sms_body',default_body).strip() if action=='send' else default_body
                 if not body or len(body)>1000:return error('Enter SMS text between 1 and 1000 characters.',400)
                 if action=='send':
+                    if latest and latest[0] in ('sending','unconfirmed') and link[2]=='not sent':return error('Check the previous uncertain SMS result before sending another reminder.')
                     if not phone:return error('Add a valid phone number to this payer profile before sending.',400)
                     if not api['sms_config_status']()[0]:return error('SMS provider is not configured.',503)
-                    cur.execute("UPDATE family_payment_links SET sms_status='sending',destination=?,sms_body=? WHERE token_hash=? AND sms_status='not sent'",(phone,body,digest))
+                    cur.execute("UPDATE family_payment_links SET sms_status='sending',destination=?,sms_body=?,sent_at=? WHERE token_hash=? AND sms_status='not sent'",(phone,body,int(time.time()),digest))
                     send=cur.rowcount==1;conn.commit()
                     if send:
                         try:
-                            ok,_=api['send_sms_delivery'](phone,'Combined family invoice',body+'\n\nPay here:', '/f/'+token)
-                        except Exception:ok=False
-                        cur.execute('UPDATE family_payment_links SET sms_status=? WHERE token_hash=?',('accepted' if ok else 'unconfirmed',digest));conn.commit()
+                            ok,delivery_result=api['send_sms_delivery'](phone,'Combined family invoice',body+'\n\nPay here:', '/f/'+token)
+                        except Exception:ok=False;delivery_result='Provider result unavailable; check records before retrying.'
+                        cur.execute('UPDATE family_payment_links SET sms_status=?,sms_result=? WHERE token_hash=?',('accepted' if ok else 'unconfirmed',str(delivery_result)[:500],digest));conn.commit()
                 status=cur.execute('SELECT sms_status FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
                 stored_body=cur.execute('SELECT sms_body FROM family_payment_links WHERE token_hash=?',(digest,)).fetchone()[0]
                 if status!='not sent':body=stored_body or default_body
@@ -347,9 +366,12 @@ def install_family_billing(app, api):
                     <script>document.getElementById('sms-body').addEventListener('input',function(){{document.getElementById('sms-preview').textContent=['H-Music: Combined family invoice',this.value.trim(),'','Pay here:',document.querySelector('[aria-label="Family payment link"]').value].join(String.fromCharCode(10));}});</script>'''
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in cur.fetchall())
+            history_rows=cur.execute("SELECT sent_at,destination,sms_status,sms_body,sms_result FROM family_payment_links WHERE batch_id=? AND sms_status!='not sent' ORDER BY COALESCE(sent_at,0) DESC,expires_at DESC",(batch_id,)).fetchall()
+            history=''.join(f'<tr><td>{datetime.fromtimestamp(ts,ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %I:%M:%S %p %Z") if ts else "Legacy record — time unavailable"}</td><td>{escape(dest)}</td><td>{escape(status)}<p>{escape(detail)}</p></td><td><details><summary>View SMS text</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{escape(body)}</pre><p>Pay here: payment link for this combined bill (stored securely as a token hash).</p></details></td></tr>' for ts,dest,status,body,detail in history_rows)
+            reminder_form='<form method="post"><input type="hidden" name="action" value="remind"><button>Send reminder again · preview first</button></form>' if batch[3] not in ('paid','submitted','processing','checkout_starting') else '<p>No new payment reminder: this bill is paid or being processed.</p>'
             return page('Send combined invoice by SMS',f'''<p>Recipient: {escape(str(parent[0] if parent else ''))} · {escape(phone or 'phone missing')}</p><table><tr><th>Invoice</th><th>Student</th><th>Course / teacher</th><th>Credits</th><th>Amount</th></tr>{items}</table><h2>Total ${batch[4]/100:,.2f}</h2>{result}
-                <form method="post"><input type="hidden" name="action" value="create"><button>Generate family payment link</button></form>
-                <p>Parents can open this link and pay once by ACH without app login. Link expires within 23 hours of creating the combined bill. Generating a link does not send a message.</p><a href="/family_payment/{batch_id}">Back to combined bill</a>''')
+                {reminder_form}<h2>SMS sending history</h2><div class="table-wrap"><table><tr><th>Time (Los Angeles)</th><th>Recipient</th><th>Result</th><th>Message</th></tr>{history or '<tr><td colspan="4">No SMS sent yet.</td></tr>'}</table></div>
+                <p>Previewing does not send a message. New payment links last up to 7 days; an existing online checkout may expire sooner. Accepted means provider submission, not confirmed phone delivery.</p><a href="/family_payment/{batch_id}">Back to combined bill</a>''')
         finally:conn.close()
 
     @app.route('/f/<token>')
@@ -455,7 +477,7 @@ def install_family_billing(app, api):
             if batch[3]=='paid': return redirect(f'/family_payment/{batch_id}')
             if batch[2] not in ('Stripe ACH','Square') or batch[3]=='cancelled': raise FamilyPaymentError('This payment cannot use online checkout.')
             if batch[5] and batch[6]: return redirect(batch[6])
-            if (datetime.now() - datetime.fromisoformat(batch[8])).total_seconds() > 23 * 3600:
+            if not (batch[3]=='creating' and not batch[5]) and (datetime.now() - datetime.fromisoformat(batch[8])).total_seconds() > 23 * 3600:
                 raise FamilyPaymentError('The checkout attempt is too old to retry safely. Review provider records before paying again.')
             return_path=f'/family_payment/{batch_id}'
             grant=cur.execute('SELECT batch_id,expires_at FROM family_payment_links WHERE token_hash=?',(session.get('family_guest_grant',''),)).fetchone()
@@ -465,6 +487,7 @@ def install_family_billing(app, api):
             cur.execute('BEGIN IMMEDIATE')
             cur.execute("UPDATE family_payments SET status=CASE WHEN status='creating' THEN 'checkout_starting' ELSE status END WHERE id=? AND method IN ('Stripe ACH','Square') AND status NOT IN ('paid','cancelled')",(batch_id,))
             if cur.rowcount!=1:raise FamilyPaymentError('This bill changed. Refresh before continuing.')
+            if batch[3]=='creating' and not batch[5]:cur.execute('UPDATE family_payments SET created_at=? WHERE id=?',(datetime.now().strftime('%Y-%m-%d %H:%M:%S'),batch_id))
             conn.commit()
             # Same immutable batch and provider idempotency key on every retry.
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
