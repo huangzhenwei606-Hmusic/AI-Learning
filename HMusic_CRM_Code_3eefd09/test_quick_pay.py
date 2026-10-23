@@ -318,4 +318,25 @@ class QuickPayTest(unittest.TestCase):
         self.assertEqual(self.client.get('/p/'+t).status_code,404)
         with self.connect() as c:self.assertEqual(c.execute('SELECT status,lock_token FROM invoice_allocations').fetchone(),('unpaid',None))
 
+    def test_zelle_entry_expires_checkout_before_manual_confirmation(self):
+        t=self.make_link(); self.checkout(t)
+        with self.client.session_transaction() as s:s['owner']=True
+        response=self.client.post('/owner/invoice/1/quick-pay',data={'action':'revoke_for_zelle','digest':hashlib.sha256(t.encode()).hexdigest()})
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(response.location,'/pay_invoice/1')
+        self.assertEqual(next(iter(self.provider.objects.values()))['status'],'expired')
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status,lock_token FROM invoice_allocations').fetchone(),('unpaid',None))
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
+            self.assertEqual(c.execute('SELECT lessons_left FROM enrollments').fetchone()[0],0)
+
+    def test_zelle_entry_blocks_processing_online_payment(self):
+        t=self.make_link(); self.checkout(t)
+        obj=next(iter(self.provider.objects.values()))
+        obj['status']='complete';obj['payment_intent']='pi_processing';obj['payment_status']='unpaid'
+        with self.client.session_transaction() as s:s['owner']=True
+        response=self.client.post('/owner/invoice/1/quick-pay',data={'action':'revoke_for_zelle','digest':hashlib.sha256(t.encode()).hexdigest()})
+        self.assertEqual(response.status_code,409)
+        with self.connect() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM payments').fetchone()[0],0)
+
 if __name__=='__main__': unittest.main()
