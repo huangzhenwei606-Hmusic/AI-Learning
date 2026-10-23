@@ -320,6 +320,24 @@ class FamilyBillingTests(unittest.TestCase):
             self.assertEqual(client.post(f'/family_payment/{bid}/share',data={'action':'send','token':token,'sms_body':body}).status_code,400)
         api['send_sms_delivery'].assert_not_called()
 
+    def test_owner_zelle_confirmation_closes_ach_and_grants_once(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        self.guest_link(client,bid)
+        data={'action':'confirm_zelle','received_amount':str(self.conn.execute('SELECT total_cents FROM family_payments WHERE id=?',(bid,)).fetchone()[0]/100),'payment_date':'2026-10-22'}
+        self.assertEqual(client.post(f'/family_payment/{bid}',data=data).status_code,302)
+        balance=self.balances()
+        self.assertEqual(self.conn.execute('SELECT method,status FROM family_payments').fetchone(),('Zelle','paid'))
+        self.assertEqual(self.conn.execute('SELECT expires_at FROM family_payment_links').fetchone()[0],0)
+        self.assertEqual(client.post(f'/family_payment/{bid}',data=data).status_code,409)
+        self.assertEqual(self.balances(),balance)
+
+    def test_zelle_conversion_blocks_existing_online_checkout(self):
+        bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client()
+        self.conn.execute("UPDATE family_payments SET provider_id='cs_existing' WHERE id=?",(bid,));self.conn.commit()
+        before=self.balances()
+        self.assertEqual(client.post(f'/family_payment/{bid}',data={'action':'confirm_zelle','received_amount':'100'}).status_code,409)
+        self.assertEqual(self.balances(),before)
+
     def test_guest_link_permission_revoked(self):
         bid=self.create(method='Stripe ACH');client,api=self.setup_guest_client();token=self.guest_link(client,bid)
         with client.session_transaction() as s:s.clear()

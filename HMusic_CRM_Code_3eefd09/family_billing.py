@@ -384,7 +384,21 @@ def install_family_billing(app, api):
             if request.method == 'POST':
                 action = request.form.get('action')
                 cur.execute('BEGIN IMMEDIATE')
-                if action == 'confirm':
+                if action == 'confirm_zelle':
+                    if not api['require_owner']():
+                        return error('Only the owner can record received Zelle payments.',403)
+                    cur.execute('SELECT method,status,provider_id FROM family_payments WHERE id=?',(batch_id,))
+                    current=cur.fetchone()
+                    if current[0]!='Stripe ACH' or current[1]!='creating' or current[2]:
+                        raise FamilyPaymentError('Online checkout may already exist. Verify or expire it before recording Zelle; do not charge again.')
+                    if cents(request.form.get('received_amount'))!=batch[4]:
+                        raise FamilyPaymentError('Enter the exact total actually received.')
+                    payment_date=request.form.get('payment_date') or date.today().isoformat()
+                    date.fromisoformat(payment_date)
+                    cur.execute("UPDATE family_payments SET method='Zelle' WHERE id=?",(batch_id,))
+                    settle_batch(cur,batch_id,'Zelle',request.form.get('reference') or 'Owner confirmed received Zelle',batch[4],api,payment_date)
+                    cur.execute('UPDATE family_payment_links SET expires_at=0 WHERE batch_id=?',(batch_id,))
+                elif action == 'confirm':
                     if not api['require_owner']() or batch[2] not in ('Zelle','Check','Cash'):
                         return error('Only the owner can confirm a received manual payment.',403)
                     if cents(request.form.get('received_amount')) != batch[4]:
@@ -424,6 +438,8 @@ def install_family_billing(app, api):
                     actions = instructions + f'<p>Payment note: Family payment #{batch_id}</p><form method="post"><input type="hidden" name="action" value="notify"><input name="reference" placeholder="Payment reference"><button>I sent the combined payment</button></form>'
                     if api['require_owner']():
                         actions += f'<form method="post"><input type="hidden" name="action" value="confirm"><label>Amount received <input name="received_amount" type="number" step="0.01" required></label><label>Date <input type="date" name="payment_date" value="{date.today().isoformat()}" required></label><input name="reference" placeholder="Check / transfer reference"><button>Confirm total received &amp; apply course credits</button></form><form method="post"><input type="hidden" name="action" value="cancel"><button>Cancel — no payment received</button></form>'
+            if api['require_owner']() and batch[2]=='Stripe ACH' and batch[3]=='creating' and not batch[5]:
+                actions += f'<hr><h2>Already received by Zelle?</h2><p>Record the full amount already received. This closes the online payment link and applies each invoice’s course credits once.</p><form method="post"><input type="hidden" name="action" value="confirm_zelle"><label>Amount received <input name="received_amount" type="number" step="0.01" required></label><label>Date <input type="date" name="payment_date" value="{date.today().isoformat()}" required></label><input name="reference" placeholder="Zelle reference / note"><button>Confirm Zelle received &amp; apply course credits</button></form>'
             if api['require_owner']() and batch[2]=='Stripe ACH' and batch[3] not in ('paid','cancelled'):
                 actions += f'<p><a class="button" href="/family_payment/{batch_id}/share">SMS payment link · no app login</a></p>'
             return page(f'Family payment #{batch_id}',f'<p>Status: <strong>{escape(batch[3])}</strong> · {escape(batch[2])}</p><div class="table-wrap"><table><tr><th>Invoice</th><th>Student</th><th>Course / Teacher</th><th>Course credits</th><th>Share</th></tr>{rows}</table></div><h2>Total ${batch[4]/100:,.2f}</h2><p>Each invoice keeps its course binding. Split-guardian invoices receive credit only when all shares have been paid.</p>{actions}<a href="/family_billing/{batch[1]}">Family billing</a>')
@@ -445,6 +461,11 @@ def install_family_billing(app, api):
             grant=cur.execute('SELECT batch_id,expires_at FROM family_payment_links WHERE token_hash=?',(session.get('family_guest_grant',''),)).fetchone()
             if grant and grant[0]==batch_id and grant[1]>int(time.time()) and session.get('family_guest_token'):
                 return_path='/f/'+session['family_guest_token']
+            # Reserve online creation before any provider call so manual recording cannot race it.
+            cur.execute('BEGIN IMMEDIATE')
+            cur.execute("UPDATE family_payments SET status=CASE WHEN status='creating' THEN 'checkout_starting' ELSE status END WHERE id=? AND method IN ('Stripe ACH','Square') AND status NOT IN ('paid','cancelled')",(batch_id,))
+            if cur.rowcount!=1:raise FamilyPaymentError('This bill changed. Refresh before continuing.')
+            conn.commit()
             # Same immutable batch and provider idempotency key on every retry.
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=cur.fetchall()
