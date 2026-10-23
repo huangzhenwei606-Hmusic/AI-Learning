@@ -313,6 +313,8 @@ def install_quick_pay(app, api):
                 WHERE q.invoice_id=? AND q.attempt_key=ia.lock_token
                 AND ia.status IN ('unpaid','processing') AND q.status IN ('checkout','submitted') LIMIT 1""", (invoice_id,))
             if cur.fetchone():
+                if api['require_owner']():
+                    return page('Online payment needs review', f'<p>This invoice has an online payment checkout. If the parent paid by Zelle, review and close the unpaid checkout before recording the received payment.</p><p><a class="button" href="/owner/invoice/{invoice_id}/quick-pay">Already paid by Zelle? Review and record payment</a></p><p>Processing or completed online payments cannot be replaced by Zelle confirmation.</p>',409)
                 return unavailable('A quick payment is in progress. Check or revoke its checkout before changing this invoice.')
         finally:
             conn.close()
@@ -470,8 +472,8 @@ def install_quick_pay(app, api):
                 WHERE q.invoice_id=? AND q.revoked=0 ORDER BY q.expires_at DESC''', (invoice_id,))
             history = ''.join(f'''<p>Guardian #{r[1]} · {escape(r[2])} · SMS: {escape(r[4])} {escape(r[5])}</p><form method="post">
                 <input type="hidden" name="action" value="revoke"><input type="hidden" name="digest" value="{r[0]}">
-                <button>Revoke link</button></form>''' for r in cur.fetchall() if r[2] != 'paid')
-            if request.method == 'POST' and request.form.get('action') == 'revoke':
+                <button>Revoke link</button></form><form method="post"><input type="hidden" name="action" value="revoke_for_zelle"><input type="hidden" name="digest" value="{r[0]}"><button>Close unpaid online checkout &amp; record Zelle</button><p class="muted">Next: confirm the amount actually received. Course credits are added only after that confirmation.</p></form>''' for r in cur.fetchall() if r[2] != 'paid')
+            if request.method == 'POST' and request.form.get('action') in ('revoke','revoke_for_zelle'):
                 link = load(cur, request.form.get('digest',''))
                 if not link or link['invoice_id'] != invoice_id:
                     abort(404)
@@ -487,7 +489,7 @@ def install_quick_pay(app, api):
                     settle(obj, 'expired')
                 cur.execute('UPDATE quick_payment_links SET revoked=1 WHERE token_hash=?', (link['token_hash'],))
                 conn.commit()
-                return redirect(request.path)
+                return redirect(f'/pay_invoice/{invoice_id}' if request.form.get('action')=='revoke_for_zelle' else request.path)
             return page(f'Quick payment · Invoice #{invoice_id}', f'''<p>{escape(str(invoice[0]))}</p>
                 <p>Generate a guest payment link only for the guardian you choose.</p><p><a href="/owner/quick-pay-settings">Quick payment settings</a> · <a href="/owner/quick-pay-guide">Step-by-step guide</a> · <a href="/edit_invoice/{invoice_id}">Edit invoice / coverage</a></p>{default_html}
                 {generated}<form method="post"><input type="hidden" name="action" value="create">
