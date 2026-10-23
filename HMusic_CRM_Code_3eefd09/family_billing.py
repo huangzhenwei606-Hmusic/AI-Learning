@@ -461,6 +461,11 @@ def install_family_billing(app, api):
             grant=cur.execute('SELECT batch_id,expires_at FROM family_payment_links WHERE token_hash=?',(session.get('family_guest_grant',''),)).fetchone()
             if grant and grant[0]==batch_id and grant[1]>int(time.time()) and session.get('family_guest_token'):
                 return_path='/f/'+session['family_guest_token']
+            # Reserve online creation before any provider call so manual recording cannot race it.
+            cur.execute('BEGIN IMMEDIATE')
+            cur.execute("UPDATE family_payments SET status=CASE WHEN status='creating' THEN 'checkout_starting' ELSE status END WHERE id=? AND method IN ('Stripe ACH','Square') AND status NOT IN ('paid','cancelled')",(batch_id,))
+            if cur.rowcount!=1:raise FamilyPaymentError('This bill changed. Refresh before continuing.')
+            conn.commit()
             # Same immutable batch and provider idempotency key on every retry.
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
             items=cur.fetchall()
