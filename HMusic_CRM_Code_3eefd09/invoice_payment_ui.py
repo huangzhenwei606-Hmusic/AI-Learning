@@ -3,6 +3,33 @@ from datetime import datetime
 from html import escape
 
 
+MANUAL_PAYMENT_METHODS = ('Zelle', 'Bank transfer', 'Check', 'Cash')
+
+
+def validated_manual_payment_method(value, share_status='', current_method=''):
+    if share_status == 'processing' and str(current_method).lower().startswith(('stripe', 'square')):
+        raise ValueError('Online payment is processing. Wait for the provider result before recording another payment.')
+    if value not in MANUAL_PAYMENT_METHODS:
+        raise ValueError('Choose the method of the payment actually received. Stripe ACH is confirmed automatically.')
+    return value
+
+
+def owner_payment_confirmation_html(allocation_id, share_status, current_method):
+    if share_status == 'processing' and str(current_method).lower().startswith(('stripe', 'square')):
+        return '<p role="status">Bank / online payment processing. This updates automatically after the provider confirms payment.</p>'
+    options = '<option value="">Choose received payment method…</option>'
+    for method in MANUAL_PAYMENT_METHODS:
+        label = 'Bank payment (already received, manual verification)' if method == 'Bank transfer' else method
+        selected = ' selected' if method == current_method else ''
+        options += f'<option value="{escape(method)}"{selected}>{escape(label)}</option>'
+    return f'''<form method="POST" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="hidden" name="action" value="confirm_allocation">
+        <input type="hidden" name="allocation_id" value="{int(allocation_id)}">
+        <label>Received payment method <select name="payment_method" required>{options}</select></label>
+        <button type="submit">Confirm payment received</button>
+    </form>'''
+
+
 def display_date(value):
     raw = str(value or '').strip()
     if not raw:
