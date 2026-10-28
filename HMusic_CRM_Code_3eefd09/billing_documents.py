@@ -4,7 +4,7 @@ from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from html import escape
 
-from flask import abort, make_response, redirect, session
+from flask import abort, make_response, redirect, session, request
 
 LOGO = Path(__file__).parent / 'static' / 'hmusic-icon.png'
 
@@ -14,9 +14,9 @@ def money(value):
 
 
 def document_links(base, paid=False):
-    links = f'<a class="billing-download" href="{escape(base)}/invoice.pdf">Download Invoice</a>'
+    links = f'<a class="billing-download" href="{escape(base)}/invoice.pdf?view=1">Download Invoice</a>'
     if paid:
-        links += f'<a class="billing-download receipt-download" href="{escape(base)}/receipt.pdf">Download Receipt</a>'
+        links += f'<a class="billing-download receipt-download" href="{escape(base)}/receipt.pdf?view=1">Download Receipt</a>'
     else:
         links += '<small class="receipt-help">Receipt available after payment is confirmed.</small>'
     return '<div class="billing-downloads">' + links + '</div>'
@@ -107,7 +107,8 @@ def build_pdf(doc, kind):
     for text in [doc['title'] if kind=='receipt' else '',f'Status: {state}',f'Issued: {doc["issued"] or "Not recorded"}',
                  f'Payment due: {doc["due"]}' if doc.get('due') else '',
                  f'Paid: {doc["paid_at"] or "Date not recorded"}' if doc['paid'] else '',
-                 f'Billed to: {doc["payer"] or "Guardian"}']:
+                 'Billed to: H-Music Studio',
+                 f'Parent / payer: {doc["payer"] or "Guardian"}']:
         if text:story.append(p(text))
     if doc.get('share'):story.extend([Spacer(1,6),p('Amounts shown cover this payer\'s assigned share. Lesson quantities describe each course package.')])
     story.append(Spacer(1,18))
@@ -134,9 +135,29 @@ def build_pdf(doc, kind):
 
 
 def pdf_response(doc,kind):
-    response=make_response(build_pdf(doc,kind))
-    response.headers['Content-Type']='application/pdf'
-    response.headers['Content-Disposition']=f'attachment; filename="H-Music-{kind}-{doc["number"]}.pdf"'
+    if kind not in ('invoice','receipt'):abort(404)
+    if kind=='receipt' and not doc['paid']:abort(409, 'Receipt is available only after payment is confirmed.')
+    filename=f'H-Music-{kind}-{doc["number"]}.pdf'
+    if request.args.get('view')=='1':
+        # Keep app navigation outside the PDF viewer; never trust a return URL parameter.
+        base=request.path.rsplit('/',1)[0]
+        url=escape(request.path)
+        response=make_response(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+            <title>{kind.title()} preview</title><link rel="stylesheet" href="/static/billing_documents.css?v=2">
+            <script src="/static/billing_documents.js?v=2" defer></script></head>
+            <body class="billing-document-view"><header class="document-toolbar">
+                <a class="document-back" href="{escape(base)}">← Back to invoice</a>
+                <span class="document-heading">{kind.title()}</span>
+                <button type="button" class="document-save" data-pdf-url="{url}" data-filename="{escape(filename)}">Save PDF</button>
+            </header><p class="document-status" role="status" aria-live="polite">Use Save PDF to save or share. Back to invoice returns to your bill.</p>
+            <iframe class="document-frame" src="{url}?inline=1" title="{kind.title()} PDF preview"></iframe>
+            <p class="document-fallback">Preview unavailable? Use Save PDF above.</p></body></html>''')
+    else:
+        response=make_response(build_pdf(doc,kind))
+        response.headers['Content-Type']='application/pdf'
+        disposition='inline' if request.args.get('inline')=='1' else 'attachment'
+        response.headers['Content-Disposition']=f'{disposition}; filename="{filename}"'
     response.headers['Cache-Control']='private, no-store'
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['X-Robots-Tag']='noindex, nofollow'

@@ -76,6 +76,19 @@ INSERT INTO invoice_allocations VALUES(1,240,1,400,'unpaid','','',NULL,NULL),(2,
   with self.connect() as c:doc=family_document(c.cursor(),1)
   doc['payer']='家长 Chen';doc['lines']*=15;doc['lines'][0]['note']='Long course details and <unsafe> & notes. '*45
   self.assertTrue(build_pdf(doc,'receipt').startswith(b'%PDF'))
+ def test_preview_retains_back_button_and_requires_confirmed_receipt(self):
+  self.assertEqual(self.client.get('/parent_invoice/240/receipt.pdf?view=1').status_code,409)
+  self.paid();r=self.client.get('/parent_invoice/240/receipt.pdf?view=1&return=https://evil.invalid')
+  self.assertEqual(r.status_code,200);self.assertTrue(r.content_type.startswith('text/html'))
+  self.assertIn(b'href="/parent_invoice/240"',r.data);self.assertIn(b'Back to invoice',r.data);self.assertIn(b'Save PDF',r.data);self.assertNotIn(b'evil.invalid',r.data)
+  self.assertIn(b'/parent_invoice/240/receipt.pdf?inline=1',r.data)
+ def test_family_preview_and_pdf_dispositions(self):
+  self.paid();r=self.client.get('/family_payment/1/receipt.pdf?view=1')
+  self.assertIn(b'href="/family_payment/1"',r.data)
+  inline=self.client.get('/family_payment/1/receipt.pdf?inline=1')
+  self.assertTrue(inline.headers['Content-Disposition'].startswith('inline;'))
+  self.assertTrue(inline.data.startswith(b'%PDF'))
+  self.assertTrue(self.client.get('/family_payment/1/receipt.pdf').headers['Content-Disposition'].startswith('attachment;'))
  def test_hidden_invoice_invalid_kind(self):
   self.assertEqual(self.client.get('/parent_invoice/240/anything.pdf').status_code,404)
   with self.connect() as c:c.execute("UPDATE invoices SET status='pending_owner_approval' WHERE id=240")
@@ -100,6 +113,7 @@ class QuickDocumentTest(unittest.TestCase):
  def test_guest_invoice_receipt_and_revocation(self):
   t=self.q.make_link();client=self.q.client
   self.assertEqual(client.get('/p/'+t+'/invoice.pdf').status_code,200)
+  preview=client.get('/p/'+t+'/invoice.pdf?view=1');self.assertIn(('href="/p/'+t+'"').encode(),preview.data);self.assertIn(b'Back to invoice',preview.data)
   self.assertEqual(client.get('/p/'+t+'/receipt.pdf').status_code,409)
   with self.q.connect() as c:c.execute("UPDATE invoice_allocations SET status='paid',paid_at='2026-10-28',payment_method='Zelle'")
   self.assertEqual(client.get('/p/'+t+'/receipt.pdf').status_code,200)
