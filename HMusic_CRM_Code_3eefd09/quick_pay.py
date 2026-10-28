@@ -62,13 +62,26 @@ def install_quick_pay(app, api):
     def page(title, body, status=200):
         response = make_response(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1"><title>{escape(title)}</title>
-        <style>body{{margin:0;background:#f5f6fa;font:16px system-ui;color:#172033}}main{{max-width:560px;margin:32px auto;padding:28px;background:white;border-radius:18px}}h1{{font-size:26px}}p{{line-height:1.6}}button,.button{{display:inline-block;border:0;border-radius:10px;background:#4f46e5;color:white;padding:15px 20px;font:600 16px system-ui;cursor:pointer;text-decoration:none}}input:not([type=checkbox]),select,textarea{{box-sizing:border-box;width:100%;padding:12px;font:16px system-ui;margin:8px 0 16px}}textarea{{min-height:150px}}.amount{{font-size:40px;font-weight:750}}.muted{{color:#64748b;font-size:14px}}.description{{background:#efedff;padding:16px;border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere}}dl>div{{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #e2e8f0}}dt{{color:#64748b}}dd{{margin:0;text-align:right}}.check{{display:flex;gap:10px;align-items:flex-start;margin:15px 0}}input[type=checkbox]{{width:20px;flex:none}}.notice{{background:#ecfdf5;padding:12px;border-radius:10px}}form{{margin:18px 0}}@media(max-width:600px){{main{{margin:12px;padding:22px}}}}</style></head>
-        <body><main><p class="muted">H-MUSIC · SECURE PAYMENT</p><h1>{escape(title)}</h1>{body}</main></body></html>''', status)
+        <link rel="stylesheet" href="/static/billing_documents.css"><style>body{{margin:0;background:#f5f6fa;font:13px system-ui;color:#172033}}main{{max-width:560px;margin:32px auto;padding:28px;background:white;border-radius:18px}}h1{{font-size:22px}}p{{line-height:1.6}}button,.button{{display:inline-block;border:0;border-radius:10px;background:#216bb2;color:white;padding:12px 16px;font:600 13px system-ui;cursor:pointer;text-decoration:none}}input:not([type=checkbox]),select,textarea{{box-sizing:border-box;width:100%;padding:12px;font:16px system-ui;margin:8px 0 16px}}textarea{{min-height:150px}}.amount{{font-size:30px;font-weight:750}}.muted{{color:#64748b;font-size:14px}}.description{{background:#f1f5f9;padding:16px;border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere}}dl>div{{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #e2e8f0}}dt{{color:#64748b}}dd{{margin:0;text-align:right}}.check{{display:flex;gap:10px;align-items:flex-start;margin:15px 0}}input[type=checkbox]{{width:20px;flex:none}}.notice{{background:#ecfdf5;padding:12px;border-radius:10px}}form{{margin:18px 0}}@media(max-width:600px){{main{{margin:12px;padding:22px}}}}</style></head>
+        <body><main><div class="billing-brand"><span class="billing-logo"><img src="/static/hmusic-icon.png" alt="H-Music logo"></span></div><h1>{escape(title)}</h1>{body}</main></body></html>''', status)
         response.headers['Cache-Control'] = 'no-store'
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['X-Robots-Tag'] = 'noindex, nofollow'
         response.headers['X-Hmusic-Payment-Submission'] = 'confirmed-only-v1'
         return response
+
+    @app.route('/p/<token>/<kind>.pdf')
+    def quick_pay_document(token,kind):
+        from billing_documents import invoice_document, pdf_response
+        prepare();conn=connect()
+        try:
+            cur=conn.cursor();link=load(cur,hashlib.sha256(token.encode()).hexdigest())
+            row=context(cur,link) if link else None
+            if not validate(link,row):abort(404)
+            if snapshot(row)!=link['invoice_snapshot'] or cents(row[0])!=link['amount_cents']:abort(409)
+            doc=invoice_document(cur,link['invoice_id'],link['parent_id'])
+            return pdf_response(doc,kind)
+        finally:conn.close()
 
     def unavailable(message='This payment link is unavailable. Please contact H-Music for a new link.', status=409):
         return page('Payment needs attention', f'<p>{escape(message)}</p>', status)
@@ -118,10 +131,15 @@ def install_quick_pay(app, api):
             row[4], course, row[18], f'{row[7]:g} lesson(s)', row[12]] if x)
         return html, default
 
-    def details(link):
+    def details(link,downloads=True):
         description = escape(link['payment_description'])
         return (f'<section><h2>What you are paying for</h2><div class="description">{description}</div></section>'
-                + link['coverage_html'])
+                + link['coverage_html'] + (download_links(link,False) if downloads else ''))
+
+    def download_links(link,paid=False):
+        from billing_documents import document_links
+        token=request.view_args.get('token','')
+        return document_links('/p/'+token,paid)
 
     def receipt(link, paid=False):
         fee = link['fee_cents'] if link['method'] == 'card' else 0
@@ -129,8 +147,8 @@ def install_quick_pay(app, api):
             f'<p>Invoice #{link["invoice_id"]} · {"Paid" if paid else "Processing — not yet confirmed"}</p>'
             f'<div class="amount">${(link["amount_cents"]+fee)/100:,.2f}</div>'
             f'<p>Tuition / assigned share: ${link["amount_cents"]/100:,.2f}<br>'
-            f'Credit card surcharge: ${fee/100:,.2f}</p>' + details(link) +
-            ('<p>Thank you. Your payment is confirmed. A receipt is sent to the family email on file.</p>'
+            f'Credit card surcharge: ${fee/100:,.2f}</p>' + details(link,False) + download_links(link,paid) +
+            ('<p>Thank you. Your payment is confirmed. Download your receipt for your records.</p>'
              if paid else '<p>No further payment is needed while your bank payment is processing. Course credits are added only after payment is confirmed.</p>'))
 
     def validate(link, row):
@@ -540,7 +558,7 @@ def install_quick_pay(app, api):
                 app.logger.exception('Quick payment status verification failed')
                 return unavailable('Payment status could not be verified. Please try again shortly.', 503)
         if row[1] == 'paid':
-            return page('Already paid', '<p>This invoice share has already been paid. No additional payment is needed.</p>')
+            return page('Already paid', '<p>This invoice share has already been paid. No additional payment is needed.</p>'+download_links(link,True))
         if str(row[5]).lower() in CLOSED or cents(row[0]) != link['amount_cents'] or snapshot(row) != link['invoice_snapshot']:
             return unavailable('This invoice changed. Please ask H-Music for a new payment link.')
         if link['status'] in ('expired','failed'):
