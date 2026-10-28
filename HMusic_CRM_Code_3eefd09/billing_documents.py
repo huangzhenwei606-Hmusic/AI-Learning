@@ -107,7 +107,8 @@ def build_pdf(doc, kind):
     for text in [doc['title'] if kind=='receipt' else '',f'Status: {state}',f'Issued: {doc["issued"] or "Not recorded"}',
                  f'Payment due: {doc["due"]}' if doc.get('due') else '',
                  f'Paid: {doc["paid_at"] or "Date not recorded"}' if doc['paid'] else '',
-                 f'Billed to: {doc["payer"] or "Guardian"}']:
+                 'Billed to: H-Music Studio',
+                 f'Parent / payer: {doc["payer"] or "Guardian"}']:
         if text:story.append(p(text))
     if doc.get('share'):story.extend([Spacer(1,6),p('Amounts shown cover this payer\'s assigned share. Lesson quantities describe each course package.')])
     story.append(Spacer(1,18))
