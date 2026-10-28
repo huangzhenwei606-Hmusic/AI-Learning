@@ -49929,3 +49929,7 @@ install_manager_labels(app)
 from child_os_api import register_child_os_api
 
 register_child_os_api(app, "hmusic.db")
+
+# Website editing uses the existing owner session and global CSRF protection.
+from website_cms import register_website_cms
+register_website_cms(app, lambda: sqlite3.connect('hmusic.db'), require_owner, hmusic_csrf_token)
