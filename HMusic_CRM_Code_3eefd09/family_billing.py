@@ -235,14 +235,30 @@ def install_family_billing(app, api):
         if not api['require_parent']() or str(session.get('parent_id')) != str(parent_id):
             from flask import abort
             abort(403)
+        if batch_id:
+            from flask import abort
+            conn=connect()
+            try:
+                students=conn.execute('SELECT student_name FROM family_payment_items WHERE family_payment_id=?',(batch_id,)).fetchall()
+                if not students or not all(api['parent_has_student_permission'](parent_id,s,'view_billing') for s, in students):abort(403)
+            finally:conn.close()
+
+    @app.route('/family_payment/<int:batch_id>/<kind>.pdf')
+    def family_billing_document(batch_id,kind):
+        from billing_documents import family_document, pdf_response
+        conn=connect()
+        try:
+            cur=conn.cursor();batch=load(cur,batch_id);authorize(batch[1],batch_id)
+            return pdf_response(family_document(cur,batch_id),kind)
+        finally:conn.close()
 
     def error(message, status=409):
         return '<h1>Payment needs review</h1><p>' + escape(str(message)) + '</p><p><a href="javascript:history.back()">Back</a></p>', status
 
     def page(title, body):
         return f'''<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>{escape(title)}</title>
-        <style>body{{font-family:system-ui;background:#f5f7fb;color:#172033;margin:0;padding:24px}}main{{max-width:1000px;margin:auto;background:white;padding:24px;border-radius:16px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}}button,.button{{display:inline-block;background:#2273ba;color:white;padding:12px 18px;border:0;border-radius:8px;text-decoration:none;cursor:pointer}}form{{margin:16px 0}}.muted{{color:#64748b}}input,select{{padding:10px}}.table-wrap{{overflow:auto}}</style></head>
-        <body><main><h1>{escape(title)}</h1>{body}</main></body></html>'''
+        <link rel="stylesheet" href="/static/billing_documents.css"><style>body{{font-size:13px;font-family:system-ui;background:#f5f7fb;color:#172033;margin:0;padding:24px}}main{{max-width:1000px;margin:auto;background:white;padding:24px;border-radius:16px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}}button,.button{{display:inline-block;background:#2273ba;color:white;padding:12px 18px;border:0;border-radius:8px;text-decoration:none;cursor:pointer}}form{{margin:16px 0}}.muted{{color:#64748b}}input,select{{padding:10px}}.table-wrap{{overflow:auto}}</style></head>
+        <body><main><div class="billing-brand"><span class="billing-logo"><img src="/static/hmusic-icon.png" alt="H-Music logo"></span></div><h1 style="font-size:22px">{escape(title)}</h1>{body}</main></body></html>'''
 
     def choose(parent_id):
         authorize(parent_id)
@@ -445,7 +461,8 @@ def install_family_billing(app, api):
                 else: raise FamilyPaymentError('Unknown action.')
                 conn.commit(); return redirect(f'/family_payment/{batch_id}')
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
-            rows = ''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in cur.fetchall())
+            items=cur.fetchall()
+            rows = ''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in items)
             actions = ''
             if batch[3] != 'paid' and batch[3] != 'cancelled':
                 if batch[2] in ('Stripe ACH','Square'):
@@ -464,6 +481,12 @@ def install_family_billing(app, api):
                 actions += f'<hr><h2>Already received by Zelle?</h2><p>Record the full amount already received. This closes the online payment link and applies each invoice’s course credits once.</p><form method="post"><input type="hidden" name="action" value="confirm_zelle"><label>Amount received <input name="received_amount" type="number" step="0.01" required></label><label>Date <input type="date" name="payment_date" value="{date.today().isoformat()}" required></label><input name="reference" placeholder="Zelle reference / note"><button>Confirm Zelle received &amp; apply course credits</button></form>'
             if api['require_owner']() and batch[2]=='Stripe ACH' and batch[3] not in ('paid','cancelled'):
                 actions += f'<p><a class="button" href="/family_payment/{batch_id}/share">SMS payment link · no app login</a></p>'
+            from billing_documents import document_links
+            actions = document_links(f'/family_payment/{batch_id}', batch[3]=='paid') + actions
+            if not api['require_owner']():
+                label='Paid' if batch[3]=='paid' else 'Payment processing' if batch[3] in ('submitted','processing') else 'Unpaid'
+                cards=''.join(f'<section class="billing-record"><h3>{escape(s)} · Invoice #{i}</h3><p>{escape(c or "Tuition")} · {escape(t or "")}</p><p>{l:g} lessons</p><p><strong>${n/100:,.2f}</strong></p></section>' for i,s,c,t,l,n in items)
+                return page('Payment received' if batch[3]=='paid' else 'Family invoice',f'<p>Family invoice #{batch_id} · {label}</p><div class="payment-total">${batch[4]/100:,.2f}</div><p>{escape(batch[2])}</p><h2 style="font-size:16px">Course breakdown</h2>{cards}{actions}<p class="muted">Keep these documents for your records. Course credits are added only after payment is confirmed.</p>')
             return page(f'Family payment #{batch_id}',f'<p>Status: <strong>{escape(batch[3])}</strong> · {escape(batch[2])}</p><div class="table-wrap"><table><tr><th>Invoice</th><th>Student</th><th>Course / Teacher</th><th>Course credits</th><th>Share</th></tr>{rows}</table></div><h2>Total ${batch[4]/100:,.2f}</h2><p>Each invoice keeps its course binding. Split-guardian invoices receive credit only when all shares have been paid.</p>{actions}<a href="/family_billing/{batch[1]}">Family billing</a>')
         except (ValueError,FamilyPaymentError) as exc:
             conn.rollback(); return error(exc)

@@ -376,3 +376,5 @@ dl>div {
   padding-left:30px}
 }
 
+/* Compact parent billing documents, matching the approved design. */
+body{font-size:13px}h1{font-size:20px}h2{font-size:14px}h3{font-size:13px}.amount{font-size:30px}.summary-value{font-size:17px}.summary,.invoice-details,.manager-note{padding:15px}

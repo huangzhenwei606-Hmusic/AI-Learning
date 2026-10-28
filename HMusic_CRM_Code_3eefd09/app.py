@@ -33227,7 +33227,7 @@ def parent_dashboard():
     tuition_due_count = 0
     first_unpaid_invoice_id = None
     for inv in invoices:
-        action = "Paid"
+        action = f'<a class="mini-pay-button" href="/parent_invoice/{inv[0]}">View / Download</a>'
         if inv[2] != "paid":
             if first_unpaid_invoice_id is None:
                 first_unpaid_invoice_id = inv[0]
@@ -35202,6 +35202,7 @@ def parent_billing():
         return redirect("/parent_login")
 
     ensure_billing_schema()
+    ensure_guardian_billing_schema()
     parent_id = session.get("parent_id")
 
     conn = sqlite3.connect("hmusic.db")
@@ -35307,6 +35308,9 @@ def parent_billing():
     WHERE parent_id = ?
     """, (parent_id,))
     billing = cursor.fetchone()
+    from billing_documents import billing_records
+    records_html = billing_records(cursor, parent_id, globals())
+    conn.commit()
     conn.close()
 
     status = billing[2] if billing else "not_connected"
@@ -35343,14 +35347,16 @@ def parent_billing():
     <html>
     <head>
         {parent_app_meta("Billing")}
+        <link rel="stylesheet" href="/static/billing_documents.css">
         <style>
             * {{ box-sizing:border-box; }}
-            body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
+            body {{ font-size:13px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f7f7fb; margin:0; color:#111827; }}
             .container {{ background:white; min-height:100vh; max-width:760px; margin:0 auto; padding:max(22px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); }}
-            h1 {{ font-size:30px; margin:0 0 18px; }}
+            h2 {{ font-size:16px; }}
+            h1 {{ font-size:22px; margin:0 0 18px; }}
             .card {{ border:1px solid #e5e7eb; border-radius:10px; padding:16px; margin:14px 0; background:#f8fafc; }}
             .label {{ color:#6b7280; font-size:13px; }}
-            .value {{ font-size:24px; font-weight:900; margin-top:4px; }}
+            .value {{ font-size:18px; font-weight:700; margin-top:4px; }}
             .alert {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             .warn {{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:10px; padding:13px; margin-bottom:14px; font-weight:850; }}
             button, a.button {{ display:inline-block; background:#4f46e5; color:white; border:none; border-radius:8px; padding:12px 16px; font-weight:850; text-decoration:none; margin-right:8px; }}
@@ -35363,7 +35369,9 @@ def parent_billing():
     </head>
     <body>
         <div class="container">
-            <h1>Billing & AutoPay</h1>
+            <div class="billing-brand"><span class="billing-logo"><img src="/static/hmusic-icon.png" alt="H-Music logo"></span><h1>Billing</h1></div>
+            {records_html}
+            <h2>Bank & AutoPay settings</h2>
             {requested_alert}
             <p class="hint">For safety, H-Music does not store bank account details. Bank setup will happen through a secure Stripe page after the owner enables live billing.</p>
             <div class="card">
@@ -36586,6 +36594,7 @@ def square_webhook():
 @app.route("/parent_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def parent_invoice(invoice_id):
     from invoice_payment_ui import invoice_details_html, payment_choices_html
+    from billing_documents import document_links
 
     if not require_parent():
         return redirect("/parent_login")
@@ -36901,7 +36910,8 @@ def parent_invoice(invoice_id):
     <html>
     <head>
         {parent_app_meta("Tuition Invoice")}
-        <link rel="stylesheet" href="/static/parent_invoice.css?v=20261019">
+        <link rel="stylesheet" href="/static/parent_invoice.css?v=20261028">
+        <link rel="stylesheet" href="/static/billing_documents.css">
         <script>
             function copyParentPaymentAccount(button) {{
                 const value = button.getAttribute("data-copy-value") || "";
@@ -36945,13 +36955,14 @@ def parent_invoice(invoice_id):
     </head>
     <body>
         <div class="container">
-            <a class="header-back" href="/parent_profile">‹ H-Music</a>
+            <div class="billing-brand"><span class="billing-logo"><img src="/static/hmusic-icon.png" alt="H-Music logo"></span><a class="header-back" href="/parent_billing">‹ Billing</a></div>
             <h1>Tuition payment</h1>
             <div class="summary">
                 <div><div class="summary-value">{escape(str(invoice[1]))}</div><div class="invoice-number">Invoice #{invoice_id}</div></div>
                 <div class="amount-block"><div class="status-pill">{escape(status_label)}</div><div class="summary-label">{amount_label}</div><div class="amount">${hmusic_money(own_amount)}</div></div>
             </div>
             {payment_status_alert}
+            {document_links(f"/parent_invoice/{invoice_id}", own_status == "paid") if own_allocation else ""}
             {details_html}
             {allocation_summary_html}
             {package_options_html}
@@ -48789,6 +48800,9 @@ install_lesson_comments(app, globals())
 
 from quick_pay import install_quick_pay
 install_quick_pay(app, globals())
+
+from billing_documents import install_billing_documents
+install_billing_documents(app, globals())
 
 from website_trial_api import register_website_trial_api
 register_website_trial_api(app, globals())
