@@ -19462,6 +19462,7 @@ def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_me
 
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def pay_invoice(invoice_id):
+    from invoice_payment_ui import owner_payment_confirmation_html, validated_manual_payment_method
     if not require_owner():
         return redirect("/owner_login")
 
@@ -19522,17 +19523,25 @@ def pay_invoice(invoice_id):
             except (TypeError, ValueError):
                 allocation_id = 0
             cursor.execute("""
-            SELECT id FROM invoice_allocations
+            SELECT id, status, payment_method FROM invoice_allocations
             WHERE id = ? AND invoice_id = ?
             """, (allocation_id, invoice_id))
-            if not cursor.fetchone():
+            current_allocation = cursor.fetchone()
+            if not current_allocation:
                 conn.rollback()
                 conn.close()
                 return "<h1>Payment share not found</h1>", 404
+            try:
+                confirmed_method = validated_manual_payment_method(
+                    request.form.get("payment_method"), current_allocation[1], current_allocation[2])
+            except ValueError as exc:
+                conn.rollback()
+                conn.close()
+                return f"<h1>Payment needs review</h1><p>{escape(str(exc))}</p>", 400
             result = record_invoice_allocation_paid(
                 cursor,
                 allocation_id,
-                request.form.get("payment_method") or "Zelle",
+                confirmed_method,
                 payment_date=request.form.get("payment_date") or None,
                 reference="Manager confirmed",
             )
@@ -19542,7 +19551,7 @@ def pay_invoice(invoice_id):
                 if not result.get("already_paid"):
                     notify_parent_payment_confirmed(
                         invoice_id, result["student_name"], result["amount"],
-                        request.form.get("payment_method") or "Zelle",
+                        confirmed_method,
                         request.form.get("payment_date") or date.today().isoformat(),
                         lessons_added=result.get("lessons_added", 0),
                         parent_id=result["parent_id"], allocation_id=allocation_id,
@@ -19675,14 +19684,7 @@ def pay_invoice(invoice_id):
     for allocation_id, allocation_parent_id, parent_name, share_amount, share_status, method, paid_at in allocations:
         confirm_button = ""
         if share_status in ("pending_confirmation", "processing", "unpaid", "failed"):
-            confirm_button = f"""
-            <form method="POST" style="display:inline-flex;gap:8px;align-items:center;">
-                <input type="hidden" name="action" value="confirm_allocation">
-                <input type="hidden" name="allocation_id" value="{allocation_id}">
-                <input type="hidden" name="payment_method" value="Zelle">
-                <button type="submit">Confirm Zelle received</button>
-            </form>
-            """
+            confirm_button = owner_payment_confirmation_html(allocation_id, share_status, method)
         allocation_rows += f"""
         <tr>
             <td>{escape(str(parent_name or 'Parent'))}</td>
@@ -19699,6 +19701,8 @@ def pay_invoice(invoice_id):
     if allocations:
         allocation_section = f"""
         <h2>Guardian payment shares</h2>
+        <p>Stripe ACH bank payments update automatically when Stripe confirms success. Bank processing is not yet a completed payment. Stripe payouts to the school bank account follow a separate payout schedule.</p>
+        <p>Use manual confirmation only for a payment you have independently verified as received. Selecting a method does not check Stripe or initiate a charge.</p>
         <p>Confirm each share separately. The invoice is paid and lesson credits are added only after every share is complete.</p>
         <table border="1" cellpadding="8" cellspacing="0">
             <tr><th>Guardian</th><th>Share</th><th>Status</th><th>Method</th><th>Paid</th><th>Action</th></tr>
