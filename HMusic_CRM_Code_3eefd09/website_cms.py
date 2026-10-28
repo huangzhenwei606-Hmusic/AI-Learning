@@ -3,7 +3,8 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from flask import request, redirect, jsonify, send_file
+from datetime import datetime, timezone
+from flask import request, redirect, jsonify, Response
 
 BASE = Path(__file__).with_name('website_cms')
 CATEGORIES = {'programs', 'teachers', 'about', 'events', 'resources', 'services', 'careers'}
@@ -14,6 +15,9 @@ def register_website_cms(app, connect, is_owner, csrf_token):
         conn.execute('CREATE TABLE IF NOT EXISTS website_cms (id INTEGER PRIMARY KEY, draft TEXT NOT NULL, published TEXT NOT NULL, revision INTEGER NOT NULL)')
         seed = (BASE / 'seed.json').read_text()
         conn.execute('INSERT OR IGNORE INTO website_cms (id,draft,published,revision) VALUES (1,?,?,0)', (seed, seed))
+        conn.execute('CREATE TABLE IF NOT EXISTS website_cms_history (revision INTEGER PRIMARY KEY, content TEXT NOT NULL, published_at TEXT NOT NULL)')
+        row = conn.execute('SELECT published FROM website_cms WHERE id=1').fetchone()
+        conn.execute('INSERT OR IGNORE INTO website_cms_history (revision,content,published_at) VALUES (0,?,?)', (row[0], datetime.now(timezone.utc).isoformat()))
         conn.commit()
         return conn
 
@@ -22,6 +26,14 @@ def register_website_cms(app, connect, is_owner, csrf_token):
         if not is_owner():
             return redirect('/owner_login')
         return (BASE / 'index.html').read_text().replace('__CSRF__', csrf_token())
+
+    @app.get('/website-admin/editor.js')
+    def website_editor_script():
+        if not is_owner():
+            return {'error':'Owner access required'}, 403
+        response = Response((BASE / 'editor.js').read_text(), mimetype='application/javascript')
+        response.headers['Cache-Control'] = 'no-store'
+        return response
 
     @app.get('/api/website/content')
     def website_content():
@@ -42,8 +54,9 @@ def register_website_cms(app, connect, is_owner, csrf_token):
         conn = db()
         try:
             if request.method == 'GET':
-                row = conn.execute('SELECT draft,revision FROM website_cms WHERE id=1').fetchone()
-                return {'pages': json.loads(row[0]), 'revision': row[1]}
+                row = conn.execute('SELECT draft,revision,published FROM website_cms WHERE id=1').fetchone()
+                history = conn.execute('SELECT revision,published_at FROM website_cms_history ORDER BY revision DESC LIMIT 20').fetchall()
+                return {'pages': json.loads(row[0]), 'revision': row[1], 'hasDraft': json.loads(row[0]) != json.loads(row[2]), 'publishedStates': {p['id']:bool(p.get('hidden')) for p in json.loads(row[2])}, 'history': [{'revision':h[0], 'publishedAt':h[1]} for h in history]}
             data = request.get_json(silent=True) or {}
             pages = data.get('pages')
             if not isinstance(pages, list) or len(pages) > 300 or not isinstance(data.get('revision'), int):
@@ -73,7 +86,32 @@ def register_website_cms(app, connect, is_owner, csrf_token):
             if cursor.rowcount != 1:
                 conn.rollback()
                 return {'error': 'Another editor saved changes. Reload before saving.'}, 409
+            published_at = None
+            if publish:
+                published_at = datetime.now(timezone.utc).isoformat()
+                conn.execute('INSERT INTO website_cms_history (revision,content,published_at) VALUES (?,?,?)', (data['revision']+1, payload, published_at))
             conn.commit()
-            return {'ok': True, 'revision': data['revision']+1, 'published':publish}
+            return {'ok': True, 'revision': data['revision']+1, 'published':publish, 'publishedAt':published_at}
+        finally:
+            conn.close()
+
+    @app.post('/api/website/restore')
+    def website_restore():
+        if not is_owner():
+            return {'error': 'Owner access required'}, 403
+        data = request.get_json(silent=True) or {}
+        if type(data.get('revision')) is not int or type(data.get('target')) is not int:
+            return {'error':'Invalid revision'}, 400
+        conn = db()
+        try:
+            row = conn.execute('SELECT content FROM website_cms_history WHERE revision=?', (data['target'],)).fetchone()
+            if row is None:
+                return {'error':'Version not found'}, 404
+            cursor = conn.execute('UPDATE website_cms SET draft=?,revision=revision+1 WHERE id=1 AND revision=?', (row[0],data['revision']))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return {'error':'Another editor saved changes. Reload before restoring.'}, 409
+            conn.commit()
+            return {'ok':True, 'pages':json.loads(row[0]), 'revision':data['revision']+1}
         finally:
             conn.close()

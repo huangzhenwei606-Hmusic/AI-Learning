@@ -40,3 +40,25 @@ class WebsiteCMSTests(unittest.TestCase):
         self.assertIn(b'test-token',self.client.get('/website-admin').data)
         self.assertEqual(self.client.get('/api/website/content').headers['Access-Control-Allow-Origin'],'*')
 if __name__=='__main__':unittest.main()
+
+class WebsiteHistoryTests(WebsiteCMSTests):
+    def test_restore_only_changes_draft_and_checks_revision(self):
+        self.owner();data=self.client.get('/api/website/admin').json
+        self.assertEqual(data['history'][0]['revision'],0)
+        data['pages'][0]['title']='Published new title';data['publish']=True
+        result=self.client.post('/api/website/admin',json=data).json
+        published=self.client.get('/api/website/content').json
+        self.assertEqual(self.client.post('/api/website/restore',json={'revision':999,'target':0}).status_code,409)
+        self.assertEqual(self.client.post('/api/website/restore',json={'revision':result['revision'],'target':999}).status_code,404)
+        restored=self.client.post('/api/website/restore',json={'revision':result['revision'],'target':0})
+        self.assertEqual(restored.status_code,200)
+        self.assertNotEqual(restored.json['pages'][0]['title'],'Published new title')
+        self.assertEqual(self.client.get('/api/website/content').json,published)
+        self.assertTrue(self.client.get('/api/website/admin').json['hasDraft'])
+    def test_restore_and_script_are_owner_only(self):
+        self.assertEqual(self.client.post('/api/website/restore',json={'revision':0,'target':0}).status_code,403)
+        self.assertEqual(self.client.get('/website-admin/editor.js').status_code,403)
+        self.owner()
+        result=self.client.get('/website-admin/editor.js')
+        self.assertEqual(result.status_code,200)
+        self.assertIn('javascript',result.content_type)
