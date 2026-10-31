@@ -17,10 +17,18 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.path=str(Path(self.tmp.name)/'test.db')
         self.conn=sqlite3.connect(self.path);c=self.conn.cursor()
         c.executescript('''
+        CREATE TABLE teachers(teacher_name TEXT,active INTEGER);
+        INSERT INTO teachers VALUES ('Teacher One',1),('Teacher Two',1),('Inactive Teacher',0);
+        CREATE TABLE course_types(id INTEGER,name TEXT,duration INTEGER,is_group INTEGER,active INTEGER);
+        INSERT INTO course_types VALUES(2,'Group Class',45,1,1),(4,'Circle Piano',50,1,1),(3,'Private',30,0,1);
+        CREATE TABLE studio_locations(id INTEGER,location_name TEXT,active INTEGER);
+        INSERT INTO studio_locations VALUES(1,'Studio',1);
+        CREATE TABLE studio_rooms(id INTEGER,room_name TEXT,location_id INTEGER,active INTEGER);
+        INSERT INTO studio_rooms VALUES(1,'Group Room',1,1);
         CREATE TABLE students(id INTEGER PRIMARY KEY,name TEXT UNIQUE,teacher TEXT,parent_name TEXT,parent_email TEXT,parent_phone TEXT,lessons_left REAL DEFAULT 0);
         CREATE TABLE parent_profiles(id INTEGER PRIMARY KEY,parent_name TEXT,email TEXT,phone TEXT,password TEXT,password_hash TEXT,must_change_password INTEGER,active INTEGER,created_at TEXT,updated_at TEXT);
         CREATE TABLE parent_students(id INTEGER PRIMARY KEY,parent_id INTEGER,student_name TEXT,relationship TEXT,active INTEGER,created_at TEXT);
-        CREATE TABLE schedule(id INTEGER PRIMARY KEY,student_name TEXT,lesson_date TEXT,lesson_time TEXT,duration INTEGER,teacher TEXT,classroom TEXT,location TEXT,course_type_id INTEGER,course_type_name TEXT,status TEXT,is_group INTEGER,group_name TEXT,group_student_names TEXT,group_size INTEGER,owner_calendar_updated_at TEXT);
+        CREATE TABLE schedule(id INTEGER PRIMARY KEY,student_name TEXT,lesson_date TEXT,lesson_time TEXT,duration INTEGER,teacher TEXT,classroom TEXT,location TEXT,course_type_id INTEGER,course_type_name TEXT,status TEXT,is_group INTEGER,group_name TEXT,group_student_names TEXT,group_size INTEGER,owner_calendar_updated_at TEXT,room_id INTEGER,location_id INTEGER,charge_lessons REAL,student_billing_method TEXT,student_price REAL,teacher_billing_method TEXT,teacher_pay REAL,student_charge_amount REAL,teacher_pay_amount REAL,schedule_type TEXT,notes TEXT);
         CREATE TABLE group_schedule_students(id INTEGER PRIMARY KEY,schedule_id INTEGER,student_name TEXT,parent_name TEXT,credit_units REAL,student_rate REAL,billing_rule TEXT,billing_status TEXT,attendance_status TEXT,attendance_credit_applied REAL,attendance_enrollment_id INTEGER,created_at TEXT,updated_at TEXT);
         CREATE TABLE enrollments(id INTEGER PRIMARY KEY,student_name TEXT,course_type_id INTEGER,course_type_name TEXT,teacher_name TEXT,duration INTEGER,student_billing_method TEXT,base_price REAL,final_price REAL,lessons_left REAL,status TEXT,notes TEXT,package_amount REAL,package_lessons REAL,auto_renew_enabled INTEGER,start_date TEXT,created_at TEXT,updated_at TEXT,auto_renew_lessons REAL);
         CREATE TABLE invoices(id INTEGER PRIMARY KEY,student_name TEXT,schedule_id INTEGER,charge_lessons REAL,amount REAL,status TEXT,invoice_type TEXT,created_at TEXT,enrollment_id INTEGER,due_date TEXT,notes TEXT,credits_applied INTEGER,coverage_title TEXT,coverage_class TEXT,coverage_start TEXT,coverage_note TEXT);
@@ -37,7 +45,9 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.api={'sqlite3':SimpleNamespace(connect=lambda _:sqlite3.connect(self.path)),
                   'require_owner':lambda:session.get('user_role')=='owner',
                   'hmusic_password_hash':lambda p:'hashed:'+p,
-                  'create_enrollment_invoice':scope['create_enrollment_invoice']}
+                  'create_enrollment_invoice':scope['create_enrollment_invoice'],
+                  'schedule_has_conflict':lambda *args,**kwargs:dict(has_conflict=False),
+                  'get_final_pricing':lambda *args,**kwargs:dict(student_billing_method='Per Lesson',student_price=55,teacher_billing_method='Hourly',teacher_pay=60,student_charge_amount=55,teacher_pay_amount=50)}
         self.app=Flask(__name__);self.app.secret_key='test-secret';self.app.testing=True
         @self.app.post('/convert_inquiry_to_student/<int:inquiry_id>')
         def convert_inquiry_to_student(inquiry_id):return 'legacy conversion'
@@ -61,6 +71,73 @@ class GroupEnrollmentTests(unittest.TestCase):
     def paid(self,aid=1):
         invoice=self.scalar('SELECT invoice_id FROM group_applications WHERE id=?',(aid,))
         self.conn.execute("UPDATE invoices SET status='paid' WHERE id=?",(invoice,));self.conn.commit()
+
+    def test_basic_information_editor_preserves_class_dates(self):
+        page=self.client.get('/group-class-admin?edit=1')
+        self.assertIn(b'Edit basic information',page.data)
+        self.assertIn(b'name="schedule_ids" value="1"',page.data)
+        result=self.create_class(offering_id=1,title='Renamed',policy='One make-up lesson included.')
+        self.assertEqual(result.status_code,303)
+        self.assertEqual(self.scalar('SELECT title FROM group_offerings'),'Renamed')
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+
+    def schedule_plan(self):
+        return [dict(id=0,date='2099-12-05',time='11:10',teacher='Teacher One',room_id=1,course_id=4),
+                dict(id=0,date='2099-12-12',time='12:10',teacher='Teacher Two',room_id=1,course_id=4)]
+
+    def save_calendar(self,plan,version=None):
+        import json
+        if version is None:version=ge.schedule_version(ge.get_offering(self.conn.cursor(),1))
+        return self.client.post('/group-class-admin/1/schedule',data={'sessions':json.dumps(plan),'version':version})
+
+    def test_date_picker_saves_empty_calendar_sessions_and_rotating_teachers(self):
+        self.conn.execute('DELETE FROM group_offering_sessions');self.conn.commit()
+        page=self.client.get('/group-class-admin/1/schedule')
+        self.assertIn(b'Select class dates',page.data)
+        version=ge.schedule_version(ge.get_offering(self.conn.cursor(),1))
+        r=self.save_calendar(self.schedule_plan(),version)
+        self.assertEqual(r.status_code,303)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertEqual(self.scalar('SELECT duration FROM schedule WHERE lesson_date=?',('2099-12-05',)),50)
+        self.assertEqual(self.scalar('SELECT teacher FROM schedule WHERE lesson_date=?',('2099-12-12',)),'Teacher Two')
+        self.assertEqual(self.scalar('SELECT teacher_pay FROM schedule WHERE lesson_date=?',('2099-12-12',)),60)
+        self.assertEqual(self.scalar('SELECT published FROM group_offerings'),0)
+        duplicate=self.save_calendar(self.schedule_plan(),version)
+        self.assertIn(b'another window',duplicate.data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+
+    def test_calendar_plan_conflict_and_invalid_plan_roll_back(self):
+        count=self.scalar('SELECT COUNT(*) FROM schedule')
+        self.api['schedule_has_conflict']=lambda *args,**kwargs:dict(has_conflict=True,message='Room is occupied.')
+        result=self.save_calendar(self.schedule_plan())
+        self.assertIn(b'Room is occupied',result.data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM schedule'),count)
+        self.assertEqual(self.scalar('SELECT status FROM schedule WHERE id=1'),'scheduled')
+        self.api['schedule_has_conflict']=lambda *args,**kwargs:dict(has_conflict=False)
+        for field,value in [('teacher','Inactive Teacher'),('course_id',3),('room_id',99),('date','2000-01-01'),('time','25:00'),('id',3)]:
+            plan=self.schedule_plan();plan[0][field]=value
+            self.assertEqual(self.save_calendar(plan).status_code,200)
+            self.assertEqual(self.scalar('SELECT COUNT(*) FROM schedule'),count)
+        plan=self.schedule_plan();plan[1]['date']=plan[0]['date']
+        self.assertIn(b'only once',self.save_calendar(plan).data)
+
+    def test_calendar_edit_keeps_ids_and_soft_cancels_removed_dates(self):
+        plan=self.schedule_plan();plan[0]['id']=1
+        self.assertEqual(self.save_calendar([plan[0]]).status_code,303)
+        self.assertEqual(self.scalar('SELECT lesson_date FROM schedule WHERE id=1'),'2099-12-05')
+        self.assertEqual(self.scalar('SELECT status FROM schedule WHERE id=2'),'cancelled')
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM schedule'),3)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),1)
+
+    def test_calendar_cannot_change_existing_enrollments_or_other_classes(self):
+        self.apply()
+        self.client.post('/group-class-admin',data={'action':'visibility','id':1,'published':'0'})
+        self.assertIn(b'already has applications',self.save_calendar(self.schedule_plan()).data)
+        with self.client.session_transaction() as ss:ss['user_role']=None
+        self.assertEqual(self.client.get('/group-class-admin/1/schedule').status_code,403)
+        self.assertEqual(self.save_calendar(self.schedule_plan()).status_code,403)
 
     def image_upload(self, data=None, filename='class.png'):
         if data is None:

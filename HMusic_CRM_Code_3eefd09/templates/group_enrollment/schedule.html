@@ -1,0 +1,50 @@
+{% extends 'group_enrollment/base.html' %}
+{% block nav %}<a href="/group-class-admin">← Group Classes</a>{% endblock %}
+{% block content %}
+<h1>Edit Dates &amp; Times</h1><p>{{ offering.title }} · Select dates on the calendar, then arrange each lesson below. Times are Pacific time.</p>
+<form method="POST" id="schedule-form"><input type="hidden" name="version" value="{{ version }}"><input type="hidden" name="sessions" id="sessions-json">
+<div class="grid"><section class="card"><h2>1. Select class dates</h2>
+<label>Month<input type="month" id="calendar-month"></label>
+<div class="toolbar"><button type="button" class="secondary" id="prev-month">← Previous</button><button type="button" class="secondary" id="next-month">Next →</button></div>
+<p id="month-label" aria-live="polite"></p><div class="date-calendar" id="date-calendar" aria-label="Select class dates"></div>
+<p class="muted">Click a date to select it. Click again to remove it. You can select dates across multiple months.</p></section>
+<section class="card"><h2>2. Arrange selected lessons</h2>
+<label>Group course / duration<select id="default-course" required><option value="">Choose course</option>{% for c in courses %}<option value="{{ c.id }}">{{ c.name }} · {{ c.duration }} mins</option>{% endfor %}</select></label>
+<label>Start time<input type="time" id="default-time" value="11:10"></label>
+<label>Teacher<select id="default-teacher"><option value="">Choose teacher</option>{% for name in teachers %}<option>{{ name }}</option>{% endfor %}</select></label>
+<label>Location / room<select id="default-room"><option value="">Choose location &amp; room</option>{% for r in rooms %}<option value="{{ r.id }}">{{ r.location_name }} · {{ r.room_name }}</option>{% endfor %}</select></label>
+<button type="button" class="secondary" id="apply-defaults">Apply to all selected dates</button><p class="muted">You can change each date’s time, teacher and room in the list below, including alternating teachers.</p>
+</section></div>
+<section class="card"><h2>3. Review &amp; save</h2><p id="selection-count" aria-live="polite"></p><div class="scroll"><table><thead><tr><th>Date</th><th>Start time</th><th>Teacher</th><th>Location / room</th><th></th></tr></thead><tbody id="selected-dates"></tbody></table></div>
+<p class="notice">Saving updates the CRM calendar and keeps registration as a draft. Removing an existing empty class date cancels that calendar lesson. Existing student lessons must be managed in Calendar.</p>
+<p id="calendar-error" class="error" hidden role="alert"></p><div class="toolbar"><button type="submit">Save dates &amp; times</button><a href="/group-class-admin">Cancel</a></div></section></form>
+<script id="schedule-data" type="application/json">{{ {'initial':initial,'teachers':teachers,'courses':courses,'rooms':rooms}|tojson }}</script>
+<script>
+(()=>{
+const data=JSON.parse(document.getElementById('schedule-data').textContent);
+const q=id=>document.getElementById(id), selected=new Map();
+for(const row of data.initial)if(row&&typeof row.date==='string')selected.set(row.date,{...row});
+const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+const month=q('calendar-month');month.value=[...selected.keys()].sort()[0]?.slice(0,7)||today.slice(0,7);
+const first=[...selected.values()][0];if(first){q('default-time').value=first.time;q('default-teacher').value=first.teacher;q('default-room').value=first.room_id;q('default-course').value=first.course_id;}
+function defaults(){return {time:q('default-time').value,teacher:q('default-teacher').value,room_id:q('default-room').value,course_id:q('default-course').value};}
+function textCell(row,value){const td=document.createElement('td');td.textContent=value;row.append(td);return td;}
+function selectControl(options,current,onchange){const input=document.createElement('select');const blank=document.createElement('option');blank.value='';blank.textContent='Choose';input.append(blank);for(const [value,label]of options){const option=document.createElement('option');option.value=value;option.textContent=label;input.append(option);}input.value=current||'';input.required=true;input.addEventListener('change',()=>onchange(input.value));return input;}
+function render(){
+if(selected.size)q('calendar-error').hidden=true;
+const grid=q('date-calendar');grid.replaceChildren();for(const day of ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']){const label=document.createElement('span');label.className='weekday';label.textContent=day;grid.append(label);}
+const [year,mm]=month.value.split('-').map(Number);if(!year||!mm)return;
+q('month-label').textContent=new Date(year,mm-1,1).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+for(let i=0;i<new Date(year,mm-1,1).getDay();i++)grid.append(document.createElement('span'));
+for(let i=1;i<=new Date(year,mm,0).getDate();i++){const day=`${year}-${String(mm).padStart(2,'0')}-${String(i).padStart(2,'0')}`;const b=document.createElement('button');b.type='button';b.textContent=i;b.className='calendar-day'+(selected.has(day)?' selected':'');b.setAttribute('aria-label',day);b.setAttribute('aria-pressed',String(selected.has(day)));b.disabled=day<today;b.addEventListener('click',()=>{if(selected.has(day))selected.delete(day);else selected.set(day,{id:0,date:day,...defaults()});render();});grid.append(b);}
+const body=q('selected-dates');body.replaceChildren();for(const [day,item]of [...selected].sort(([a],[b])=>a.localeCompare(b))){const tr=document.createElement('tr');textCell(tr,day);const time=document.createElement('input');time.type='time';time.value=item.time||'';time.required=true;time.setAttribute('aria-label','Start time '+day);time.addEventListener('change',()=>item.time=time.value);textCell(tr,'').append(time);const teacher=selectControl(data.teachers.map(x=>[x,x]),item.teacher,x=>item.teacher=x);teacher.setAttribute('aria-label','Teacher '+day);textCell(tr,'').append(teacher);const room=selectControl(data.rooms.map(x=>[x.id,x.location_name+' · '+x.room_name]),item.room_id,x=>item.room_id=x);room.setAttribute('aria-label','Location and room '+day);textCell(tr,'').append(room);const remove=document.createElement('button');remove.type='button';remove.className='secondary';remove.textContent='Remove';remove.setAttribute('aria-label','Remove '+day);remove.addEventListener('click',()=>{selected.delete(day);render();});textCell(tr,'').append(remove);body.append(tr);}
+q('selection-count').textContent=selected.size+' class date'+(selected.size===1?'':'s')+' selected';
+}
+q('apply-defaults').addEventListener('click',()=>{for(const item of selected.values())Object.assign(item,defaults());render();});
+q('default-course').addEventListener('change',()=>{for(const item of selected.values())item.course_id=q('default-course').value;});
+month.addEventListener('change',render);function shift(n){const [y,m]=month.value.split('-').map(Number);const d=new Date(y,m-1+n,1);month.value=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');render();}q('prev-month').onclick=()=>shift(-1);q('next-month').onclick=()=>shift(1);
+q('schedule-form').addEventListener('submit',e=>{if(!selected.size){e.preventDefault();q('calendar-error').hidden=false;q('calendar-error').textContent='Select at least one class date.';return;}q('sessions-json').value=JSON.stringify([...selected.values()].map(x=>({...x,course_id:q('default-course').value})));});render();
+})();
+</script>
+<style>.date-calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.weekday{text-align:center;font-size:12px;color:#617187;padding:8px 0}.calendar-day{background:#f0f4fa;color:#24496d;padding:12px 0;border:2px solid transparent}.calendar-day.selected{background:#216bb2;color:white;border-color:#0d477e}.calendar-day:disabled{opacity:.35;cursor:default}#selected-dates select{min-width:180px}#selected-dates input{min-width:110px}#selected-dates td:first-child{white-space:nowrap}</style>
+{% endblock %}

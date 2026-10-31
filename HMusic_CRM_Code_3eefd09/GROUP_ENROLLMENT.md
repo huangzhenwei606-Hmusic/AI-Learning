@@ -58,3 +58,9 @@ The Render build includes these tests and the existing regression suite.
 Draft details and cancellation/makeup policy can be edited in Group Classes. Dates, teachers and locations remain sourced from Calendar; each linked date has an entry to its calendar month and teacher. Close registration before editing terms. Existing applications retain their submitted policy snapshot and prevent overwriting agreed terms.
 
 Managers can upload or replace a class cover image independently of tuition and enrollment. PNG/JPEG/WebP uploads are limited to 4 MB and 20 megapixels, decoded and re-encoded as JPEG (metadata discarded, max 1600px). Images are stored durably in the CRM database. Draft image access requires owner authentication; published images appear in the catalog and application form. Uploads never publish a draft or create students/invoices.
+
+## Calendar date picker
+
+Group Classes now has visible Edit Basic Information and Edit Dates & Times actions. The date editor supports selecting dates across months, then setting a group course/duration, time, teacher and location/room in bulk or individually. Saving creates or updates native calendar rows and links them to the draft offer; it creates no students, invoices or credits. Teachers may alternate.
+
+The server validates all selected dates and active course/teacher/room choices before writing; native pricing and teacher/room conflict checks are reused. Repeated or stale saves are rejected using a calendar version hash. Existing empty sessions retain their IDs; deselected sessions are cancelled rather than deleted. Classes with applications, past sessions or existing student rosters must use the existing Calendar workflow for changes. Registration is never automatically published by a schedule save.

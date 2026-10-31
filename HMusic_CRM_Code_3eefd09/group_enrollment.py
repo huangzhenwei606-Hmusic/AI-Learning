@@ -63,7 +63,7 @@ def ensure_schema(conn):
 
 def get_sessions(cur, offering_id):
     cur.execute('''SELECT s.id,s.lesson_date,s.lesson_time,s.duration,s.teacher,s.classroom,s.location,
-        s.course_type_id,s.course_type_name,s.status,s.group_name
+        s.course_type_id,s.course_type_name,s.status,s.group_name,s.room_id,s.location_id
         FROM group_offering_sessions gs JOIN schedule s ON s.id=gs.schedule_id
         WHERE gs.offering_id=? ORDER BY s.lesson_date,s.lesson_time,s.id''', (offering_id,))
     return rows(cur)
@@ -278,6 +278,51 @@ def confirm(cur, aid):
                     (a['student_name'],a['enrollment_id'],now(),a['inquiry_id']))
 
 
+def schedule_version(offering):
+    return hashlib.sha256(json.dumps(offering['sessions'],sort_keys=True,default=str).encode()).hexdigest()
+
+
+def validate_schedule_plan(cur, oid, data):
+    if not isinstance(data,list) or not 1<=len(data)<=100:
+        raise ValueError('Select between 1 and 100 class dates.')
+    offering=get_offering(cur,oid)
+    if not offering:raise ValueError('Class not found.')
+    if offering['published']:raise ValueError('Close registration before editing the class calendar.')
+    cur.execute('SELECT COUNT(*) FROM group_applications WHERE offering_id=?',(oid,))
+    if cur.fetchone()[0]:raise ValueError('This class already has applications. Manage changes through Calendar to preserve enrollment records.')
+    existing={x['id']:x for x in offering['sessions']}
+    if offering['session_count']!=len(existing):raise ValueError('A linked calendar lesson is missing. Review the class first.')
+    for sid,lesson in existing.items():
+        if str(lesson['status']).lower()!='scheduled' or session_roster_names(cur,sid):
+            raise ValueError('Only upcoming empty Scheduled class sessions can be changed here. Use Calendar for existing student lessons.')
+        if lesson['lesson_date']+'T'+lesson['lesson_time']+':00'<=now():
+            raise ValueError('Past class sessions cannot be changed here.')
+    plan=[];dates=set();ids=set()
+    for item in data:
+        if not isinstance(item,dict):raise ValueError('Invalid class date.')
+        try:
+            day=str(item['date']);time=str(item['time']);sid=int(item.get('id') or 0)
+            moment=datetime.strptime(day+' '+time,'%Y-%m-%d %H:%M')
+            if moment.strftime('%Y-%m-%d %H:%M')!=day+' '+time or moment.isoformat()<=now():raise ValueError()
+            room_id=int(item['room_id']);course_id=int(item['course_id']);teacher=str(item['teacher']).strip()
+        except (ValueError,TypeError,KeyError):raise ValueError('Each selected date needs a future date, time, teacher, course and location/room.')
+        if day in dates or (sid and sid in ids):raise ValueError('Select each class date only once.')
+        if sid and sid not in existing:raise ValueError('A lesson does not belong to this class.')
+        dates.add(day);ids.add(sid)
+        cur.execute('SELECT teacher_name FROM teachers WHERE teacher_name=? AND active=1',(teacher,))
+        if not cur.fetchone():raise ValueError('Choose an active teacher.')
+        cur.execute('SELECT id,name,duration FROM course_types WHERE id=? AND is_group=1 AND active=1',(course_id,))
+        course=cur.fetchone()
+        if not course or not 1<=int(course[2] or 0)<=240:raise ValueError('Choose an active group course with a valid duration.')
+        cur.execute("""SELECT r.room_name,r.location_id,l.location_name FROM studio_rooms r JOIN studio_locations l ON l.id=r.location_id
+            WHERE r.id=? AND r.active=1 AND l.active=1""",(room_id,));room=cur.fetchone()
+        if not room:raise ValueError('Choose an active location and room.')
+        if moment.hour*60+moment.minute+int(course[2])>1440:raise ValueError('A class must finish before midnight.')
+        plan.append(dict(id=sid,date=day,time=time,teacher=teacher,room_id=room_id,classroom=room[0],location_id=room[1],location=room[2],course_id=course_id,course_name=course[1],duration=int(course[2])))
+    if len({(x['course_id'],x['duration']) for x in plan})!=1:raise ValueError('Use the same course and duration for this class package.')
+    return offering,plan
+
+
 def prepare_class_image(upload):
     if not upload or not upload.filename:
         raise ValueError('Choose a PNG, JPEG or WebP image.')
@@ -455,6 +500,57 @@ def register_group_enrollment(app, api):
         response.headers['Cache-Control']='private, no-store'
         return response
 
+    @bp.route('/group-class-admin/<int:oid>/schedule',methods=['GET','POST'])
+    def schedule_editor(oid):
+        owner();error='';submitted=None
+        # Native schema helpers can write, so run them before the scheduling transaction.
+        for name in ('ensure_teacher_management_schema','ensure_location_room_schema','ensure_v18c_schema'):
+            if name in api:api[name]()
+        try:
+            if request.method=='POST':
+                try:submitted=json.loads(request.form.get('sessions','[]'))
+                except (ValueError,TypeError):raise ValueError('Invalid calendar selection.')
+                with db() as conn:
+                    o,plan=validate_schedule_plan(conn.cursor(),oid,submitted)
+                pricing={}
+                for item in plan:
+                    key=(item['teacher'],item['course_id'])
+                    if key not in pricing:
+                        pricing[key]=api['get_final_pricing']('',item['teacher'],item['course_id'],class_size=o['capacity'])
+                    if not pricing[key]:raise ValueError('Course pricing is not configured. Complete the course settings first.')
+                with db(write=True) as conn:
+                    cur=conn.cursor();lock_offering(cur,oid)
+                    o,plan=validate_schedule_plan(cur,oid,submitted)
+                    if request.form.get('version')!=schedule_version(o):raise ValueError('The class calendar changed in another window. Reload before saving.')
+                    for item in plan:
+                        conflict=api['schedule_has_conflict'](item['teacher'],item['classroom'],item['date'],item['time'],exclude_schedule_id=item['id'] or None,duration=item['duration'],room_id=item['room_id'],location_id=item['location_id'],location=item['location'])
+                        if conflict.get('has_conflict'):raise ValueError(item['date']+': '+conflict.get('message','Teacher or room is unavailable.'))
+                    kept={item['id'] for item in plan if item['id']}
+                    for old in o['sessions']:
+                        if old['id'] not in kept:
+                            cur.execute("UPDATE schedule SET status='cancelled',charge_lessons=0,owner_calendar_updated_at=? WHERE id=?",(now(),old['id']))
+                            cur.execute('DELETE FROM group_offering_sessions WHERE offering_id=? AND schedule_id=?',(oid,old['id']))
+                    for item in plan:
+                        rate=pricing[(item['teacher'],item['course_id'])]
+                        fields=dict(student_name=o['title'],lesson_date=item['date'],lesson_time=item['time'],teacher=item['teacher'],classroom=item['classroom'],duration=item['duration'],course_type_id=item['course_id'],course_type_name=item['course_name'],student_billing_method=rate['student_billing_method'],student_price=rate['student_price'],teacher_billing_method=rate['teacher_billing_method'],teacher_pay=rate['teacher_pay'],student_charge_amount=rate['student_charge_amount'],teacher_pay_amount=rate['teacher_pay_amount'],is_group=1,group_size=0,group_name=o['title'],group_student_names='',room_id=item['room_id'],location_id=item['location_id'],location=item['location'],charge_lessons=0,owner_calendar_updated_at=now())
+                        if item['id']:
+                            cur.execute('UPDATE schedule SET '+','.join(k+'=?' for k in fields)+' WHERE id=?',tuple(fields.values())+(item['id'],))
+                        else:
+                            fields.update(status='scheduled',schedule_type='one_time',notes='Group offering #'+str(oid)+'; enrollment pending.')
+                            cur.execute('INSERT INTO schedule('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+')',tuple(fields.values()))
+                            cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,cur.lastrowid))
+                return redirect('/group-class-admin',code=303)
+        except (ValueError,TypeError) as exc:error=str(exc)
+        with db() as conn:
+            cur=conn.cursor();o=get_offering(cur,oid)
+            if not o:abort(404)
+            cur.execute('SELECT teacher_name FROM teachers WHERE active=1 ORDER BY teacher_name');teachers=[r[0] for r in cur.fetchall()]
+            cur.execute('SELECT id,name,duration FROM course_types WHERE is_group=1 AND active=1 ORDER BY duration,name');courses=rows(cur)
+            cur.execute("""SELECT r.id,r.room_name,l.location_name FROM studio_rooms r JOIN studio_locations l ON l.id=r.location_id
+                WHERE r.active=1 AND l.active=1 ORDER BY l.location_name,r.room_name""");rooms=rows(cur)
+        initial=[dict(id=x['id'],date=x['lesson_date'],time=x['lesson_time'],teacher=x['teacher'],room_id=x['room_id'],course_id=x['course_type_id']) for x in o['sessions']]
+        return page('schedule.html',offering=o,initial=submitted if isinstance(submitted,list) else initial,teachers=teachers,courses=courses,rooms=rooms,version=schedule_version(o),error=error)
+
     @bp.route('/group-class-admin',methods=['GET','POST'])
     def manage():
         owner()
@@ -533,7 +629,8 @@ def register_group_enrollment(app, api):
                 AND lower(s.status)='scheduled'
                 ORDER BY s.teacher,s.group_name,s.lesson_date,s.lesson_time LIMIT 400''',(now()[:10],))
             choices=rows(cur)
-        return page('manage.html',offerings=offerings,choices=choices,error=error)
+        editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
+        return page('manage.html',offerings=offerings,choices=choices,editing=editing,error=error)
 
     @bp.route('/group-enrollments',methods=['GET','POST'])
     def review():
