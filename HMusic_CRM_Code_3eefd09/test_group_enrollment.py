@@ -108,14 +108,22 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.assertIn(b'another window',duplicate.data)
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
 
-    def test_calendar_plan_conflict_and_invalid_plan_roll_back(self):
-        count=self.scalar('SELECT COUNT(*) FROM schedule')
-        self.api['schedule_has_conflict']=lambda *args,**kwargs:dict(has_conflict=True,message='Room is occupied.')
+    def test_calendar_conflicts_warn_without_blocking_creation(self):
+        self.api['schedule_has_conflict']=lambda *args,**kwargs:dict(has_conflict=True,message='Teacher conflict with another lesson at 11:15.')
         result=self.save_calendar(self.schedule_plan())
-        self.assertIn(b'Room is occupied',result.data)
-        self.assertEqual(self.scalar('SELECT COUNT(*) FROM schedule'),count)
-        self.assertEqual(self.scalar('SELECT status FROM schedule WHERE id=1'),'scheduled')
-        self.api['schedule_has_conflict']=lambda *args,**kwargs:dict(has_conflict=False)
+        self.assertEqual(result.status_code,303)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM schedule WHERE status='scheduled' AND lesson_date LIKE '2099-12-%'"),2)
+        notice=self.client.get(result.location)
+        self.assertIn(b'Dates &amp; times saved',notice.data)
+        self.assertIn(b'reminder only',notice.data)
+        self.assertIn(b'Teacher conflict with another lesson at 11:15.',notice.data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertEqual(self.scalar('SELECT published FROM group_offerings'),0)
+
+    def test_invalid_calendar_plan_still_rolls_back(self):
+        count=self.scalar('SELECT COUNT(*) FROM schedule')
         for field,value in [('teacher','Inactive Teacher'),('course_id',3),('room_id',99),('date','2000-01-01'),('time','25:00'),('id',3)]:
             plan=self.schedule_plan();plan[0][field]=value
             self.assertEqual(self.save_calendar(plan).status_code,200)

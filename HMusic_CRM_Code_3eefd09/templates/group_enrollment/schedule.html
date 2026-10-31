@@ -2,6 +2,7 @@
 {% block nav %}<a href="/group-class-admin">← Group Classes</a>{% endblock %}
 {% block content %}
 <h1>Edit Dates &amp; Times</h1><p>{{ offering.title }} · Select dates on the calendar, then arrange each lesson below. Times are Pacific time.</p>
+<p class="notice">Teacher and room conflicts are reminders only. Your selected lessons can still be saved.</p>
 <form method="POST" id="schedule-form"><input type="hidden" name="version" value="{{ version }}"><input type="hidden" name="sessions" id="sessions-json">
 <div class="grid"><section class="card"><h2>1. Select class dates</h2>
 <label>Month<input type="month" id="calendar-month"></label>

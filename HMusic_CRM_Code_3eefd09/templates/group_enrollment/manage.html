@@ -17,6 +17,8 @@
 {% block nav %}<a href="/new_students">Intake</a><a href="/group-enrollments">Applications</a><a href="/group-classes" target="_blank">Public class page ↗</a>{% endblock %}
 {% block content %}
 <h1>Group Classes</h1>
+{% if saved %}<section class="notice" role="status"><strong>Dates &amp; times saved · {{ saved.title }}</strong><p>Calendar lessons have been created or updated.</p></section>{% if warnings %}<section class="schedule-warning" role="status"><strong>Schedule conflicts — reminder only</strong><p>Your lessons were saved. These overlaps do not block class creation.</p><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></section>{% endif %}{% endif %}
+<style>.schedule-warning{background:#fff8e6;border:1px solid #edca78;color:#775000;padding:18px 22px;border-radius:12px;margin:18px 0}.schedule-warning li{margin:8px 0;line-height:1.5}</style>
 <p class="muted">Edit class information, select dates on the calendar, then preview and publish registration.</p>
 {% if editing %}<section class="card"><h2>Edit basic information · {{ editing.title }}</h2>{{ class_form(editing) }}</section>{% endif %}
 <div class="grid">

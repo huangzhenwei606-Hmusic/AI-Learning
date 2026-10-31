@@ -522,9 +522,6 @@ def register_group_enrollment(app, api):
                     cur=conn.cursor();lock_offering(cur,oid)
                     o,plan=validate_schedule_plan(cur,oid,submitted)
                     if request.form.get('version')!=schedule_version(o):raise ValueError('The class calendar changed in another window. Reload before saving.')
-                    for item in plan:
-                        conflict=api['schedule_has_conflict'](item['teacher'],item['classroom'],item['date'],item['time'],exclude_schedule_id=item['id'] or None,duration=item['duration'],room_id=item['room_id'],location_id=item['location_id'],location=item['location'])
-                        if conflict.get('has_conflict'):raise ValueError(item['date']+': '+conflict.get('message','Teacher or room is unavailable.'))
                     kept={item['id'] for item in plan if item['id']}
                     for old in o['sessions']:
                         if old['id'] not in kept:
@@ -539,6 +536,7 @@ def register_group_enrollment(app, api):
                             fields.update(status='scheduled',schedule_type='one_time',notes='Group offering #'+str(oid)+'; enrollment pending.')
                             cur.execute('INSERT INTO schedule('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+')',tuple(fields.values()))
                             cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,cur.lastrowid))
+                session['group_schedule_saved_id']=oid
                 return redirect('/group-class-admin',code=303)
         except (ValueError,TypeError) as exc:error=str(exc)
         with db() as conn:
@@ -629,8 +627,16 @@ def register_group_enrollment(app, api):
                 AND lower(s.status)='scheduled'
                 ORDER BY s.teacher,s.group_name,s.lesson_date,s.lesson_time LIMIT 400''',(now()[:10],))
             choices=rows(cur)
+        saved_id=session.pop('group_schedule_saved_id',None)
+        saved=next((o for o in offerings if o['id']==saved_id),None)
+        warnings=[]
+        if saved:
+            for lesson in saved['sessions']:
+                conflict=api['schedule_has_conflict'](lesson['teacher'],lesson['classroom'],lesson['lesson_date'],lesson['lesson_time'],exclude_schedule_id=lesson['id'],duration=lesson['duration'],room_id=lesson['room_id'],location_id=lesson['location_id'],location=lesson['location'])
+                if conflict.get('has_conflict'):
+                    warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
         editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
-        return page('manage.html',offerings=offerings,choices=choices,editing=editing,error=error)
+        return page('manage.html',offerings=offerings,choices=choices,editing=editing,saved=saved,warnings=warnings,error=error)
 
     @bp.route('/group-enrollments',methods=['GET','POST'])
     def review():
