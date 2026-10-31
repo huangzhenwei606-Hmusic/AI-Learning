@@ -1,0 +1,48 @@
+{% extends 'group_enrollment/base.html' %}
+{% block nav %}<a href="/new_students">Intake</a>
+<a href="/group-class-admin">Manage classes</a>
+<a href="/invoices">Billing</a>{% endblock %}
+{% block content %}<h1>Group Enrollments</h1>
+<p class="muted">Review → reserve a place and create an invoice → verify payment → confirm enrollment. Reservations last 48 hours; paid applications keep their place.</p>
+<div class="card scroll">
+<table>
+<thead>
+<tr>
+<th>Student / parent</th>
+<th>Class</th>
+<th>Enrollment</th>
+<th>Payment</th>
+<th>Review</th>
+</tr>
+</thead>
+<tbody>{% for a in applications %}<tr id="application-{{ a.id }}">
+<td>
+<b>{{ a.student_name }}</b>
+<br>{{ a.parent_name }}<br>{{ a.email }}<br>{{ a.phone }}</td>
+<td>{{ a.title }}</td>
+<td>
+<span class="badge">{{ a.status|title }}</span>{% if a.reserved_until %}<p>
+<small>Hold until {{ a.reserved_until }} Pacific</small>
+</p>{% endif %}</td>
+<td>{{ a.payment|replace('_',' ')|title }}{% if a.invoice_id %}<p>
+<a href="/owner/invoice/{{ a.invoice_id }}/quick-pay">Payment link / invoice #{{ a.invoice_id }}</a>
+</p>{% endif %}</td>
+<td>
+<details>
+<summary>Review application #{{ a.id }}</summary>
+<p>Date of birth: {{ a.birth_date }}<br>Experience: {{ a.experience or 'Not provided' }}</p>{% if a.inquiry_id %}<a href="/inquiry/{{ a.inquiry_id }}">Intake record</a>{% endif %}
+{% if a.status in ['review','waitlist','reserved'] %}<form method="POST" class="review-form">
+<input type="hidden" name="id" value="{{ a.id }}">{% if not a.invoice_id %}<label>Confirm the correct student profile<select name="student_id" required>
+<option value="">Choose explicitly…</option>
+<option value="new">Create a new student profile for {{ a.student_name }}</option>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} (#{{ s.id }})</option>{% endfor %}</select>
+</label>
+<p class="muted">Approving links this guardian to the selected child’s parent app. Verify the family before approving.</p>{% endif %}<p class="toolbar">{% if a.payment=='paid' %}<button name="action" value="confirm">Confirm paid enrollment</button>{% else %}<button name="action" value="approve">{{ 'Renew reservation' if a.invoice_id else 'Approve & create invoice' }}</button>{% endif %}
+{% if not a.invoice_id %}<button class="secondary" name="action" value="waitlist" formnovalidate>Waitlist</button>
+<button class="danger" name="action" value="cancel" formnovalidate>Close application</button>{% endif %}</p>
+</form>{% endif %}</details>
+</td>
+</tr>{% else %}<tr>
+<td colspan="5">No group applications yet. Publish a class and share the website enrollment link.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>{% endblock %}

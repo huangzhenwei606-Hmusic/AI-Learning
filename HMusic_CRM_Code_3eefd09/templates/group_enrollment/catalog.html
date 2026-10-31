@@ -1,0 +1,16 @@
+{% extends 'group_enrollment/base.html' %}
+{% block content %}<h1>Find your group class</h1>
+<p class="muted">Choose a class, send your application, and we’ll confirm placement before payment.</p>
+<div class="grid">{% for o in offerings %}<article class="card">
+<span class="badge">{{ o.remaining }} places available{% if not o.remaining %} · Waitlist{% endif %}</span>
+<h2>{{ o.title }}</h2>
+<p>{{ o.description }}</p>
+<p>{{ o.age_range }}</p>{% if o.available_sessions %}
+{% set s=o.available_sessions[0] %}<p>
+<b>{{ o.teachers|join(' & ') }}</b> · {{ s.duration }} minutes<br>{{ s.location or '' }} {{ s.classroom }}<br>Starts {{ s.lesson_date }} at {{ s.lesson_time }}</p>{% endif %}<p class="price">${{ o.tuition }} <small>/ {{ o.available_sessions|length }} lessons</small>
+</p>
+<a class="button" href="/group-classes/{{ o.id }}/apply">{{ 'Apply to Enroll' if o.remaining else 'Join Waitlist' }}</a>
+</article>{% else %}<div class="card">
+<h2>New classes are coming</h2>
+<p>Contact us to find a suitable group. Published class schedules will appear here.</p>
+</div>{% endfor %}</div>{% endblock %}

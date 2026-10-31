@@ -1,0 +1,8 @@
+{% extends 'group_enrollment/base.html' %}
+{% block content %}<section class="card">
+<span class="badge">{{ application.status|title }}</span>
+<h1>{{ 'You’re enrolled' if application.status=='enrolled' else 'Application received' }}</h1>
+<p>Thank you. We received the application for <b>{{ application.student_name }}</b> in <b>{{ offering.title }}</b>.</p>
+<div class="notice">Application #{{ application.id }}<br>Enrollment: {{ application.status|title }}<br>Payment: {{ payment|replace('_',' ')|title }}</div>
+<p>{% if application.status=='waitlist' %}Your child is on the waitlist. We’ll contact you when a suitable place becomes available.{% elif application.status=='reserved' %}Your application has been reviewed. Please follow the payment instructions from H-Music. An opened or abandoned payment link is not a completed payment.{% elif application.status=='enrolled' %}Your place is confirmed. Your child’s classes are linked to the family’s parent app account.{% else %}We’ll review your child’s placement and confirm availability before requesting payment. You can bookmark this private page to check your status.{% endif %}</p>
+</section>{% endblock %}

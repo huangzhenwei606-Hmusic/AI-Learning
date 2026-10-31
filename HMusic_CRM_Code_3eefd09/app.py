@@ -40967,6 +40967,8 @@ def inquiries():
                 <div class="actions">
                     <a href="/trial" target="_blank">Trial link</a>
                     <a href="/registration" target="_blank">Registration</a>
+                    <a href="/group-class-admin">Group Classes</a>
+                    <a href="/group-enrollments">Group Enrollments</a>
                     <a class="primary" href="/new_student_intake">Manual Entry</a>
                 </div>
             </div>
@@ -46550,7 +46552,7 @@ def prefer_real_parent_for_student(cursor, parent_id, student_name=None):
     return matched[0] if matched else parent_id
 
 
-def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", grant_credit_on_payment=True, approval_required=False):
+def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", grant_credit_on_payment=True, approval_required=False, attach_pending_charges=True):
     cursor.execute("""
     SELECT
         id,
@@ -46620,7 +46622,8 @@ def create_enrollment_invoice(cursor, enrollment_id, invoice_type, notes="", gra
     ))
 
     invoice_id = cursor.lastrowid
-    hmusic_attach_pending_invoice_charges(cursor, e[1], invoice_id)
+    if attach_pending_charges:
+        hmusic_attach_pending_invoice_charges(cursor, e[1], invoice_id)
     return invoice_id
 
 
@@ -49951,3 +49954,8 @@ register_child_os_api(app, "hmusic.db")
 # Website editing uses the existing owner session and global CSRF protection.
 from website_cms import register_website_cms
 register_website_cms(app, lambda: sqlite3.connect('hmusic.db'), require_owner, hmusic_csrf_token)
+
+
+# Group registration reuses calendar sessions and existing invoice settlement.
+from group_enrollment import register_group_enrollment
+register_group_enrollment(app, globals())

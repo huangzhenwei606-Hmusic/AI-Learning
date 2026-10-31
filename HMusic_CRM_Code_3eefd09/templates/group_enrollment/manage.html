@@ -1,0 +1,39 @@
+{% extends 'group_enrollment/base.html' %}
+{% macro class_form(o=none) %}
+<form method="POST">
+{% if o %}<input type="hidden" name="offering_id" value="{{ o.id }}">{% endif %}
+<div class="grid"><div>
+<label>Class name *<input required maxlength="150" name="title" value="{{ o.title if o else '' }}" placeholder="Piano Group · Saturday beginners"></label>
+<label>Suitable ages / level<input name="age_range" maxlength="100" value="{{ o.age_range if o else '' }}" placeholder="Ages 5–7 · Beginner"></label>
+<label>Description / package details<textarea name="description" maxlength="3000">{{ o.description if o else '' }}</textarea></label>
+</div><div>
+<label>Total class capacity *<input required type="number" name="capacity" min="1" max="100" value="{{ o.capacity if o else 4 }}"></label>
+<label>Total tuition per student ($) *<input required type="number" name="tuition" min="0.01" step="0.01" value="{{ o.tuition if o else '' }}"></label>
+<label>Policy shown to parents *<textarea required name="policy" maxlength="5000" placeholder="Explain cancellations, make-up lessons and payment due dates.">{{ o.policy if o else '' }}</textarea></label>
+</div></div>
+<h3>Link actual group calendar sessions</h3>
+<p class="muted">You can save a planning draft before linking dates. Publication requires upcoming Scheduled sessions with the same course type and duration. Each session keeps its actual teacher.</p>
+<div class="session-picker">
+{% if o %}{% for s in o.sessions %}<label><input type="checkbox" name="schedule_ids" value="{{ s.id }}" checked>#{{ s.id }} · {{ s.lesson_date }} {{ s.lesson_time }} · {{ s.teacher }} · {{ s.duration }} mins · {{ s.location or '' }} {{ s.classroom }}</label>{% endfor %}{% endif %}
+{% for s in choices %}<label><input type="checkbox" name="schedule_ids" value="{{ s.id }}">#{{ s.id }} · {{ s.lesson_date }} {{ s.lesson_time }} · {{ s.group_name or s.course_type_name }} · {{ s.teacher }} · {{ s.duration }} mins · {{ s.location or '' }} {{ s.classroom }}</label>{% else %}<p>No unlinked upcoming group sessions. Create the class dates in Calendar when ready.</p>{% endfor %}
+</div><p><button>{{ 'Save draft changes' if o else 'Create draft class' }}</button></p>
+</form>
+{% endmacro %}
+{% block nav %}<a href="/new_students">Intake</a><a href="/group-enrollments">Applications</a><a href="/group-classes" target="_blank">Public class page ↗</a>{% endblock %}
+{% block content %}
+<h1>Group Classes</h1>
+<p class="muted">Plan your classes, link their real calendar sessions, then publish registration. No duplicate lessons are created.</p>
+<div class="grid">
+{% for o in offerings %}<article class="card">
+<span class="badge">{{ 'Published' if o.published else 'Draft' }}</span>
+<h2>{{ o.title }}</h2>
+<p>{{ o.available_sessions|length }} linked lessons · ${{ o.tuition }} · {{ o.remaining }}/{{ o.capacity }} places remaining</p>
+<p>{{ o.description }}</p>
+{% if not o.sessions %}<p class="notice">Dates and course details pending. This draft cannot accept registrations yet.</p>{% endif %}
+<div class="dates">{% for s in o.sessions %}<span class="date">{{ s.lesson_date }} {{ s.lesson_time }} · {{ s.teacher }} · {{ s.status }}</span>{% endfor %}</div>
+<form method="POST"><input type="hidden" name="action" value="visibility"><input type="hidden" name="id" value="{{ o.id }}"><input type="hidden" name="published" value="{{ 0 if o.published else 1 }}"><p class="toolbar"><button class="secondary">{{ 'Close registration' if o.published else 'Publish registration' }}</button><a href="/group-classes/{{ o.id }}/apply{{ '?preview=1' if not o.published else '' }}" target="_blank">Preview form</a></p></form>
+{% if not o.published %}<details><summary>Edit draft / complete class dates</summary>{{ class_form(o) }}</details>{% endif %}
+</article>{% endfor %}
+</div>
+<section class="card"><h2>Create a class offer</h2><p>Create the actual lessons in <a href="/calendar">Calendar</a>, including teacher, location, room and course type, then link them here. A planning draft can be saved before those details are finalized.</p>{{ class_form() }}</section>
+{% endblock %}

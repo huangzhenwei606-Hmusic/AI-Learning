@@ -1,0 +1,43 @@
+{% extends 'group_enrollment/base.html' %}
+{% block content %}<h1>{{ offering.title }}</h1>
+{% if not offering.published %}<p class="notice">Manager draft preview. Families cannot apply until registration is published.</p>{% endif %}
+<div class="grid">
+<section class="card">
+<h2>Your class</h2>
+<p>{{ offering.description }}</p>
+<p>{{ offering.age_range }}</p>{% if offering.sessions %}
+{% set s=offering.sessions[0] %}<p>
+<b>{{ offering.teachers|join(' & ') }}</b>
+<br>{{ s.location or '' }} {{ s.classroom }} · {{ s.duration }} minutes per lesson</p>{% endif %}<p class="price">${{ offering.tuition }} <small>/ {{ offering.available_sessions|length }} lessons</small>
+</p>
+<h3>Class dates · Pacific time</h3>
+<div class="dates">{% for s in offering.sessions %}<span class="date">{{ s.lesson_date }} · {{ s.lesson_time }} · {{ s.teacher }} · {{ s.location or '' }} {{ s.classroom }}{% if s not in offering.available_sessions %} · {{ s.status }}{% endif %}</span>{% endfor %}</div>
+<h3>Class policy</h3>
+<div class="policy">{{ offering.policy }}</div>
+</section>
+<section class="card">
+<h2>{{ 'Student & parent details' if offering.remaining else 'Join the waitlist' }}</h2>
+<p class="muted">No app login required. Submit one application per child. Submission does not confirm a place or payment.</p>
+<form method="POST">
+<input type="hidden" name="request_key" value="{{ request_key }}">
+<label>Student’s full name *<input required maxlength="100" name="student_name" autocomplete="off" value="{{ values.get('student_name','') }}">
+</label>
+<label>Date of birth *<input required type="date" name="birth_date" value="{{ values.get('birth_date','') }}">
+</label>
+<label>Learning experience<textarea name="experience" maxlength="1500">{{ values.get('experience','') }}</textarea>
+</label>
+<label>Parent / guardian name *<input required name="parent_name" maxlength="100" autocomplete="name" value="{{ values.get('parent_name','') }}">
+</label>
+<label>Email *<input required type="email" maxlength="250" name="email" autocomplete="email" value="{{ values.get('email','') }}">
+</label>
+<label>Phone *<input required type="tel" name="phone" maxlength="40" autocomplete="tel" value="{{ values.get('phone','') }}">
+</label>
+<label class="hidden" aria-hidden="true">Leave blank<input name="website" tabindex="-1" autocomplete="off">
+</label>
+<label class="check">
+<input required type="checkbox" name="policy_ack" value="yes" {{ 'checked' if values.get('policy_ack')=='yes' else '' }}>I have read the class dates, tuition and policy.</label>
+<p class="muted">We use these details to review enrollment and manage your child’s classes. H-Music will confirm placement and send payment instructions separately.</p>
+<button type="submit" {{ 'disabled' if not offering.published else '' }}>{{ 'Submit Application' if offering.remaining else 'Join Waitlist' }}</button>
+</form>
+</section>
+</div>{% endblock %}
