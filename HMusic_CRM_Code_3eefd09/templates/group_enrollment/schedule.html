@@ -22,8 +22,8 @@
 <script>
 (()=>{
 const data=JSON.parse(document.getElementById('schedule-data').textContent);
-const q=id=>document.getElementById(id), selected=new Map();
-for(const row of data.initial)if(row&&typeof row.date==='string')selected.set(row.date,{...row});
+const q=id=>document.getElementById(id), selected=new Map(), originalByDate=new Map();
+for(const row of data.initial)if(row&&typeof row.date==='string'){selected.set(row.date,{...row});originalByDate.set(row.date,{...row});}
 const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const month=q('calendar-month');month.value=[...selected.keys()].sort()[0]?.slice(0,7)||today.slice(0,7);
 const first=[...selected.values()][0];if(first){q('default-time').value=first.time;q('default-teacher').value=first.teacher;q('default-room').value=first.room_id;q('default-course').value=first.course_id;}
@@ -36,7 +36,7 @@ const grid=q('date-calendar');grid.replaceChildren();for(const day of ['Sun','Mo
 const [year,mm]=month.value.split('-').map(Number);if(!year||!mm)return;
 q('month-label').textContent=new Date(year,mm-1,1).toLocaleDateString('en-US',{month:'long',year:'numeric'});
 for(let i=0;i<new Date(year,mm-1,1).getDay();i++)grid.append(document.createElement('span'));
-for(let i=1;i<=new Date(year,mm,0).getDate();i++){const day=`${year}-${String(mm).padStart(2,'0')}-${String(i).padStart(2,'0')}`;const b=document.createElement('button');b.type='button';b.textContent=i;b.className='calendar-day'+(selected.has(day)?' selected':'');b.setAttribute('aria-label',day);b.setAttribute('aria-pressed',String(selected.has(day)));b.disabled=day<today;b.addEventListener('click',()=>{if(selected.has(day))selected.delete(day);else selected.set(day,{id:0,date:day,...defaults()});render();});grid.append(b);}
+for(let i=1;i<=new Date(year,mm,0).getDate();i++){const day=`${year}-${String(mm).padStart(2,'0')}-${String(i).padStart(2,'0')}`;const b=document.createElement('button');b.type='button';b.textContent=i;b.className='calendar-day'+(selected.has(day)?' selected':'');b.setAttribute('aria-label',day);b.setAttribute('aria-pressed',String(selected.has(day)));b.disabled=day<today;b.addEventListener('click',()=>{if(selected.has(day))selected.delete(day);else selected.set(day,originalByDate.has(day)?{...originalByDate.get(day)}:{id:0,date:day,...defaults()});render();});grid.append(b);}
 const body=q('selected-dates');body.replaceChildren();for(const [day,item]of [...selected].sort(([a],[b])=>a.localeCompare(b))){const tr=document.createElement('tr');textCell(tr,day);const time=document.createElement('input');time.type='time';time.value=item.time||'';time.required=true;time.setAttribute('aria-label','Start time '+day);time.addEventListener('change',()=>item.time=time.value);textCell(tr,'').append(time);const teacher=selectControl(data.teachers.map(x=>[x,x]),item.teacher,x=>item.teacher=x);teacher.setAttribute('aria-label','Teacher '+day);textCell(tr,'').append(teacher);const room=selectControl(data.rooms.map(x=>[x.id,x.location_name+' · '+x.room_name]),item.room_id,x=>item.room_id=x);room.setAttribute('aria-label','Location and room '+day);textCell(tr,'').append(room);const remove=document.createElement('button');remove.type='button';remove.className='secondary';remove.textContent='Remove';remove.setAttribute('aria-label','Remove '+day);remove.addEventListener('click',()=>{selected.delete(day);render();});textCell(tr,'').append(remove);body.append(tr);}
 q('selection-count').textContent=selected.size+' class date'+(selected.size===1?'':'s')+' selected';
 }
