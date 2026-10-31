@@ -72,6 +72,32 @@ class GroupEnrollmentTests(unittest.TestCase):
         invoice=self.scalar('SELECT invoice_id FROM group_applications WHERE id=?',(aid,))
         self.conn.execute("UPDATE invoices SET status='paid' WHERE id=?",(invoice,));self.conn.commit()
 
+    def test_registration_center_separates_parent_links_and_drafts(self):
+        self.publish();self.create_class(title='Vocal Draft',schedule_ids=[])
+        page=self.client.get('/group-class-admin')
+        self.assertIn(b'+ New Group Class',page.data)
+        self.assertIn(b'/group-class-admin?new=1',page.data)
+        self.assertIn(b'https://hmusic-crm.onrender.com/group-classes/1/apply',page.data)
+        self.assertNotIn(b'https://hmusic-crm.onrender.com/group-classes/2/apply',page.data)
+        self.assertIn(b'Vocal Draft',page.data)
+        self.assertNotIn(b'Create a class offer',page.data)
+        self.assertIn(b'Create a new group class',self.client.get('/group-class-admin?new=1').data)
+        self.assertIn(b'Upload class image',self.client.get('/group-class-admin?class_id=1').data)
+
+    def test_applications_are_filtered_to_selected_class(self):
+        self.apply(name='Piano Child');self.create_class(title='Vocal',schedule_ids=[])
+        self.conn.execute("""INSERT INTO group_applications(offering_id,student_name,birth_date,experience,parent_name,email,phone,status,request_key,receipt_hash,policy_snapshot,created_at,updated_at)
+            SELECT 2,'Vocal Child',birth_date,experience,parent_name,email,phone,status,'vocal-key','vocal-hash',policy_snapshot,created_at,updated_at FROM group_applications WHERE id=1""");self.conn.commit()
+        page=self.client.get('/group-enrollments?offering_id=1')
+        self.assertIn(b'Piano Child',page.data);self.assertNotIn(b'Vocal Child',page.data)
+        page=self.client.get('/group-enrollments?offering_id=2')
+        self.assertIn(b'Vocal Child',page.data);self.assertNotIn(b'Piano Child',page.data)
+        self.assertEqual(self.client.get('/group-enrollments?offering_id=999').status_code,404)
+        self.assertEqual(self.client.get('/group-enrollments?offering_id=bad').status_code,400)
+        center=self.client.get('/group-class-admin')
+        self.assertIn(b'1 applications',center.data)
+        self.assertIn(b'1 need review',center.data)
+
     def test_basic_information_editor_preserves_class_dates(self):
         page=self.client.get('/group-class-admin?edit=1')
         self.assertIn(b'Edit basic information',page.data)

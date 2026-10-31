@@ -40967,8 +40967,8 @@ def inquiries():
                 <div class="actions">
                     <a href="/trial" target="_blank">Trial link</a>
                     <a href="/registration" target="_blank">Registration</a>
-                    <a href="/group-class-admin">Group Classes</a>
-                    <a href="/group-enrollments">Group Enrollments</a>
+                    <a href="/group-class-admin">Group Class Enrollment</a>
+                    <a href="/group-enrollments">Review Group Applications</a>
                     <a class="primary" href="/new_student_intake">Manual Entry</a>
                 </div>
             </div>

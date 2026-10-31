@@ -66,3 +66,9 @@ Group Classes now has visible Edit Basic Information and Edit Dates & Times acti
 The server validates all selected dates and active course/teacher/room choices before writing; native pricing and teacher/room conflict checks are reused. Repeated or stale saves are rejected using a calendar version hash. Existing empty sessions retain their IDs; deselected sessions are cancelled rather than deleted. Classes with applications, past sessions or existing student rosters must use the existing Calendar workflow for changes. Registration is never automatically published by a schedule save.
 
 Teacher and room overlaps in the group date picker are advisory only. A valid plan saves all lessons, then the manager sees a successful-save notice and an amber list of overlap details. Conflict warnings do not block creating or updating empty draft class sessions.
+
+## Manager registration center
+
+Admissions now labels the entry Group Class Enrollment, with a separate Review Group Applications shortcut. The registration center lists all classes with open/draft status, available places, application totals and review counts. Each open class exposes its own parent form link and Copy class link action; draft/unavailable forms are not shareable. The parent directory link is separate and lists all open classes.
+
+New Group Class is available at the top and opens a focused creation form. Manage class opens one class's settings, calendar, image, publication controls and applications. Application lists can be filtered by offering_id, and approval/closing actions retain the selected filter. Existing enrollment and payment behavior is unchanged.

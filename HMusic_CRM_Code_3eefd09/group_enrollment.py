@@ -614,13 +614,20 @@ def register_group_enrollment(app, api):
                         cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,sid))
                     if occupied(cur,oid)>capacity:
                         raise ValueError('Capacity is smaller than the existing calendar roster.')
-                    return redirect('/group-class-admin',code=303)
+                    return redirect('/group-class-admin?class_id='+str(oid),code=303)
         except (ValueError,InvalidOperation) as exc:
             error=str(exc)
         with db() as conn:
             cur=conn.cursor();cur.execute('SELECT id FROM group_offerings ORDER BY id DESC')
             offerings=[get_offering(cur,r[0]) for r in cur.fetchall()]
-            for o in offerings:o['remaining']=max(0,o['capacity']-occupied(cur,o['id']))
+            for o in offerings:
+                o['remaining']=max(0,o['capacity']-occupied(cur,o['id']))
+                cur.execute('SELECT status,COUNT(*) FROM group_applications WHERE offering_id=? GROUP BY status',(o['id'],))
+                o['application_counts']=dict(cur.fetchall())
+                o['application_total']=sum(o['application_counts'].values())
+                o['needs_review']=o['application_counts'].get('review',0)
+                try:valid_sessions(cur,o);o['registration_open']=bool(o['published'])
+                except ValueError:o['registration_open']=False
             cur.execute('''SELECT s.id,s.lesson_date,s.lesson_time,s.duration,s.teacher,s.group_name,s.course_type_name,s.classroom,s.location
                 FROM schedule s LEFT JOIN group_offering_sessions gs ON gs.schedule_id=s.id
                 WHERE s.is_group=1 AND s.lesson_date>=? AND gs.schedule_id IS NULL
@@ -636,11 +643,14 @@ def register_group_enrollment(app, api):
                 if conflict.get('has_conflict'):
                     warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
         editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
-        return page('manage.html',offerings=offerings,choices=choices,editing=editing,saved=saved,warnings=warnings,error=error)
+        selected=next((o for o in offerings if str(o['id'])==request.args.get('class_id')),None) or editing or saved
+        return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
 
     @bp.route('/group-enrollments',methods=['GET','POST'])
     def review():
         owner();error=''
+        filter_id=request.args.get('offering_id',type=int)
+        if request.args.get('offering_id') and not filter_id:abort(400)
         try:
             if request.method=='POST':
                 with db(write=True) as conn:
@@ -656,13 +666,17 @@ def register_group_enrollment(app, api):
                         cur.execute('UPDATE group_applications SET status=?,updated_at=? WHERE id=?',
                                     ('waitlist' if action=='waitlist' else 'cancelled',now(),aid))
                     else:raise ValueError('Unknown action.')
-                return redirect('/group-enrollments',code=303)
+                return redirect('/group-enrollments'+('?offering_id='+str(filter_id) if filter_id else ''),code=303)
         except ValueError as exc:error=str(exc)
         with db() as conn:
-            cur=conn.cursor();cur.execute('''SELECT a.*,o.title FROM group_applications a
-                JOIN group_offerings o ON o.id=a.offering_id ORDER BY a.id DESC LIMIT 500''');applications=rows(cur)
+            cur=conn.cursor();cur.execute('SELECT id,title FROM group_offerings ORDER BY title,id');class_choices=rows(cur)
+            filtered_class=next((o for o in class_choices if o['id']==filter_id),None)
+            if filter_id and not filtered_class:abort(404)
+            query='SELECT a.*,o.title FROM group_applications a JOIN group_offerings o ON o.id=a.offering_id'
+            cur.execute(query+(' WHERE a.offering_id=?' if filter_id else '')+' ORDER BY a.id DESC LIMIT 500',(filter_id,) if filter_id else ())
+            applications=rows(cur)
             for a in applications:a['payment']=payment_status(cur,a)
             cur.execute('SELECT id,name FROM students ORDER BY name');students=rows(cur)
-        return page('review.html',applications=applications,students=students,error=error)
+        return page('review.html',applications=applications,students=students,class_choices=class_choices,filtered_class=filtered_class,error=error)
 
     app.register_blueprint(bp)

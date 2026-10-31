@@ -3,6 +3,7 @@
 <a href="/group-class-admin">Manage classes</a>
 <a href="/invoices">Billing</a>{% endblock %}
 {% block content %}<h1>Group Enrollments</h1>
+<form method="GET" class="card"><label>Class<select name="offering_id"><option value="">All group classes</option>{% for o in class_choices %}<option value="{{ o.id }}" {{ 'selected' if filtered_class and filtered_class.id==o.id else '' }}>{{ o.title }} (#{{ o.id }})</option>{% endfor %}</select></label><button class="secondary">Show applications</button>{% if filtered_class %}<p><a href="/group-class-admin?class_id={{ filtered_class.id }}">Manage {{ filtered_class.title }} ↗</a> · {{ applications|length }} application(s)</p>{% endif %}</form>
 <p class="muted">Review → reserve a place and create an invoice → verify payment → confirm enrollment. Reservations last 48 hours; paid applications keep their place.</p>
 <div class="card scroll">
 <table>
@@ -30,7 +31,7 @@
 <td>
 <details>
 <summary>Review application #{{ a.id }}</summary>
-<p>Date of birth: {{ a.birth_date }}<br>Experience: {{ a.experience or 'Not provided' }}</p>{% if a.inquiry_id %}<a href="/inquiry/{{ a.inquiry_id }}">Intake record</a>{% endif %}
+<p>Date of birth: {{ a.birth_date }}</p>{% if a.inquiry_id %}<a href="/inquiry/{{ a.inquiry_id }}">Intake record</a>{% endif %}
 {% if a.status in ['review','waitlist','reserved'] %}<form method="POST" class="review-form">
 <input type="hidden" name="id" value="{{ a.id }}">{% if not a.invoice_id %}<label>Confirm the correct student profile<select name="student_id" required>
 <option value="">Choose explicitly…</option>
