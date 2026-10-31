@@ -44827,16 +44827,22 @@ def enrollment_detail(enrollment_id):
     for charge in pending_invoice_charges:
         charge_label = "Last-minute cancellation" if charge[1] == "pending_last_min_fee" else "Additional charge"
         charge_description = (charge[3] or charge_label).split(" | Actor:", 1)[0]
+        remove_charge_action = "—"
+        if charge[1] == "pending_extra_charge":
+            remove_charge_action = f'''<form method="POST" action="/remove_enrollment_invoice_charge/{enrollment_id}/{charge[0]}" style="margin:0;" onsubmit="return confirm('Remove this pending charge? It will not be added to an invoice.');">
+                <button type="submit" class="mini-button">Remove charge</button>
+            </form>'''
         pending_charge_rows += f"""
         <tr>
             <td>{escape(str(charge[4] or ''))}</td>
             <td>{escape(charge_label)}</td>
             <td>{escape(charge_description)}</td>
             <td>${hmusic_money(charge[2])}</td>
+            <td>{remove_charge_action}</td>
         </tr>
         """
     if not pending_charge_rows:
-        pending_charge_rows = "<tr><td colspan='4'>No pending invoice add-ons.</td></tr>"
+        pending_charge_rows = "<tr><td colspan='5'>No pending invoice add-ons.</td></tr>"
 
     open_invoice_option = ""
     merge_pending_button = ""
@@ -44852,6 +44858,8 @@ def enrollment_detail(enrollment_id):
     charge_notice = ""
     if request.args.get("charge_added") == "1":
         charge_notice = '<p class="charge-success">Additional charge saved.</p>'
+    elif request.args.get("charge_removed") == "1":
+        charge_notice = '<p class="charge-success" role="status">Charge removed. Pending total updated. The original entry is retained in the ledger.</p>'
     elif request.args.get("charges_merged") == "1":
         charge_notice = '<p class="charge-success">Pending charges merged into the open invoice.</p>'
     elif request.args.get("charge_error") == "invalid":
@@ -45062,6 +45070,7 @@ def enrollment_detail(enrollment_id):
                                     <th>Type</th>
                                     <th>Description</th>
                                     <th>Amount</th>
+                                    <th>Action</th>
                                 </tr>
                                 {pending_charge_rows}
                             </table>
@@ -45288,6 +45297,38 @@ def add_enrollment_invoice_charge(enrollment_id):
     conn.close()
     result = "charges_merged=1" if merged else "charge_added=1"
     return redirect(f"/enrollment/{enrollment_id}?{result}#invoice-addons")
+
+
+@app.route("/remove_enrollment_invoice_charge/<int:enrollment_id>/<int:ledger_id>", methods=["POST"])
+def remove_enrollment_invoice_charge(enrollment_id, ledger_id):
+    if not require_owner():
+        return redirect("/owner_login")
+    ensure_v321_schema()
+    conn = sqlite3.connect("hmusic.db")
+    try:
+        cursor = conn.cursor()
+        # Serialize against invoice creation/merging: an invoiced charge cannot be removed.
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT student_name FROM enrollments WHERE id = ?", (enrollment_id,))
+        enrollment = cursor.fetchone()
+        if not enrollment:
+            return "Enrollment not found", 404
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("""
+        UPDATE student_ledger
+        SET entry_type = 'voided_extra_charge',
+            description = COALESCE(description, '') || ' | Removed by owner at ' || ?,
+            waived_at = ?
+        WHERE id = ? AND student_name = ?
+          AND entry_type = 'pending_extra_charge'
+          AND related_invoice_id IS NULL AND amount > 0
+        """, (now, now, ledger_id, enrollment[0]))
+        if cursor.rowcount != 1:
+            return "Charge is no longer pending, belongs to another student, or was already removed. Reload to review the current bill.", 409
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(f"/enrollment/{enrollment_id}?charge_removed=1#invoice-addons")
 
 
 @app.route("/merge_enrollment_pending_charges/<int:enrollment_id>", methods=["POST"])
