@@ -1,3 +1,4 @@
+import io
 import ast
 import re
 import sqlite3
@@ -60,6 +61,36 @@ class GroupEnrollmentTests(unittest.TestCase):
     def paid(self,aid=1):
         invoice=self.scalar('SELECT invoice_id FROM group_applications WHERE id=?',(aid,))
         self.conn.execute("UPDATE invoices SET status='paid' WHERE id=?",(invoice,));self.conn.commit()
+
+    def image_upload(self, data=None, filename='class.png'):
+        if data is None:
+            from PIL import Image
+            out=io.BytesIO();Image.new('RGB',(80,40),'purple').save(out,format='PNG');data=out.getvalue()
+        return self.client.post('/group-class-admin',data={'action':'image','id':'1','class_image':(io.BytesIO(data),filename)},content_type='multipart/form-data')
+
+    def test_image_upload_draft_privacy_and_public_preview(self):
+        self.assertEqual(self.image_upload().status_code,303)
+        preview=self.client.get('/group-classes/1/apply?preview=1')
+        self.assertIn(b'/group-class-image/1',preview.data)
+        image=self.client.get('/group-class-image/1')
+        self.assertEqual(image.mimetype,'image/jpeg')
+        self.assertEqual(image.headers['X-Content-Type-Options'],'nosniff')
+        with self.client.session_transaction() as ss:ss['user_role']=None
+        self.assertEqual(self.client.get('/group-class-image/1').status_code,404)
+        with self.client.session_transaction() as ss:ss['user_role']='owner'
+        self.publish()
+        with self.client.session_transaction() as ss:ss['user_role']=None
+        self.assertEqual(self.client.get('/group-class-image/1').status_code,200)
+        self.assertIn(b'/group-class-image/1',self.client.get('/group-classes').data)
+        self.assertEqual(self.image_upload().status_code,403)
+
+    def test_invalid_image_does_not_replace_saved_image_or_change_class(self):
+        self.image_upload(); original=self.scalar('SELECT image_data FROM group_offering_images')
+        self.assertIn(b'valid image',self.image_upload(b'<svg onload="alert(1)"></svg>','fake.png').data)
+        self.assertEqual(self.scalar('SELECT image_data FROM group_offering_images'),original)
+        self.assertIn(b'exceeds 4 MB',self.image_upload(b'x'*(4*1024*1024+1)).data)
+        self.assertEqual(self.scalar('SELECT tuition_cents FROM group_offerings'),50000)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),0)
 
     def test_planning_draft_can_be_completed_before_publication(self):
         r=self.create_class(title='Planning',schedule_ids=[])

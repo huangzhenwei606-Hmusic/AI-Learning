@@ -4,6 +4,7 @@
 <div class="grid">
 <section class="card">
 <h2>Your class</h2>
+{% if offering.image_url %}<img class="class-image" src="{{ offering.image_url }}" alt="{{ offering.title }}">{% endif %}
 <p>{{ offering.description }}</p>
 <p>{{ offering.age_range }}</p>{% if offering.sessions %}
 {% set s=offering.sessions[0] %}<p>

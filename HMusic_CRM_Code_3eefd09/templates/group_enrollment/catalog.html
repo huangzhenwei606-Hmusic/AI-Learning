@@ -4,6 +4,7 @@
 <div class="grid">{% for o in offerings %}<article class="card">
 <span class="badge">{{ o.remaining }} places available{% if not o.remaining %} · Waitlist{% endif %}</span>
 <h2>{{ o.title }}</h2>
+{% if o.image_url %}<img class="class-image" src="{{ o.image_url }}" alt="{{ o.title }}">{% endif %}
 <p>{{ o.description }}</p>
 <p>{{ o.age_range }}</p>{% if o.available_sessions %}
 {% set s=o.available_sessions[0] %}<p>

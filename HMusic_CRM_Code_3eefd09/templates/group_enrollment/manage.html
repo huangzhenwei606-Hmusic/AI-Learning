@@ -29,10 +29,15 @@
 <h2>{{ o.title }}</h2>
 <p>{{ o.available_sessions|length }} linked lessons · ${{ o.tuition }} · {{ o.remaining }}/{{ o.capacity }} places remaining</p>
 <p>{{ o.description }}</p>
+{% if o.image_url %}<img class="class-image" src="{{ o.image_url }}" alt="{{ o.title }}">{% endif %}
+<details><summary>{{ 'Replace class image' if o.image_url else 'Upload class image' }}</summary>
+<form method="POST" enctype="multipart/form-data"><input type="hidden" name="action" value="image"><input type="hidden" name="id" value="{{ o.id }}">
+<label>Class image<input required type="file" name="class_image" accept="image/png,image/jpeg,image/webp"></label><p class="muted">PNG, JPEG or WebP · up to 4 MB. Published classes show this image to families immediately after saving.</p><button>Save class image</button></form></details>
+<p><a href="/calendar" target="_blank">Edit dates, teachers &amp; location in Calendar ↗</a></p>
 {% if not o.sessions %}<p class="notice">Dates and course details pending. This draft cannot accept registrations yet.</p>{% endif %}
-<div class="dates">{% for s in o.sessions %}<span class="date">{{ s.lesson_date }} {{ s.lesson_time }} · {{ s.teacher }} · {{ s.status }}</span>{% endfor %}</div>
+<div class="dates">{% for s in o.sessions %}<span class="date">{{ s.lesson_date }} {{ s.lesson_time }} · {{ s.teacher }} · {{ s.status }} · {{ s.location or '' }} {{ s.classroom }} · <a href="/calendar?month={{ s.lesson_date[:7] }}&amp;teacher={{ s.teacher|urlencode }}" target="_blank">Edit in Calendar ↗</a></span>{% endfor %}</div>
 <form method="POST"><input type="hidden" name="action" value="visibility"><input type="hidden" name="id" value="{{ o.id }}"><input type="hidden" name="published" value="{{ 0 if o.published else 1 }}"><p class="toolbar"><button class="secondary">{{ 'Close registration' if o.published else 'Publish registration' }}</button><a href="/group-classes/{{ o.id }}/apply{{ '?preview=1' if not o.published else '' }}" target="_blank">Preview form</a></p></form>
-{% if not o.published %}<details><summary>Edit draft / complete class dates</summary>{{ class_form(o) }}</details>{% endif %}
+{% if not o.published %}<details><summary>Edit class details &amp; policy</summary>{{ class_form(o) }}</details>{% endif %}
 </article>{% endfor %}
 </div>
 <section class="card"><h2>Create a class offer</h2><p>Create the actual lessons in <a href="/calendar">Calendar</a>, including teacher, location, room and course type, then link them here. A planning draft can be saved before those details are finalized.</p>{{ class_form() }}</section>

@@ -4,6 +4,9 @@ Class sessions reference existing calendar lessons so dates and cancellations st
 in sync. All admission writes share a transaction; an application never grants
 credits. The existing invoice settlement remains the only credit-granting path.
 """
+import base64
+import io
+import warnings
 import hashlib
 import json
 import re
@@ -12,7 +15,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
-from flask import Blueprint, abort, redirect, render_template, request, session, url_for
+from PIL import Image, ImageOps, UnidentifiedImageError
+from flask import Response, Blueprint, abort, redirect, render_template, request, session, url_for
 
 ACTIVE = ('review', 'waitlist', 'reserved', 'enrolled')
 
@@ -49,6 +53,7 @@ def ensure_schema(conn):
         receipt_hash TEXT NOT NULL UNIQUE, policy_snapshot TEXT NOT NULL,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_until TEXT,
         student_id INTEGER, enrollment_id INTEGER, invoice_id INTEGER, inquiry_id INTEGER)''',
+        '''CREATE TABLE IF NOT EXISTS group_offering_images (offering_id INTEGER PRIMARY KEY, image_data TEXT NOT NULL, updated_at TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS group_application_limits (bucket TEXT PRIMARY KEY, hits INTEGER NOT NULL)''',
         '''CREATE INDEX IF NOT EXISTS idx_group_apps_offering ON group_applications(offering_id,status)''',
     ):
@@ -70,6 +75,9 @@ def get_offering(cur, oid):
     if item:
         cur.execute('SELECT COUNT(*) FROM group_offering_sessions WHERE offering_id=?',(oid,))
         item['session_count']=cur.fetchone()[0]
+        cur.execute('SELECT updated_at FROM group_offering_images WHERE offering_id=?',(oid,))
+        image=cur.fetchone()
+        item['image_url'] = '/group-class-image/'+str(oid)+'?v='+image[0] if image else ''
         item['sessions'] = get_sessions(cur, oid)
         item['available_sessions'] = [s for s in item['sessions'] if str(s['status']).lower() == 'scheduled']
         item['teachers']=list(dict.fromkeys(s['teacher'] for s in item['sessions']))
@@ -270,6 +278,27 @@ def confirm(cur, aid):
                     (a['student_name'],a['enrollment_id'],now(),a['inquiry_id']))
 
 
+def prepare_class_image(upload):
+    if not upload or not upload.filename:
+        raise ValueError('Choose a PNG, JPEG or WebP image.')
+    data=upload.read(4*1024*1024+1)
+    if len(data)>4*1024*1024:
+        raise ValueError('Image exceeds 4 MB. Choose a smaller file.')
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as source:
+                if source.format not in ('PNG','JPEG','WEBP') or source.width*source.height>20000000:
+                    raise ValueError('Use a PNG, JPEG or WebP image under 20 megapixels.')
+                source.load()
+                image=ImageOps.exif_transpose(source).convert('RGB')
+                image.thumbnail((1600,1600))
+                output=io.BytesIO(); image.save(output,format='JPEG',quality=85)
+                return base64.b64encode(output.getvalue()).decode('ascii')
+    except (UnidentifiedImageError,OSError,Image.DecompressionBombError,Image.DecompressionBombWarning):
+        raise ValueError('This file could not be read as a valid image.')
+
+
 def register_group_enrollment(app, api):
     bp = Blueprint('group_enrollment', __name__, template_folder='templates')
 
@@ -413,6 +442,19 @@ def register_group_enrollment(app, api):
             paid = payment_status(cur,a)
         return page('receipt.html',application=a,offering=o,payment=paid)
 
+    @bp.get('/group-class-image/<int:oid>')
+    def class_image(oid):
+        with db() as conn:
+            cur=conn.cursor();o=get_offering(cur,oid)
+            if not o or (not o['published'] and not api['require_owner']()):abort(404)
+            cur.execute('SELECT image_data FROM group_offering_images WHERE offering_id=?',(oid,))
+            data=cur.fetchone()
+            if not data:abort(404)
+        response=Response(base64.b64decode(data[0]),mimetype='image/jpeg')
+        response.headers['X-Content-Type-Options']='nosniff'
+        response.headers['Cache-Control']='private, no-store'
+        return response
+
     @bp.route('/group-class-admin',methods=['GET','POST'])
     def manage():
         owner()
@@ -421,6 +463,12 @@ def register_group_enrollment(app, api):
             with db(write=request.method=='POST') as conn:
                 cur = conn.cursor()
                 if request.method == 'POST':
+                    if request.form.get('action')=='image':
+                        oid=int(request.form.get('id','0'));lock_offering(cur,oid)
+                        data=prepare_class_image(request.files.get('class_image'))
+                        cur.execute('DELETE FROM group_offering_images WHERE offering_id=?',(oid,))
+                        cur.execute('INSERT INTO group_offering_images(offering_id,image_data,updated_at) VALUES (?,?,?)',(oid,data,now()))
+                        return redirect('/group-class-admin',code=303)
                     if request.form.get('action')=='visibility':
                         if request.form.get('published')=='1':
                             candidate=get_offering(cur,int(request.form['id']))

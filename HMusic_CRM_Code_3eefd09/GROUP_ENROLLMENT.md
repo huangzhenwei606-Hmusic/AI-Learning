@@ -52,3 +52,9 @@
 invoice creation, capacity including concurrent approval, duplicate detection,
 identity matching, bank-processing holds, roster / wallet links and access checks.
 The Render build includes these tests and the existing regression suite.
+
+## Manager editing and class images
+
+Draft details and cancellation/makeup policy can be edited in Group Classes. Dates, teachers and locations remain sourced from Calendar; each linked date has an entry to its calendar month and teacher. Close registration before editing terms. Existing applications retain their submitted policy snapshot and prevent overwriting agreed terms.
+
+Managers can upload or replace a class cover image independently of tuition and enrollment. PNG/JPEG/WebP uploads are limited to 4 MB and 20 megapixels, decoded and re-encoded as JPEG (metadata discarded, max 1600px). Images are stored durably in the CRM database. Draft image access requires owner authentication; published images appear in the catalog and application form. Uploads never publish a draft or create students/invoices.
