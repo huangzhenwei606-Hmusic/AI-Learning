@@ -44691,8 +44691,10 @@ def enrollment_detail(enrollment_id):
     """, (enrollment_id,))
     payment_summary = cursor.fetchone()
 
-    total_paid = payment_summary[0] or 0
-    total_lessons_purchased = payment_summary[1] or 0
+    # PostgreSQL SUM(NUMERIC) returns Decimal; SQLite may return float.
+    # Normalize only these display calculations, without changing stored amounts.
+    total_paid = float(payment_summary[0] or 0)
+    total_lessons_purchased = float(payment_summary[1] or 0)
 
     # Lesson financial summary
     cursor.execute("""
@@ -44706,12 +44708,12 @@ def enrollment_detail(enrollment_id):
     """, (enrollment_id,))
     financial_summary = cursor.fetchone()
 
-    lessons_used = financial_summary[0] or 0
+    lessons_used = float(financial_summary[0] or 0)
     revenue_earned = financial_summary[1] or 0
     teacher_cost = financial_summary[2] or 0
     profit_earned = financial_summary[3] or 0
 
-    package_value = e[18] or 0
+    package_value = float(e[18] or 0)
     outstanding_balance = round(package_value - total_paid, 2)
     utilization = 0
     if total_lessons_purchased:
@@ -44799,10 +44801,10 @@ def enrollment_detail(enrollment_id):
 
     suggested_pricing = get_final_pricing(e[1], e[4], e[3], class_size=e[24], duration_override=e[5])
     suggested_price = suggested_pricing["student_charge_amount"] if suggested_pricing else (e[10] or 0)
-    confirmed_tuition = e[10] or suggested_price
-    confirmed_package_lessons = e[19] or e[21] or 10
+    confirmed_tuition = float(e[10] or suggested_price or 0)
+    confirmed_package_lessons = float(e[19] or e[21] or 10)
     confirmed_package_amount = e[18] or round((confirmed_tuition or 0) * confirmed_package_lessons, 2)
-    tuition_profit = round((confirmed_tuition or 0) - (e[13] or 0), 2)
+    tuition_profit = round(confirmed_tuition - float(e[13] or 0), 2)
     class_size_value = e[24] or (1 if "group" not in (e[2] or "").lower() else "")
 
     invoice_rows = ""
