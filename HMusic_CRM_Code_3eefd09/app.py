@@ -6849,7 +6849,22 @@ def edit_invoice(invoice_id):
         selected_methods = [method for method in method_order if method in request.form.getlist("payment_methods")]
         new_payment_methods = ",".join(selected_methods) or "ach,zelle"
 
-        if new_amount < 0:
+        custom_credit_error = ""
+        if invoice_type in ("custom_invoice", "makeup_invoice"):
+            import math
+            if not math.isfinite(new_amount) or new_amount <= 0:
+                custom_credit_error = "Enter a positive invoice amount."
+            elif not math.isfinite(new_lessons) or new_lessons < 0 or new_lessons > 10000 or new_lessons % 0.5:
+                custom_credit_error = "Credits must be 0 or a positive multiple of 0.5."
+            elif new_lessons > 0:
+                cursor.execute("SELECT e.student_name FROM invoices i LEFT JOIN enrollments e ON e.id=i.enrollment_id WHERE i.id=?", (invoice_id,))
+                credit_course = cursor.fetchone()
+                if not credit_course or credit_course[0] != student_name:
+                    custom_credit_error = "This fee-only invoice has no credit course. Create a new invoice with the correct course to add credits."
+
+        if custom_credit_error:
+            error = custom_credit_error
+        elif new_amount < 0:
             error = "Amount cannot be negative."
         elif new_lessons < 0:
             error = "Lessons cannot be negative."
@@ -6969,7 +6984,7 @@ def edit_invoice(invoice_id):
                             <input name="amount" type="number" min="0" step="0.01" value="{hmusic_money(amount)}" required>
                         </div>
                         <div>
-                            <label>Package / lesson count</label>
+                            <label>{"Credits to add after full payment" if invoice_type in ("custom_invoice", "makeup_invoice") else "Package / lesson count"}</label>
                             <input name="charge_lessons" type="number" min="0" step="0.5" value="{float(charge_lessons or 0):g}" required>
                         </div>
                         <div>
@@ -19365,7 +19380,7 @@ def parent_email_audit():
     """
 
 def invoice_credit_to_grant(cursor, invoice_id, charge_lessons, invoice_type):
-    if invoice_type not in {"package_invoice", "initial_tuition", "renewal_tuition", "auto_renewal"}:
+    if invoice_type not in {"package_invoice", "initial_tuition", "renewal_tuition", "auto_renewal", "custom_invoice", "makeup_invoice"}:
         return 0
     cursor.execute("SELECT COALESCE(credits_applied, 0) FROM invoices WHERE id = ?", (invoice_id,))
     applied = cursor.fetchone()
@@ -21838,6 +21853,12 @@ def parent_admin(parent_id):
                     <button class="button compact" type="submit">Email reminder</button>
                 </form>
             """
+        custom_invoice_action = ""
+        if invoice_type in ("custom_invoice", "makeup_invoice"):
+            if invoice_status_key == "pending_owner_approval":
+                custom_invoice_action = f'<a class="button compact" href="/review_invoice_notice/{invoice_id}">Review draft</a>'
+            elif invoice_status_key in ("unpaid", "payment_failed"):
+                custom_invoice_action = f'<a class="button compact" href="/owner/invoice/{invoice_id}/quick-pay">Payment link / SMS</a>'
         family_invoice_rows += f"""
         <tr>
             <td><a class="invoice-link" href="/parent_invoice/{invoice_id}">#{invoice_id}</a><span>{escape(str(created_at or ''))}</span></td>
@@ -21849,6 +21870,7 @@ def parent_admin(parent_id):
             <td>
                 <div class="row-actions">
                     {reminder_action}
+                    {custom_invoice_action}
                     <a class="button compact" href="/edit_invoice/{invoice_id}">Edit</a>
                     {invoice_delete_action(invoice_id, student_name, amount, invoice_status_key, f"/parent_admin/{parent[0]}")}
                 </div>
@@ -21890,20 +21912,14 @@ def parent_admin(parent_id):
     last_use_label = parent[12] or parent[9] or "No tracked use"
     reset_note = f"Last reset {parent[13]}" if parent[13] else "No tracked password reset"
     active_link_count = sum(1 for row in linked_students if row[3] == 1)
-    if len(active_student_names) == 1:
-        family_billing_actions = f"""
-        <a class="button primary compact" href="/create_package_invoice/{quote(str(active_student_names[0] or ''), safe='')}">Add billing</a>
-        """
-    elif len(active_student_names) > 1:
-        billing_links = ""
+    family_billing_actions = (
+        f'<a class="button primary compact" href="/owner/family/{parent_id}/custom-invoice">Add billing</a>'
+        if active_student_names else ""
+    )
+    if len(active_student_names) > 1:
         for student_name in active_student_names:
             safe_name = escape(str(student_name or 'Student'))
-            billing_links += f"""
-            <a class="button compact" href="/create_package_invoice/{quote(str(student_name or ''), safe='')}">Add {safe_name}</a>
-            """
-        family_billing_actions = billing_links
-    else:
-        family_billing_actions = ""
+            family_billing_actions += f'<a class="button compact" href="/create_package_invoice/{quote(str(student_name or ""), safe="")}">Tuition: {safe_name}</a>'
     family_billing_actions += f'<a class="button primary compact" href="/family_billing/{parent[0]}">Combine payments</a>'
     try:
         unread_count = get_unread_notification_count("parent", str(parent[0]))
@@ -50002,3 +50018,8 @@ register_website_cms(app, lambda: sqlite3.connect('hmusic.db'), require_owner, h
 # Group registration reuses calendar sessions and existing invoice settlement.
 from group_enrollment import register_group_enrollment
 register_group_enrollment(app, globals())
+
+
+# Standalone family charges reuse the existing invoice and credit settlement.
+from custom_invoices import register_custom_invoices
+register_custom_invoices(app, globals())
