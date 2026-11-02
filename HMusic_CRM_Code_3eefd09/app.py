@@ -494,6 +494,17 @@ def inject_csrf_token(response):
     return apply_owner_workspace(response, request, session.get("user_role") == "owner")
 
 
+@app.after_request
+def inject_student_picker(response):
+    if (request.endpoint in {"calendar", "teacher_dashboard", "add_schedule"}
+            and response.status_code == 200 and response.mimetype == "text/html"):
+        html = response.get_data(as_text=True)
+        asset = '<script defer src="/static/student_picker.js?v=1"></script>'
+        html = html.replace("</head>", asset + "</head>", 1) if "</head>" in html else html + asset
+        response.set_data(html)
+    return response
+
+
 def add_column_if_missing(cursor, table, column_name, column_sql):
     cursor.execute(f"PRAGMA table_info({table})")
     columns = [row[1] for row in cursor.fetchall()]
