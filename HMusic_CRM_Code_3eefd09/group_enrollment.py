@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 from PIL import Image, ImageOps, UnidentifiedImageError
 from flask import Response, Blueprint, abort, redirect, render_template, request, session, url_for, jsonify
 
@@ -54,12 +55,42 @@ def ensure_schema(conn):
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_until TEXT,
         student_id INTEGER, enrollment_id INTEGER, invoice_id INTEGER, inquiry_id INTEGER)''',
         '''CREATE TABLE IF NOT EXISTS group_session_teachers (schedule_id INTEGER NOT NULL, teacher_name TEXT NOT NULL, PRIMARY KEY(schedule_id,teacher_name))''',
+        '''CREATE TABLE IF NOT EXISTS group_programs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, summary TEXT NOT NULL, classroom TEXT NOT NULL, materials TEXT NOT NULL, home_practice TEXT NOT NULL, website_url TEXT NOT NULL, images_json TEXT NOT NULL, updated_at TEXT NOT NULL)''',
+        '''CREATE TABLE IF NOT EXISTS group_offering_programs (offering_id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL)''',
+        '''CREATE TABLE IF NOT EXISTS group_program_images (program_id INTEGER NOT NULL, slot INTEGER NOT NULL, image_data TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(program_id,slot))''',
         '''CREATE TABLE IF NOT EXISTS group_offering_images (offering_id INTEGER PRIMARY KEY, image_data TEXT NOT NULL, updated_at TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS group_application_limits (bucket TEXT PRIMARY KEY, hits INTEGER NOT NULL)''',
         '''CREATE INDEX IF NOT EXISTS idx_group_apps_offering ON group_applications(offering_id,status)''',
     ):
         conn.execute(sql)
+    conn.execute("""INSERT INTO group_programs(name,summary,classroom,materials,home_practice,website_url,images_json,updated_at)
+        SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM group_programs)""",
+        ('Circle Piano','A playful introduction to piano through stories, games, listening and making music together.',
+         'Children explore at individual piano stations and take part in guided listening, movement and ensemble activities.',
+         'Visual teaching materials introduce keyboard geography, finger positions, note patterns and musical letter names.',
+         'Worksheets and teacher-guided activities connect classroom learning with short, encouraging practice at home.',
+         'https://www.hmusicandart.com/page.html?id=piano-hero-group-class-enrolling-nowfor-age-56#cp-curriculum',
+         json.dumps(['https://www.hmusicandart.com/assets/circle-piano/classroom-interaction.jpg','https://www.hmusicandart.com/assets/circle-piano/classroom-left-hand.png','https://www.hmusicandart.com/assets/circle-piano/homework-notes.png']),now()))
     conn.commit()
+
+
+def program_details(cur, program_id):
+    cur.execute('SELECT * FROM group_programs WHERE id=?',(program_id,));program=one(cur)
+    if not program:return None
+    images=json.loads(program.pop('images_json'))
+    cur.execute('SELECT slot,updated_at FROM group_program_images WHERE program_id=?',(program_id,))
+    for slot,stamp in cur.fetchall():images[slot]='/group-program-image/'+str(program_id)+'/'+str(slot)+'?v='+stamp
+    program['sections']=[dict(title=title,text=program[key],image=images[i]) for i,(title,key) in enumerate([('The classroom experience','classroom'),('Learning materials','materials'),('Practice at home','home_practice')])]
+    return program
+
+
+def school_website_url(value):
+    value=value.strip()
+    if not value:return ''
+    parts=urlsplit(value)
+    if parts.scheme!='https' or parts.hostname not in ('www.hmusicandart.com','hmusicandart.com') or parts.username or parts.password or parts.port not in (None,443):
+        raise ValueError('Use an HTTPS link on hmusicandart.com.')
+    return value
 
 
 def get_sessions(cur, offering_id):
@@ -87,6 +118,9 @@ def get_offering(cur, oid):
         item['sessions'] = get_sessions(cur, oid)
         item['available_sessions'] = [s for s in item['sessions'] if str(s['status']).lower() == 'scheduled']
         item['teachers']=list(dict.fromkeys(t for s in item['sessions'] for t in s['teachers']))
+        cur.execute('SELECT program_id FROM group_offering_programs WHERE offering_id=?',(oid,));linked=cur.fetchone()
+        item['program_id']=linked[0] if linked else None
+        item['program']=program_details(cur,item['program_id']) if linked else None
         item['tuition'] = f"{item['tuition_cents']/100:.2f}"
     return item
 
@@ -232,7 +266,7 @@ def approve(cur, aid, student_choice, api):
         (o['title'],f"{ss[0]['course_type_name']} · {ss[0]['duration']} minutes · {' & '.join(o['teachers'])}",
          ss[0]['lesson_date'],"Class dates (Pacific time):\n"+"\n".join(
              f"{s['lesson_date']} {s['lesson_time']} · {s['teacher']} · {s['location'] or ''} {s['classroom']}" for s in ss)
-             +"\n"+o['description'],invoice))
+             +"\n"+(o['program']['summary'] if o['program'] else o['description']),invoice))
     cur.execute("UPDATE group_applications SET student_id=?,student_name=?,enrollment_id=?,invoice_id=?,status='reserved',reserved_until=?,updated_at=? WHERE id=?",
         (sid,name,eid,invoice,(datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(),now(),aid))
 
@@ -421,16 +455,16 @@ def register_group_enrollment(app, api):
                 offerings = published_offerings(conn.cursor())
             classes = []
             for o in offerings:
-                program_text = ' '.join([o['title'], o['description']] + [s.get('course_type_name') or '' for s in o['sessions']])
+                program_text = ' '.join([o['program']['name'] if o['program'] else '', o['title'], o['description']] + [s.get('course_type_name') or '' for s in o['sessions']])
                 if not re.search(r'\bcircle[\s-]+piano\b', program_text, re.I):
                     continue
                 sessions = [{
                     'date': s['lesson_date'], 'time': s['lesson_time'],
-                    'duration_minutes': s['duration'], 'teacher': s['teacher'],
+                    'duration_minutes': s['duration'], 'teacher': s.get('teacher_label') or s['teacher'],
                     'location': s.get('location') or '', 'room': s.get('classroom') or '',
                 } for s in o['available_sessions']]
                 classes.append({
-                    'id': o['id'], 'title': o['title'], 'description': o['description'],
+                    'id': o['id'], 'title': o['title'], 'description': o['program']['summary'] if o['program'] else o['description'],
                     'age_range': o['age_range'], 'capacity': o['capacity'],
                     'remaining': o['remaining'], 'tuition_cents': o['tuition_cents'],
                     'currency': 'USD', 'session_count': len(sessions),
@@ -553,6 +587,55 @@ def register_group_enrollment(app, api):
         response.headers['Cache-Control']='private, no-store'
         return response
 
+    @bp.route('/group-program-admin',methods=['GET','POST'])
+    def program_editor():
+        owner();error='';selected_id=request.args.get('id',type=int)
+        try:
+            if request.method=='POST':
+                selected_id=int(request.form.get('id') or 0)
+                name=request.form.get('name','').strip()
+                if not name or len(name)>100:raise ValueError('Enter a program name of up to 100 characters.')
+                values=[name]+[request.form.get(key,'').strip()[:2000] for key in ('summary','classroom','materials','home_practice')]+[school_website_url(request.form.get('website_url',''))]
+                with db(write=True) as conn:
+                    cur=conn.cursor()
+                    cur.execute('SELECT id FROM group_programs WHERE name=? AND id!=?',(name,selected_id))
+                    if cur.fetchone():raise ValueError('A program with this name already exists.')
+                    if selected_id:
+                        if not program_details(cur,selected_id):abort(404)
+                        cur.execute('UPDATE group_programs SET name=?,summary=?,classroom=?,materials=?,home_practice=?,website_url=?,updated_at=? WHERE id=?',tuple(values)+(now(),selected_id))
+                    else:
+                        cur.execute('SELECT id FROM group_programs WHERE name=?',(name,))
+                        if cur.fetchone():raise ValueError('A program with this name already exists.')
+                        cur.execute('INSERT INTO group_programs(name,summary,classroom,materials,home_practice,website_url,images_json,updated_at) VALUES (?,?,?,?,?,?,?,?)',tuple(values)+(json.dumps(['','','']),now()))
+                        selected_id=cur.lastrowid
+                    for slot in range(3):
+                        upload=request.files.get('image_'+str(slot))
+                        if upload and upload.filename:
+                            image=prepare_class_image(upload)
+                            cur.execute('DELETE FROM group_program_images WHERE program_id=? AND slot=?',(selected_id,slot))
+                            cur.execute('INSERT INTO group_program_images(program_id,slot,image_data,updated_at) VALUES (?,?,?,?)',(selected_id,slot,image,now()))
+                return redirect('/group-program-admin?id='+str(selected_id)+'&saved=1',code=303)
+        except (ValueError,InvalidOperation) as exc:error=str(exc)
+        with db() as conn:
+            cur=conn.cursor();cur.execute('SELECT id,name FROM group_programs ORDER BY name');programs=rows(cur)
+            if not selected_id and request.method=='GET' and request.args.get('new')!='1' and programs:selected_id=programs[0]['id']
+            program=program_details(cur,selected_id) if selected_id else None
+            if selected_id and not program:abort(404)
+            cur.execute('SELECT o.title FROM group_offerings o JOIN group_offering_programs p ON p.offering_id=o.id WHERE p.program_id=?',(selected_id or 0,));linked=[x[0] for x in cur.fetchall()]
+        return page('program_editor.html',program=program,programs=programs,linked=linked,error=error,saved=request.args.get('saved')=='1')
+
+    @bp.get('/group-program-image/<int:program_id>/<int:slot>')
+    def program_image(program_id,slot):
+        with db() as conn:
+            cur=conn.cursor()
+            if not api['require_owner']():
+                cur.execute('SELECT 1 FROM group_offering_programs p JOIN group_offerings o ON o.id=p.offering_id WHERE p.program_id=? AND o.published=1',(program_id,))
+                if not cur.fetchone():abort(404)
+            cur.execute('SELECT image_data FROM group_program_images WHERE program_id=? AND slot=?',(program_id,slot));row=cur.fetchone()
+            if not row:abort(404)
+        response=Response(base64.b64decode(row[0]),mimetype='image/jpeg');response.headers['X-Content-Type-Options']='nosniff';response.headers['Cache-Control']='private, no-store'
+        return response
+
     @bp.route('/group-class-admin/<int:oid>/schedule',methods=['GET','POST'])
     def schedule_editor(oid):
         owner();error='';submitted=None
@@ -658,6 +741,8 @@ def register_group_enrollment(app, api):
                         ss.append(r)
                     if ss and (len({(s['course_type_id'],s['duration']) for s in ss})!=1 or not ss[0]['course_type_id']):
                         raise ValueError('All sessions must use the same group course type and duration; each session keeps its actual teacher.')
+                    program_id=int(request.form.get('program_id') or 0)
+                    if program_id and not program_details(cur,program_id):raise ValueError('Choose an existing program.')
                     values=(title,request.form.get('description','')[:3000],request.form.get('age_range','')[:100],policy[:5000],capacity,int(amount*100))
                     if edit_id:
                         oid=edit_id
@@ -667,6 +752,8 @@ def register_group_enrollment(app, api):
                         cur.execute("""INSERT INTO group_offerings(title,description,age_range,policy,capacity,
                             tuition_cents,published,created_at) VALUES (?,?,?,?,?,?,0,?)""",values+(now(),))
                         oid=cur.lastrowid
+                    cur.execute('DELETE FROM group_offering_programs WHERE offering_id=?',(oid,))
+                    if program_id:cur.execute('INSERT INTO group_offering_programs(offering_id,program_id) VALUES (?,?)',(oid,program_id))
                     for sid in selected:
                         cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,sid))
                     if occupied(cur,oid)>capacity:
@@ -675,7 +762,8 @@ def register_group_enrollment(app, api):
         except (ValueError,InvalidOperation) as exc:
             error=str(exc)
         with db() as conn:
-            cur=conn.cursor();cur.execute('SELECT id FROM group_offerings ORDER BY id DESC')
+            cur=conn.cursor();cur.execute('SELECT id,name FROM group_programs ORDER BY name');programs=rows(cur)
+            cur.execute('SELECT id FROM group_offerings ORDER BY id DESC')
             offerings=[get_offering(cur,r[0]) for r in cur.fetchall()]
             for o in offerings:
                 o['remaining']=max(0,o['capacity']-occupied(cur,o['id']))
@@ -702,7 +790,7 @@ def register_group_enrollment(app, api):
                         warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
         editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
         selected=next((o for o in offerings if str(o['id'])==request.args.get('class_id')),None) or editing or saved
-        return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
+        return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,programs=programs,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
 
     @bp.route('/group-enrollments',methods=['GET','POST'])
     def review():

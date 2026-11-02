@@ -1,12 +1,13 @@
 {% extends 'group_enrollment/base.html' %}
 {% block content %}<h1>{{ offering.title }}</h1>
 {% if not offering.published %}<p class="notice">Manager draft preview. Families cannot apply until registration is published.</p>{% endif %}
+{% include 'group_enrollment/program_intro.html' %}
 <div class="grid">
 <section class="card">
 <h2>Your class</h2>
 {% if offering.image_url %}<img class="class-image" src="{{ offering.image_url }}" alt="{{ offering.title }}">{% endif %}
-<p>{{ offering.description }}</p>
-<p>{{ offering.age_range }}</p>{% if offering.sessions %}
+{% if not offering.program %}<p>{{ offering.description }}</p>{% endif %}
+<p>{{ offering.age_range }} · Up to {{ offering.capacity }} students</p>{% if offering.sessions %}
 {% set s=offering.sessions[0] %}<p>
 <b>{{ offering.teachers|join(' & ') }}</b>
 <br>{{ s.location or '' }} {{ s.classroom }} · {{ s.duration }} minutes per lesson</p>{% endif %}<p class="price">${{ offering.tuition }} <small>/ {{ offering.available_sessions|length }} lessons</small>

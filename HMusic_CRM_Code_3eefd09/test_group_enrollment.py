@@ -116,6 +116,51 @@ class GroupEnrollmentTests(unittest.TestCase):
         if version is None:version=ge.schedule_version(ge.get_offering(self.conn.cursor(),1))
         return self.client.post('/group-class-admin/1/schedule',data={'sessions':json.dumps(plan),'version':version})
 
+    def test_shared_curriculum_uses_live_class_facts_and_is_reusable(self):
+        pid=self.scalar("SELECT id FROM group_programs WHERE name='Circle Piano'")
+        self.assertEqual(self.create_class(offering_id='1',program_id=str(pid),description='OLD $999 99 students').status_code,303)
+        self.assertEqual(self.scalar('SELECT program_id FROM group_offering_programs WHERE offering_id=1'),pid)
+        page=self.client.get('/group-classes/1/apply?preview=1')
+        self.assertIn(b'Learning materials',page.data)
+        self.assertIn(b'Learn More on Our Website',page.data)
+        self.assertIn(b'$500.00',page.data)
+        self.assertIn(b'Up to 2 students',page.data)
+        self.assertNotIn(b'OLD $999',page.data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        response=self.client.post('/group-program-admin',data=dict(id=pid,name='Circle Piano updated',summary='Shared summary',classroom='Class activities',materials='Visual materials',home_practice='Home activities',website_url='https://www.hmusicandart.com/page.html?id=example'))
+        self.assertEqual(response.status_code,303)
+        self.assertIn(b'Shared summary',self.client.get('/group-classes/1/apply?preview=1').data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_programs'),1)
+        self.assertEqual(self.scalar('SELECT tuition_cents FROM group_offerings'),50000)
+        self.publish()
+        catalog=self.client.get('/api/website/group-classes').get_json()
+        self.assertEqual(catalog['classes'][0]['description'],'Shared summary')
+        self.assertEqual(catalog['classes'][0]['tuition_cents'],50000)
+
+    def test_program_upload_private_until_linked_class_is_published(self):
+        from PIL import Image
+        pid=self.scalar('SELECT id FROM group_programs LIMIT 1')
+        data=io.BytesIO();Image.new('RGB',(20,20),'blue').save(data,'PNG');data.seek(0)
+        response=self.client.post('/group-program-admin',data={'id':str(pid),'name':'Circle Piano','summary':'Hello','image_0':(data,'class.png')},content_type='multipart/form-data')
+        self.assertEqual(response.status_code,303)
+        self.assertEqual(self.client.get('/group-program-image/1/0').status_code,200)
+        with self.client.session_transaction() as sess:sess.clear()
+        self.assertEqual(self.client.get('/group-program-image/1/0').status_code,404)
+        self.assertEqual(self.client.post('/group-program-admin',data={'name':'bad'}).status_code,403)
+        with self.client.session_transaction() as sess:sess['user_role']='owner'
+        self.create_class(offering_id='1',program_id=str(pid));self.publish()
+        with self.client.session_transaction() as sess:sess.clear()
+        image=self.client.get('/group-program-image/1/0')
+        self.assertEqual(image.status_code,200);self.assertEqual(image.mimetype,'image/jpeg')
+
+    def test_curriculum_rejects_external_or_unsafe_links_and_bad_program(self):
+        for url in ('javascript:alert(1)','https://evil.test/a','https://hmusicandart.com.evil.test/a'):
+            response=self.client.post('/group-program-admin',data={'name':'Circle Piano','id':'1','website_url':url})
+            self.assertIn(b'HTTPS link on hmusicandart.com',response.data)
+        response=self.create_class(offering_id='1',program_id='999')
+        self.assertIn(b'Choose an existing program',response.data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_programs'),0)
+
     def test_coteachers_share_one_lesson_and_roundtrip_without_duplicate_credits(self):
         plan=self.schedule_plan()
         plan[0]['teachers']=['Teacher One','Teacher Two','Teacher Two']
