@@ -41,6 +41,9 @@ def ensure_schema(cursor):
         amount_cents INTEGER NOT NULL, course_name TEXT, teacher_name TEXT,
         UNIQUE(family_payment_id, allocation_id)
     )""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS family_payment_archive (
+        batch_id INTEGER PRIMARY KEY, archived_at TEXT NOT NULL, archived_by TEXT NOT NULL
+    )""")
     cursor.execute("CREATE INDEX IF NOT EXISTS family_payment_allocation_idx ON family_payment_items(allocation_id)")
     cursor.execute('''CREATE TABLE IF NOT EXISTS family_payment_links (
         token_hash TEXT PRIMARY KEY, batch_id INTEGER NOT NULL, expires_at INTEGER NOT NULL,
@@ -184,13 +187,56 @@ def release_batch(cursor, batch_id, api):
     cursor.execute("UPDATE family_payments SET status=status WHERE id=?", (batch_id,))
     cursor.execute("SELECT status FROM family_payments WHERE id=?", (batch_id,))
     row = cursor.fetchone()
-    if not row or row[0] in ('paid','submitted'):
+    if not row or row[0] in ('paid','submitted','processing','checkout_starting'):
         raise FamilyPaymentError('A settled payment cannot be cancelled.')
     cursor.execute("UPDATE family_payments SET status='cancelled' WHERE id=?", (batch_id,))
+    cursor.execute('UPDATE family_payment_links SET expires_at=0 WHERE batch_id=?', (batch_id,))
     cursor.execute('SELECT allocation_id,invoice_id FROM family_payment_items WHERE family_payment_id=?',(batch_id,))
     for aid,iid in cursor.fetchall():
         cursor.execute("UPDATE invoice_allocations SET status='unpaid',lock_token=NULL,locked_at=NULL WHERE id=? AND lock_token=?",(aid,'family:'+str(batch_id)))
         api['refresh_invoice_status_from_allocations'](cursor,iid)
+
+
+def cancel_unpaid_batch(cursor, batch_id, api):
+    """Caller holds the batch lock. Expire any unpaid checkout before unlocking invoices."""
+    cursor.execute('UPDATE family_payments SET status=status WHERE id=?', (batch_id,))
+    cursor.execute('SELECT parent_id,method,status,provider_id,total_cents FROM family_payments WHERE id=?', (batch_id,))
+    batch = cursor.fetchone()
+    if not batch:
+        raise FamilyPaymentError('Combined bill not found.')
+    parent_id, method, status, provider_id, total = batch
+    if status == 'cancelled':
+        return
+    if status in ('paid','submitted','processing','checkout_starting'):
+        raise FamilyPaymentError('This bill is paid or payment may be in progress. Check payment status before cancelling; no invoices were released.')
+    cursor.execute("""SELECT 1 FROM family_payment_items fi
+        JOIN invoice_allocations ia ON ia.id=fi.allocation_id
+        JOIN invoices i ON i.id=fi.invoice_id
+        WHERE fi.family_payment_id=? AND (ia.status IN ('paid','processing') OR i.status='paid') LIMIT 1""", (batch_id,))
+    if cursor.fetchone():
+        raise FamilyPaymentError('An invoice payment is paid or processing. Check payment status before cancelling.')
+    if method == 'Stripe ACH' and provider_id:
+        if not api['configure_stripe']():
+            raise FamilyPaymentError('Stripe status cannot be verified. No invoices were released.')
+        provider = api['stripe'].checkout.Session
+        checkout = provider.retrieve(provider_id)
+        metadata = checkout.get('metadata') or {}
+        if (checkout.get('id') != provider_id or str(metadata.get('family_payment_id')) != str(batch_id)
+                or str(metadata.get('parent_id')) != str(parent_id)
+                or checkout.get('amount_total') != total or checkout.get('currency') != 'usd'):
+            raise FamilyPaymentError('Stripe bill identity or amount could not be verified. Check payment status first.')
+        if checkout.get('payment_status') != 'unpaid' or checkout.get('payment_intent'):
+            raise FamilyPaymentError('Stripe may have received this payment. Check payment status before cancelling.')
+        if checkout.get('status') == 'open':
+            checkout = provider.expire(provider_id)
+        if (checkout.get('id') != provider_id or checkout.get('status') != 'expired'
+                or checkout.get('payment_status') != 'unpaid' or checkout.get('payment_intent')):
+            raise FamilyPaymentError('The online checkout could not be closed safely. No invoices were released.')
+    elif method in ('Stripe ACH','Square') and (provider_id or status != 'creating'):
+        raise FamilyPaymentError('Online checkout may be in progress. Check provider records before cancelling.')
+    elif method not in ('Stripe ACH','Square','Zelle','Check','Cash'):
+        raise FamilyPaymentError('This payment method needs review before cancelling.')
+    release_batch(cursor, batch_id, api)
 
 
 def install_family_billing(app, api):
@@ -390,6 +436,37 @@ def install_family_billing(app, api):
                 <p>Previewing does not send a message. New payment links last up to 7 days; an existing online checkout may expire sooner. Accepted means provider submission, not confirmed phone delivery.</p><a href="/family_payment/{batch_id}">Back to combined bill</a>''')
         finally:conn.close()
 
+    @app.route('/owner/family_payment/<int:batch_id>/manage', methods=['POST'])
+    def manage_family_payment(batch_id):
+        if not api['require_owner']():
+            return error('Only the owner can cancel or archive combined bills.',403)
+        conn=connect();cur=conn.cursor()
+        try:
+            cur.execute('BEGIN IMMEDIATE')
+            action=request.form.get('action')
+            if action == 'cancel':
+                cancel_unpaid_batch(cur,batch_id,api)
+            elif action in ('archive','restore'):
+                cur.execute('UPDATE family_payments SET status=status WHERE id=?',(batch_id,))
+                batch=load(cur,batch_id)
+                if action == 'archive':
+                    if batch[3] not in ('paid','cancelled'):
+                        raise FamilyPaymentError('Only paid or cancelled bills can be archived. Cancel an unpaid bill first.')
+                    cur.execute('INSERT INTO family_payment_archive(batch_id,archived_at,archived_by) VALUES (?,?,?) ON CONFLICT(batch_id) DO NOTHING',
+                                (batch_id,datetime.now(ZoneInfo('America/Los_Angeles')).isoformat(),str(session.get('owner_id') or 'owner')))
+                else:
+                    cur.execute('DELETE FROM family_payment_archive WHERE batch_id=?',(batch_id,))
+            else:
+                raise FamilyPaymentError('Unknown action.')
+            conn.commit()
+            return redirect('/invoices?combined_notice='+action+('#combined-bills'))
+        except FamilyPaymentError as exc:
+            conn.rollback();return error(exc)
+        except Exception:
+            conn.rollback();app.logger.exception('Combined bill management needs review for %s',batch_id)
+            return error('Payment provider status could not be verified. Nothing was cancelled; retry status checking before trying again.',503)
+        finally:conn.close()
+
     @app.route('/f/<token>')
     def family_guest_payment(token):
         conn=connect()
@@ -457,7 +534,7 @@ def install_family_billing(app, api):
                 elif action == 'cancel':
                     if not api['require_owner']() or batch[2] not in ('Zelle','Check','Cash') or batch[3] == 'paid':
                         raise FamilyPaymentError('Only an unreceived manual payment can be cancelled by the owner.')
-                    release_batch(cur,batch_id,api)
+                    cancel_unpaid_batch(cur,batch_id,api)
                 else: raise FamilyPaymentError('Unknown action.')
                 conn.commit(); return redirect(f'/family_payment/{batch_id}')
             cur.execute('SELECT invoice_id,student_name,course_name,teacher_name,lessons,amount_cents FROM family_payment_items WHERE family_payment_id=? ORDER BY id',(batch_id,))
