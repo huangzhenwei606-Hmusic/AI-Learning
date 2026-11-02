@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from PIL import Image, ImageOps, UnidentifiedImageError
-from flask import Response, Blueprint, abort, redirect, render_template, request, session, url_for
+from flask import Response, Blueprint, abort, redirect, render_template, request, session, url_for, jsonify
 
 ACTIVE = ('review', 'waitlist', 'reserved', 'enrolled')
 
@@ -386,15 +386,56 @@ def register_group_enrollment(app, api):
             return redirect('/group-enrollments#application-'+str(application[0]),code=303)
         return None
 
+    def published_offerings(cur):
+        # Match the existing parent catalog: unpublished, cancelled or started
+        # packages must not appear as available on the public school website.
+        cur.execute('SELECT id FROM group_offerings WHERE published=1 ORDER BY id DESC')
+        offerings = [get_offering(cur, r[0]) for r in cur.fetchall()]
+        offerings = [o for o in offerings if o['available_sessions'] and len(o['available_sessions'])==o['session_count'] and o['sessions'][0]['lesson_date']+'T'+o['sessions'][0]['lesson_time']+':00'>now()]
+        for o in offerings:
+            o['remaining'] = max(0,o['capacity']-occupied(cur,o['id']))
+        return offerings
+
+    @bp.get('/api/website/group-classes')
+    def website_group_catalog():
+        # This endpoint contains only public class information. Never return
+        # application records, roster names, contacts or billing identifiers.
+        program = request.args.get('program', 'circle-piano')
+        if program != 'circle-piano':
+            result = jsonify(error='Unknown program.')
+            result.status_code = 400
+        else:
+            with db() as conn:
+                offerings = published_offerings(conn.cursor())
+            classes = []
+            for o in offerings:
+                program_text = ' '.join([o['title'], o['description']] + [s.get('course_type_name') or '' for s in o['sessions']])
+                if not re.search(r'\bcircle[\s-]+piano\b', program_text, re.I):
+                    continue
+                sessions = [{
+                    'date': s['lesson_date'], 'time': s['lesson_time'],
+                    'duration_minutes': s['duration'], 'teacher': s['teacher'],
+                    'location': s.get('location') or '', 'room': s.get('classroom') or '',
+                } for s in o['available_sessions']]
+                classes.append({
+                    'id': o['id'], 'title': o['title'], 'description': o['description'],
+                    'age_range': o['age_range'], 'capacity': o['capacity'],
+                    'remaining': o['remaining'], 'tuition_cents': o['tuition_cents'],
+                    'currency': 'USD', 'session_count': len(sessions),
+                    'teachers': o['teachers'], 'sessions': sessions,
+                    'apply_path': url_for('group_enrollment.apply', oid=o['id']),
+                })
+            result = jsonify(program='circle-piano', timezone='America/Los_Angeles', classes=classes)
+        result.headers['Access-Control-Allow-Origin'] = '*'
+        result.headers['Access-Control-Allow-Methods'] = 'GET'
+        result.headers['Cache-Control'] = 'no-store'
+        return result
+
     @bp.route('/group-classes')
     def catalog():
         with db() as conn:
             cur = conn.cursor()
-            cur.execute('SELECT id FROM group_offerings WHERE published=1 ORDER BY id DESC')
-            offerings = [get_offering(cur, r[0]) for r in cur.fetchall()]
-            offerings = [o for o in offerings if o['available_sessions'] and len(o['available_sessions'])==o['session_count'] and o['sessions'][0]['lesson_date']+'T'+o['sessions'][0]['lesson_time']+':00'>now()]
-            for o in offerings:
-                o['remaining'] = max(0,o['capacity']-occupied(cur,o['id']))
+            offerings = published_offerings(cur)
         return page('catalog.html', offerings=offerings)
 
     @bp.route('/group-classes/<int:oid>/apply', methods=['GET','POST'])
