@@ -148,7 +148,7 @@ class AttendanceCreditsTest(unittest.TestCase):
                          maybe_handle_enrollment_renewal=lambda *args:[],
                          hmusic_policy_status_label=lambda s:s, app=SimpleNamespace(logger=Mock()))
             tree = ast.parse(Path(__file__).with_name('app.py').read_text())
-            for name in ('hmusic_attendance_enrollment','apply_lesson_status','teacher_safe_lesson_status_result','api_teacher_lesson_status'):
+            for name in ('hmusic_schedule_teacher_matches','hmusic_attendance_enrollment','apply_lesson_status','teacher_safe_lesson_status_result','api_teacher_lesson_status'):
                 node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
                 node.decorator_list=[]
                 exec(compile(ast.Module(body=[node],type_ignores=[]),'<private-attendance>','exec'),scope)
