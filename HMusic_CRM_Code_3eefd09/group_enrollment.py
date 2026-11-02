@@ -53,6 +53,7 @@ def ensure_schema(conn):
         receipt_hash TEXT NOT NULL UNIQUE, policy_snapshot TEXT NOT NULL,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_until TEXT,
         student_id INTEGER, enrollment_id INTEGER, invoice_id INTEGER, inquiry_id INTEGER)''',
+        '''CREATE TABLE IF NOT EXISTS group_session_teachers (schedule_id INTEGER NOT NULL, teacher_name TEXT NOT NULL, PRIMARY KEY(schedule_id,teacher_name))''',
         '''CREATE TABLE IF NOT EXISTS group_offering_images (offering_id INTEGER PRIMARY KEY, image_data TEXT NOT NULL, updated_at TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS group_application_limits (bucket TEXT PRIMARY KEY, hits INTEGER NOT NULL)''',
         '''CREATE INDEX IF NOT EXISTS idx_group_apps_offering ON group_applications(offering_id,status)''',
@@ -66,7 +67,12 @@ def get_sessions(cur, offering_id):
         s.course_type_id,s.course_type_name,s.status,s.group_name,s.room_id,s.location_id
         FROM group_offering_sessions gs JOIN schedule s ON s.id=gs.schedule_id
         WHERE gs.offering_id=? ORDER BY s.lesson_date,s.lesson_time,s.id''', (offering_id,))
-    return rows(cur)
+    lessons=rows(cur)
+    for lesson in lessons:
+        cur.execute('SELECT teacher_name FROM group_session_teachers WHERE schedule_id=? ORDER BY teacher_name',(lesson['id'],))
+        lesson['teachers']=list(dict.fromkeys([lesson['teacher']]+[r[0] for r in cur.fetchall()]))
+        lesson['teacher_label']=' & '.join(lesson['teachers'])
+    return lessons
 
 
 def get_offering(cur, oid):
@@ -80,7 +86,7 @@ def get_offering(cur, oid):
         item['image_url'] = '/group-class-image/'+str(oid)+'?v='+image[0] if image else ''
         item['sessions'] = get_sessions(cur, oid)
         item['available_sessions'] = [s for s in item['sessions'] if str(s['status']).lower() == 'scheduled']
-        item['teachers']=list(dict.fromkeys(s['teacher'] for s in item['sessions']))
+        item['teachers']=list(dict.fromkeys(t for s in item['sessions'] for t in s['teachers']))
         item['tuition'] = f"{item['tuition_cents']/100:.2f}"
     return item
 
@@ -309,8 +315,14 @@ def validate_schedule_plan(cur, oid, data):
         if day in dates or (sid and sid in ids):raise ValueError('Select each class date only once.')
         if sid and sid not in existing:raise ValueError('A lesson does not belong to this class.')
         dates.add(day);ids.add(sid)
-        cur.execute('SELECT teacher_name FROM teachers WHERE teacher_name=? AND active=1',(teacher,))
-        if not cur.fetchone():raise ValueError('Choose an active teacher.')
+        names=item.get('teachers',[teacher])
+        if not isinstance(names,list) or not 1<=len(names)<=20 or any(not isinstance(t,str) or not t.strip() for t in names):
+            raise ValueError('Choose at least one active teacher for each date.')
+        names=list(dict.fromkeys(t.strip() for t in names))
+        teacher=names[0]
+        for name in names:
+            cur.execute('SELECT teacher_name FROM teachers WHERE teacher_name=? AND active=1',(name,))
+            if not cur.fetchone():raise ValueError('Choose an active teacher.')
         cur.execute('SELECT id,name,duration FROM course_types WHERE id=? AND is_group=1 AND active=1',(course_id,))
         course=cur.fetchone()
         if not course or not 1<=int(course[2] or 0)<=240:raise ValueError('Choose an active group course with a valid duration.')
@@ -318,7 +330,7 @@ def validate_schedule_plan(cur, oid, data):
             WHERE r.id=? AND r.active=1 AND l.active=1""",(room_id,));room=cur.fetchone()
         if not room:raise ValueError('Choose an active location and room.')
         if moment.hour*60+moment.minute+int(course[2])>1440:raise ValueError('A class must finish before midnight.')
-        plan.append(dict(id=sid,date=day,time=time,teacher=teacher,room_id=room_id,classroom=room[0],location_id=room[1],location=room[2],course_id=course_id,course_name=course[1],duration=int(course[2])))
+        plan.append(dict(id=sid,date=day,time=time,teacher=teacher,teachers=names,room_id=room_id,classroom=room[0],location_id=room[1],location=room[2],course_id=course_id,course_name=course[1],duration=int(course[2])))
     if len({(x['course_id'],x['duration']) for x in plan})!=1:raise ValueError('Use the same course and duration for this class package.')
     return offering,plan
 
@@ -576,18 +588,22 @@ def register_group_enrollment(app, api):
                         else:
                             fields.update(status='scheduled',schedule_type='one_time',notes='Group offering #'+str(oid)+'; enrollment pending.')
                             cur.execute('INSERT INTO schedule('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+')',tuple(fields.values()))
-                            cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,cur.lastrowid))
+                            item['id']=cur.lastrowid
+                            cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,item['id']))
+                        cur.execute('DELETE FROM group_session_teachers WHERE schedule_id=?',(item['id'],))
+                        for name in item['teachers'][1:]:
+                            cur.execute('INSERT INTO group_session_teachers(schedule_id,teacher_name) VALUES (?,?)',(item['id'],name))
                 session['group_schedule_saved_id']=oid
                 return redirect('/group-class-admin',code=303)
         except (ValueError,TypeError) as exc:error=str(exc)
         with db() as conn:
             cur=conn.cursor();o=get_offering(cur,oid)
             if not o:abort(404)
-            cur.execute('SELECT teacher_name FROM teachers WHERE active=1 ORDER BY teacher_name');teachers=[r[0] for r in cur.fetchall()]
+            cur.execute('SELECT teacher_name FROM teachers WHERE active=1 ORDER BY teacher_name');teachers=list(dict.fromkeys(r[0] for r in cur.fetchall()))
             cur.execute('SELECT id,name,duration FROM course_types WHERE is_group=1 AND active=1 ORDER BY duration,name');courses=rows(cur)
             cur.execute("""SELECT r.id,r.room_name,l.location_name FROM studio_rooms r JOIN studio_locations l ON l.id=r.location_id
                 WHERE r.active=1 AND l.active=1 ORDER BY l.location_name,r.room_name""");rooms=rows(cur)
-        initial=[dict(id=x['id'],date=x['lesson_date'],time=x['lesson_time'],teacher=x['teacher'],room_id=x['room_id'],course_id=x['course_type_id']) for x in o['sessions']]
+        initial=[dict(id=x['id'],date=x['lesson_date'],time=x['lesson_time'],teacher=x['teacher'],teachers=x['teachers'],room_id=x['room_id'],course_id=x['course_type_id']) for x in o['sessions']]
         return page('schedule.html',offering=o,initial=submitted if isinstance(submitted,list) else initial,teachers=teachers,courses=courses,rooms=rooms,version=schedule_version(o),error=error)
 
     @bp.route('/group-class-admin',methods=['GET','POST'])
@@ -680,9 +696,10 @@ def register_group_enrollment(app, api):
         warnings=[]
         if saved:
             for lesson in saved['sessions']:
-                conflict=api['schedule_has_conflict'](lesson['teacher'],lesson['classroom'],lesson['lesson_date'],lesson['lesson_time'],exclude_schedule_id=lesson['id'],duration=lesson['duration'],room_id=lesson['room_id'],location_id=lesson['location_id'],location=lesson['location'])
-                if conflict.get('has_conflict'):
-                    warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
+                for teaching_name in lesson['teachers']:
+                    conflict=api['schedule_has_conflict'](teaching_name,lesson['classroom'],lesson['lesson_date'],lesson['lesson_time'],exclude_schedule_id=lesson['id'],duration=lesson['duration'],room_id=lesson['room_id'],location_id=lesson['location_id'],location=lesson['location'])
+                    if conflict.get('has_conflict'):
+                        warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
         editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
         selected=next((o for o in offerings if str(o['id'])==request.args.get('class_id')),None) or editing or saved
         return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)

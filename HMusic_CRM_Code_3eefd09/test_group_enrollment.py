@@ -116,6 +116,35 @@ class GroupEnrollmentTests(unittest.TestCase):
         if version is None:version=ge.schedule_version(ge.get_offering(self.conn.cursor(),1))
         return self.client.post('/group-class-admin/1/schedule',data={'sessions':json.dumps(plan),'version':version})
 
+    def test_coteachers_share_one_lesson_and_roundtrip_without_duplicate_credits(self):
+        plan=self.schedule_plan()
+        plan[0]['teachers']=['Teacher One','Teacher Two','Teacher Two']
+        self.assertEqual(self.save_calendar(plan).status_code,303)
+        offering=ge.get_offering(self.conn.cursor(),1)
+        self.assertEqual(offering['sessions'][0]['teachers'],['Teacher One','Teacher Two'])
+        self.assertEqual(offering['session_count'],2)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM enrollments'),0)
+        ids=[x['id'] for x in offering['sessions']]
+        for item,sid in zip(plan,ids):item['id']=sid
+        self.assertEqual(self.save_calendar(plan).status_code,303)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+        plan[0]['teachers']=['Teacher Two']
+        self.assertEqual(self.save_calendar(plan).status_code,303)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_session_teachers WHERE schedule_id=?',(ids[0],)),0)
+        self.assertEqual(self.scalar('SELECT teacher FROM schedule WHERE id=?',(ids[0],)),'Teacher Two')
+        self.publish()
+        page=self.client.get('/group-classes/1/apply')
+        self.assertIn(b'Teacher Two',page.data)
+
+    def test_invalid_secondary_teacher_rolls_back_calendar(self):
+        for names in ([],['Teacher One','Inactive Teacher'],['Teacher One','Missing'], 'Teacher One'):
+            plan=self.schedule_plan();plan[0]['teachers']=names
+            response=self.save_calendar(plan)
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_session_teachers'),0)
+            self.assertEqual(self.scalar('SELECT COUNT(*) FROM schedule'),3)
+
     def test_date_picker_saves_empty_calendar_sessions_and_rotating_teachers(self):
         self.conn.execute('DELETE FROM group_offering_sessions');self.conn.commit()
         page=self.client.get('/group-class-admin/1/schedule')

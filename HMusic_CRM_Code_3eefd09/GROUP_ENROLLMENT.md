@@ -72,3 +72,9 @@ Teacher and room overlaps in the group date picker are advisory only. A valid pl
 Admissions now labels the entry Group Class Enrollment, with a separate Review Group Applications shortcut. The registration center lists all classes with open/draft status, available places, application totals and review counts. Each open class exposes its own parent form link and Copy class link action; draft/unavailable forms are not shareable. The parent directory link is separate and lists all open classes.
 
 New Group Class is available at the top and opens a focused creation form. Manage class opens one class's settings, calendar, image, publication controls and applications. Application lists can be filtered by offering_id, and approval/closing actions retain the selected filter. Existing enrollment and payment behavior is unchanged.
+
+## Co-teaching
+
+The draft date editor has teacher checkboxes in bulk defaults and on each date. Selecting several teachers associates them with one native schedule row through `group_session_teachers`; the primary teacher stays in `schedule.teacher`. Reopening restores selections; changing selections removes obsolete associations. The offering, parent form and owner calendar display all assigned teachers. Each assigned teacher's calendar includes the shared lesson once and existing attendance/note permissions still apply. Teacher conflicts include secondary assignments and remain advisory in this editor. No extra student, invoice, enrollment or credit deduction is created per teacher.
+
+This change associates co-teachers; payroll rates and settlement continue to use the native primary teacher fields. It does not introduce separate co-teacher wage allocation. Existing rostered/published-class edit restrictions still apply.

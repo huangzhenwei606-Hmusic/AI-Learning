@@ -8459,7 +8459,7 @@ def calendar():
     params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
 
     if selected_teacher:
-        where_clauses.append("s.teacher = ?")
+        where_clauses.append("? IN (SELECT s.teacher UNION SELECT gt.teacher_name FROM group_session_teachers gt WHERE gt.schedule_id=s.id)")
         params.append(selected_teacher)
 
     if selected_student:
@@ -8518,6 +8518,9 @@ def calendar():
     """, params)
 
     schedules = cursor.fetchall()
+    calendar_teacher_labels={}
+    cursor.execute('SELECT gt.schedule_id,gt.teacher_name FROM group_session_teachers gt JOIN schedule s ON s.id=gt.schedule_id WHERE s.lesson_date BETWEEN ? AND ? ORDER BY gt.teacher_name',(month_start.strftime('%Y-%m-%d'),month_end.strftime('%Y-%m-%d')))
+    for sid,name in cursor.fetchall():calendar_teacher_labels.setdefault(sid,[]).append(name)
 
     slot_params = [month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")]
     slot_filter = ""
@@ -8788,7 +8791,8 @@ def calendar():
                 early_cancel_class = " ev-early-cancel" if early_cancel else ""
                 cancel_result = '<span class="ev-cancel-result">No credit deducted · No fee</span>' if early_cancel else ""
                 event_line = f"{compact_location_room(event[17] if len(event) > 17 else '', event[5])} · {event[7] or course_name or 'Lesson'}"
-                teacher_line = f'<span class="ev-teacher">with {escape(str(event[4]).strip())}</span>' if event[4] and str(event[4]).strip() else ""
+                teacher_label = ' & '.join(dict.fromkeys([str(event[4] or '').strip()]+calendar_teacher_labels.get(event[0],[])))
+                teacher_line = f'<span class="ev-teacher">with {escape(teacher_label)}</span>' if teacher_label else ""
                 event_cards += f"""
                 <div class="ev{early_cancel_class}" draggable="true" style="{course_style}" onclick="ownerCalendarEventClick(event, this)"
                      data-id="{event[0]}" data-date="{escape(str(event[1] or ''))}"
@@ -13274,7 +13278,7 @@ def teacher_dashboard():
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON l.id = s.location_id
-    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
+    WHERE LOWER(TRIM(?)) IN (SELECT LOWER(TRIM(COALESCE(s.teacher,''))) UNION SELECT LOWER(TRIM(gt.teacher_name)) FROM group_session_teachers gt WHERE gt.schedule_id=s.id)
     AND s.lesson_date LIKE ?
     ORDER BY s.lesson_date, s.lesson_time
     """, (teacher_name, selected_month + "%"))
@@ -13289,7 +13293,7 @@ def teacher_dashboard():
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON l.id = s.location_id
-    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
+    WHERE LOWER(TRIM(?)) IN (SELECT LOWER(TRIM(COALESCE(s.teacher,''))) UNION SELECT LOWER(TRIM(gt.teacher_name)) FROM group_session_teachers gt WHERE gt.schedule_id=s.id)
     AND s.lesson_date >= ?
     AND s.lesson_date <= ?
     ORDER BY s.lesson_date, s.lesson_time
@@ -13328,7 +13332,7 @@ def teacher_dashboard():
     FROM schedule s
     LEFT JOIN course_types c ON s.course_type_id = c.id
     LEFT JOIN studio_locations l ON l.id = s.location_id
-    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
+    WHERE LOWER(TRIM(?)) IN (SELECT LOWER(TRIM(COALESCE(s.teacher,''))) UNION SELECT LOWER(TRIM(gt.teacher_name)) FROM group_session_teachers gt WHERE gt.schedule_id=s.id)
     AND s.lesson_date = ?
     ORDER BY s.lesson_time
     """, (teacher_name, today))
@@ -17264,10 +17268,11 @@ def calendar_lesson_detail(schedule_id):
         cursor.execute("SELECT enrollment_id FROM schedule WHERE id = ?", (schedule_id,))
         linked_account = cursor.fetchone()
         attendance_account = hmusic_attendance_enrollment(cursor, schedule_id, row[1], linked_account[0] if linked_account else None)
+    assigned = bool(row) and hmusic_schedule_teacher_matches(cursor,schedule_id,session.get("teacher_name"),row[2])
     conn.close()
     if not row:
         return {"ok": False, "error": "Lesson not found"}, 404
-    if require_teacher() and not require_owner() and not hmusic_teacher_name_matches(row[2], session.get("teacher_name")):
+    if require_teacher() and not require_owner() and not assigned:
         return {"ok": False, "error": "Permission denied"}, 403
     is_teacher_view = require_teacher() and not require_owner()
     teacher_permissions = get_teacher_permissions(session.get("teacher_name")) if is_teacher_view else {}
@@ -17369,7 +17374,7 @@ def calendar_lesson_action():
     is_owner = require_owner()
     is_teacher = require_teacher() and not is_owner
     teacher_name = session.get("teacher_name")
-    if is_teacher and not hmusic_teacher_name_matches(row[2], teacher_name):
+    if is_teacher and not hmusic_schedule_teacher_matches(cursor,schedule_id,teacher_name,row[2]):
         conn.close()
         return {"ok": False, "error": "Permission denied"}, 403
 
@@ -29539,6 +29544,11 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
     ))
 
     rows = cursor.fetchall()
+    co_teachers={}
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_session_teachers'")
+    if cursor.fetchone():
+        cursor.execute("SELECT gt.schedule_id,gt.teacher_name FROM group_session_teachers gt JOIN schedule s ON s.id=gt.schedule_id WHERE s.lesson_date=?",(lesson_date,))
+        for sid,name in cursor.fetchall():co_teachers.setdefault(sid,set()).add(name)
     conn.close()
 
     for row in rows:
@@ -29546,7 +29556,7 @@ def schedule_has_conflict(teacher, classroom, lesson_date, lesson_time, exclude_
         if str(status).startswith("cancel") or status in ("excused", "excused_24h", "last_min_cancel", "teacher_cancelled"):
             continue
 
-        same_teacher = bool(teacher) and row[2] == teacher
+        same_teacher = bool(teacher) and (row[2] == teacher or teacher in co_teachers.get(row[0],set()))
         same_room = bool(classroom) and row[3] == classroom
         if room_id and row[7]:
             same_room = int(room_id) == int(row[7])
@@ -46478,6 +46488,7 @@ def ensure_v321_schema():
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS group_session_teachers (schedule_id INTEGER NOT NULL, teacher_name TEXT NOT NULL, PRIMARY KEY(schedule_id,teacher_name))')
 
     def add_column_if_missing(table_name, column_name, column_sql):
         cursor.execute(f"PRAGMA table_info({table_name})")
@@ -49115,6 +49126,16 @@ def teacher_api_identity():
     return teacher_name, None
 
 
+def hmusic_schedule_teacher_matches(cursor, schedule_id, teacher_name, primary_teacher=None):
+    if hmusic_teacher_name_matches(primary_teacher, teacher_name):
+        return True
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_session_teachers'")
+    if not cursor.fetchone():
+        return False
+    cursor.execute("SELECT 1 FROM group_session_teachers WHERE schedule_id=? AND LOWER(TRIM(teacher_name))=LOWER(TRIM(?))",(schedule_id,teacher_name))
+    return cursor.fetchone() is not None
+
+
 def teacher_api_schedule_payload(row):
     return {
         "id": int(row[0] or 0),
@@ -49169,7 +49190,7 @@ def teacher_api_schedule_rows(cursor, teacher_name, start_date, end_date):
     FROM schedule s
     LEFT JOIN students st ON st.name = s.student_name
     LEFT JOIN course_types c ON s.course_type_id = c.id
-    WHERE LOWER(TRIM(COALESCE(s.teacher, ''))) = LOWER(TRIM(?))
+    WHERE LOWER(TRIM(?)) IN (SELECT LOWER(TRIM(COALESCE(s.teacher,''))) UNION SELECT LOWER(TRIM(gt.teacher_name)) FROM group_session_teachers gt WHERE gt.schedule_id=s.id)
       AND s.lesson_date >= ?
       AND s.lesson_date <= ?
     ORDER BY s.lesson_date, s.lesson_time, s.id
@@ -49367,8 +49388,9 @@ def api_teacher_lesson_status():
     cursor = conn.cursor()
     cursor.execute("SELECT teacher FROM schedule WHERE id = ?", (schedule_id,))
     row = cursor.fetchone()
+    assigned = bool(row) and hmusic_schedule_teacher_matches(cursor,schedule_id,teacher_name,row[0])
     conn.close()
-    if not row or row[0] != teacher_name:
+    if not assigned:
         return {"ok": False, "error": "Lesson not found or permission denied"}, 404
     result = apply_lesson_status(schedule_id, status, actor=f"teacher:{teacher_name}", reason=data.get("reason"))
     if result.get("ok") and status == "teacher_cancelled" and data.get("notify_parent"):
@@ -49399,7 +49421,7 @@ def api_teacher_lesson_bulk_status():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     placeholders = ",".join(["?"] * len(ids))
-    cursor.execute(f"SELECT id FROM schedule WHERE id IN ({placeholders}) AND teacher = ?", (*ids, teacher_name))
+    cursor.execute(f"SELECT s.id FROM schedule s WHERE s.id IN ({placeholders}) AND ? IN (SELECT s.teacher UNION SELECT gt.teacher_name FROM group_session_teachers gt WHERE gt.schedule_id=s.id)", (*ids, teacher_name))
     owned_ids = [int(r[0]) for r in cursor.fetchall()]
     conn.close()
     updated = 0
@@ -49446,7 +49468,7 @@ def api_teacher_lesson_save():
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     calendar_row = calendar_lesson_row(cursor, schedule_id)
-    if not calendar_row or not hmusic_teacher_name_matches(calendar_row[2], teacher_name):
+    if not calendar_row or not hmusic_schedule_teacher_matches(cursor,schedule_id,teacher_name,calendar_row[2]):
         conn.close()
         return {"ok": False, "error": "Lesson not found or permission denied"}, 404
     row = (calendar_row[0], calendar_row[1], calendar_row[18])
@@ -49454,7 +49476,7 @@ def api_teacher_lesson_save():
     UPDATE schedule
     SET notes = ?, private_note = ?, homework_assignment = ?, practice_reminder_enabled = ?
     WHERE id = ? AND LOWER(TRIM(COALESCE(teacher, ''))) = LOWER(TRIM(?))
-    """, (lesson_note, private_note, homework, 1 if data.get("practice_reminder_enabled") else 0, schedule_id, teacher_name))
+    """, (lesson_note, private_note, homework, 1 if data.get("practice_reminder_enabled") else 0, schedule_id, calendar_row[2]))
     roster_change_summary = None
     if isinstance(group_roster, list) and not int(row[2] or 0):
         conn.close()

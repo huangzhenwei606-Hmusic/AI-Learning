@@ -12,7 +12,7 @@
 <br>{{ s.location or '' }} {{ s.classroom }} · {{ s.duration }} minutes per lesson</p>{% endif %}<p class="price">${{ offering.tuition }} <small>/ {{ offering.available_sessions|length }} lessons</small>
 </p>
 <h3>Class dates · Pacific time</h3>
-<div class="dates">{% for s in offering.sessions %}<span class="date">{{ s.lesson_date }} · {{ s.lesson_time }} · {{ s.teacher }} · {{ s.location or '' }} {{ s.classroom }}{% if s not in offering.available_sessions %} · {{ s.status }}{% endif %}</span>{% endfor %}</div>
+<div class="dates">{% for s in offering.sessions %}<span class="date">{{ s.lesson_date }} · {{ s.lesson_time }} · {{ s.teacher_label or s.teacher }} · {{ s.location or '' }} {{ s.classroom }}{% if s not in offering.available_sessions %} · {{ s.status }}{% endif %}</span>{% endfor %}</div>
 <h3>Class policy</h3>
 <div class="policy">{{ offering.policy }}</div>
 </section>

@@ -27,11 +27,18 @@ class TeacherCopyTest(unittest.TestCase):
    minutes_from_time_text=lambda t:60 if ':' in t else None,
    schedule_has_conflict=lambda *args,**kw:dict(has_conflict=self.conflict,message='Room occupied'),app=SimpleNamespace(logger=Mock()))
   tree=ast.parse(Path(__file__).with_name('app.py').read_text())
-  for name in ('hmusic_name_key','hmusic_teacher_name_matches','hmusic_copy_lesson','calendar_lesson_action'):
+  for name in ('hmusic_name_key','hmusic_teacher_name_matches','hmusic_schedule_teacher_matches','hmusic_copy_lesson','calendar_lesson_action'):
    node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name);node.decorator_list=[]
    exec(compile(ast.Module(body=[node],type_ignores=[]),'copy-test','exec'),self.scope)
  def tearDown(self):self.db.close()
  def call(self):return self.scope['calendar_lesson_action']()
+ def test_assigned_coteacher_can_access_shared_lesson(self):
+  self.db.execute('CREATE TABLE group_session_teachers(schedule_id INTEGER,teacher_name TEXT)')
+  self.db.execute("INSERT INTO group_session_teachers VALUES(1,'Claire')")
+  self.assertTrue(self.scope['hmusic_schedule_teacher_matches'](self.db.cursor(),1,'Claire','Mike'))
+  self.assertFalse(self.scope['hmusic_schedule_teacher_matches'](self.db.cursor(),2,'Claire','Mike'))
+  self.assertFalse(self.scope['hmusic_schedule_teacher_matches'](self.db.cursor(),1,'Unassigned','Mike'))
+
  def test_teacher_copy_preserves_configuration_resets_attendance(self):
   result=self.call();self.assertTrue(result['ok'])
   r=self.db.execute('SELECT lesson_date,lesson_time,course_type_id,enrollment_id,student_charge_amount,teacher_pay_amount,room_id,status,charge_lessons,policy_waiver_applied,pending_fee_amount,homework_assignment FROM schedule WHERE id=?',(result['new_id'],)).fetchone()
