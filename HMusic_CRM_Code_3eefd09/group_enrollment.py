@@ -593,11 +593,15 @@ def register_group_enrollment(app, api):
         try:
             if request.method=='POST':
                 selected_id=int(request.form.get('id') or 0)
+                offering_id=int(request.form.get('offering_id') or 0)
                 name=request.form.get('name','').strip()
                 if not name or len(name)>100:raise ValueError('Enter a program name of up to 100 characters.')
                 values=[name]+[request.form.get(key,'').strip()[:2000] for key in ('summary','classroom','materials','home_practice')]+[school_website_url(request.form.get('website_url',''))]
                 with db(write=True) as conn:
                     cur=conn.cursor()
+                    if offering_id:
+                        lock_offering(cur,offering_id)
+                        if not get_offering(cur,offering_id):raise ValueError('Class not found.')
                     cur.execute('SELECT id FROM group_programs WHERE name=? AND id!=?',(name,selected_id))
                     if cur.fetchone():raise ValueError('A program with this name already exists.')
                     if selected_id:
@@ -614,6 +618,10 @@ def register_group_enrollment(app, api):
                             image=prepare_class_image(upload)
                             cur.execute('DELETE FROM group_program_images WHERE program_id=? AND slot=?',(selected_id,slot))
                             cur.execute('INSERT INTO group_program_images(program_id,slot,image_data,updated_at) VALUES (?,?,?,?)',(selected_id,slot,image,now()))
+                    if offering_id:
+                        cur.execute('DELETE FROM group_offering_programs WHERE offering_id=?',(offering_id,))
+                        cur.execute('INSERT INTO group_offering_programs(offering_id,program_id) VALUES (?,?)',(offering_id,selected_id))
+                if offering_id:return redirect('/group-class-admin?class_id='+str(offering_id)+'&curriculum_saved=1',code=303)
                 return redirect('/group-program-admin?id='+str(selected_id)+'&saved=1',code=303)
         except (ValueError,InvalidOperation) as exc:error=str(exc)
         with db() as conn:
@@ -765,6 +773,7 @@ def register_group_enrollment(app, api):
             cur=conn.cursor();cur.execute('SELECT id,name FROM group_programs ORDER BY name');programs=rows(cur)
             cur.execute('SELECT id FROM group_offerings ORDER BY id DESC')
             offerings=[get_offering(cur,r[0]) for r in cur.fetchall()]
+            default_program=program_details(cur,programs[0]['id']) if programs else None
             for o in offerings:
                 o['remaining']=max(0,o['capacity']-occupied(cur,o['id']))
                 cur.execute('SELECT status,COUNT(*) FROM group_applications WHERE offering_id=? GROUP BY status',(o['id'],))
@@ -790,7 +799,7 @@ def register_group_enrollment(app, api):
                         warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
         editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
         selected=next((o for o in offerings if str(o['id'])==request.args.get('class_id')),None) or editing or saved
-        return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,programs=programs,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
+        return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,programs=programs,default_program=default_program,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
 
     @bp.route('/group-enrollments',methods=['GET','POST'])
     def review():

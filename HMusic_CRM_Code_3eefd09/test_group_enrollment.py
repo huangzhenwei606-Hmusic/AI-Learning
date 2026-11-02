@@ -116,6 +116,22 @@ class GroupEnrollmentTests(unittest.TestCase):
         if version is None:version=ge.schedule_version(ge.get_offering(self.conn.cursor(),1))
         return self.client.post('/group-class-admin/1/schedule',data={'sessions':json.dumps(plan),'version':version})
 
+    def test_each_class_has_inline_curriculum_upload_and_save_keeps_class_terms(self):
+        page=self.client.get('/group-class-admin?class_id=1')
+        self.assertIn(b'Edit introduction &amp; upload curriculum images',page.data)
+        self.assertIn(b'name="offering_id" value="1"',page.data)
+        self.assertIn(b'name="image_0"',page.data)
+        self.publish()
+        result=self.client.post('/group-program-admin',data={'id':'1','offering_id':'1','name':'Circle Piano','summary':'Updated in class upload page','website_url':'https://www.hmusicandart.com/'})
+        self.assertEqual(result.status_code,303)
+        self.assertIn('class_id=1',result.location)
+        self.assertEqual(self.scalar('SELECT program_id FROM group_offering_programs WHERE offering_id=1'),1)
+        self.assertEqual(self.scalar('SELECT tuition_cents FROM group_offerings'),50000)
+        self.assertEqual(self.scalar('SELECT capacity FROM group_offerings'),2)
+        self.assertEqual(self.scalar('SELECT published FROM group_offerings'),1)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+        self.assertIn(b'Updated in class upload page',self.client.get('/group-classes/1/apply').data)
+
     def test_shared_curriculum_uses_live_class_facts_and_is_reusable(self):
         pid=self.scalar("SELECT id FROM group_programs WHERE name='Circle Piano'")
         self.assertEqual(self.create_class(offering_id='1',program_id=str(pid),description='OLD $999 99 students').status_code,303)
