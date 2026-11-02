@@ -255,10 +255,62 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM schedule'),3)
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),1)
 
+    def test_published_calendar_updates_without_closing_registration(self):
+        self.publish()
+        plan=self.schedule_plan();plan[0]['id']=1;plan[1]['id']=2
+        self.assertEqual(self.save_calendar(plan).status_code,303)
+        self.assertEqual(self.scalar('SELECT published FROM group_offerings'),1)
+        self.assertEqual(self.scalar('SELECT lesson_date FROM schedule WHERE id=1'),'2099-12-05')
+
+    def test_existing_applications_require_review_and_preserve_roster_and_credits(self):
+        self.apply()
+        self.conn.execute("INSERT INTO group_schedule_students(schedule_id,student_name,attendance_credit_applied,attendance_enrollment_id) VALUES (1,'Child',0,42)")
+        self.conn.execute("UPDATE schedule SET group_size=1,group_student_names='Child',student_charge_amount=55 WHERE id=1");self.conn.commit()
+        plan=[dict(id=x['id'],date=x['lesson_date'],time='12:00',teacher=x['teacher'],room_id=1,course_id=2) for x in ge.get_sessions(self.conn.cursor(),1)]
+        response=self.save_calendar(plan)
+        self.assertIn(b'Review schedule changes',response.data)
+        self.assertEqual(self.scalar('SELECT lesson_time FROM schedule WHERE id=1'),'10:00')
+        with self.client.session_transaction() as sess:key=sess['group_schedule_review']
+        result=self.client.post('/group-class-admin/1/schedule',data={'sessions':__import__('json').dumps(plan),'version':ge.schedule_version(ge.get_offering(self.conn.cursor(),1)),'confirm_changes':key})
+        self.assertEqual(result.status_code,303)
+        self.assertEqual(self.scalar('SELECT lesson_time FROM schedule WHERE id=1'),'12:00')
+        self.assertEqual(self.scalar('SELECT group_size FROM schedule WHERE id=1'),1)
+        self.assertEqual(self.scalar('SELECT attendance_enrollment_id FROM group_schedule_students WHERE schedule_id=1'),42)
+        self.assertEqual(self.scalar('SELECT student_charge_amount FROM schedule WHERE id=1'),55)
+        self.assertEqual(self.scalar('SELECT published FROM group_offerings'),1)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+
+    def test_review_cannot_be_bypassed_and_rechecks_new_applications(self):
+        self.apply()
+        plan=self.schedule_plan();plan[0]['id']=1;plan[1]['id']=2
+        version=ge.schedule_version(ge.get_offering(self.conn.cursor(),1))
+        response=self.client.post('/group-class-admin/1/schedule',data={'sessions':__import__('json').dumps(plan),'version':version,'confirm_changes':'forged'})
+        self.assertIn(b'Review schedule changes',response.data)
+        with self.client.session_transaction() as sess:key=sess['group_schedule_review']
+        self.conn.execute("UPDATE group_applications SET updated_at='new update'");self.conn.commit()
+        response=self.client.post('/group-class-admin/1/schedule',data={'sessions':__import__('json').dumps(plan),'version':version,'confirm_changes':key})
+        self.assertIn(b'Review schedule changes',response.data)
+        self.assertEqual(self.scalar('SELECT lesson_date FROM schedule WHERE id=1'),'2099-11-01')
+
+    def test_enrolled_lesson_cannot_be_deleted_or_duration_changed(self):
+        self.conn.execute("INSERT INTO group_schedule_students(schedule_id,student_name) VALUES (1,'Child')");self.conn.commit()
+        plan=[dict(id=2,date='2099-12-12',time='12:00',teacher='Teacher One',room_id=1,course_id=2)]
+        self.assertIn(b'cannot be removed',self.save_calendar(plan).data)
+        plan.insert(0,dict(id=1,date='2099-12-05',time='12:00',teacher='Teacher One',room_id=1,course_id=4))
+        self.assertIn(b'course and duration',self.save_calendar(plan).data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+
+    def test_past_lessons_preserved_when_future_calendar_changes(self):
+        self.conn.execute("UPDATE schedule SET lesson_date='2020-01-01',status='present' WHERE id=1");self.conn.commit()
+        plan=[dict(id=2,date='2099-12-12',time='12:00',teacher='Teacher One',room_id=1,course_id=2)]
+        self.assertEqual(self.save_calendar(plan).status_code,303)
+        self.assertEqual(self.scalar('SELECT status FROM schedule WHERE id=1'),'present')
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM group_offering_sessions'),2)
+
     def test_calendar_cannot_change_existing_enrollments_or_other_classes(self):
         self.apply()
         self.client.post('/group-class-admin',data={'action':'visibility','id':1,'published':'0'})
-        self.assertIn(b'already has applications',self.save_calendar(self.schedule_plan()).data)
+        self.assertIn(b'Review schedule changes',self.save_calendar(self.schedule_plan()).data)
         with self.client.session_transaction() as ss:ss['user_role']=None
         self.assertEqual(self.client.get('/group-class-admin/1/schedule').status_code,403)
         self.assertEqual(self.save_calendar(self.schedule_plan()).status_code,403)

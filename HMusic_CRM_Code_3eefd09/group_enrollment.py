@@ -322,21 +322,33 @@ def schedule_version(offering):
     return hashlib.sha256(json.dumps(offering['sessions'],sort_keys=True,default=str).encode()).hexdigest()
 
 
+def schedule_editable(lesson):
+    return str(lesson['status']).lower()=='scheduled' and lesson['lesson_date']+'T'+lesson['lesson_time']+':00'>now()
+
+
+def schedule_changes(offering,plan):
+    old={x['id']:x for x in offering['sessions'] if schedule_editable(x)}
+    changes=[]
+    def label(x,new=False):
+        return ' · '.join([x['date'] if new else x['lesson_date'],x['time'] if new else x['lesson_time'],' & '.join(x['teachers']),str(x['duration'])+' mins',x.get('location') or '',x['classroom']])
+    for item in plan:
+        before=old.pop(item['id'],None)
+        if not before:changes.append(dict(before='New lesson',after=label(item,True)))
+        elif (before['lesson_date'],before['lesson_time'],before['teachers'],before['room_id'],before['course_type_id'])!=(item['date'],item['time'],item['teachers'],item['room_id'],item['course_id']):
+            changes.append(dict(before=label(before),after=label(item,True)))
+    changes += [dict(before=label(x),after='Cancel this empty lesson') for x in old.values()]
+    return changes
+
+
 def validate_schedule_plan(cur, oid, data):
     if not isinstance(data,list) or not 1<=len(data)<=100:
         raise ValueError('Select between 1 and 100 class dates.')
     offering=get_offering(cur,oid)
     if not offering:raise ValueError('Class not found.')
-    if offering['published']:raise ValueError('Close registration before editing the class calendar.')
-    cur.execute('SELECT COUNT(*) FROM group_applications WHERE offering_id=?',(oid,))
-    if cur.fetchone()[0]:raise ValueError('This class already has applications. Manage changes through Calendar to preserve enrollment records.')
     existing={x['id']:x for x in offering['sessions']}
     if offering['session_count']!=len(existing):raise ValueError('A linked calendar lesson is missing. Review the class first.')
-    for sid,lesson in existing.items():
-        if str(lesson['status']).lower()!='scheduled' or session_roster_names(cur,sid):
-            raise ValueError('Only upcoming empty Scheduled class sessions can be changed here. Use Calendar for existing student lessons.')
-        if lesson['lesson_date']+'T'+lesson['lesson_time']+':00'<=now():
-            raise ValueError('Past class sessions cannot be changed here.')
+    editable={sid:lesson for sid,lesson in existing.items() if schedule_editable(lesson)}
+    rostered={sid for sid in editable if session_roster_names(cur,sid)}
     plan=[];dates=set();ids=set()
     for item in data:
         if not isinstance(item,dict):raise ValueError('Invalid class date.')
@@ -348,6 +360,7 @@ def validate_schedule_plan(cur, oid, data):
         except (ValueError,TypeError,KeyError):raise ValueError('Each selected date needs a future date, time, teacher, course and location/room.')
         if day in dates or (sid and sid in ids):raise ValueError('Select each class date only once.')
         if sid and sid not in existing:raise ValueError('A lesson does not belong to this class.')
+        if sid and sid not in editable:raise ValueError('Completed, past or cancelled lessons are read-only here.')
         dates.add(day);ids.add(sid)
         names=item.get('teachers',[teacher])
         if not isinstance(names,list) or not 1<=len(names)<=20 or any(not isinstance(t,str) or not t.strip() for t in names):
@@ -364,7 +377,12 @@ def validate_schedule_plan(cur, oid, data):
             WHERE r.id=? AND r.active=1 AND l.active=1""",(room_id,));room=cur.fetchone()
         if not room:raise ValueError('Choose an active location and room.')
         if moment.hour*60+moment.minute+int(course[2])>1440:raise ValueError('A class must finish before midnight.')
+        if sid in rostered and (course_id!=existing[sid]['course_type_id'] or int(course[2])!=existing[sid]['duration']):
+            raise ValueError('Keep the course and duration of enrolled lessons unchanged. Adjust billing separately.')
         plan.append(dict(id=sid,date=day,time=time,teacher=teacher,teachers=names,room_id=room_id,classroom=room[0],location_id=room[1],location=room[2],course_id=course_id,course_name=course[1],duration=int(course[2])))
+    kept={x['id'] for x in plan if x['id']}
+    if rostered-kept:raise ValueError('An enrolled lesson cannot be removed here. Change its date in its row to keep the student roster.')
+    if rostered and any(not x['id'] for x in plan):raise ValueError('For enrolled classes, move existing dates in their rows; use Calendar to add extra lessons with enrollment billing.')
     if len({(x['course_id'],x['duration']) for x in plan})!=1:raise ValueError('Use the same course and duration for this class package.')
     return offering,plan
 
@@ -666,15 +684,22 @@ def register_group_enrollment(app, api):
                     cur=conn.cursor();lock_offering(cur,oid)
                     o,plan=validate_schedule_plan(cur,oid,submitted)
                     if request.form.get('version')!=schedule_version(o):raise ValueError('The class calendar changed in another window. Reload before saving.')
+                    changes=schedule_changes(o,plan)
+                    cur.execute('SELECT id,status,updated_at FROM group_applications WHERE offering_id=? ORDER BY id',(oid,));applications=cur.fetchall()
+                    review_key=hashlib.sha256(json.dumps([oid,schedule_version(o),submitted,applications],sort_keys=True,default=str).encode()).hexdigest()
+                    if changes and applications and not (request.form.get('confirm_changes')==review_key and session.get('group_schedule_review')==review_key):
+                        session['group_schedule_review']=review_key
+                        return page('schedule_review.html',offering=o,changes=changes,application_count=len(applications),submitted=submitted,version=schedule_version(o),review_key=review_key)
                     kept={item['id'] for item in plan if item['id']}
                     for old in o['sessions']:
-                        if old['id'] not in kept:
+                        if old['id'] not in kept and schedule_editable(old):
                             cur.execute("UPDATE schedule SET status='cancelled',charge_lessons=0,owner_calendar_updated_at=? WHERE id=?",(now(),old['id']))
                             cur.execute('DELETE FROM group_offering_sessions WHERE offering_id=? AND schedule_id=?',(oid,old['id']))
                     for item in plan:
                         rate=pricing[(item['teacher'],item['course_id'])]
                         fields=dict(student_name=o['title'],lesson_date=item['date'],lesson_time=item['time'],teacher=item['teacher'],classroom=item['classroom'],duration=item['duration'],course_type_id=item['course_id'],course_type_name=item['course_name'],student_billing_method=rate['student_billing_method'],student_price=rate['student_price'],teacher_billing_method=rate['teacher_billing_method'],teacher_pay=rate['teacher_pay'],student_charge_amount=rate['student_charge_amount'],teacher_pay_amount=rate['teacher_pay_amount'],is_group=1,group_size=0,group_name=o['title'],group_student_names='',room_id=item['room_id'],location_id=item['location_id'],location=item['location'],charge_lessons=0,owner_calendar_updated_at=now())
                         if item['id']:
+                            fields={k:fields[k] for k in ('lesson_date','lesson_time','teacher','classroom','duration','course_type_id','course_type_name','room_id','location_id','location','owner_calendar_updated_at')}
                             cur.execute('UPDATE schedule SET '+','.join(k+'=?' for k in fields)+' WHERE id=?',tuple(fields.values())+(item['id'],))
                         else:
                             fields.update(status='scheduled',schedule_type='one_time',notes='Group offering #'+str(oid)+'; enrollment pending.')
@@ -684,6 +709,7 @@ def register_group_enrollment(app, api):
                         cur.execute('DELETE FROM group_session_teachers WHERE schedule_id=?',(item['id'],))
                         for name in item['teachers'][1:]:
                             cur.execute('INSERT INTO group_session_teachers(schedule_id,teacher_name) VALUES (?,?)',(item['id'],name))
+                session.pop('group_schedule_review',None)
                 session['group_schedule_saved_id']=oid
                 return redirect('/group-class-admin',code=303)
         except (ValueError,TypeError) as exc:error=str(exc)
@@ -694,8 +720,8 @@ def register_group_enrollment(app, api):
             cur.execute('SELECT id,name,duration FROM course_types WHERE is_group=1 AND active=1 ORDER BY duration,name');courses=rows(cur)
             cur.execute("""SELECT r.id,r.room_name,l.location_name FROM studio_rooms r JOIN studio_locations l ON l.id=r.location_id
                 WHERE r.active=1 AND l.active=1 ORDER BY l.location_name,r.room_name""");rooms=rows(cur)
-        initial=[dict(id=x['id'],date=x['lesson_date'],time=x['lesson_time'],teacher=x['teacher'],teachers=x['teachers'],room_id=x['room_id'],course_id=x['course_type_id']) for x in o['sessions']]
-        return page('schedule.html',offering=o,initial=submitted if isinstance(submitted,list) else initial,teachers=teachers,courses=courses,rooms=rooms,version=schedule_version(o),error=error)
+        initial=[dict(id=x['id'],date=x['lesson_date'],time=x['lesson_time'],teacher=x['teacher'],teachers=x['teachers'],room_id=x['room_id'],course_id=x['course_type_id']) for x in o['sessions'] if schedule_editable(x)]
+        return page('schedule.html',offering=o,initial=submitted if isinstance(submitted,list) else initial,teachers=teachers,courses=courses,rooms=rooms,locked_sessions=[x for x in o['sessions'] if not schedule_editable(x)],version=schedule_version(o),error=error)
 
     @bp.route('/group-class-admin',methods=['GET','POST'])
     def manage():
