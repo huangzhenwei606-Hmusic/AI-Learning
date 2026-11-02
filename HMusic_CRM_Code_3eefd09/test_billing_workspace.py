@@ -40,3 +40,18 @@ class BillingWorkspaceTests(unittest.TestCase):
         html=billing_workspace_html(self.c.cursor())
         self.assertIn('Hao Qi',html)
         self.assertEqual(self.c.execute('SELECT COUNT(*) FROM invoice_allocations WHERE parent_id=4').fetchone()[0],0)
+
+    def test_lifecycle_actions_and_archive_filter(self):
+        for i,status in [(1,'creating'),(2,'paid'),(3,'submitted'),(4,'cancelled')]:
+            self.c.execute("INSERT INTO family_payments(id,parent_id,request_key,method,status,total_cents,created_at) VALUES(?,1,?,'Stripe ACH',?,100,'2026-11-01')",(i,str(i),status))
+        html=billing_workspace_html(self.c.cursor())
+        self.assertIn('Cancel combined bill',html);self.assertIn('Archive',html)
+        self.assertIn('/owner/family_payment/1/manage',html)
+        self.assertNotIn('/owner/family_payment/3/manage',html)
+        self.c.execute("INSERT INTO family_payment_archive VALUES(2,'2026-11-01','owner')")
+        html=billing_workspace_html(self.c.cursor())
+        self.assertNotIn('/family_payment/2/share',html)
+        archived=billing_workspace_html(self.c.cursor(),show_archived=True)
+        self.assertIn('/family_payment/2/share',archived);self.assertIn('Restore',archived)
+        self.assertNotIn('/family_payment/1/share',archived)
+        self.assertIn('original invoices and credits are unchanged',billing_workspace_html(self.c.cursor(),notice='cancel'))

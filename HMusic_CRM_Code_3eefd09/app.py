@@ -18815,7 +18815,7 @@ def invoices():
     """)
     summary_rows = cursor.fetchall()
     from billing_workspace import billing_workspace_html
-    billing_tools = billing_workspace_html(cursor)
+    billing_tools = billing_workspace_html(cursor, show_archived=request.args.get("combined_archived") == "1", notice=request.args.get("combined_notice", ""))
     conn.commit()
     conn.close()
 
