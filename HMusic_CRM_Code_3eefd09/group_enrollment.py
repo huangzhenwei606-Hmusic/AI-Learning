@@ -794,7 +794,7 @@ def register_group_enrollment(app, api):
                         raise ValueError('Tuition must be a positive dollar amount with at most two decimal places.')
                     if not title or len(title)>150 or not policy or not 1<=capacity<=100:
                         raise ValueError('Enter a title, policy and capacity between 1 and 100.')
-                    selected=[] if edit_id else sorted(set(int(x) for x in request.form.getlist('schedule_ids')))
+                    selected=[] if edit_id and (existing['published'] or existing['session_count']) else sorted(set(int(x) for x in request.form.getlist('schedule_ids')))
                     if len(selected)>100:
                         raise ValueError('Select at most 100 group calendar sessions.')
                     ss=[]
