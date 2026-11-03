@@ -200,6 +200,14 @@ def valid_sessions(cur, offering):
     return ss
 
 
+def application_tuition(application):
+    # Direct class updates apply to new applications; old quotes stay binding.
+    try:amount=json.loads(application['policy_snapshot'])['tuition_cents']
+    except (ValueError,KeyError,TypeError):raise ValueError('Review the original application tuition before invoicing.')
+    if type(amount) is not int or amount<=0:raise ValueError('Review the original application tuition before invoicing.')
+    return amount
+
+
 def approve(cur, aid, student_choice, api):
     cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
     a = one(cur)
@@ -266,6 +274,7 @@ def approve(cur, aid, student_choice, api):
         cur.execute('''INSERT INTO parent_students(parent_id,student_name,relationship,active,created_at)
             VALUES (?,?,'Parent',1,?)''', (pid, name, now()))
     # Never reuse or overwrite another course wallet, or pre-grant its credits.
+    o['tuition_cents']=application_tuition(a)
     per_lesson = o['tuition_cents']/100/len(ss)
     cur.execute('''INSERT INTO enrollments(student_name,course_type_id,course_type_name,teacher_name,
         duration,student_billing_method,base_price,final_price,lessons_left,status,notes,
@@ -299,6 +308,7 @@ def confirm(cur, aid):
         raise ValueError('Confirm admission only after the invoice is marked paid. Use Billing to verify Zelle or bank settlement.')
     o = get_offering(cur, a['offering_id'])
     ss = valid_sessions(cur, o)
+    o['tuition_cents']=application_tuition(a)
     if occupied(cur, o['id'], aid) >= o['capacity']:
         raise ValueError('Class is full. Review this paid application before admission.')
     cur.execute("UPDATE enrollments SET status='active',updated_at=? WHERE id=?", (now(), a['enrollment_id']))

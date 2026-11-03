@@ -8,6 +8,9 @@ class GroupDirectSaveTests(unittest.TestCase):
  publish=fixtures.GroupEnrollmentTests.publish
  apply=fixtures.GroupEnrollmentTests.apply
  scalar=fixtures.GroupEnrollmentTests.scalar
+ approve=fixtures.GroupEnrollmentTests.approve
+ confirm=fixtures.GroupEnrollmentTests.confirm
+ paid=fixtures.GroupEnrollmentTests.paid
  def test_published_class_saves_without_closing_and_keeps_calendar(self):
   self.publish();before=list(self.conn.execute('SELECT * FROM group_offering_sessions'))
   response=self.create_class(offering_id=1,title='Updated published class',teaching_location_id='hanlin',schedule_ids=[])
@@ -33,3 +36,9 @@ class GroupDirectSaveTests(unittest.TestCase):
   self.publish();self.assertIn(b'Tuition must be',self.create_class(offering_id=1,tuition='-10').data)
   self.assertEqual(self.scalar('SELECT tuition_cents FROM group_offerings'),50000)
   self.assertEqual(self.scalar('SELECT published FROM group_offerings'),1)
+
+ def test_later_invoice_and_roster_use_original_application_quote(self):
+  self.apply();self.assertEqual(self.create_class(offering_id=1,tuition='600').status_code,303)
+  self.approve();self.assertEqual(self.scalar('SELECT amount FROM invoices'),500)
+  self.paid();self.confirm()
+  self.assertEqual(self.scalar("SELECT student_rate FROM group_schedule_students WHERE student_name='Child' LIMIT 1"),250)
