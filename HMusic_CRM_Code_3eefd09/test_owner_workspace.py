@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from flask import Flask, request, Response
-from owner_workspace import apply_owner_workspace
+from owner_workspace import apply_owner_workspace, workspace_section, NAV
 
 class WorkspaceTest(unittest.TestCase):
     def setUp(self):
@@ -52,5 +52,39 @@ class WorkspaceTest(unittest.TestCase):
             self.assertNotIn('<iframe',self.render(path))
         self.assertNotIn('<iframe',self.render(attachment=True))
         self.assertNotIn('<iframe',self.render(status=403))
+
+    def test_admissions_has_its_own_sidebar_entry(self):
+        self.assertIn(('/admissions','Admissions & enrollment'),NAV)
+        html=self.render('/admissions')
+        self.assertIn('data-section="/admissions"',html)
+        self.assertIn('const initialSection="/admissions"',html)
+    def test_all_intake_and_group_management_paths_share_channel(self):
+        for path in ['/admissions','/inquiries','/inquiry/42','/new_students','/new_student_leads','/new_student_intake','/add_inquiry','/trial_leads','/group-class-admin','/group-class-admin/3/schedule','/group-enrollments']:
+            self.assertEqual(workspace_section(path),'/admissions',path)
+    def test_public_family_pages_never_get_manager_shell(self):
+        for path in ['/group-classes','/group-classes/3/apply?preview=1','/group-classes/3/apply?_workspace=1','/group-registration/receipt','/registration','/trial','/trial_form','/trial_request']:
+            html=self.render(path)
+            self.assertNotIn('<iframe',html,path)
+            self.assertNotIn('hmusic-workspace',html,path)
+            self.assertNotIn('admissions-nav',html,path)
+    def test_public_redirect_not_rewritten(self):
+        with self.app.test_request_context('/group-classes/3/apply?_workspace=1',method='POST'):
+            response=Response(status=302,headers={'Location':'/group-registration/receipt'})
+            self.assertEqual(apply_owner_workspace(response,request,True).headers['Location'],'/group-registration/receipt')
+    def test_admissions_subnavigation_and_active_tab(self):
+        html=self.render('/group-enrollments?_workspace=1')
+        self.assertIn('aria-label="Admissions & enrollment"',html)
+        self.assertIn('href="/group-enrollments" aria-current="page"',html)
+        self.assertIn('section:"/admissions"',html)
+        self.assertNotIn('admissions-nav',self.render('/students?_workspace=1'))
+    def test_unknown_page_is_not_classified_as_settings(self):
+        self.assertEqual(workspace_section('/unclassified-page'),'')
+        self.assertEqual(workspace_section('/owner_settings'),'/owner_settings')
+        self.assertEqual(workspace_section('/enrollment/12'),'/students')
+        self.assertEqual(workspace_section('/teacher_dashboard'),'/teachers')
+    def test_public_links_can_escape_the_manager_frame(self):
+        html=self.render('/admissions?_workspace=1')
+        self.assertIn("if(a.target!=='_blank')a.target='_top'",html)
+        self.assertIn("u.searchParams.delete('_workspace')",html)
 
 if __name__=='__main__':unittest.main()

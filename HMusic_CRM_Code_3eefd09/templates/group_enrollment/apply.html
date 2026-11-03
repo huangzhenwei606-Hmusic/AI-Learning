@@ -1,5 +1,5 @@
 {% extends 'group_enrollment/base.html' %}
-{% block content %}<h1>{{ offering.title }}</h1>
+{% block content %}{% if request.args.get('preview') == '1' and session.get('user_role') == 'owner' %}<p><a href="/group-class-admin?class_id={{ offering.id }}">← Back to Admissions · Class management</a></p>{% endif %}<h1>{{ offering.title }}</h1>
 {% if not offering.published %}<p class="notice">Manager draft preview. Families cannot apply until registration is published.</p>{% endif %}
 {% include 'group_enrollment/program_intro.html' %}
 <div class="grid">
