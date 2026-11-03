@@ -87,6 +87,18 @@ def ensure_schema(conn):
   conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('center-locations-v1','{}',?)",(now(),));conn.commit()
 
 
+ if not conn.execute("SELECT 1 FROM admissions_audit WHERE action='partner-photos-v1'").fetchone():
+  defaults={p['id']:p for p in seed()['partners']};values=[]
+  for raw in conn.execute('SELECT draft,published FROM admissions_settings WHERE id=1').fetchone():
+   cfg=json.loads(raw)
+   for partner in cfg.get('partners',[]):
+    for key in ['imageUrl','imageAlt','imageCaption','imageSourceUrl']:
+     if partner['id'] in defaults:partner.setdefault(key,defaults[partner['id']].get(key,''))
+   values.append(json.dumps(cfg,ensure_ascii=False))
+  conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',values)
+  conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('partner-photos-v1','{}',?)",(now(),));conn.commit()
+
+
 def validate_catalog(c):
  if not isinstance(c,dict):raise ValueError('Invalid catalog')
  if not isinstance(c.get('centers'),list) or len(c['centers'])>20:raise ValueError('Invalid centers')
@@ -117,9 +129,9 @@ def validate_catalog(c):
     if not isinstance(item.get(k,''),str) or len(item.get(k,''))>3000:raise ValueError('Invalid text')
    if not item.get('title'):raise ValueError('Title required')
    if group=='partners':
-    for k in ['city','address','phone','email','website','sourceUrl','locationNote']:
+    for k in ['city','address','phone','email','website','sourceUrl','locationNote','imageUrl','imageAlt','imageCaption','imageSourceUrl']:
      if not isinstance(item.get(k,''),str) or len(item.get(k,''))>1000:raise ValueError('Invalid partner contact information')
-    for k in ['website','sourceUrl']:
+    for k in ['website','sourceUrl','imageUrl','imageSourceUrl']:
      u=item.get(k,'')
      if u and (urlsplit(u).scheme!='https' or not urlsplit(u).netloc or urlsplit(u).username or urlsplit(u).password):raise ValueError('Use HTTPS school links')
     courses=item.get('programs',[])
