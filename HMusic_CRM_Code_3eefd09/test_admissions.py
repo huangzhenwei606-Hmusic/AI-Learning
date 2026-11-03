@@ -128,3 +128,15 @@ class AdmissionBillingTests(AdmissionsTests):
    self.assertEqual(c.execute('SELECT COUNT(*) FROM enrollments').fetchone()[0],1)
    self.assertEqual(c.execute('SELECT amount,discount_amount FROM invoices').fetchone(),(585,65))
    self.assertEqual(c.execute('SELECT lessons_left,package_lessons FROM enrollments').fetchone(),(0,10))
+
+class AdmissionRouteCompatibilityTests(unittest.TestCase):
+ def test_all_legacy_app_endpoint_names_can_coexist(self):
+  import ast
+  from pathlib import Path
+  app=Flask(__name__)
+  tree=ast.parse(Path(__file__).with_name('app.py').read_text())
+  for n in tree.body:
+   if isinstance(n,ast.FunctionDef) and any(isinstance(d,ast.Call) and isinstance(d.func,ast.Attribute) and isinstance(d.func.value,ast.Name) and d.func.value.id=='app' and d.func.attr in ['route','get','post'] for d in n.decorator_list):
+    app.add_url_rule('/legacy/'+n.name,endpoint=n.name,view_func=lambda:'legacy')
+  register_admissions(app,{'require_owner':lambda:False})
+  self.assertIn('hmusic_admissions_checkout',app.view_functions)

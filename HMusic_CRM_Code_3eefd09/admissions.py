@@ -135,22 +135,22 @@ def register_admissions(app,api):
  def audit(c,action,payload):c.execute('INSERT INTO admissions_audit(action,payload,created_at) VALUES(?,?,?)',(action,json.dumps(payload,ensure_ascii=False),now()))
  def response(html,status=200):
   r=Response(html,status=status,mimetype='text/html');r.headers['Cache-Control']='no-store';r.headers['Referrer-Policy']='no-referrer';r.headers['X-Robots-Tag']='noindex';return r
- @app.get('/admissions-admin')
+ @app.get('/admissions-admin', endpoint='hmusic_admissions_admissions_admin')
  def admissions_admin():
   if not owner():return redirect('/owner_login')
   return response((BASE/'admin.html').read_text().replace('__CSRF__',api['hmusic_csrf_token']()))
- @app.get('/admissions-admin/editor.js')
+ @app.get('/admissions-admin/editor.js', endpoint='hmusic_admissions_admissions_editor')
  def admissions_editor():
   if not owner():abort(403)
   return Response((BASE/'admin.js').read_text(),mimetype='application/javascript')
- @app.get('/api/website/admissions')
+ @app.get('/api/website/admissions', endpoint='hmusic_admissions_public_admissions')
  def public_admissions():
   c=db()
   try:
    data=catalog(c);data['partners']=[p for p in data['partners'] if p['active']];data['events']=[e for e in data['events'] if e['active']];data['teachers']=[t for t in data['teachers'] if t['active']]
    r=jsonify(data);r.headers['Access-Control-Allow-Origin']='*';r.headers['Cache-Control']='no-store';return r
   finally:c.close()
- @app.route('/api/admissions/admin',methods=['GET','POST'])
+ @app.route('/api/admissions/admin',methods=['GET','POST'], endpoint='hmusic_admissions_admissions_settings')
  def admissions_settings():
   if not owner():abort(403)
   c=db()
@@ -167,7 +167,7 @@ def register_admissions(app,api):
    audit(c,'publish' if publish else 'save',cat);c.commit();return {'ok':True,'revision':d['revision']+1,'published':publish}
   except (ValueError,TypeError,KeyError) as e:c.rollback();return {'error':str(e)},400
   finally:c.close()
- @app.route('/api/admissions/coupons',methods=['GET','POST'])
+ @app.route('/api/admissions/coupons',methods=['GET','POST'], endpoint='hmusic_admissions_coupons')
  def coupons():
   if not owner():abort(403)
   c=db()
@@ -185,14 +185,14 @@ def register_admissions(app,api):
    audit(c,'coupon',cp);c.commit();return {'ok':True}
   except (ValueError,TypeError,KeyError) as e:c.rollback();return {'error':str(e)},400
   finally:c.close()
- @app.post('/api/admissions/quote')
+ @app.post('/api/admissions/quote', endpoint='hmusic_admissions_quote_api')
  def quote_api():
   c=db()
   try:
    d=request.get_json(silent=True) or {};q=quote(c,d.get('teacher_id'),d.get('duration'),d.get('code',''),d.get('partner_id',''));return {k:q[k] for k in ['subtotal','discount','total','lessons']}
   except (ValueError,TypeError) as e:return {'error':str(e)},400
   finally:c.close()
- @app.post('/api/admissions/order-action')
+ @app.post('/api/admissions/order-action', endpoint='hmusic_admissions_owner_order_action')
  def owner_order_action():
   if not owner():abort(403)
   d=request.get_json(silent=True) or {};c=db()
@@ -214,7 +214,7 @@ def register_admissions(app,api):
    audit(c,'order-'+d['action'],{'id':o['id']});c.commit();return {'ok':True}
   except ValueError as e:c.rollback();return {'error':str(e)},400
   finally:c.close()
- @app.get('/api/admissions/attach-options')
+ @app.get('/api/admissions/attach-options', endpoint='hmusic_admissions_attach_options')
  def attach_options():
   if not owner():abort(403)
   c=db()
@@ -223,7 +223,7 @@ def register_admissions(app,api):
    courses=[{'id':r[0],'name':r[1],'duration':r[2]} for r in c.execute('SELECT id,name,duration FROM course_types WHERE active=1 AND COALESCE(is_group,0)=0 ORDER BY duration,name').fetchall()]
    return {'students':students,'courses':courses}
   finally:c.close()
- @app.post('/api/admissions/attach')
+ @app.post('/api/admissions/attach', endpoint='hmusic_admissions_attach_order')
  def attach_order():
   if not owner():abort(403)
   api['ensure_v321_schema']();api['ensure_guardian_billing_schema']();d=request.get_json(silent=True) or {};c=db()
@@ -251,7 +251,7 @@ def register_admissions(app,api):
   result=api['finalize_stripe_invoice_payment'](iid,checkout_session_id=o['checkout_id'],source='admissions-'+o['id'])
   if not result:return {'error':'The invoice is linked but needs Billing review before credits are granted.'},409
   return {'ok':True,'invoice_id':iid}
- @app.get('/api/admissions/orders')
+ @app.get('/api/admissions/orders', endpoint='hmusic_admissions_order_list')
  def order_list():
   if not owner():abort(403)
   c=db()
@@ -329,7 +329,7 @@ def register_admissions(app,api):
   o=row(c.execute('SELECT * FROM admissions_orders WHERE id=?',(oid,)))
   if not o or not secrets.compare_digest(o['access_hash'],digest(token)):abort(404)
   return o
- @app.get('/enrollment-order/<oid>/<token>')
+ @app.get('/enrollment-order/<oid>/<token>', endpoint='hmusic_admissions_receipt')
  def receipt(oid,token):
   c=db()
   try:
@@ -345,7 +345,7 @@ def register_admissions(app,api):
    body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1><p>{escape(status)}</p><h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
    return response(body)
   finally:c.close()
- @app.post('/enrollment-order/<oid>/<token>/checkout')
+ @app.post('/enrollment-order/<oid>/<token>/checkout', endpoint='hmusic_admissions_checkout')
  def checkout(oid,token):
   c=db()
   try:
