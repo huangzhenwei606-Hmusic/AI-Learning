@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 from flask import request, session, redirect, jsonify, Response, abort
 
 BASE=Path(__file__).with_name('admissions')
@@ -93,7 +94,7 @@ def coupon_validate(d):
  if type(d.get('active')) is not bool:raise ValueError('Invalid code status')
  for k in ['starts_at','ends_at']:
   if d.get(k):
-   dt=datetime.fromisoformat(d[k]);d[k]=(dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).astimezone(timezone.utc).isoformat(timespec='seconds')
+   dt=datetime.fromisoformat(d[k]);d[k]=(dt.replace(tzinfo=ZoneInfo("America/Los_Angeles")) if dt.tzinfo is None else dt).astimezone(timezone.utc).isoformat(timespec='seconds')
   else:d[k]=''
  if d['starts_at'] and d['ends_at'] and d['ends_at']<=d['starts_at']:raise ValueError('End must follow start')
  if not isinstance(d.get('teacher_ids'),list) or any(not isinstance(x,str) for x in d['teacher_ids']):raise ValueError('Invalid scope')
@@ -123,6 +124,7 @@ def sync_order(conn,obj):
  if not o:return None
  if obj.get('id')!=o['checkout_id'] or obj.get('mode')!='payment' or obj.get('currency')!='usd' or obj.get('amount_total')!=o['total']:raise ValueError('Payment does not match enrollment order')
  if o['status']=='paid':return 'paid'
+ if o['status']=='failed' and obj.get('payment_status')!='paid':return 'failed'
  status='paid' if obj.get('payment_status')=='paid' else ('expired' if obj.get('status')=='expired' else ('processing' if obj.get('status')=='complete' else 'checkout'))
  conn.execute('UPDATE admissions_orders SET status=?,paid_at=? WHERE id=? AND status<>?',(status,now() if status=='paid' else None,oid,'paid'));conn.commit();return status
 
@@ -312,7 +314,13 @@ def register_admissions(app,api):
   if not api['configure_stripe']():return Response('Stripe unavailable',503)
   if not str(obj.get('id','')).startswith('cs_'):return Response('Invalid checkout',400)
   obj=api['stripe'].checkout.Session.retrieve(obj['id']);c=db()
-  try:sync_order(c,obj);return {'received':True}
+  try:
+   state=sync_order(c,obj)
+   if event.get('type')=='checkout.session.async_payment_failed' and state!='paid' and obj.get('status')=='complete' and obj.get('payment_intent'):
+    intent=api['stripe'].PaymentIntent.retrieve(obj['payment_intent'])
+    if intent.get('status') in ['requires_payment_method','canceled']:
+     c.execute("UPDATE admissions_orders SET status='failed' WHERE id=? AND status<>'paid'",((obj.get('metadata') or {})['admissions_order'],));c.commit()
+   return {'received':True}
   except ValueError:return Response('Enrollment checkout mismatch',400)
   finally:c.close()
  def find_order(c,oid,token):

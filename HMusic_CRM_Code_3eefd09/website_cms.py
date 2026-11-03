@@ -18,6 +18,25 @@ def register_website_cms(app, connect, is_owner, csrf_token):
         conn.execute('CREATE TABLE IF NOT EXISTS website_cms_history (revision INTEGER PRIMARY KEY, content TEXT NOT NULL, published_at TEXT NOT NULL)')
         row = conn.execute('SELECT published FROM website_cms WHERE id=1').fetchone()
         conn.execute('INSERT OR IGNORE INTO website_cms_history (revision,content,published_at) VALUES (0,?,?)', (row[0], datetime.now(timezone.utc).isoformat()))
+        # Retire the five programs explicitly removed from the website by the owner.
+        # Apply once to existing databases; future owner visibility changes remain editable.
+        conn.execute('CREATE TABLE IF NOT EXISTS website_cms_migrations (name TEXT PRIMARY KEY)')
+        applied = conn.execute('INSERT OR IGNORE INTO website_cms_migrations(name) VALUES (?)', ('2026-11-03-retired-programs',))
+        if applied.rowcount == 1:
+            retired = {'new-page-5', 'enroll-a-piano-group-class-35', 'instrument-preperation-app', 'little-singer-4-9', 'little-singer-9-15'}
+            current = conn.execute('SELECT draft,published,revision FROM website_cms WHERE id=1').fetchone()
+            versions = []
+            changed = False
+            for raw in current[:2]:
+                pages = json.loads(raw)
+                for page in pages:
+                    if page.get('id') in retired and not page.get('hidden'):
+                        changed = True
+                        page['hidden'] = True
+                versions.append(json.dumps(pages, ensure_ascii=False))
+            if changed:
+                conn.execute('UPDATE website_cms SET draft=?,published=?,revision=revision+1 WHERE id=1', tuple(versions))
+                conn.execute('INSERT INTO website_cms_history(revision,content,published_at) VALUES (?,?,?)', (current[2]+1, versions[1], datetime.now(timezone.utc).isoformat()))
         conn.commit()
         return conn
 
