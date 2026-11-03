@@ -771,10 +771,11 @@ def register_group_enrollment(app, api):
                     edit_id=int(request.form.get('offering_id') or 0)
                     if edit_id:
                         lock_offering(cur,edit_id)
-                        cur.execute('SELECT COUNT(*) FROM group_applications WHERE offering_id=?',(edit_id,))
-                        if cur.fetchone()[0]:raise ValueError('This class has applications. Review enrollment before changing terms.')
-                        if get_offering(cur,edit_id)['published']:raise ValueError('Close registration before editing this draft.')
-                    teaching_location_id=request.form.get('teaching_location_id','')
+                        existing=get_offering(cur,edit_id)
+                        if not existing:raise ValueError('Class not found.')
+                    # Basic updates preserve publication, calendar links and all existing
+                    # application/invoice snapshots. Calendar edits have their own route.
+                    teaching_location_id=request.form.get('teaching_location_id',existing['teaching_location_id'] if edit_id else '')
                     if teaching_location_id and not any(p['id']==teaching_location_id and p['active'] for p in teaching_locations(cur)):raise ValueError('Choose an available teaching location.')
                     title=request.form.get('title','').strip(); policy=request.form.get('policy','').strip()
                     capacity=int(request.form.get('capacity','0'))
@@ -783,7 +784,7 @@ def register_group_enrollment(app, api):
                         raise ValueError('Tuition must be a positive dollar amount with at most two decimal places.')
                     if not title or len(title)>150 or not policy or not 1<=capacity<=100:
                         raise ValueError('Enter a title, policy and capacity between 1 and 100.')
-                    selected=sorted(set(int(x) for x in request.form.getlist('schedule_ids')))
+                    selected=[] if edit_id else sorted(set(int(x) for x in request.form.getlist('schedule_ids')))
                     if len(selected)>100:
                         raise ValueError('Select at most 100 group calendar sessions.')
                     ss=[]
@@ -806,7 +807,6 @@ def register_group_enrollment(app, api):
                     if edit_id:
                         oid=edit_id
                         cur.execute('UPDATE group_offerings SET title=?,description=?,age_range=?,policy=?,capacity=?,tuition_cents=? WHERE id=?',values+(oid,))
-                        cur.execute('DELETE FROM group_offering_sessions WHERE offering_id=?',(oid,))
                     else:
                         cur.execute("""INSERT INTO group_offerings(title,description,age_range,policy,capacity,
                             tuition_cents,published,created_at) VALUES (?,?,?,?,?,?,0,?)""",values+(now(),))
@@ -819,7 +819,7 @@ def register_group_enrollment(app, api):
                         cur.execute('INSERT INTO group_offering_sessions(offering_id,schedule_id) VALUES (?,?)',(oid,sid))
                     if occupied(cur,oid)>capacity:
                         raise ValueError('Capacity is smaller than the existing calendar roster.')
-                    return redirect('/group-class-admin?class_id='+str(oid),code=303)
+                    return redirect('/group-class-admin?class_id='+str(oid)+'&information_saved=1',code=303)
         except (ValueError,InvalidOperation) as exc:
             error=str(exc)
         with db() as conn:
