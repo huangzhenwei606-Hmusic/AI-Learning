@@ -40449,6 +40449,7 @@ def public_student_registration():
             ("Student notes", request.form.get("student_notes", "")),
             ("Policy agreement", "Agreed"),
             ("Accepted policy snapshot", admissions_policy_snapshot()),
+            ("Partner school registration", admissions_partner_snapshot(request.form)),
             ("Billing authorization", "Agreed"),
             ("SMS consent", "Opted in" if request.form.get("sms_consent") == "1" else "Not opted in"),
             ("Guardian signature", request.form.get("guardian_signature", "")),

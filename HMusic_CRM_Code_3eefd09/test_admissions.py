@@ -32,6 +32,36 @@ class AdmissionsTests(unittest.TestCase):
   r=self.client.post('/test-register',data={'teacher_id':self.teacher,'lesson_minutes':'30','admission_code':code,'admissions_key':key,'parent_email':'parent@example.com','student_name':'Child','age':'7','policy_version':self.catalog['policy']['version'],'guardian_signature':'Parent','signed_date':'2026-11-03'})
   self.assertEqual(r.status_code,303,r.data)
   return r.location
+ def test_partner_directory_and_idempotent_migration(self):
+  self.assertEqual(len(self.catalog['partners']),4)
+  with closing(sqlite3.connect(self.path)) as conn:
+   cfg=json.loads(conn.execute('SELECT published FROM admissions_settings').fetchone()[0]);cfg['partners'][0]['address']='Edited address'
+   conn.execute('UPDATE admissions_settings SET published=?',(json.dumps(cfg),));conn.commit();ensure_schema(conn)
+   self.assertEqual(json.loads(conn.execute('SELECT published FROM admissions_settings').fetchone()[0])['partners'][0]['address'],'Edited address')
+ def test_partner_registration_context_and_no_generic_charge(self):
+  for course,program in [('circle-piano','Group Class'),('private-instruments','Private Lesson')]:
+   values={'partner_id':'dreamers-thinkers','partner_course':course,'program_interest':program}
+   with self.app.test_request_context():
+    self.assertIsNone(self.api['admissions_prepare'](values))
+    snapshot=json.loads(self.api['admissions_partner_snapshot'](values))
+    self.assertEqual(snapshot['school'],'Dreamers & Thinkers');self.assertEqual(snapshot['course_id'],course)
+    with self.assertRaises(ValueError):self.api['admissions_prepare']({**values,'teacher_id':self.teacher})
+   with self.app.test_request_context('/registration?partner=dreamers-thinkers&course='+course):
+    html=self.api['admissions_decorate']('<html><section></section><select name="program_interest" required><option>Private Lesson</option></select>')
+    self.assertIn('name="partner_course" value="'+course+'"',html);self.assertNotIn('admissions-registration.js',html)
+  self.provider.checkout.Session.create.assert_not_called()
+ def test_partner_registration_rejects_unknown_and_mismatched_course(self):
+  with self.app.test_request_context():
+   for values in [{'partner_id':'unknown','partner_course':'circle-piano'},{'partner_id':'hanlin','partner_course':'bad'},{'partner_course':'circle-piano'},{'partner_id':'hanlin','partner_course':'circle-piano','program_interest':'Private Lesson'}]:
+    with self.assertRaises(ValueError):self.api['admissions_prepare'](values)
+ def test_partner_course_links_and_publishing_validation(self):
+  self.owner();d=self.client.get('/api/admissions/admin').json
+  d['catalog']['partners'][0]['programs'][0]['registrationUrl']='javascript:alert(1)'
+  self.assertEqual(self.client.post('/api/admissions/admin',json=d).status_code,400)
+  d['catalog']['partners'][0]['programs'][0]['registrationUrl']=''
+  d['catalog']['partners'][0]['programs'][0]['schedule']='Mondays at 3 PM';d['publish']=True
+  self.assertEqual(self.client.post('/api/admissions/admin',json=d).status_code,200)
+  self.assertEqual(self.client.get('/api/website/admissions').json['partners'][0]['programs'][0]['schedule'],'Mondays at 3 PM')
  def test_owner_guards_and_public_data(self):
   self.assertEqual(self.client.get('/admissions-admin').status_code,302)
   for path in ['/api/admissions/admin','/api/admissions/coupons','/api/admissions/orders']:

@@ -40,7 +40,7 @@ def seed():
  for names,prices,subject in [(['Xu Huang','Jason Kim'],[65000,97500,130000],'Instrument'),(['Jessie Gong','Hyewon Shin','Xueyang Wang','Yidan Sun','Chloe Lu'],[60000,90000,120000],'Instrument'),(['Mia Li','Claire Chen','Halley Hsieh','Jenny Lee'],[55000,82500,110000],'Instrument'),(['Jenny Lee','Yichi Dang'],[55000,82500,110000],'Voice')]:
   for name in names:
    teachers.append(dict(id=re.sub('[^a-z0-9]+','-',name.lower()+'-'+subject.lower()),name=name,subject=subject,active=True,prices=dict(zip(['30','45','60'],prices))))
- return dict(teachers=teachers,lessons=10,checkoutEnabled=True,policy=dict(version='2026-11-03',text=POLICY,textZh=POLICY_ZH),partners=[],events=[],copy={'enrollTitle':'Find your next musical chapter.','enrollTitleZh':'开启你的音乐新篇章。','eventsTitle':'On stage. Together.','eventsTitleZh':'一起走上舞台。'},navigation={'enroll':True,'events':True})
+ return dict(teachers=teachers,lessons=10,checkoutEnabled=True,policy=dict(version='2026-11-03',text=POLICY,textZh=POLICY_ZH),partners=json.loads((BASE/'partners.json').read_text()),events=[],copy={'enrollTitle':'Find your next musical chapter.','enrollTitleZh':'开启你的音乐新篇章。','eventsTitle':'On stage. Together.','eventsTitleZh':'一起走上舞台。'},navigation={'enroll':True,'events':True})
 
 def ensure_schema(conn):
  for sql in [
@@ -51,6 +51,17 @@ def ensure_schema(conn):
   '''CREATE TABLE IF NOT EXISTS admissions_audit (id INTEGER PRIMARY KEY AUTOINCREMENT,action TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL)'''
  ]:conn.execute(sql)
  s=json.dumps(seed(),ensure_ascii=False);conn.execute('INSERT OR IGNORE INTO admissions_settings(id,draft,published,revision) VALUES(1,?,?,0)',(s,s));conn.commit()
+ # Add the requested partner directory once, preserving existing settings and edits.
+ if not conn.execute("SELECT 1 FROM admissions_audit WHERE action='partner-directory-v1'").fetchone():
+  row=conn.execute('SELECT draft,published FROM admissions_settings WHERE id=1').fetchone()
+  updated=[]
+  for raw in row:
+   cfg=json.loads(raw);existing={p['id'] for p in cfg['partners']}
+   cfg['partners'].extend(p for p in seed()['partners'] if p['id'] not in existing)
+   updated.append(json.dumps(cfg,ensure_ascii=False))
+  conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',updated)
+  conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('partner-directory-v1','{}',?)",(now(),));conn.commit()
+
 
 def validate_catalog(c):
  if not isinstance(c,dict):raise ValueError('Invalid catalog')
@@ -75,6 +86,24 @@ def validate_catalog(c):
    for k in ['title','titleZh','description','descriptionZh','url','semester']:
     if not isinstance(item.get(k,''),str) or len(item.get(k,''))>3000:raise ValueError('Invalid text')
    if not item.get('title'):raise ValueError('Title required')
+   if group=='partners':
+    for k in ['city','address','phone','email','website','sourceUrl','locationNote']:
+     if not isinstance(item.get(k,''),str) or len(item.get(k,''))>1000:raise ValueError('Invalid partner contact information')
+    for k in ['website','sourceUrl']:
+     u=item.get(k,'')
+     if u and (urlsplit(u).scheme!='https' or not urlsplit(u).netloc or urlsplit(u).username or urlsplit(u).password):raise ValueError('Use HTTPS school links')
+    courses=item.get('programs',[])
+    if not isinstance(courses,list) or len(courses)>2:raise ValueError('Invalid partner courses')
+    seen_courses=set()
+    for course in courses:
+     if course.get('id') not in ['circle-piano','private-instruments'] or course['id'] in seen_courses:raise ValueError('Invalid partner course')
+     seen_courses.add(course['id'])
+     if type(course.get('active')) is not bool:raise ValueError('Invalid course visibility')
+     for k in ['title','description','details','schedule','tuition','registrationUrl']:
+      if not isinstance(course.get(k,''),str) or len(course.get(k,''))>5000:raise ValueError('Invalid course information')
+     u=course.get('registrationUrl','')
+     if u and (urlsplit(u).scheme!='https' or not urlsplit(u).netloc or urlsplit(u).username or urlsplit(u).password):raise ValueError('Use HTTPS registration links')
+
    if type(item.get('active')) is not bool:raise ValueError('Invalid visibility')
    u=item.get('url','')
    if u and (urlsplit(u).scheme!='https' or not urlsplit(u).netloc or urlsplit(u).username or urlsplit(u).password):raise ValueError('Use HTTPS links')
@@ -263,6 +292,23 @@ def register_admissions(app,api):
   c=db()
   try:return {'policy':catalog(c)['policy'],'accepted_at':now()}
   finally:c.close()
+ def partner_context(values):
+  pid=values.get('partner_id','');course_id=values.get('partner_course','')
+  if not pid and not course_id:return None
+  conn=db()
+  try:cfg=catalog(conn)
+  finally:conn.close()
+  partner=next((p for p in cfg['partners'] if p['id']==pid and p['active']),None)
+  course=next((p for p in (partner or {}).get('programs',[]) if p['id']==course_id and p['active']),None)
+  if not partner or not course:raise ValueError('Choose an available school and course before registering')
+  expected='Group Class' if course_id=='circle-piano' else 'Private Lesson'
+  if values.get('program_interest',expected)!=expected:raise ValueError('The program must match your school course selection')
+  return partner,course
+ def partner_snapshot(values):
+  ctx=partner_context(values)
+  if not ctx:return ''
+  p,c=ctx
+  return json.dumps({'school_id':p['id'],'school':p['title'],'address':p.get('address',''),'course_id':c['id'],'course':c['title'],'semester':p.get('semester',''),'schedule':c.get('schedule',''),'tuition':c.get('tuition',''),'status':'School review required'},ensure_ascii=False)
  def decorate(html,values=None):
   c=db()
   try:data=catalog(c)
@@ -275,14 +321,30 @@ def register_admissions(app,api):
   if partner and not partner_item:partner=''
   partner_html=f'<p>Partner program: {escape(partner_item["title"])} · {escape(partner_item.get("semester",""))}</p>' if partner_item else ''
   fragment=f'''<section id="tuition-selection"><div class="section-title">Teacher & tuition · {data['lessons']} classes per term</div>{partner_html}<input type="hidden" name="_csrf_token" value="{escape(api['hmusic_csrf_token']())}"><input type="hidden" name="admissions_key" value="{escape(token)}"><input type="hidden" name="partner_id" value="{escape(partner)}"><input type="hidden" name="policy_version" value="{escape(data['policy']['version'])}"><label>Teacher<select name="teacher_id" id="admission-teacher">{opts}</select></label><label>Lesson length<select name="lesson_minutes" id="admission-minutes" data-selected="{escape(values.get('lesson_minutes',request.args.get('duration','')))}"></select></label><label>Discount code (optional)<input name="admission_code" id="admission-code" value="{escape(values.get('admission_code',''))}" maxlength="32"></label><button type="button" id="apply-admission-code">Apply code</button><p id="admission-price" role="status"></p><p>Tuition covers the selected package. H-Music will confirm the final schedule. No payment is collected for teacher matching requests.</p></section><script src="/static/admissions-registration.js" defer></script>'''
+  if partner_item:
+   course_id=values.get('partner_course',request.args.get('course',''))
+   course=next((p for p in partner_item.get('programs',[]) if p['id']==course_id and p['active']),None)
+   if not course:
+    return '<html lang="en"><title>Choose your school course</title><h1>Choose your course before registering</h1><a href="https://www.hmusicandart.com/after-school.html?school='+escape(partner_item['id'])+'">View school courses</a></html>'
+   program='Group Class' if course_id=='circle-piano' else 'Private Lesson'
+   fragment='<section id="partner-selection"><div class="section-title">School program registration</div><h2>'+escape(partner_item['title'])+'</h2><p>'+escape(partner_item.get('address',''))+'</p><h3>'+escape(course['title'])+'</h3><p>'+escape(course.get('schedule') or 'Schedule will be confirmed by your school.')+'</p><p>'+escape(course.get('tuition') or 'Tuition will be confirmed before invoicing.')+'</p><p>Submit your details for school review. H-Music will confirm placement and send the appropriate payment instructions.</p><input type="hidden" name="partner_id" value="'+escape(partner)+'"><input type="hidden" name="partner_course" value="'+escape(course_id)+'"><input type="hidden" name="_csrf_token" value="'+escape(api['hmusic_csrf_token']())+'"></section>'
+   html=re.sub(r'<select name="program_interest" required>.*?</select>','<input name="program_interest" value="'+program+'" readonly>',html,flags=re.S)
+   if course_id=='circle-piano':html=re.sub(r'<select name="instrument" required>.*?</select>','<input name="instrument" value="Piano" readonly>',html,flags=re.S)
+   html=html.replace('Review enrollment &amp; payment','Submit school registration').replace('Review enrollment & payment','Submit school registration')
   html=html.replace('<html>','<html lang="en">',1)
   html=html.replace('<section>',fragment+'<section>',1)
   html=html.replace('Do not enter bank account numbers here. H-Music will send a secure ACH setup link through the parent app.', 'Do not enter bank account numbers here. Bank details are entered only on Stripe’s secure payment page.')
   html=html.replace('After submission, our H-Music team will confirm package, tuition, teacher, schedule, invoice, and parent app login.', 'Selected a teacher? Review your order and continue to secure ACH payment on the next page. Matching requests are reviewed before invoicing. H-Music confirms your schedule separately.')
   start=html.find('<div class="policy-body">');end=html.find('</div>',start)
   if start!=-1 and end!=-1:html=html[:start]+'<div class="policy-body"><p>Policy version: '+escape(data['policy']['version'])+'</p>'+''.join('<p>'+escape(p)+'</p>' for p in data['policy']['text'].splitlines())+html[end:]
+  if partner_item:
+   html=html.replace('Selected a teacher? Review your order and continue to secure ACH payment on the next page. Matching requests are reviewed before invoicing. H-Music confirms your schedule separately.','Your school registration will be reviewed by H-Music. We will confirm placement, schedule and tuition before sending payment instructions.')
   return html
  def prepare(values):
+  if values.get('partner_id') or values.get('partner_course'):
+   partner_context(values)
+   if values.get('teacher_id'):raise ValueError('School program tuition must be confirmed separately')
+   return None
   tid=values.get('teacher_id','')
   if not tid:
    if values.get('admission_code','').strip():raise ValueError('Choose a teacher before applying a discount code')
@@ -367,4 +429,4 @@ def register_admissions(app,api):
   except Exception:
    c.rollback();app.logger.exception('Enrollment checkout needs retry');return response('<p>Payment could not be opened. Return to your order and retry; do not start another registration.</p>',503)
   finally:c.close()
- api['admissions_decorate']=decorate;api['admissions_prepare']=prepare;api['admissions_finish']=finish;api['handle_admissions_event']=handle_event;api['admissions_policy_snapshot']=lambda: json.dumps(catalog_for_snapshot(),ensure_ascii=False)
+ api['admissions_partner_snapshot']=partner_snapshot;api['admissions_decorate']=decorate;api['admissions_prepare']=prepare;api['admissions_finish']=finish;api['handle_admissions_event']=handle_event;api['admissions_policy_snapshot']=lambda: json.dumps(catalog_for_snapshot(),ensure_ascii=False)

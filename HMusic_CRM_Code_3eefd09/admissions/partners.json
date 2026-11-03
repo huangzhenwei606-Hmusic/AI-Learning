@@ -1,0 +1,158 @@
+[
+  {
+    "id": "dreamers-thinkers",
+    "title": "Dreamers & Thinkers",
+    "titleZh": "",
+    "city": "Foster City",
+    "address": "939 E Hillsdale Blvd, Foster City, CA 94404",
+    "description": "Bilingual after-school learning and enrichment.",
+    "descriptionZh": "",
+    "website": "https://dat.education/",
+    "phone": "650-430-1819",
+    "email": "dreamersandthinkersfc@gmail.com",
+    "sourceUrl": "https://www.inplay.org/r/foster-city/providers/dreamers-and-thinkers/after-school-program",
+    "locationNote": "Confirm the lesson room and drop-off location with your school.",
+    "url": "",
+    "semester": "",
+    "active": true,
+    "programs": [
+      {
+        "id": "circle-piano",
+        "title": "Circle Piano Group Class",
+        "description": "Learn piano through small-group instruction, rhythm games and ensemble playing.",
+        "details": "Build keyboard skills, music reading and confidence through guided group activities. Placement, class size and home practice materials are confirmed for your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      },
+      {
+        "id": "private-instruments",
+        "title": "Private Instruments Class",
+        "description": "Individual music instruction shaped around each student\u2019s interests and experience.",
+        "details": "Request your instrument, experience level and preferred schedule. H-Music will confirm teacher placement, lesson length and availability at your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      }
+    ]
+  },
+  {
+    "id": "bright-horizon",
+    "title": "Bright Horizon Chinese School",
+    "titleZh": "",
+    "city": "Foster City",
+    "address": "650 Shell Blvd, Foster City, CA 94404",
+    "description": "Chinese after-school program at Foster City Community Center.",
+    "descriptionZh": "",
+    "website": "https://brighthorizonchineseschool.weebly.com/",
+    "phone": "",
+    "email": "",
+    "sourceUrl": "https://brighthorizonchineseschool.weebly.com/",
+    "locationNote": "Foster City Community Center. Your school will confirm the lesson room.",
+    "url": "",
+    "semester": "",
+    "active": true,
+    "programs": [
+      {
+        "id": "circle-piano",
+        "title": "Circle Piano Group Class",
+        "description": "Learn piano through small-group instruction, rhythm games and ensemble playing.",
+        "details": "Build keyboard skills, music reading and confidence through guided group activities. Placement, class size and home practice materials are confirmed for your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      },
+      {
+        "id": "private-instruments",
+        "title": "Private Instruments Class",
+        "description": "Individual music instruction shaped around each student\u2019s interests and experience.",
+        "details": "Request your instrument, experience level and preferred schedule. H-Music will confirm teacher placement, lesson length and availability at your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      }
+    ]
+  },
+  {
+    "id": "hanlin",
+    "title": "Hanlin Afterschool",
+    "titleZh": "",
+    "city": "Belmont",
+    "address": "248 Harbor Boulevard, Belmont, CA 94002",
+    "description": "After-school learning, language and enrichment at Hanlin.",
+    "descriptionZh": "",
+    "website": "https://www.hanlinacademy.co/",
+    "phone": "650-888-3650",
+    "email": "info@hanlinacademy.co",
+    "sourceUrl": "https://www.hanlinacademy.co/contact",
+    "locationNote": "Your school will confirm the lesson room.",
+    "url": "",
+    "semester": "",
+    "active": true,
+    "programs": [
+      {
+        "id": "circle-piano",
+        "title": "Circle Piano Group Class",
+        "description": "Learn piano through small-group instruction, rhythm games and ensemble playing.",
+        "details": "Build keyboard skills, music reading and confidence through guided group activities. Placement, class size and home practice materials are confirmed for your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      },
+      {
+        "id": "private-instruments",
+        "title": "Private Instruments Class",
+        "description": "Individual music instruction shaped around each student\u2019s interests and experience.",
+        "details": "Request your instrument, experience level and preferred schedule. H-Music will confirm teacher placement, lesson length and availability at your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      }
+    ]
+  },
+  {
+    "id": "stemtree",
+    "title": "Stemtree of San Mateo",
+    "titleZh": "",
+    "city": "San Mateo",
+    "address": "36 42nd Avenue, San Mateo, CA 94403",
+    "description": "STEM education and after-school enrichment.",
+    "descriptionZh": "",
+    "website": "https://stemtree.com/sanmateoca/",
+    "phone": "650-341-9988",
+    "email": "sanmateoca@stemtree.com",
+    "sourceUrl": "https://stemtree.com/sanmateoca/",
+    "locationNote": "Your school will confirm the lesson room.",
+    "url": "",
+    "semester": "",
+    "active": true,
+    "programs": [
+      {
+        "id": "circle-piano",
+        "title": "Circle Piano Group Class",
+        "description": "Learn piano through small-group instruction, rhythm games and ensemble playing.",
+        "details": "Build keyboard skills, music reading and confidence through guided group activities. Placement, class size and home practice materials are confirmed for your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      },
+      {
+        "id": "private-instruments",
+        "title": "Private Instruments Class",
+        "description": "Individual music instruction shaped around each student\u2019s interests and experience.",
+        "details": "Request your instrument, experience level and preferred schedule. H-Music will confirm teacher placement, lesson length and availability at your school.",
+        "schedule": "",
+        "tuition": "",
+        "registrationUrl": "",
+        "active": true
+      }
+    ]
+  }
+]
