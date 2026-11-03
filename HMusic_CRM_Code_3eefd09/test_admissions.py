@@ -34,6 +34,10 @@ class AdmissionsTests(unittest.TestCase):
   return r.location
  def test_partner_directory_and_idempotent_migration(self):
   self.assertEqual(len(self.catalog['partners']),4)
+  for school in self.catalog['partners']:
+   for course in school['programs']:
+    self.assertEqual(course['schedule'],'Follow your school schedule. Our staff will follow up with you.')
+    self.assertTrue(course['informationUrl'].startswith('https://www.hmusicandart.com/'))
   with closing(sqlite3.connect(self.path)) as conn:
    cfg=json.loads(conn.execute('SELECT published FROM admissions_settings').fetchone()[0]);cfg['partners'][0]['address']='Edited address'
    conn.execute('UPDATE admissions_settings SET published=?',(json.dumps(cfg),));conn.commit();ensure_schema(conn)

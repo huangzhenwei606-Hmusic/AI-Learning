@@ -63,6 +63,22 @@ def ensure_schema(conn):
   conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('partner-directory-v1','{}',?)",(now(),));conn.commit()
 
 
+
+ if not conn.execute("SELECT 1 FROM admissions_audit WHERE action='partner-information-v2'").fetchone():
+  defaults={p['id']:p for p in seed()['partners']}
+  updated=[]
+  for raw in conn.execute('SELECT draft,published FROM admissions_settings WHERE id=1').fetchone():
+   cfg=json.loads(raw)
+   for school in cfg['partners']:
+    if school['id'] not in defaults:continue
+    courses={c['id']:c for c in defaults[school['id']]['programs']}
+    for course in school.get('programs',[]):
+     if course['id'] in courses:
+      for key in ['details','schedule','informationUrl']:course[key]=courses[course['id']][key]
+   updated.append(json.dumps(cfg,ensure_ascii=False))
+  conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',updated)
+  conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('partner-information-v2','{}',?)",(now(),));conn.commit()
+
 def validate_catalog(c):
  if not isinstance(c,dict):raise ValueError('Invalid catalog')
  if type(c.get('lessons')) is not int or not 1<=c['lessons']<=100:raise ValueError('Lesson count must be 1–100')
@@ -99,10 +115,11 @@ def validate_catalog(c):
      if course.get('id') not in ['circle-piano','private-instruments'] or course['id'] in seen_courses:raise ValueError('Invalid partner course')
      seen_courses.add(course['id'])
      if type(course.get('active')) is not bool:raise ValueError('Invalid course visibility')
-     for k in ['title','description','details','schedule','tuition','registrationUrl']:
+     for k in ['title','description','details','schedule','tuition','registrationUrl','informationUrl']:
       if not isinstance(course.get(k,''),str) or len(course.get(k,''))>5000:raise ValueError('Invalid course information')
-     u=course.get('registrationUrl','')
-     if u and (urlsplit(u).scheme!='https' or not urlsplit(u).netloc or urlsplit(u).username or urlsplit(u).password):raise ValueError('Use HTTPS registration links')
+     for link_key in ['registrationUrl','informationUrl']:
+      u=course.get(link_key,'')
+      if u and (urlsplit(u).scheme!='https' or not urlsplit(u).netloc or urlsplit(u).username or urlsplit(u).password):raise ValueError('Use HTTPS course links')
 
    if type(item.get('active')) is not bool:raise ValueError('Invalid visibility')
    u=item.get('url','')
@@ -327,7 +344,8 @@ def register_admissions(app,api):
    if not course:
     return '<html lang="en"><title>Choose your school course</title><h1>Choose your course before registering</h1><a href="https://www.hmusicandart.com/after-school.html?school='+escape(partner_item['id'])+'">View school courses</a></html>'
    program='Group Class' if course_id=='circle-piano' else 'Private Lesson'
-   fragment='<section id="partner-selection"><div class="section-title">School program registration</div><h2>'+escape(partner_item['title'])+'</h2><p>'+escape(partner_item.get('address',''))+'</p><h3>'+escape(course['title'])+'</h3><p>'+escape(course.get('schedule') or 'Schedule will be confirmed by your school.')+'</p><p>'+escape(course.get('tuition') or 'Tuition will be confirmed before invoicing.')+'</p><p>Submit your details for school review. H-Music will confirm placement and send the appropriate payment instructions.</p><input type="hidden" name="partner_id" value="'+escape(partner)+'"><input type="hidden" name="partner_course" value="'+escape(course_id)+'"><input type="hidden" name="_csrf_token" value="'+escape(api['hmusic_csrf_token']())+'"></section>'
+   fragment='<section id="partner-selection"><div class="section-title">School program registration</div><h2>'+escape(partner_item['title'])+'</h2><p>'+escape(partner_item.get('address',''))+'</p><h3>'+escape(course['title'])+'</h3><p>'+escape(course.get('schedule') or 'Follow your school schedule. Our staff will follow up with you.')+'</p><p>'+escape(course.get('tuition') or 'Tuition will be confirmed before invoicing.')+'</p><p>Submit your details for school review. H-Music will confirm placement and send the appropriate payment instructions.</p><input type="hidden" name="partner_id" value="'+escape(partner)+'"><input type="hidden" name="partner_course" value="'+escape(course_id)+'"><input type="hidden" name="_csrf_token" value="'+escape(api['hmusic_csrf_token']())+'"></section>'
+   if course.get('informationUrl'):fragment=fragment.replace('</h3>','</h3><p><a href="'+escape(course['informationUrl'])+'" target="_blank" rel="noopener">Read the H-Music course information</a></p>',1)
    html=re.sub(r'<select name="program_interest" required>.*?</select>','<input name="program_interest" value="'+program+'" readonly>',html,flags=re.S)
    if course_id=='circle-piano':html=re.sub(r'<select name="instrument" required>.*?</select>','<input name="instrument" value="Piano" readonly>',html,flags=re.S)
    html=html.replace('Review enrollment &amp; payment','Submit school registration').replace('Review enrollment & payment','Submit school registration')
