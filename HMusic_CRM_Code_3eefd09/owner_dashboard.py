@@ -70,7 +70,7 @@ def load_owner_dashboard(connect, today, homework_rows, selected_date=None, unre
         messages = unread_message_count if unread_message_count is not None else scalar("SELECT COUNT(*) FROM messages WHERE recipient_role='owner' AND read_at IS NULL")
         if messages: add('Message','Unread messages','Open the owner inbox','/messages',messages)
         intake = scalar("SELECT COUNT(*) FROM inquiries WHERE status IN ('New Lead','Inquiry') OR COALESCE(owner_verified,0)=0")
-        if intake: add('Intake','New student intake','Review trial scheduling and family setup','/new_students',intake)
+        if intake: add('Intake','New student intake','Review trial scheduling and family setup','/admissions',intake)
         recent_homework = [r for r in homework_rows if str(r[3] or '') >= (today-timedelta(days=6)).isoformat() and str(r[3] or '') <= today.isoformat()]
         if recent_homework: add('Homework','Recent missing homework','Present lessons in the last 7 days','/missing_homework',len(recent_homework))
         pending_count = len(reschedules)+len(subs)+bookings+cancellations+events+intake

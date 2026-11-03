@@ -40731,6 +40731,7 @@ def new_student_intake():
     return add_inquiry()
 
 
+@app.route("/admissions")
 @app.route("/inquiries")
 def inquiries():
     ensure_owner()
@@ -40915,7 +40916,7 @@ def inquiries():
     return f"""
     <html>
     <head>
-        <title>New Students / Intake</title>
+        <title>Admissions & Enrollment · H-Music</title>
         <style>
             * {{ box-sizing:border-box; }}
             body {{ margin:0; font-family: Arial, Helvetica, sans-serif; background:#f7f7fb; color:#202428; }}
@@ -40981,10 +40982,10 @@ def inquiries():
         <div class="panel">
             <div class="hero">
                 <div class="hero-top">
-                    <h1>New Students / Intake</h1>
+                    <h1>Inquiries & trials</h1>
                     <a class="owner-home" href="/owner_dashboard">Back to Manager Home</a>
                 </div>
-                <p class="subtitle">Dense list view for fast owner review. Expand a row only when detail is needed.</p>
+                <p class="subtitle">Manage new inquiries, trial scheduling and family registration. Review group applications in the admissions tabs above.</p>
                 <div class="actions">
                     <a href="/trial" target="_blank">Trial link</a>
                     <a href="/registration" target="_blank">Registration</a>
