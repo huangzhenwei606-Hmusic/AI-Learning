@@ -56,6 +56,7 @@ def ensure_schema(conn):
         student_id INTEGER, enrollment_id INTEGER, invoice_id INTEGER, inquiry_id INTEGER)''',
         '''CREATE TABLE IF NOT EXISTS group_session_teachers (schedule_id INTEGER NOT NULL, teacher_name TEXT NOT NULL, PRIMARY KEY(schedule_id,teacher_name))''',
         '''CREATE TABLE IF NOT EXISTS group_programs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, summary TEXT NOT NULL, classroom TEXT NOT NULL, materials TEXT NOT NULL, home_practice TEXT NOT NULL, website_url TEXT NOT NULL, images_json TEXT NOT NULL, updated_at TEXT NOT NULL)''',
+        '''CREATE TABLE IF NOT EXISTS group_offering_locations (offering_id INTEGER PRIMARY KEY, location_id TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS group_offering_programs (offering_id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS group_program_images (program_id INTEGER NOT NULL, slot INTEGER NOT NULL, image_data TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(program_id,slot))''',
         '''CREATE TABLE IF NOT EXISTS group_offering_images (offering_id INTEGER PRIMARY KEY, image_data TEXT NOT NULL, updated_at TEXT NOT NULL)''',
@@ -106,12 +107,25 @@ def get_sessions(cur, offering_id):
     return lessons
 
 
+def teaching_locations(cur):
+    from admissions import seed
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='admissions_settings'")
+    if cur.fetchone():
+        cur.execute('SELECT published FROM admissions_settings WHERE id=1');record=cur.fetchone()
+        cfg=json.loads(record[0]) if record else seed()
+    else:cfg=seed()
+    return [dict(id=p['id'],title=p['title'],address=p.get('address',''),city=p.get('city',''),kind=kind,active=p['active']) for key,kind in [('centers','center'),('partners','partner')] for p in cfg.get(key,seed().get(key,[]))]
+
+
 def get_offering(cur, oid):
     cur.execute('SELECT * FROM group_offerings WHERE id=?', (oid,))
     item = one(cur)
     if item:
         cur.execute('SELECT COUNT(*) FROM group_offering_sessions WHERE offering_id=?',(oid,))
         item['session_count']=cur.fetchone()[0]
+        cur.execute('SELECT location_id FROM group_offering_locations WHERE offering_id=?',(oid,));loc=cur.fetchone()
+        item['teaching_location_id']=loc[0] if loc else ''
+        item['teaching_location']=next((p for p in teaching_locations(cur) if p['id']==item['teaching_location_id']),None)
         cur.execute('SELECT updated_at FROM group_offering_images WHERE offering_id=?',(oid,))
         image=cur.fetchone()
         item['image_url'] = '/group-class-image/'+str(oid)+'?v='+image[0] if image else ''
@@ -471,17 +485,24 @@ def register_group_enrollment(app, api):
         else:
             with db() as conn:
                 offerings = published_offerings(conn.cursor())
+            requested_location=request.args.get('location','')
+            if requested_location:
+                with db() as conn:known=teaching_locations(conn.cursor())
+                if not any(p['id']==requested_location and p['active'] for p in known):return jsonify(error='Unknown location'),400
             classes = []
             for o in offerings:
+                if requested_location and o['teaching_location_id']!=requested_location:continue
+                if o['teaching_location_id'] and (not o['teaching_location'] or not o['teaching_location']['active']):continue
                 program_text = ' '.join([o['program']['name'] if o['program'] else '', o['title'], o['description']] + [s.get('course_type_name') or '' for s in o['sessions']])
                 if not re.search(r'\bcircle[\s-]+piano\b', program_text, re.I):
                     continue
                 sessions = [{
                     'date': s['lesson_date'], 'time': s['lesson_time'],
                     'duration_minutes': s['duration'], 'teacher': s.get('teacher_label') or s['teacher'],
-                    'location': s.get('location') or '', 'room': s.get('classroom') or '',
+                    'location': (o['teaching_location']['title']+' · '+o['teaching_location']['address']) if o['teaching_location'] else s.get('location') or '', 'room': s.get('classroom') or '',
                 } for s in o['available_sessions']]
                 classes.append({
+                    'location_id':o['teaching_location_id'],'teaching_location':o['teaching_location'],
                     'id': o['id'], 'title': o['title'], 'description': o['program']['summary'] if o['program'] else o['description'],
                     'age_range': o['age_range'], 'capacity': o['capacity'],
                     'remaining': o['remaining'], 'tuition_cents': o['tuition_cents'],
@@ -514,10 +535,12 @@ def register_group_enrollment(app, api):
                 preview=request.method=='GET' and request.args.get('preview')=='1' and api['require_owner']()
                 if not o or (not o['published'] and not preview):
                     abort(404)
+                if o['teaching_location_id'] and (not o['teaching_location'] or not o['teaching_location']['active']):abort(404)
                 o['remaining'] = max(0,o['capacity']-occupied(cur,oid))
                 if request.method == 'POST':
                     if len(request.form) > 20 or request.content_length and request.content_length > 16000:
                         abort(413)
+                    if request.form.get('teaching_location_id',o['teaching_location_id'])!=o['teaching_location_id']:raise ValueError('The class location changed. Reload before applying.')
                     token = request.form.get('request_key','')
                     if not token or token != session.get('group_request_key'):
                         raise ValueError('This form expired. Reload the page and try again.')
@@ -571,7 +594,7 @@ def register_group_enrollment(app, api):
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         (oid,raw['student_name'],raw['birth_date'],raw['experience'],raw['parent_name'],raw['email'].lower(),raw['phone'],
                          state,token,digest,json.dumps({'policy':o['policy'],'tuition_cents':o['tuition_cents'],
-                         'sessions':o['sessions']},ensure_ascii=False),now(),now(),inquiry))
+                         'sessions':o['sessions'],'teaching_location':o['teaching_location']},ensure_ascii=False),now(),now(),inquiry))
                     return redirect(url_for('group_enrollment.receipt',token=receipt),code=303)
         except ValueError as exc:
             error = str(exc) if 'does not match format' not in str(exc) else 'Enter a valid birth date.'
@@ -751,6 +774,8 @@ def register_group_enrollment(app, api):
                         cur.execute('SELECT COUNT(*) FROM group_applications WHERE offering_id=?',(edit_id,))
                         if cur.fetchone()[0]:raise ValueError('This class has applications. Review enrollment before changing terms.')
                         if get_offering(cur,edit_id)['published']:raise ValueError('Close registration before editing this draft.')
+                    teaching_location_id=request.form.get('teaching_location_id','')
+                    if teaching_location_id and not any(p['id']==teaching_location_id and p['active'] for p in teaching_locations(cur)):raise ValueError('Choose an available teaching location.')
                     title=request.form.get('title','').strip(); policy=request.form.get('policy','').strip()
                     capacity=int(request.form.get('capacity','0'))
                     amount=Decimal(request.form.get('tuition','0'))
@@ -786,6 +811,8 @@ def register_group_enrollment(app, api):
                         cur.execute("""INSERT INTO group_offerings(title,description,age_range,policy,capacity,
                             tuition_cents,published,created_at) VALUES (?,?,?,?,?,?,0,?)""",values+(now(),))
                         oid=cur.lastrowid
+                    cur.execute('DELETE FROM group_offering_locations WHERE offering_id=?',(oid,))
+                    if teaching_location_id:cur.execute('INSERT INTO group_offering_locations(offering_id,location_id) VALUES (?,?)',(oid,teaching_location_id))
                     cur.execute('DELETE FROM group_offering_programs WHERE offering_id=?',(oid,))
                     if program_id:cur.execute('INSERT INTO group_offering_programs(offering_id,program_id) VALUES (?,?)',(oid,program_id))
                     for sid in selected:
@@ -814,6 +841,7 @@ def register_group_enrollment(app, api):
                 AND lower(s.status)='scheduled'
                 ORDER BY s.teacher,s.group_name,s.lesson_date,s.lesson_time LIMIT 400''',(now()[:10],))
             choices=rows(cur)
+            locations=[p for p in teaching_locations(cur) if p['active']]
         saved_id=session.pop('group_schedule_saved_id',None)
         saved=next((o for o in offerings if o['id']==saved_id),None)
         warnings=[]
@@ -825,7 +853,7 @@ def register_group_enrollment(app, api):
                         warnings.append(lesson['lesson_date']+': '+conflict.get('message','Teacher or room overlap.'))
         editing=next((o for o in offerings if str(o['id'])==request.args.get('edit')),None)
         selected=next((o for o in offerings if str(o['id'])==request.args.get('class_id')),None) or editing or saved
-        return page('manage.html',offerings=offerings,choices=choices,editing=editing,selected=selected,programs=programs,default_program=default_program,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
+        return page('manage.html',locations=locations,offerings=offerings,choices=choices,editing=editing,selected=selected,programs=programs,default_program=default_program,creating=request.args.get('new')=='1',saved=saved,warnings=warnings,error=error)
 
     @bp.route('/group-enrollments',methods=['GET','POST'])
     def review():

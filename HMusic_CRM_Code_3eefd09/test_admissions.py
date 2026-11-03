@@ -66,6 +66,14 @@ class AdmissionsTests(unittest.TestCase):
   d['catalog']['partners'][0]['programs'][0]['schedule']='Mondays at 3 PM';d['publish']=True
   self.assertEqual(self.client.post('/api/admissions/admin',json=d).status_code,200)
   self.assertEqual(self.client.get('/api/website/admissions').json['partners'][0]['programs'][0]['schedule'],'Mondays at 3 PM')
+ def test_center_selection_is_validated_and_preserved(self):
+  with self.app.test_request_context('/registration?location=center-edgewater'):
+   html=self.api['admissions_decorate']('<html><section></section>')
+   self.assertIn('951 M Edgewater',html);self.assertIn('name="center_id" value="center-edgewater"',html)
+   snapshot=json.loads(self.api['admissions_partner_snapshot']({'center_id':'center-marlin'}))
+   self.assertEqual(snapshot['location_id'],'center-marlin')
+   with self.assertRaises(ValueError):self.api['admissions_prepare']({'center_id':'unknown'})
+   with self.assertRaises(ValueError):self.api['admissions_prepare']({'center_id':'center-edgewater','partner_id':'hanlin'})
  def test_owner_guards_and_public_data(self):
   self.assertEqual(self.client.get('/admissions-admin').status_code,302)
   for path in ['/api/admissions/admin','/api/admissions/coupons','/api/admissions/orders']:

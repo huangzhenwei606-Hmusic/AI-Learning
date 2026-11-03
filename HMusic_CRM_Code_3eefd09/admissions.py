@@ -40,7 +40,7 @@ def seed():
  for names,prices,subject in [(['Xu Huang','Jason Kim'],[65000,97500,130000],'Instrument'),(['Jessie Gong','Hyewon Shin','Xueyang Wang','Yidan Sun','Chloe Lu'],[60000,90000,120000],'Instrument'),(['Mia Li','Claire Chen','Halley Hsieh','Jenny Lee'],[55000,82500,110000],'Instrument'),(['Jenny Lee','Yichi Dang'],[55000,82500,110000],'Voice')]:
   for name in names:
    teachers.append(dict(id=re.sub('[^a-z0-9]+','-',name.lower()+'-'+subject.lower()),name=name,subject=subject,active=True,prices=dict(zip(['30','45','60'],prices))))
- return dict(teachers=teachers,lessons=10,checkoutEnabled=True,policy=dict(version='2026-11-03',text=POLICY,textZh=POLICY_ZH),partners=json.loads((BASE/'partners.json').read_text()),events=[],copy={'enrollTitle':'Find your next musical chapter.','enrollTitleZh':'开启你的音乐新篇章。','eventsTitle':'On stage. Together.','eventsTitleZh':'一起走上舞台。'},navigation={'enroll':True,'events':True})
+ return dict(teachers=teachers,lessons=10,checkoutEnabled=True,policy=dict(version='2026-11-03',text=POLICY,textZh=POLICY_ZH),centers=[{'id': 'center-edgewater', 'title': 'H-Music Center · Edgewater', 'address': '951 M Edgewater Blvd, Foster City, CA 94404', 'city': 'Foster City', 'active': True}, {'id': 'center-marlin', 'title': 'H-Music Center · Marlin', 'address': '1101 Marlin Ave, Foster City, CA 94404', 'city': 'Foster City', 'active': True}],partners=json.loads((BASE/'partners.json').read_text()),events=[],copy={'enrollTitle':'Find your next musical chapter.','enrollTitleZh':'开启你的音乐新篇章。','eventsTitle':'On stage. Together.','eventsTitleZh':'一起走上舞台。'},navigation={'enroll':True,'events':True})
 
 def ensure_schema(conn):
  for sql in [
@@ -79,8 +79,22 @@ def ensure_schema(conn):
   conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',updated)
   conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('partner-information-v2','{}',?)",(now(),));conn.commit()
 
+ if not conn.execute("SELECT 1 FROM admissions_audit WHERE action='center-locations-v1'").fetchone():
+  values=[]
+  for raw in conn.execute('SELECT draft,published FROM admissions_settings WHERE id=1').fetchone():
+   cfg=json.loads(raw);cfg.setdefault('centers',seed()['centers']);values.append(json.dumps(cfg,ensure_ascii=False))
+  conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',values)
+  conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('center-locations-v1','{}',?)",(now(),));conn.commit()
+
+
 def validate_catalog(c):
  if not isinstance(c,dict):raise ValueError('Invalid catalog')
+ if not isinstance(c.get('centers'),list) or len(c['centers'])>20:raise ValueError('Invalid centers')
+ seen_centers=set()
+ for center in c['centers']:
+  if not isinstance(center,dict) or not re.fullmatch('center-[a-z0-9-]{1,90}',str(center.get('id',''))) or center['id'] in seen_centers:raise ValueError('Unique center IDs required')
+  seen_centers.add(center['id'])
+  if any(not isinstance(center.get(k),str) or not center[k].strip() or len(center[k])>500 for k in ['title','address','city']) or type(center.get('active')) is not bool:raise ValueError('Center name, address and city required')
  if type(c.get('lessons')) is not int or not 1<=c['lessons']<=100:raise ValueError('Lesson count must be 1–100')
  if type(c.get('checkoutEnabled')) is not bool:raise ValueError('Invalid checkout switch')
  if not isinstance(c.get('teachers'),list) or len(c['teachers'])>100:raise ValueError('Invalid teachers')
@@ -321,7 +335,19 @@ def register_admissions(app,api):
   expected='Group Class' if course_id=='circle-piano' else 'Private Lesson'
   if values.get('program_interest',expected)!=expected:raise ValueError('The program must match your school course selection')
   return partner,course
+ def center_context(values):
+  cid=values.get('center_id','')
+  if not cid:return None
+  conn=db()
+  try:cfg=catalog(conn)
+  finally:conn.close()
+  center=next((p for p in cfg['centers'] if p['id']==cid and p['active']),None)
+  if not center:raise ValueError('Choose an available H-Music Center')
+  if values.get('partner_id'):raise ValueError('Choose only one teaching location')
+  return center
  def partner_snapshot(values):
+  center=center_context(values)
+  if center:return json.dumps({'location_id':center['id'],'location':center['title'],'address':center['address']},ensure_ascii=False)
   ctx=partner_context(values)
   if not ctx:return ''
   p,c=ctx
@@ -349,6 +375,10 @@ def register_admissions(app,api):
    html=re.sub(r'<select name="program_interest" required>.*?</select>','<input name="program_interest" value="'+program+'" readonly>',html,flags=re.S)
    if course_id=='circle-piano':html=re.sub(r'<select name="instrument" required>.*?</select>','<input name="instrument" value="Piano" readonly>',html,flags=re.S)
    html=html.replace('Review enrollment &amp; payment','Submit school registration').replace('Review enrollment & payment','Submit school registration')
+  center_id=values.get('center_id',request.args.get('location',''))
+  if center_id and not partner_item:
+   center=next((p for p in data['centers'] if p['id']==center_id and p['active']),None)
+   if center:fragment='<section><div class="section-title">Teaching location</div><h2>'+escape(center['title'])+'</h2><p>'+escape(center['address'])+'</p><input type="hidden" name="center_id" value="'+escape(center_id)+'"></section>'+fragment
   html=html.replace('<html>','<html lang="en">',1)
   html=html.replace('<section>',fragment+'<section>',1)
   html=html.replace('Do not enter bank account numbers here. H-Music will send a secure ACH setup link through the parent app.', 'Do not enter bank account numbers here. Bank details are entered only on Stripe’s secure payment page.')
@@ -359,6 +389,7 @@ def register_admissions(app,api):
    html=html.replace('Selected a teacher? Review your order and continue to secure ACH payment on the next page. Matching requests are reviewed before invoicing. H-Music confirms your schedule separately.','Your school registration will be reviewed by H-Music. We will confirm placement, schedule and tuition before sending payment instructions.')
   return html
  def prepare(values):
+  center_context(values)
   if values.get('partner_id') or values.get('partner_course'):
    partner_context(values)
    if values.get('teacher_id'):raise ValueError('School program tuition must be confirmed separately')
@@ -379,6 +410,7 @@ def register_admissions(app,api):
    if values.get('policy_version')!=cfg['policy']['version']:raise ValueError('The policy changed. Review the updated policy and submit again.')
    identity=digest('|'.join([values.get('parent_email','').strip().lower(),values.get('student_name','').strip().casefold(),values.get('age','').strip().casefold()]))
    q=quote(c,tid,values.get('lesson_minutes'),values.get('admission_code',''),values.get('partner_id',''),identity,True)
+   q['teaching_location']=center_context(values)
    q['checkoutEnabled']=cfg['checkoutEnabled'];q['student_name']=values.get('student_name','');q['email']=values.get('parent_email','');q['signed_by']=values.get('guardian_signature','');q['signed_date']=values.get('signed_date','');q['accepted_at']=now()
    oid=secrets.token_urlsafe(24);access=secrets.token_urlsafe(32)
    c.execute('INSERT INTO admissions_orders(id,request_key,access_hash,student_key,teacher_id,partner_id,semester,snapshot,subtotal,discount,total,coupon_code,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(oid,digest(values['admissions_key']),digest(access),identity,tid,q['partner_id'],q['semester'],json.dumps(q,ensure_ascii=False),q['subtotal'],q['discount'],q['total'],q['coupon'],'registration',now()));c.commit()
@@ -423,7 +455,8 @@ def register_admissions(app,api):
    button=''
    if o['status'] in ['registration','checkout'] and catalog(c)['checkoutEnabled'] and o['inquiry_id']:
     button=f'<form method="post" action="/enrollment-order/{oid}/{token}/checkout"><input type="hidden" name="_csrf_token" value="{csrf}"><button>Continue to secure ACH payment ↗</button></form>'
-   body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1><p>{escape(status)}</p><h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
+   venue=q.get('teaching_location');venue_html=('<p><strong>'+escape(venue['title'])+'</strong><br>'+escape(venue['address'])+'</p>') if venue else ''
+   body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1>{venue_html}<p>{escape(status)}</p><h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
    return response(body)
   finally:c.close()
  @app.post('/enrollment-order/<oid>/<token>/checkout', endpoint='hmusic_admissions_checkout')
