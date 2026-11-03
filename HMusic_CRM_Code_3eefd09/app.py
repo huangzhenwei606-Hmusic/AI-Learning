@@ -35532,6 +35532,10 @@ def stripe_webhook():
         parent_id=metadata.get("parent_id")
     )
 
+    admission_result = handle_admissions_event(event)
+    if admission_result is not None:
+        return admission_result
+
     quick_pay_result = handle_quick_pay_event(event)
     if quick_pay_result is not None:
         return quick_pay_result
@@ -40185,7 +40189,7 @@ def v35_registration_form(error="", values=None):
         return v35_safe(values.get(name, ""))
 
     error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
-    return f"""
+    return admissions_decorate(f"""
     <html>
     <head>
         <title>H-Music New Student Registration</title>
@@ -40353,7 +40357,7 @@ def v35_registration_form(error="", values=None):
         </div>
     </body>
     </html>
-    """
+    """, values)
 
 
 def v35_registration_thank_you(inquiry_id, data):
@@ -40415,7 +40419,20 @@ def public_student_registration():
             return v35_registration_form("Please review and agree to the policy and billing authorization.", request.form)
         if not request.form.get("guardian_signature", "").strip() or not request.form.get("signed_date", "").strip():
             return v35_registration_form("Please sign and date the registration.", request.form)
+        try:
+            admission_order = admissions_prepare(request.form)
+        except (ValueError, TypeError) as exc:
+            return v35_registration_form(str(exc), request.form), 400
+        if admission_order and admission_order.get('existing'):
+            if admission_order['inquiry_id']:
+                return admissions_finish(admission_order, admission_order['inquiry_id'])
+            return v35_registration_form('This registration is already being saved. Please wait or contact H-Music before submitting another registration.', request.form), 409
         extras = [
+            ("Selected teacher", request.form.get("teacher_id", "")),
+            ("Lesson minutes", request.form.get("lesson_minutes", "")),
+            ("Partner school", request.form.get("partner_id", "")),
+            ("Policy version", request.form.get("policy_version", "")),
+
             ("Relationship", request.form.get("relationship", "")),
             ("Second guardian", request.form.get("guardian_2_name", "")),
             ("Second guardian contact", request.form.get("guardian_2_contact", "")),
@@ -40431,6 +40448,7 @@ def public_student_registration():
             ("Preferred payment setup", request.form.get("payment_setup", "")),
             ("Student notes", request.form.get("student_notes", "")),
             ("Policy agreement", "Agreed"),
+            ("Accepted policy snapshot", admissions_policy_snapshot()),
             ("Billing authorization", "Agreed"),
             ("SMS consent", "Opted in" if request.form.get("sms_consent") == "1" else "Not opted in"),
             ("Guardian signature", request.form.get("guardian_signature", "")),
@@ -40450,6 +40468,8 @@ def public_student_registration():
         """, ("Registration Submitted", "Ready to Enroll", "Registration", v35_now(), inquiry_id))
         conn.commit()
         conn.close()
+        if admission_order:
+            return admissions_finish(admission_order, inquiry_id)
         return v35_registration_thank_you(inquiry_id, data)
 
     return v35_registration_form()
@@ -40990,6 +41010,7 @@ def inquiries():
                     <a href="/trial" target="_blank">Trial link</a>
                     <a href="/registration" target="_blank">Registration</a>
                     <a href="/group-class-admin">Group Class Enrollment</a>
+                    <a href="/admissions-admin">Tuition, discounts & enrollment payments</a>
                     <a href="/group-enrollments">Review Group Applications</a>
                     <a class="primary" href="/new_student_intake">Manual Entry</a>
                 </div>
@@ -50036,3 +50057,8 @@ register_website_cms(app, lambda: sqlite3.connect('hmusic.db'), require_owner, h
 # Group registration reuses calendar sessions and existing invoice settlement.
 from group_enrollment import register_group_enrollment
 register_group_enrollment(app, globals())
+
+
+# One published configuration for tuition, policies, partners and event registration.
+from admissions import register_admissions
+register_admissions(app, globals())
