@@ -1,4 +1,6 @@
 (async()=>{
+const style=document.createElement('style');style.textContent=`#tuition-selection>label{margin-top:16px}#tuition-selection select,#tuition-selection input{margin-top:4px}#apply-admission-code{margin:14px 0 10px;padding:11px 20px;border:1px solid #1f6fba;border-radius:10px;background:#fff;color:#1f6fba;font:700 14px system-ui;cursor:pointer;min-height:44px}#apply-admission-code:hover{background:#e4f2ff}#admission-price{padding:16px;background:#eef5f5;border:1px solid #d4e4df;border-radius:12px;font-weight:700;color:#203e46;line-height:1.7;margin:8px 0 14px}#tuition-selection>p:last-child{font-size:13px;line-height:1.6;color:#6f6b63}`;document.head.append(style);
+
 const teacher=document.getElementById('admission-teacher'),duration=document.getElementById('admission-minutes'),code=document.getElementById('admission-code'),price=document.getElementById('admission-price');if(!teacher)return;
 let catalog,sequence=0;const money=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(n/100);
 const submittedDuration=duration.dataset.selected||new URLSearchParams(location.search).get('duration');
