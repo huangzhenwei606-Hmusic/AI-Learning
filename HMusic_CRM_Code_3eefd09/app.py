@@ -35532,6 +35532,10 @@ def stripe_webhook():
         parent_id=metadata.get("parent_id")
     )
 
+    trial_payment_result = handle_trial_payment_event(event)
+    if trial_payment_result is not None:
+        return trial_payment_result
+
     admission_result = handle_admissions_event(event)
     if admission_result is not None:
         return admission_result
@@ -39834,6 +39838,7 @@ def v35_insert_trial_lead(data, public=False):
 
 
 def v35_public_trial_form(error="", values=None, family_context=None):
+    session.setdefault("trial_payment_nonce", secrets.token_urlsafe(32))
     values = values or {}
     family_context = family_context or {}
 
@@ -39992,6 +39997,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
         <script>
             function selectTrialFee(value, fee) {{
                 document.getElementById("trial_fee").value = fee;
+                updateTrialPaymentButton();
                 const hint = document.getElementById("age-fee-hint");
                 const age = parseFloat(document.querySelector("input[name='age']").value || "0");
                 if (value === "15 mins" && age && age > 5) {{
@@ -40002,6 +40008,19 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                     hint.style.display = "none";
                 }}
             }}
+            function updateTrialPaymentButton() {{
+                const button = document.getElementById('trial-payment-submit');
+                const selected = document.querySelector('input[name="trial_duration"]:checked');
+                const method = document.querySelector('input[name="payment_method"]:checked');
+                const fees = {{'15 mins': '$15', '30 mins': '$30', '45 mins': '$45', '60 mins': '$60'}};
+                button.textContent = method && method.value === 'ACH' && selected
+                    ? 'Submit request & pay ' + fees[selected.value] + ' by ACH'
+                    : 'Submit trial request';
+            }}
+            document.addEventListener('DOMContentLoaded', () => {{
+                document.querySelectorAll('input[name="payment_method"]').forEach(input => input.addEventListener('change', updateTrialPaymentButton));
+                updateTrialPaymentButton();
+            }});
             function setInstrument(value) {{
                 const input = document.querySelector("input[name='instrument']");
                 input.value = value;
@@ -40118,7 +40137,7 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                             <input type="radio" name="payment_method" value="ACH" required {'checked' if values.get('payment_method') in ('ACH', '') else ''}>
                             <div class="pay-title">ACH Bank</div>
                             <p>No card. H-Music covers ACH fee.</p>
-                            <div class="payment-note">Instructions sent after slot confirmation.</div>
+                            <div class="payment-note">Pay securely after submitting this form. No app login needed.</div>
                         </label>
                         <label class="pay-card">
                             <input type="radio" name="payment_method" value="Zelle" required {'checked' if values.get('payment_method') == 'Zelle' else ''}>
@@ -40134,7 +40153,8 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                     <label>Anything else you’d like us to know?<textarea name="notes" placeholder="Tell us about goals, schedule needs, teacher preference, or anything helpful...">{val('notes')}</textarea></label>
                 </section>
 
-                <button class="submit" type="submit">Submit trial request</button>
+                <p>ACH: submit your request and continue to secure bank payment for the selected trial fee. Zelle: submit your request to view payment instructions. Your trial time will be confirmed separately.</p>
+                <button class="submit" id="trial-payment-submit" type="submit">Submit request &amp; continue to payment</button>
             </form>
         </div>
     </body>
@@ -40710,6 +40730,8 @@ def public_trial_request():
             return v35_public_trial_form("15 mins / $15 is only for children age 5 and under. Please choose 30, 45, or 60 mins.", form_values, family_context)
         if not data["preferred_days"] or not data["preferred_times"]:
             return v35_public_trial_form("Please enter at least one preferred day and time.", form_values, family_context)
+        if data["payment_method"] == "ACH":
+            return start_trial_payment(data)
         inquiry_id = v35_insert_trial_lead(data, public=True)
         return v35_public_trial_thank_you(inquiry_id, data)
     return v35_public_trial_form(values=prefill_values, family_context=family_context)
@@ -41302,6 +41324,7 @@ def inquiry_detail(inquiry_id):
                 <div class="card"><span>Phone</span><b>{v35_safe(inquiry['phone'], '-')}</b></div>
                 <div class="card"><span>Status</span><b>{v35_safe(inquiry['status'], '-')}</b></div>
                 <div class="card"><span>Trial Fee</span><b>{trial_fee_line}</b></div>
+                {trial_payment_owner_status(inquiry_id)}
             </div>
         </div>
 
@@ -50100,3 +50123,7 @@ register_group_enrollment(app, globals())
 # One published configuration for tuition, policies, partners and event registration.
 from admissions import register_admissions
 register_admissions(app, globals())
+
+
+from trial_payment import register_trial_payment
+register_trial_payment(app, globals())
