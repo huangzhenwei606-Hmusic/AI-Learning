@@ -39608,6 +39608,37 @@ def v35_safe(value, default=""):
     return escape(str(value))
 
 
+
+def v35_trial_location_select(current=""):
+    """Use active configured rooms and preserve existing intake locations."""
+    ensure_location_room_schema()
+    conn = sqlite3.connect(DB_NAME)
+    try:
+        rows = conn.execute("""
+            SELECT l.location_name, r.room_name
+            FROM studio_locations l
+            JOIN studio_rooms r ON r.location_id = l.id
+            WHERE l.active = 1 AND r.active = 1
+            ORDER BY l.sort_order, l.location_name, r.sort_order, r.room_name
+        """).fetchall()
+    finally:
+        conn.close()
+    values = ["To be confirmed", "Online"]
+    for location, room in rows:
+        label = f"{location} / {room}"
+        if label not in values:
+            values.append(label)
+    current = str(current or "").strip()
+    if current and current not in values:
+        values.append(current)
+    selected = current or "To be confirmed"
+    options = "".join(
+        f'<option value="{v35_safe(value)}"{" selected" if value == selected else ""}>{v35_safe(value)}</option>'
+        for value in values
+    )
+    return f'<select id="trial-location" name="trial_location">{options}</select>'
+
+
 def v35_add_column_if_missing(cursor, table_name, column_name, column_sql):
     cursor.execute(f"PRAGMA table_info({table_name})")
     columns = [row[1] for row in cursor.fetchall()]
@@ -41213,7 +41244,7 @@ def add_inquiry():
                     <div><label>Preferred Days</label><input name="preferred_days" placeholder="Mon/Wed/Sat"></div>
                     <div><label>Preferred Times</label><input name="preferred_times" placeholder="After 4pm / weekend morning"></div>
                     <div><label>Lead Temperature</label><select name="lead_temperature"><option>Warm</option><option>Hot</option><option>Cold</option></select></div>
-                    <div><label>Preferred Trial Location / Room</label><input name="trial_location" placeholder="Room 1 / Online / Cupertino"></div>
+                    <div><label>Preferred Trial Location / Room</label>{v35_trial_location_select()}</div>
                 </div>
                 <label>Notes</label><textarea name="notes" placeholder="Parent goals, student level, availability, questions..."></textarea>
                 <button type="submit">Create Intake Lead</button>
@@ -41363,7 +41394,7 @@ def inquiry_detail(inquiry_id):
                     <div><label>Trial Date</label><input type="date" name="trial_date" value="{v35_safe(inquiry['trial_date'])}"></div>
                     <div><label>Trial Time</label><input type="time" name="trial_time" value="{v35_safe(inquiry['trial_time'])}"></div>
                     <div><label>Trial Teacher</label><select name="trial_teacher">{teacher_options}</select></div>
-                    <div><label>Location / Room</label><input name="trial_location" value="{v35_safe(inquiry['trial_location'])}" placeholder="Room 1 / Online"></div>
+                    <div><label>Location / Room</label>{v35_trial_location_select(inquiry['trial_location'])}</div>
                     <div><label>Next Follow-up</label><input type="datetime-local" name="next_follow_up_at" value="{v35_safe(inquiry['next_follow_up_at']).replace(' ', 'T')}"></div>
                     <div><label>Follow-up Status</label><select name="follow_up_status">{opts(follow_options, inquiry['follow_up_status'] or 'New')}</select></div>
                 </div>
