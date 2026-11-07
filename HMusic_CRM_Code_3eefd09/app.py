@@ -24744,60 +24744,13 @@ def queue_notification_delivery(user_role, user_key, title, body, link_url, chan
             conn.close()
             return None
 
-    cursor.execute("""
-    SELECT id
-    FROM notification_delivery_queue
-    WHERE user_role = ?
-    AND user_key = ?
-    AND channel = ?
-    AND destination = ?
-    AND title = ?
-    AND COALESCE(related_type, '') = COALESCE(?, '')
-    AND COALESCE(related_id, -1) = COALESCE(?, -1)
-    AND COALESCE(link_url, '') = COALESCE(?, '')
-    AND COALESCE(body, '') = COALESCE(?, '')
-    AND status IN ('pending', 'sending', 'sent')
-    ORDER BY id DESC
-    LIMIT 1
-    """, (user_role, str(user_key), channel, destination, title, related_type, related_id, link_url, body))
-    existing = cursor.fetchone()
-    if existing:
+    from delivery_queue import queue_once
+    try:
+        return queue_once(conn, user_role, str(user_key), channel, destination,
+                          title, body, link_url, related_type, related_id,
+                          postgres=using_postgres())
+    finally:
         conn.close()
-        return existing[0]
-
-    cursor.execute("""
-    INSERT INTO notification_delivery_queue (
-        user_role,
-        user_key,
-        channel,
-        destination,
-        title,
-        body,
-        link_url,
-        related_type,
-        related_id,
-        status,
-        created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        user_role,
-        str(user_key),
-        channel,
-        destination,
-        title,
-        body,
-        link_url,
-        related_type,
-        related_id,
-        "pending",
-        datetime.now().strftime("%Y-%m-%d %H:%M")
-    ))
-
-    queue_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return queue_id
 
 
 def queue_sms_if_available(user_role, user_key, title, body, link_url, related_type=None, related_id=None):
@@ -24828,53 +24781,13 @@ def queue_direct_delivery(channel, destination, title, body, link_url, related_t
         if hmusic_is_email_suppressed(cursor, destination):
             conn.close()
             return None
-    cursor.execute("""
-    SELECT id
-    FROM notification_delivery_queue
-    WHERE channel = ?
-    AND destination = ?
-    AND related_type = ?
-    AND related_id = ?
-    AND title = ?
-    AND status IN ('pending', 'sent')
-    LIMIT 1
-    """, (channel, destination, related_type, related_id, title))
-    existing = cursor.fetchone()
-    if existing:
+    from delivery_queue import queue_once
+    try:
+        return queue_once(conn, "trial_parent", destination, channel, destination,
+                          title, body, link_url, related_type, related_id,
+                          postgres=using_postgres(), direct=True)
+    finally:
         conn.close()
-        return existing[0]
-
-    cursor.execute("""
-    INSERT INTO notification_delivery_queue (
-        user_role,
-        user_key,
-        channel,
-        destination,
-        title,
-        body,
-        link_url,
-        related_type,
-        related_id,
-        status,
-        created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-    """, (
-        "trial_parent",
-        destination,
-        channel,
-        destination,
-        title,
-        body,
-        link_url,
-        related_type,
-        related_id,
-        datetime.now().strftime("%Y-%m-%d %H:%M")
-    ))
-    queue_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return queue_id
 
 
 def send_email_delivery(destination, title, body, link_url):
@@ -25045,7 +24958,7 @@ def mark_delivery_status(queue_id, status, provider_response=None):
     conn.close()
 
 
-def send_queued_email_now(queue_id):
+def send_queued_email_now(queue_id, retry_failed=False):
     ensure_v33_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -25063,11 +24976,11 @@ def send_queued_email_now(queue_id):
     if channel != "email":
         conn.close()
         return False, "Queue item is not an email."
-    if status != "pending":
+    if status != "pending" and not (retry_failed and status == "failed"):
         conn.close()
         return False, f"Queue item already {status}."
 
-    cursor.execute("UPDATE notification_delivery_queue SET status = 'sending' WHERE id = ? AND channel = 'email' AND status = 'pending'", (queue_id,))
+    cursor.execute("UPDATE notification_delivery_queue SET status = 'sending' WHERE id = ? AND channel = 'email' AND status = ?", (queue_id, status))
     claimed = cursor.rowcount == 1
     conn.commit()
     conn.close()
@@ -25076,9 +24989,12 @@ def send_queued_email_now(queue_id):
 
     try:
         sent, response = send_email_delivery(destination, title, body, link_url)
-    except Exception as exc:
-        sent = False
-        response = f"Email send failed: {exc}"
+    except smtplib.SMTPResponseException as exc:
+        sent, response = False, f"SMTP rejected delivery ({exc.smtp_code}): {exc.smtp_error!s}"
+    except Exception:
+        # A timeout/disconnect may happen after SMTP accepted DATA. Never resend blindly.
+        mark_delivery_status(queue_id, "unconfirmed", "Email outcome unknown; check Sent mail before retrying.")
+        return False, "Email outcome unknown; owner review required."
 
     mark_delivery_status(queue_id, "sent" if sent else "failed", response)
     return sent, response
@@ -25305,7 +25221,7 @@ def create_lesson_reminders_for_date(target_date):
             AND related_type = 'lesson_reminder'
             AND related_id = ?
             AND channel IN ('email', 'sms')
-            AND status IN ('pending', 'sent')
+            AND status IN ('pending', 'sending', 'sent', 'failed', 'unconfirmed')
             LIMIT 1
             """, (str(parent_id), schedule_id))
             existing = cursor.fetchone()
@@ -26113,7 +26029,11 @@ def notification_queue():
 
     def external_status(status, channel):
         if status == "sent":
-            return '<span class="pill sent">Sent</span>'
+            label = "SMTP accepted · delivery unverified" if channel == "email" else "Sent"
+            return f'<span class="pill sent">{label}</span>'
+        if status in ("sending", "unconfirmed"):
+            label = "Sending · do not retry" if status == "sending" else "Outcome unknown · check Sent mail"
+            return f'<span class="pill failed">{label}</span>'
         if status == "failed":
             return '<span class="pill failed">Failed</span>'
         if channel == "sms":
@@ -26338,12 +26258,7 @@ def notification_queue_send(queue_id):
 
     channel, destination, title, body, link_url = row
     if channel == "email":
-        try:
-            sent, response = send_email_delivery(destination, title, body, link_url)
-        except Exception as exc:
-            sent = False
-            response = f"Email send failed: {exc}"
-        mark_delivery_status(queue_id, "sent" if sent else "failed", response)
+        send_queued_email_now(queue_id, retry_failed=True)
     elif channel == "push":
         mark_delivery_status(queue_id, "sent", "In-app notification queued. Browser push provider not connected yet.")
     elif channel == "sms":
