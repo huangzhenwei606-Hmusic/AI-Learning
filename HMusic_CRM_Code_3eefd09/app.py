@@ -407,7 +407,7 @@ def hmusic_csrf_token():
 
 
 def hmusic_validate_csrf():
-    if request.path.startswith("/api/child-os/v1/"):
+    if request.path.startswith("/api/child-os/v1/") or request.path.startswith("/api/studio-agent/v1/operations"):
         return True
     csrf_exempt_paths = {
         "/api/website/trial",  # Public JSON intake validates its own origin and fields.
@@ -25094,15 +25094,24 @@ def send_queued_sms_now(queue_id):
     WHERE id = ?
     """, (queue_id,))
     row = cursor.fetchone()
-    conn.close()
-
     if not row:
+        conn.close()
+
         return False, "Queue item not found."
     channel, destination, title, body, link_url, status = row
     if channel != "sms":
+        conn.close()
         return False, "Queue item is not an SMS message."
-    if status not in ("pending", "failed"):
+    if status != "pending":
+        conn.close()
         return False, f"Queue item already {status}."
+
+    cursor.execute("UPDATE notification_delivery_queue SET status = 'sending' WHERE id = ? AND channel = 'sms' AND status = 'pending'", (queue_id,))
+    claimed = cursor.rowcount == 1
+    conn.commit()
+    conn.close()
+    if not claimed:
+        return False, "Queue item already claimed for delivery."
 
     try:
         sent, response = send_sms_delivery(destination, title, body, link_url)
@@ -48929,7 +48938,7 @@ def owner_backup_download(filename):
 @app.before_request
 def prepare_database_for_request():
     # Service reads must not trigger migrations, reminders, or backups.
-    if request.endpoint == "studio_agent_readonly.snapshot":
+    if request.endpoint == "studio_agent_readonly.snapshot" or request.blueprint == "studio_operations":
         return
     public_paths = (
         "/static/",
@@ -50166,3 +50175,8 @@ register_trial_payment(app, globals())
 # Scoped read-only Studio Agent service; disabled until a dedicated token is configured.
 from studio_agent_connector import register_blueprint as register_studio_agent
 register_studio_agent(app, lambda: sqlite3.connect("hmusic.db"), using_postgres)
+
+
+# Scoped writes use a distinct credential and durable proposals/outbox.
+from studio_operations import register_operations
+register_operations(app, lambda: sqlite3.connect("hmusic.db"), globals())
