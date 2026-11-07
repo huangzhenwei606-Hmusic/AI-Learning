@@ -63,6 +63,16 @@ class Tests(unittest.TestCase):
    c=self.connect();c.execute("UPDATE notification_delivery_queue SET status='failed' WHERE id=?",(qid,));c.commit();c.close()
   self.api['queue_direct_delivery']=Mock(side_effect=queue);self.api['send_queued_email_now']=Mock(side_effect=fail)
   p=self.s.prepare('message',{'target_kind':'inquiry','target_id':1,'channels':['email'],'title':'Hi','body':'Hello'},'owner')['id'];self.s.execute(p,'owner');self.s.tick();self.s.tick();self.assertEqual(self.s.status(p,'owner')['tasks'][0]['state'],'attention');self.api['send_queued_email_now'].assert_called_once()
+ def test_sms_owner_retry_preserved_but_background_never_retries_failed(self):
+  import ast,pathlib,types
+  source=pathlib.Path(__file__).with_name('app.py').read_text();tree=ast.parse(source)
+  functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('send_queued_sms_now','hmusic_send_queued_sms')]
+  cur=Mock();cur.fetchone.return_value=('sms','+15555550100','Title','Body','/parent_dashboard','failed');cur.rowcount=1
+  conn=Mock();conn.cursor.return_value=cur;sender=Mock(return_value=(True,'accepted'))
+  scope={'sqlite3':types.SimpleNamespace(connect=lambda *a:conn),'ensure_v33_schema':lambda:None,'send_sms_delivery':sender,'mark_delivery_status':Mock()}
+  exec(compile(ast.Module(body=functions,type_ignores=[]),'<sms-sender>','exec'),scope)
+  self.assertFalse(scope['send_queued_sms_now'](1)[0]);sender.assert_not_called()
+  self.assertTrue(scope['hmusic_send_queued_sms'](1,retry_failed=True)[0]);sender.assert_called_once()
  def test_read_token(self):
   app=Flask(__name__);register_operations(app,self.connect,self.api)
   with patch.dict(os.environ,{'HMUSIC_AGENT_WRITE_TOKEN':'w'*40,'HMUSIC_AGENT_READ_TOKEN':'r'*40}):self.assertEqual(app.test_client().post('/api/studio-agent/v1/operations/prepare',json={},headers={'Authorization':'Bearer '+'r'*40,'X-Studio-Actor':'owner'}).status_code,401)

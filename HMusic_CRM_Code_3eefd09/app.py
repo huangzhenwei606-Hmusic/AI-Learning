@@ -25085,6 +25085,10 @@ def send_queued_email_now(queue_id):
 
 
 def send_queued_sms_now(queue_id):
+    return hmusic_send_queued_sms(queue_id, retry_failed=False)
+
+
+def hmusic_send_queued_sms(queue_id, retry_failed=False):
     ensure_v33_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -25102,11 +25106,11 @@ def send_queued_sms_now(queue_id):
     if channel != "sms":
         conn.close()
         return False, "Queue item is not an SMS message."
-    if status != "pending":
+    if status != "pending" and not (retry_failed and status == "failed"):
         conn.close()
         return False, f"Queue item already {status}."
 
-    cursor.execute("UPDATE notification_delivery_queue SET status = 'sending' WHERE id = ? AND channel = 'sms' AND status = 'pending'", (queue_id,))
+    cursor.execute("UPDATE notification_delivery_queue SET status = 'sending' WHERE id = ? AND channel = 'sms' AND status = ?", (queue_id, status))
     claimed = cursor.rowcount == 1
     conn.commit()
     conn.close()
@@ -26343,7 +26347,7 @@ def notification_queue_send(queue_id):
     elif channel == "push":
         mark_delivery_status(queue_id, "sent", "In-app notification queued. Browser push provider not connected yet.")
     elif channel == "sms":
-        send_queued_sms_now(queue_id)
+        hmusic_send_queued_sms(queue_id, retry_failed=True)
     else:
         mark_delivery_status(queue_id, "failed", f"Unsupported channel: {channel}")
 
