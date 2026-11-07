@@ -220,7 +220,7 @@ class Operations:
         for rr in cur.fetchall():
             w=dict(zip([d[0] for d in cur.description],rr));i=record(c,'SELECT * FROM inquiries WHERE id=?',(w['inquiry_id'],))
             if not i:continue
-            base={'target_kind':'inquiry','target_id':i['id'],'channels':json.loads(w['channels'])}
+            base={'target_kind':'inquiry','target_id':i['id'],'channels':json.loads(w['channels']),'workflow_updated_at':w['updated_at']}
             due=str(i.get('next_follow_up_at') or '').replace('T',' ')
             if due and not i.get('converted_student_name') and str(i.get('status','')).lower() not in ('closed','lost','enrolled','converted') and w['followup_body']:
                 try:when=datetime.fromisoformat(due).replace(tzinfo=LA)
@@ -243,7 +243,7 @@ class Operations:
         try:
             if task['operation_id'].startswith('workflow:'):
                 w=record(c,'SELECT * FROM studio_workflows WHERE inquiry_id=?',(p['target_id'],))
-                if not w or not w['enabled']:return {'cancelled':True,'reason':'workflow_paused'}
+                if not w or not w['enabled'] or w['updated_at']!=p.get('workflow_updated_at'):return {'cancelled':True,'reason':'workflow_paused'}
             if p.get('lesson_id'):
                 s=lesson(c,p['lesson_id'])
                 if fingerprint(s)!=p['lesson_version'] or str(s.get('status') or '').lower() in CANCELLED:return {'cancelled':True,'reason':'lesson_changed'}
