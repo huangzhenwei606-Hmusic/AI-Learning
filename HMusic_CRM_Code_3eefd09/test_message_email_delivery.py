@@ -11,7 +11,7 @@ class DeliveryTests(unittest.TestCase):
    def cursor(self):return db.cursor()
    def commit(self):db.commit()
    def close(self):pass
-  self.ns=dict(sqlite3=SimpleNamespace(connect=lambda *a:Conn()),datetime=datetime,ensure_v29_schema=lambda:None,ensure_v33_schema=lambda:None,get_notification_destination=lambda *a:'parent@example.test',hmusic_normalize_email=lambda x:x,hmusic_is_real_email=lambda x:True,hmusic_is_email_suppressed=lambda *a:False,should_queue_sms_notification=lambda *a:False,app=SimpleNamespace(logger=SimpleNamespace(exception=lambda *a:None)))
+  self.ns=dict(sqlite3=SimpleNamespace(connect=lambda *a:Conn()),using_postgres=lambda:False,datetime=datetime,ensure_v29_schema=lambda:None,ensure_v33_schema=lambda:None,get_notification_destination=lambda *a:'parent@example.test',hmusic_normalize_email=lambda x:x,hmusic_is_real_email=lambda x:True,hmusic_is_email_suppressed=lambda *a:False,should_queue_sms_notification=lambda *a:False,app=SimpleNamespace(logger=SimpleNamespace(exception=lambda *a:None)))
   for name in ('hmusic_should_send_message_email_now','queue_notification_delivery','send_queued_email_now','create_notification'):
    n=next(n for n in TREE.body if isinstance(n,ast.FunctionDef) and n.name==name);n.decorator_list=[];exec(compile(ast.Module(body=[n],type_ignores=[]),'app.py','exec'),self.ns)
   self.ns['send_email_delivery']=lambda *a:(self.sent.append(a) or (True,'SMTP accepted'))
