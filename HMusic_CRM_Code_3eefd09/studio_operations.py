@@ -328,6 +328,8 @@ class Operations:
         threading.Thread(target=loop,name='studio-automation',daemon=True).start()
 
 def register_operations(app,connect,api):
+    from communication_tracking import Tracker
+    tracker=Tracker(connect,{'logger':app.logger})
     service=Operations(connect,api);bp=Blueprint('studio_operations',__name__)
     @bp.before_request
     def guard():
@@ -339,6 +341,14 @@ def register_operations(app,connect,api):
         if not request.headers.get('X-Studio-Actor'):return jsonify(error='缺少操作者'),400
     @bp.get(PREFIX)
     def overview():return jsonify(service.overview())
+    @bp.get(PREFIX+'/communications')
+    def communications():
+        try:return jsonify(tracker.overview(request.args.get('date')))
+        except ValueError:return jsonify(error='日期须为 YYYY-MM-DD'),400
+    @bp.post(PREFIX+'/communications/sync')
+    def communication_sync():
+        threading.Thread(target=lambda:tracker.sync(force=True),name='studio-communication-manual',daemon=True).start()
+        return jsonify(state='queued',message='正在后台检查收件连接，请刷新查看结果'),202
     @bp.post(PREFIX+'/prepare')
     def prepare():
         try:
@@ -362,5 +372,5 @@ def register_operations(app,connect,api):
     app.register_blueprint(bp)
     @app.after_request
     def start_scheduler(response):
-        service.start();return response
+        service.start();tracker.start();return response
     app.extensions['studio_operations']=service
