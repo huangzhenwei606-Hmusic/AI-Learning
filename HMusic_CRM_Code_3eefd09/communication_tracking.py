@@ -97,12 +97,13 @@ class Tracker:
     if status!='OK':continue
     selected+=1
     validity=client.response('UIDVALIDITY')[1];validity=str(validity)
-    c=self.db();key='email:'+folder;s=state(c,key);last=int(s.get('last_uid',0)) if s.get('validity')==validity else 0
+    c=self.db();key='email:'+folder;s=state(c,key);completed=set(s.get('completed_uids',[])) if s.get('validity')==validity else set()
     try:
      since=(datetime.now(LA)-timedelta(days=7)).strftime('%d-%b-%Y')
      status,data=client.uid('search',None,'X-GM-RAW','"newer_than:7d -in:spam -in:trash -in:drafts"') if all_folder else client.uid('search',None,'SINCE',since)
      if status!='OK':raise ValueError('Mailbox search failed')
-     pending=sorted(int(x) for x in (data[0] or b'').split() if int(x)>last)
+     uids={int(x) for x in (data[0] or b'').split()};completed.intersection_update(uids)
+     pending=sorted(uids-completed,reverse=True)
      checked=0
      for uid in pending[:100]:
       if time.monotonic()>deadline:break
@@ -117,7 +118,7 @@ class Tracker:
       recipient=parseaddr(str(msg.get('To','')))[1].lower()
       contact=recipient if outgoing else sender
       if not contact:
-       last=uid;checked+=1;continue
+       completed.add(uid);checked+=1;continue
       parts=text_parts(msg);body='[邮件正文超出扫描上限，请打开原邮件]' if oversized else reply_text(*parts)
       reference=str(msg.get('References') or msg.get('In-Reply-To') or msg.get('Message-ID') or str(uid));root=re.findall(r'<[^>]+>',reference);root=root[0] if root else reference
       try:received=parsedate_to_datetime(str(msg.get('Date'))).astimezone(timezone.utc).isoformat()
@@ -125,9 +126,9 @@ class Tracker:
       mid=str(msg.get('Message-ID') or '')
       sid=hashlib.sha256((mid or folder+validity+str(uid)).encode()).hexdigest()
       add(c,dict(source='email',source_id=sid,direction='outbound' if outgoing else 'inbound',contact=contact,subject=str(msg.get('Subject') or ''),body=body,received_at=received,conversation_key='email:'+hashlib.sha256((root+'|'+contact).encode()).hexdigest(),source_link='https://mail.google.com/mail/u/?authuser='+SCHOOL+'#search/'+quote('rfc822msgid:'+mid.strip('<>'),safe='')),verified=outgoing or bool(authenticated_sender(msg)))
-      last=uid;total+=1;checked+=1;c.commit()
-      save_state(c,key,{'last_uid':last,'validity':validity,'backlog':len(pending)>checked,'last_success':now()})
-     save_state(c,key,{'last_uid':last,'validity':validity,'backlog':len(pending)>checked,'last_success':now()})
+      completed.add(uid);total+=1;checked+=1;c.commit()
+      save_state(c,key,{'completed_uids':sorted(completed),'validity':validity,'backlog':len(pending)>checked,'last_success':now()})
+     save_state(c,key,{'completed_uids':sorted(completed),'validity':validity,'backlog':len(pending)>checked,'last_success':now()})
     finally:c.close()
    if not selected:raise ValueError('没有可读取的学校邮件文件夹')
    return {'imported_or_checked':total,'folders':selected,'coverage':'全部邮件（排除垃圾、回收站、草稿）' if all_folder else '已配置收件箱和可用的已发送文件夹；归档邮件请结合每日Gmail汇总核对'}
@@ -149,9 +150,16 @@ class Tracker:
   for direction,field in [('inbound','To'),('outbound','From')]:
    c=self.db();key='sms:'+direction;s=state(c,key)
    try:
-    path=s.get('next_page') or '/2010-04-01/Accounts/'+sid+'/Messages.json?'+urlencode({field:number,'DateSent>':(datetime.now(timezone.utc)-timedelta(days=7)).date().isoformat(),'PageSize':100})
-    data=self.twilio_get(path)
-    for m in data.get('messages',[]):
+    window=(datetime.now(timezone.utc)-timedelta(days=7)).date().isoformat()
+    path='/2010-04-01/Accounts/'+sid+'/Messages.json?'+urlencode({field:number,'DateSent>':window,'PageSize':100})
+    head=self.twilio_get(path);messages=list(head.get('messages',[]))
+    older=s.get('next_page') if s.get('window')==window else None
+    overlap=bool(messages and rows(c,"SELECT id FROM studio_communications WHERE source='crm_sms' AND source_id=?",(messages[-1]['sid'],)))
+    next_page=None
+    if older:
+     history=self.twilio_get(older);messages+=history.get('messages',[]);next_page=history.get('next_page_uri')
+    elif not overlap:next_page=head.get('next_page_uri')
+    for m in messages:
      inbound=m.get('direction')=='inbound'
      if (direction=='inbound')!=inbound:continue
      own=m.get('to') if inbound else m.get('from')
@@ -161,7 +169,7 @@ class Tracker:
      contact=phone(m.get('from') if inbound else m.get('to'))
      add(c,dict(source='crm_sms',source_id=m['sid'],direction=direction,contact=contact,subject='CRM SMS',body=m.get('body') or '',received_at=received,conversation_key='sms:'+contact,provider_state=m.get('status') or '',source_link=''))
      total+=1
-    c.commit();save_state(c,key,{'next_page':data.get('next_page_uri'),'backlog':bool(data.get('next_page_uri')),'last_success':now()})
+    c.commit();save_state(c,key,{'next_page':next_page,'window':window,'backlog':bool(next_page),'last_success':now()})
    finally:c.close()
   return {'imported_or_checked':total}
  def report(self,c,day):
@@ -183,7 +191,9 @@ class Tracker:
    data=rows(c,'SELECT id,source,direction,contact,subject,body,received_at,category,match_state,family_refs,provider_state,source_link FROM studio_communications ORDER BY received_at DESC LIMIT 60')
    for r in data:r['body']=r['body'][:1000]
    sources=rows(c,'SELECT source,state,updated_at FROM studio_communication_sync')
-   for s in sources:s['state']=json.loads(s['state'])
+   for s in sources:
+    raw=json.loads(s['state']);s['state']={k:v for k,v in raw.items() if k in ('status','last_success','backlog','message','coverage','error_type','status_code','imported_or_checked','folders')}
+    if 'completed_uids' in raw:s['state']['processed_in_window']=len(raw['completed_uids'])
    return {'report':report,'recent':data,'sources':sources,'school_email':SCHOOL,'enabled':os.environ.get('HMUSIC_COMMUNICATIONS_ENABLED',os.environ.get('HMUSIC_STUDIO_AUTOMATION','0'))=='1','personal_phone':{'connection':'Mac Messages via Codex daily task','cloud_import':False}}
   finally:c.close()
  def sync(self,force=False):
