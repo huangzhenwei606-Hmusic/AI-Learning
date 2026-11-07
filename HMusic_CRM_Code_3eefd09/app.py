@@ -6869,6 +6869,7 @@ def edit_invoice(invoice_id):
             UPDATE invoices
             SET charge_lessons = ?,
                 amount = ?,
+                subtotal_amount = ? + COALESCE(discount_amount, 0),
                 due_date = ?,
                 payment_methods = ?,
                 coverage_title = ?,
@@ -6879,6 +6880,7 @@ def edit_invoice(invoice_id):
             """, (
                 new_lessons,
                 new_amount,
+                new_amount,
                 new_due_date,
                 new_payment_methods,
                 new_coverage_title,
@@ -6887,12 +6889,8 @@ def edit_invoice(invoice_id):
                 new_coverage_note,
                 invoice_id,
             ))
-            cursor.execute("""
-            UPDATE student_ledger
-            SET amount = ?
-            WHERE related_invoice_id = ?
-            AND related_payment_id IS NULL
-            """, (new_amount, invoice_id))
+            # Ledger rows are component charges or payment history, not invoice totals.
+            # The ledger view reads the invoice total directly from invoices.
             conn.commit()
             conn.close()
             return redirect(return_to)
@@ -36748,6 +36746,17 @@ def parent_invoice(invoice_id):
             )
             return redirect(f"/parent_invoice/{invoice_id}?payment_notice=sent")
 
+    cursor.execute("""
+    SELECT amount, description FROM student_ledger
+    WHERE related_invoice_id = ? AND related_payment_id IS NULL
+    AND entry_type IN ('invoiced_extra_charge', 'invoiced_last_min_fee')
+    ORDER BY id
+    """, (invoice_id,))
+    additional_charges = [
+        ("Ensemble" if str(description or "").strip().lower().startswith("ensemble") else "Additional charge", float(amount))
+        for amount, description in cursor.fetchall() if float(amount or 0) > 0
+    ]
+
     conn.close()
 
     checked_yes = "selected" if invoice[10] == 1 else ""
@@ -36847,6 +36856,7 @@ def parent_invoice(invoice_id):
     details_html = invoice_details_html(
         invoice_id, invoice[2], subtotal_amount, invoice[8], invoice[18],
         course_display, invoice[20], invoice[21], invoice[23], discount_amount, discount_code,
+        additional_charges=additional_charges,
     )
     online_payment_html = ""
     if can_pay_invoice and own_allocation and own_status in ("unpaid", "failed"):

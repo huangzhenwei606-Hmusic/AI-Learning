@@ -42,16 +42,24 @@ def display_date(value):
 
 
 def invoice_details_html(invoice_id, lessons, subtotal, due_date='', title='', course='',
-                         coverage_start='', note='', teacher='', discount=0, discount_code=''):
+                         coverage_start='', note='', teacher='', discount=0, discount_code='',
+                         additional_charges=()):
     """Only explicit parent-facing fields are accepted, never internal invoice notes."""
     count = float(lessons or 0)
     count_label = f'{count:g}'
     package = f'{count_label} lesson' + ('' if count == 1 else 's') if count > 0 else ''
-    if count > 0:
-        package += f' × ${float(subtotal or 0) / count:,.2f}'
+    charges = [(str(label), float(amount)) for label, amount in additional_charges if float(amount or 0) > 0]
+    charge_total = round(sum(amount for _, amount in charges), 2)
+    valid_breakdown = charge_total <= round(float(subtotal or 0), 2)
+    tuition = round(float(subtotal or 0) - charge_total, 2)
+    if count > 0 and valid_breakdown:
+        package += f' × ${tuition / count:,.2f}'
     rows = [('Invoice', f'#{invoice_id}'), ('Coverage', title), ('Course', course),
             ('Teacher', teacher), ('Package', package),
             ('Coverage from', display_date(coverage_start)), ('Payment due', display_date(due_date))]
+    if charges and valid_breakdown:
+        rows += [('Tuition', f'${tuition:,.2f}')] if count > 0 else []
+        rows += [(label, f'${amount:,.2f}') for label, amount in charges]
     if float(discount or 0) > 0:
         rows += [('Subtotal', f'${float(subtotal or 0):,.2f}'),
                  ('Discount' + (f' ({discount_code})' if discount_code else ''), f'−${float(discount):,.2f}')]

@@ -10,6 +10,7 @@ class InvoiceUITest(unittest.TestCase):
  def setUp(self):
   self.db=sqlite3.connect(':memory:',check_same_thread=False)
   self.db.executescript('''CREATE TABLE invoices(id,student_name,charge_lessons,amount,status,invoice_type,created_at,enrollment_id,due_date,notes,subtotal_amount,discount_code,discount_amount,payment_methods,manual_payment_status,package_options,coverage_title,coverage_class,coverage_start,coverage_note);
+CREATE TABLE student_ledger(id INTEGER PRIMARY KEY,amount,description,related_invoice_id,related_payment_id,entry_type);
 CREATE TABLE enrollments(id,auto_renew_enabled,auto_renew_lessons,course_type_name,teacher_name,duration,updated_at);
 CREATE TABLE parent_profiles(id,parent_name);
 CREATE TABLE invoice_allocations(id,invoice_id,parent_id,amount,status,payment_method,manual_payment_status,lock_token,locked_at,updated_at,stripe_checkout_session_id,stripe_payment_intent_id);
@@ -35,6 +36,14 @@ INSERT INTO invoice_allocations VALUES(1,120,7,825,'unpaid','','','','','','',''
   for t in ('Coverage from','Oct 24, 2026','Oct 23, 2026','Chloe Lu','10 lessons × $82.50','Note from H-Music'):self.assertIn(t,h)
   for t in ('PRIVATE INTERNAL NOTE','Payment responsibility','Selected'):self.assertNotIn(t,h)
   self.assertIn('6507977125',h);self.assertIn('data-copy-value="6507977125"',h);self.assertIn('Copy Zelle phone number',h);self.assertNotIn('Copy recipient email',h);self.assertNotIn('hmusicjustplay@gmail.com',h);self.assertLess(h.index('ach-choice'),h.index('zelle-choice'));self.assertIn('Pay $825.00 by bank transfer',h);self.assertIn('name="autopay" value="1"',h);self.assertNotIn('name="autopay" value="1" checked',h)
+ def test_mixed_invoice_separates_ensemble_and_private_unit_price(self):
+  self.db.execute('UPDATE invoices SET amount=2090,subtotal_amount=2090,charge_lessons=20')
+  self.db.execute('UPDATE invoice_allocations SET amount=2090')
+  self.db.execute("INSERT INTO student_ledger VALUES(2638,440,'Ensemble 11 classes | PRIVATE AUDIT',120,NULL,'invoiced_extra_charge')")
+  h=self.render();self.assertIn('20 lessons × $82.50',h);self.assertIn('<dt>Tuition</dt><dd>$1,650.00',h);self.assertIn('<dt>Ensemble</dt><dd>$440.00',h);self.assertIn('Pay $2,090.00 by bank transfer',h);self.assertNotIn('$104.50',h);self.assertNotIn('PRIVATE AUDIT',h)
+ def test_inconsistent_addon_never_invents_private_unit_price(self):
+  self.db.execute("INSERT INTO student_ledger VALUES(2638,900,'Extra',120,NULL,'invoiced_extra_charge')")
+  h=self.render();self.assertIn('<dt>Package</dt><dd>10 lessons</dd>',h);self.assertNotIn('10 lessons ×',h)
  def test_escaping_and_missing_fields(self):
   self.db.execute("UPDATE invoices SET coverage_title='<script>x</script>',coverage_note='<img onerror=x>',coverage_start='',due_date=''")
   h=self.render();self.assertIn('&lt;script&gt;',h);self.assertNotIn('<img onerror',h);self.assertNotIn('Coverage from',h);self.assertNotIn('Payment due</dt>',h)
