@@ -191,7 +191,9 @@ class Tracker:
    data=rows(c,'SELECT id,source,direction,contact,subject,body,received_at,category,match_state,family_refs,provider_state,source_link FROM studio_communications ORDER BY received_at DESC LIMIT 60')
    for r in data:r['body']=r['body'][:1000]
    sources=rows(c,'SELECT source,state,updated_at FROM studio_communication_sync')
-   for s in sources:s['state']=json.loads(s['state'])
+   for s in sources:
+    raw=json.loads(s['state']);s['state']={k:v for k,v in raw.items() if k in ('status','last_success','backlog','message','coverage','error_type','status_code','imported_or_checked','folders')}
+    if 'completed_uids' in raw:s['state']['processed_in_window']=len(raw['completed_uids'])
    return {'report':report,'recent':data,'sources':sources,'school_email':SCHOOL,'enabled':os.environ.get('HMUSIC_COMMUNICATIONS_ENABLED',os.environ.get('HMUSIC_STUDIO_AUTOMATION','0'))=='1','personal_phone':{'connection':'Mac Messages via Codex daily task','cloud_import':False}}
   finally:c.close()
  def sync(self,force=False):
