@@ -48928,6 +48928,9 @@ def owner_backup_download(filename):
 
 @app.before_request
 def prepare_database_for_request():
+    # Service reads must not trigger migrations, reminders, or backups.
+    if request.endpoint == "studio_agent_readonly.snapshot":
+        return
     public_paths = (
         "/static/",
         "/healthz",
@@ -50158,3 +50161,8 @@ register_admissions(app, globals())
 
 from trial_payment import register_trial_payment
 register_trial_payment(app, globals())
+
+
+# Scoped read-only Studio Agent service; disabled until a dedicated token is configured.
+from studio_agent_connector import register_blueprint as register_studio_agent
+register_studio_agent(app, lambda: sqlite3.connect("hmusic.db"), using_postgres)
