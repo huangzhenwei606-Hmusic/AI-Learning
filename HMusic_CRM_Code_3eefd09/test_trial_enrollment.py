@@ -115,6 +115,9 @@ CREATE TABLE notification_delivery_queue(id INTEGER PRIMARY KEY AUTOINCREMENT,st
         self.offer();c=self.s.db();task=record(c,'SELECT * FROM studio_tasks LIMIT 1');c.execute("UPDATE inquiries SET parent_email='other@example.com' WHERE id=1");c.commit();c.close();self.assertEqual(self.ops.deliver(task)['reason'],'family_identity_changed')
     def test_cancelled_trial_never_follows_up(self):
         self.trial();c=self.connect();c.execute("UPDATE schedule SET status='absent'");c.commit();c.close();self.s.process();self.assertEqual(self.j()['stage'],'attention')
+    def test_activation_replaces_only_this_familys_legacy_followups(self):
+        c=self.s.db();c.execute("INSERT INTO inquiries(id,student_name,parent_email) VALUES(2,'New Child','new@example.com')");c.execute("INSERT INTO studio_workflows VALUES(2,NULL,'[\"email\"]','Old follow-up',1,'old')");c.execute("INSERT INTO studio_workflows VALUES(3,NULL,'[\"email\"]','Unrelated follow-up',1,'old')");c.commit();c.close()
+        self.s.create(2,['email']);c=self.s.db();self.assertEqual(c.execute('SELECT enabled FROM studio_workflows WHERE inquiry_id=2').fetchone()[0],0);self.assertEqual(c.execute('SELECT enabled FROM studio_workflows WHERE inquiry_id=3').fetchone()[0],1);c.close()
     def test_parent_reply_suppresses_redundant_followup(self):
         j=self.followup();c=self.s.db();c.execute("CREATE TABLE studio_communications(direction TEXT,family_refs TEXT,received_at TEXT)");c.execute("INSERT INTO studio_communications VALUES('inbound',?,?)",(json.dumps(['inquiry:1']),datetime.now(LA).isoformat()));c.commit();task=record(c,"SELECT * FROM studio_tasks WHERE task_key LIKE '%:post-trial'");c.close();self.assertEqual(self.ops.deliver(task)['reason'],'parent_already_replied')
     def test_dispatch_uses_family_link_and_records_accepted_delivery_once(self):

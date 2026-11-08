@@ -94,7 +94,10 @@ class Journey:
             source=pack({k:i.get(k) for k in ('source','student_name','parent_name','parent_email','phone','notes','created_at')})
             cur=c.execute("""INSERT INTO studio_enrollment_journeys(inquiry_id,nonce,stage,enabled,source,channels,candidates,selected,plans,result,error,created_at,updated_at)
               VALUES(?,?,'draft',1,?,?,'[]','{}','[]','{}','',?,?)""",(i['id'],secrets.token_urlsafe(24),source,pack(channels),stamp(),stamp()))
-            jid=cur.lastrowid;c.commit();return jid
+            jid=cur.lastrowid
+            # This family now has one follow-up owner; queued legacy tasks fail their enabled check.
+            c.execute('UPDATE studio_workflows SET enabled=0,updated_at=? WHERE inquiry_id=?',(stamp(),i['id']))
+            c.commit();return jid
         except Exception:c.rollback();raise
         finally:c.close()
     def add_window(self,d):
