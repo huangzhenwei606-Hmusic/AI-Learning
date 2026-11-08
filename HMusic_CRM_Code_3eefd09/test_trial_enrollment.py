@@ -148,6 +148,37 @@ CREATE TABLE notification_delivery_queue(id INTEGER PRIMARY KEY AUTOINCREMENT,st
         c=self.s.db();c.execute("UPDATE inquiries SET source='Website Group Enrollment' WHERE id=1");c.execute("INSERT INTO studio_workflows VALUES(1,NULL,'[\"email\"]','Old trial copy',1,'old')")
         self.ops.task(c,'old-followup','workflow:1',{'target_kind':'inquiry','target_id':1,'workflow_updated_at':'old','inquiry_due':'2027-01-01 09:00','channels':['email'],'title':'Old trial follow-up','body':'Old copy'})
         c.commit();task=record(c,'SELECT * FROM studio_tasks LIMIT 1');c.close();self.assertEqual(self.ops.deliver(task)['reason'],'not_private_trial');self.api['queue_direct_delivery'].assert_not_called()
+    def test_draft_parent_page_and_owner_link_match_unconfigured_state(self):
+        j=self.j();page=self.client.get(self.s.path(j)).get_data(as_text=True)
+        self.assertIn('Trial options are not ready yet',page);self.assertNotIn('another payment',page);self.assertNotIn('Confirm enrollment',page)
+        with self.client.session_transaction() as s:s['user_role']='owner'
+        owner=self.client.get('/studio-enrollment').get_data(as_text=True);self.assertIn('尚未准备好家长选项',owner);self.assertNotIn('打开该家庭的私密选择页面',owner)
+        self.offer();owner=self.client.get('/studio-enrollment').get_data(as_text=True);self.assertIn('打开该家庭的私密选择页面',owner)
+    def test_attention_without_order_does_not_imply_a_payment(self):
+        c=self.s.db();self.s.set_stage(c,self.jid,'attention');c.commit();c.close();page=self.client.get(self.s.path(self.j())).get_data(as_text=True);self.assertNotIn('payment',page.lower())
+    def legacy_trial(self):
+        c=self.s.db();c.execute("UPDATE inquiries SET owner_verified=1,trial_status='Scheduled',status='Trial Scheduled',trial_date=?,trial_time='09:00',trial_teacher='Xu Huang' WHERE id=1",(self.day,))
+        cur=c.execute("INSERT INTO schedule(student_name,teacher,lesson_date,lesson_time,duration,classroom,location,status,schedule_type) VALUES('Child','Xu Huang',?,'09:00',30,'A','Center','scheduled','trial')",(self.day,));sid=cur.lastrowid;c.commit();c.close();return sid
+    def test_link_existing_verified_trial_without_duplicate_booking_or_confirmation(self):
+        sid=self.legacy_trial();self.s.attach_existing(self.jid,sid);self.s.attach_existing(self.jid,sid);j=self.j();self.assertEqual(j['trial_schedule_id'],sid);self.assertEqual(j['stage'],'trial')
+        c=self.connect();self.assertEqual(c.execute('SELECT count(*) FROM schedule').fetchone()[0],1);self.assertEqual(c.execute('SELECT count(*) FROM studio_tasks').fetchone()[0],0);c.close()
+        page=self.client.get(self.s.path(j)).get_data(as_text=True);self.assertIn('Your trial is confirmed',page);self.assertIn(self.day,page)
+    def test_existing_trial_cannot_be_rescanned_as_new_booking(self):
+        self.legacy_trial()
+        with self.assertRaisesRegex(ValueError,'关联'):self.offer()
+        with self.client.session_transaction() as s:s['user_role']='owner'
+        page=self.client.get('/studio-enrollment').get_data(as_text=True);self.assertIn('关联 CRM 已确认试听',page);self.assertNotIn('扫描试听空点并发送家长选项',page)
+    def test_ambiguous_existing_lessons_are_not_silently_linked(self):
+        sid=self.legacy_trial();c=self.connect();c.execute("INSERT INTO schedule(student_name,teacher,lesson_date,lesson_time,duration,classroom,location,status) VALUES('Child','Xu Huang',?,'09:00',30,'B','Center','scheduled')",(self.day,));c.commit();c.close()
+        with self.assertRaisesRegex(ValueError,'唯一匹配'):self.s.attach_existing(self.jid,sid)
+        self.assertIsNone(self.j()['trial_schedule_id'])
+        with self.assertRaisesRegex(ValueError,'关联'):self.offer()
+    def test_linked_trial_waits_for_enrollment_plan_before_parent_followup(self):
+        sid=self.legacy_trial();self.s.attach_existing(self.jid,sid);c=self.s.db();plans=self.j()['plans'];end=datetime.now(LA)-timedelta(hours=3)
+        c.execute("UPDATE schedule SET lesson_date=?,lesson_time=?,status='present' WHERE id=?",(end.date().isoformat(),(end-timedelta(minutes=30)).strftime('%H:%M'),sid));c.execute("UPDATE studio_enrollment_journeys SET plans='[]' WHERE id=?",(self.jid,));c.commit();c.close();self.s.advance(self.jid,datetime.now(LA))
+        c=self.connect();self.assertEqual(c.execute("SELECT count(*) FROM studio_tasks WHERE task_key LIKE '%:post-trial'").fetchone()[0],0);self.assertEqual(c.execute("SELECT count(*) FROM studio_tasks WHERE task_key LIKE '%:owner:missing-plan'").fetchone()[0],1);c.close()
+        self.assertIn('enrollment options are being prepared',self.client.get(self.s.path(self.j())).get_data(as_text=True))
+        c=self.connect();c.execute('UPDATE studio_enrollment_journeys SET plans=? WHERE id=?',(plans,self.jid));c.commit();c.close();self.s.advance(self.jid,datetime.now(LA));c=self.connect();self.assertEqual(c.execute("SELECT count(*) FROM studio_tasks WHERE task_key LIKE '%:post-trial'").fetchone()[0],1);c.close()
     def test_parent_reply_suppresses_redundant_followup(self):
         j=self.followup();c=self.s.db();c.execute("CREATE TABLE studio_communications(direction TEXT,family_refs TEXT,received_at TEXT)");c.execute("INSERT INTO studio_communications VALUES('inbound',?,?)",(json.dumps(['inquiry:1']),datetime.now(LA).isoformat()));c.commit();task=record(c,"SELECT * FROM studio_tasks WHERE task_key LIKE '%:post-trial'");c.close();self.assertEqual(self.ops.deliver(task)['reason'],'parent_already_replied')
     def test_dispatch_uses_family_link_and_records_accepted_delivery_once(self):
