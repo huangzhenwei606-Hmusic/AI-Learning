@@ -118,6 +118,36 @@ CREATE TABLE notification_delivery_queue(id INTEGER PRIMARY KEY AUTOINCREMENT,st
     def test_activation_replaces_only_this_familys_legacy_followups(self):
         c=self.s.db();c.execute("INSERT INTO inquiries(id,student_name,parent_email) VALUES(2,'New Child','new@example.com')");c.execute("INSERT INTO studio_workflows VALUES(2,NULL,'[\"email\"]','Old follow-up',1,'old')");c.execute("INSERT INTO studio_workflows VALUES(3,NULL,'[\"email\"]','Unrelated follow-up',1,'old')");c.commit();c.close()
         self.s.create(2,['email']);c=self.s.db();self.assertEqual(c.execute('SELECT enabled FROM studio_workflows WHERE inquiry_id=2').fetchone()[0],0);self.assertEqual(c.execute('SELECT enabled FROM studio_workflows WHERE inquiry_id=3').fetchone()[0],1);c.close()
+    def test_group_intake_cannot_be_created_or_booked_as_private_trial(self):
+        c=self.s.db();c.execute("UPDATE inquiries SET source='Website Group Enrollment',status='Registration Submitted',trial_status='Registration' WHERE id=1");c.commit();c.close()
+        with self.assertRaisesRegex(ValueError,'团课'):self.s.create(1,['email'])
+        with self.assertRaisesRegex(ValueError,'团课'):self.offer()
+        with self.assertRaisesRegex(ValueError,'团课'):self.ops.prepare('trial',{'inquiry_id':1,'teacher':'Xu Huang','date':self.day,'time':'09:00','classroom':'A','duration':30,'channels':['email']},'owner')
+        c=self.connect();self.assertEqual(c.execute('SELECT count(*) FROM schedule').fetchone()[0],0);self.assertEqual(c.execute('SELECT count(*) FROM studio_tasks').fetchone()[0],0);c.close()
+    def test_canonical_group_application_blocks_even_when_source_is_renamed(self):
+        self.offer();j=self.j();c=self.s.db();c.execute('CREATE TABLE group_applications(id INTEGER PRIMARY KEY,inquiry_id INTEGER,status TEXT)');c.execute("INSERT INTO group_applications VALUES(9,1,'review')");c.execute("UPDATE inquiries SET source='Friend' WHERE id=1");c.commit();task=record(c,'SELECT * FROM studio_tasks LIMIT 1');c.close()
+        with self.assertRaisesRegex(ValueError,'团课'):self.s.create(1,['email'])
+        self.assertEqual(self.ops.deliver(task)['reason'],'not_private_trial');self.assertEqual(self.client.get(self.s.path(j)).status_code,410)
+        c=self.connect();self.assertEqual(c.execute('SELECT status FROM group_applications WHERE id=9').fetchone()[0],'review');c.close()
+    def test_selector_excludes_group_and_direct_enrollment_and_defaults_to_empty(self):
+        c=self.s.db();c.execute("INSERT INTO inquiries(id,student_name,parent_email,source,status) VALUES(2,'Circle Child','circle@example.com','Website Group Enrollment','Registration Submitted')");c.execute("INSERT INTO inquiries(id,student_name,parent_email,source,status) VALUES(3,'Registered Child','reg@example.com','Public Registration Form','Registration Submitted')");c.commit();c.close()
+        with self.client.session_transaction() as s:s['user_role']='owner'
+        import re
+        page=self.client.get('/studio-enrollment').get_data(as_text=True);selector=re.search(r'<select name="inquiry_id"[^>]*>(.*?)</select>',page,re.S).group(1)
+        self.assertIn('value=""',selector);self.assertIn('value="1"',selector);self.assertNotIn('value="2"',selector);self.assertNotIn('value="3"',selector)
+    def test_another_private_trial_request_in_same_family_is_not_blocked(self):
+        c=self.s.db();c.execute('CREATE TABLE group_applications(id INTEGER PRIMARY KEY,inquiry_id INTEGER,status TEXT)');c.execute("INSERT INTO group_applications VALUES(9,1,'review')");c.execute("INSERT INTO inquiries(id,student_name,parent_email,source,status) VALUES(2,'Private Trial Child','parent@example.com','Public Trial Form','Trial Requested')");c.commit();c.close();self.assertIsInstance(self.s.create(2,['email']),int)
+    def test_existing_direct_order_cannot_be_reentered_as_trial(self):
+        self.accept()
+        with self.assertRaisesRegex(ValueError,'订单'):self.s.create(1,['email'])
+    def test_paused_journey_displays_paused_and_hides_family_link(self):
+        c=self.s.db();c.execute('UPDATE studio_enrollment_journeys SET enabled=0 WHERE id=?',(self.jid,));c.commit();c.close()
+        with self.client.session_transaction() as s:s['user_role']='owner'
+        page=self.client.get('/studio-enrollment').get_data(as_text=True);self.assertIn('Child · 已暂停',page);self.assertNotIn('打开该家庭的私密选择页面',page)
+    def test_preexisting_group_followup_task_is_cancelled_before_delivery(self):
+        c=self.s.db();c.execute("UPDATE inquiries SET source='Website Group Enrollment' WHERE id=1");c.execute("INSERT INTO studio_workflows VALUES(1,NULL,'[\"email\"]','Old trial copy',1,'old')")
+        self.ops.task(c,'old-followup','workflow:1',{'target_kind':'inquiry','target_id':1,'workflow_updated_at':'old','inquiry_due':'2027-01-01 09:00','channels':['email'],'title':'Old trial follow-up','body':'Old copy'})
+        c.commit();task=record(c,'SELECT * FROM studio_tasks LIMIT 1');c.close();self.assertEqual(self.ops.deliver(task)['reason'],'not_private_trial');self.api['queue_direct_delivery'].assert_not_called()
     def test_parent_reply_suppresses_redundant_followup(self):
         j=self.followup();c=self.s.db();c.execute("CREATE TABLE studio_communications(direction TEXT,family_refs TEXT,received_at TEXT)");c.execute("INSERT INTO studio_communications VALUES('inbound',?,?)",(json.dumps(['inquiry:1']),datetime.now(LA).isoformat()));c.commit();task=record(c,"SELECT * FROM studio_tasks WHERE task_key LIKE '%:post-trial'");c.close();self.assertEqual(self.ops.deliver(task)['reason'],'parent_already_replied')
     def test_dispatch_uses_family_link_and_records_accepted_delivery_once(self):
