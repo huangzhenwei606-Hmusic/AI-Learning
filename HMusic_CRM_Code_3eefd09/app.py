@@ -9293,6 +9293,7 @@ def calendar():
         </div>
         <div class="top-btns">
           <button class="btn owner-multi-toggle" id="ownerMultiToggle" type="button" onclick="ownerMultiToggle()"><i class="ti ti-checkbox"></i> Multi-Select</button>
+          <button class="btn" type="button" onclick="HMusicCalendarSms.open(null,this)">SMS lesson reminder</button>
           <a class="btn" href="/">Home</a>
           <a class="btn" href="{add_schedule_href}">+ Add Schedule</a>
           <a class="btn" href="/locations_rooms">Locations & Rooms</a>
@@ -9700,6 +9701,7 @@ def calendar():
         <div class="panel-section"><h3>Quick actions</h3><div class="panel-actions">
           <button class="panel-action" onclick="ownerReschedule()"><i class="ti ti-calendar"></i>Reschedule</button>
           <button class="panel-action" onclick="ownerMessageParent()"><i class="ti ti-message"></i>Message parent</button>
+          <button class="panel-action" type="button" onclick="if(activePanelLesson) HMusicCalendarSms.open(activePanelLesson.id,this)">SMS lesson reminder</button>
           <button class="panel-action" onclick="ownerViewStudent()"><i class="ti ti-user"></i>View student</button>
           <button class="panel-action" onclick="ownerRenewPackage()"><i class="ti ti-refresh"></i>Renew package</button>
           <button class="panel-action" onclick="ownerDuplicateLesson()"><i class="ti ti-copy"></i>Duplicate lesson</button>
@@ -50112,3 +50114,7 @@ from studio_operations import register_operations
 register_operations(app, lambda: sqlite3.connect("hmusic.db"), globals())
 from trial_enrollment import register_trial_enrollment
 register_trial_enrollment(app, app.extensions["studio_operations"], globals())
+
+
+from calendar_sms import register_calendar_sms
+register_calendar_sms(app, globals())
