@@ -241,13 +241,25 @@ class Operations:
     def deliver(self,task):
         p=json.loads(task['payload']);c=self.db()
         try:
+            if p.get('journey_id'):
+                j=record(c,'SELECT * FROM studio_enrollment_journeys WHERE id=?',(p['journey_id'],))
+                if not j or not j['enabled']:return {'cancelled':True,'reason':'journey_paused'}
+                if not p.get('owner'):
+                    i=record(c,'SELECT * FROM inquiries WHERE id=?',(j['inquiry_id'],));source=json.loads(j['source'])
+                    if not i or any(str(i.get(k) or '').strip().casefold()!=str(source.get(k) or '').strip().casefold() for k in ('student_name','parent_email','phone')):return {'cancelled':True,'reason':'family_identity_changed'}
+                if p.get('journey_kind')=='post-trial':
+                    if hasattr(self,'journeys') and self.journeys.has_reply(c,j):return {'cancelled':True,'reason':'parent_already_replied'}
+                    i=record(c,'SELECT * FROM inquiries WHERE id=?',(j['inquiry_id'],))
+                    trial=record(c,'SELECT status FROM schedule WHERE id=?',(j['trial_schedule_id'],))
+                    if not trial or str(trial['status']).lower() not in ('present','completed') or j['stage']!='followup' or j['order_id'] or not i or i.get('converted_student_name') or str(i.get('status','')).lower() in ('lost','closed','enrolled','converted'):return {'cancelled':True,'reason':'journey_progressed'}
+                if p.get('journey_kind')=='trial-options' and j['stage']!='offered':return {'cancelled':True,'reason':'selection_already_received'}
             if task['operation_id'].startswith('workflow:'):
                 w=record(c,'SELECT * FROM studio_workflows WHERE inquiry_id=?',(p['target_id'],))
                 if not w or not w['enabled'] or w['updated_at']!=p.get('workflow_updated_at'):return {'cancelled':True,'reason':'workflow_paused'}
             if p.get('lesson_id'):
                 s=lesson(c,p['lesson_id'])
                 if fingerprint(s)!=p['lesson_version'] or str(s.get('status') or '').lower() in CANCELLED:return {'cancelled':True,'reason':'lesson_changed'}
-            target=({'parent_id':None,'teacher':p['teacher']} if p.get('teacher') else get_target(c,p))
+            target=({'parent_id':None,'owner':True} if p.get('owner') else {'parent_id':None,'teacher':p['teacher']} if p.get('teacher') else get_target(c,p))
             if target.get('parent_id') and (p.get('lesson_id') or p.get('invoice_id')):
                 pref=record(c,'SELECT * FROM parent_notification_preferences WHERE parent_id=?',(target['parent_id'],))
                 pref_key='billing_alerts' if p.get('invoice_id') else 'lesson_reminders'
@@ -262,12 +274,12 @@ class Operations:
         results=[];api=self.api
         for ch in p['channels']:
             rel={'related_type':'studio_task','related_id':task['id']}
-            path='/parent_invoice/'+str(p['invoice_id']) if p.get('invoice_id') else '/parent_dashboard'
+            path=p.get('journey_path') or ('/parent_invoice/'+str(p['invoice_id']) if p.get('invoice_id') else '/parent_dashboard')
             if target.get('teacher'):path='/teacher_dashboard?view=schedule'
             link=api['hmusic_public_app_url'](path)
             if ch=='push':
-                if not target.get('parent_id') and not target.get('teacher'):results.append({'channel':ch,'state':'unavailable','reason':'no_parent_account'});continue
-                nid=api['create_notification']('teacher' if target.get('teacher') else 'parent',str(target.get('teacher') or target['parent_id']),p['title'],p['body'],path,queue_delivery=False,**rel)
+                if not target.get('parent_id') and not target.get('teacher') and not target.get('owner'):results.append({'channel':ch,'state':'unavailable','reason':'no_parent_account'});continue
+                nid=api['create_notification']('owner' if target.get('owner') else 'teacher' if target.get('teacher') else 'parent',str('owner' if target.get('owner') else target.get('teacher') or target['parent_id']),p['title'],p['body'],path,queue_delivery=False,**rel)
                 results.append({'channel':ch,'state':'in_app_created','notification_id':nid});continue
             if target.get('parent_id') or target.get('teacher'):
                 qid=api['queue_notification_delivery']('teacher' if target.get('teacher') else 'parent',str(target.get('teacher') or target['parent_id']),p['title'],p['body'],path if ch=='sms' else link,ch,**rel)
@@ -290,6 +302,8 @@ class Operations:
     def tick(self):
         if not self.lock.acquire(blocking=False):return
         try:
+            if os.environ.get('HMUSIC_STUDIO_AUTOMATION')=='1' and hasattr(self,'journeys'):
+                self.journeys.process()
             c=self.db();owner=secrets.token_hex(12);now=stamp()
             try:
                 c.execute("INSERT OR IGNORE INTO studio_leases VALUES ('tick','', '')")

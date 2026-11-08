@@ -8,8 +8,8 @@ NAV = [("/", "Overview"), ("/calendar", "Calendar"), ("/admissions", "Admissions
 
 
 # Public family journeys stay independent of the signed-in manager workspace.
-PUBLIC_ADMISSIONS = re.compile(r'^/(?:group-classes|group-registration|enrollment-order|trial|trial_form|trial_request|registration)(?:/|$)')
-ADMISSIONS = re.compile(r'^/(?:admissions|admissions-admin|website-admin|inquiries|inquiry|add_inquiry|update_inquiry|convert_inquiry_to_student|new_students|new_student_leads|new_student_intake|add_new_student_lead|trial_leads|add_trial_lead|group-class-admin|group-enrollments)(?:/|$)')
+PUBLIC_ADMISSIONS = re.compile(r'^/(?:group-classes|group-registration|enrollment-order|trial-enrollment|trial|trial_form|trial_request|registration)(?:/|$)')
+ADMISSIONS = re.compile(r'^/(?:admissions|studio-enrollment|admissions-admin|website-admin|inquiries|inquiry|add_inquiry|update_inquiry|convert_inquiry_to_student|new_students|new_student_leads|new_student_intake|add_new_student_lead|trial_leads|add_trial_lead|group-class-admin|group-enrollments)(?:/|$)')
 
 def workspace_section(path):
     if path == '/': return '/'
@@ -61,7 +61,7 @@ def apply_owner_workspace(response, request, is_owner):
         html = re.sub(r"(<body\b[^>]*>)", lambda m:m.group(0)+admissions_nav,html,count=1,flags=re.I)
     if in_workspace:
         script = r"""<script>if(window.parent!==window){
-function publicAdmissions(u){return /^\/(?:group-classes|group-registration|enrollment-order|trial|trial_form|trial_request|registration)(?:\/|$)/.test(u.pathname);}
+function publicAdmissions(u){return /^\/(?:group-classes|group-registration|enrollment-order|trial-enrollment|trial|trial_form|trial_request|registration)(?:\/|$)/.test(u.pathname);}
 function workspaceURL(raw){const u=new URL(raw,location.href);if(u.origin===location.origin){if(publicAdmissions(u))u.searchParams.delete('_workspace');else if(!/login|logout|print|export|download/i.test(u.pathname))u.searchParams.set('_workspace','1');}return u.href;}
 function workspaceLink(a){a.href=workspaceURL(a.href);const u=new URL(a.href);if(u.origin===location.origin&&publicAdmissions(u)){if(a.target!=='_blank')a.target='_top';}else if(u.origin===location.origin&&a.target==='_blank')a.target='_self';}
 document.querySelectorAll('a[href]').forEach(a=>{if(!a.hasAttribute('download')&&!a.getAttribute('href').startsWith('#')){workspaceLink(a);}});
