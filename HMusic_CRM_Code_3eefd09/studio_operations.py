@@ -10,6 +10,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
+from trial_eligibility import private_trial_block_reason
 from flask import Blueprint, request, jsonify
 
 LA = ZoneInfo('America/Los_Angeles')
@@ -97,7 +98,8 @@ class Operations:
         if action=='trial':
             r=record(c,'SELECT * FROM inquiries WHERE id=?',(int(p['inquiry_id']),))
             if not r:raise ValueError('试听记录不存在')
-            if r.get('converted_student_name'):raise ValueError('该咨询已转为学生')
+            reason=private_trial_block_reason(c,r)
+            if reason:raise ValueError(reason)
             if not record(c,'SELECT teacher_name FROM teachers WHERE teacher_name=?',(p['teacher'],)):raise ValueError('老师不存在')
             dummy={'student_name':r['student_name'],'teacher':p['teacher'],'classroom':p['classroom'],'duration':int(p['duration']),'location':p.get('location','')}
             if dummy['duration'] not in (30,45,60):raise ValueError('试听课长须为30、45或60分钟')
@@ -222,7 +224,7 @@ class Operations:
             if not i:continue
             base={'target_kind':'inquiry','target_id':i['id'],'channels':json.loads(w['channels']),'workflow_updated_at':w['updated_at']}
             due=str(i.get('next_follow_up_at') or '').replace('T',' ')
-            if due and not i.get('converted_student_name') and str(i.get('status','')).lower() not in ('closed','lost','enrolled','converted') and w['followup_body']:
+            if due and not private_trial_block_reason(c,i) and not i.get('converted_student_name') and str(i.get('status','')).lower() not in ('closed','lost','enrolled','converted') and w['followup_body']:
                 try:when=datetime.fromisoformat(due).replace(tzinfo=LA)
                 except ValueError:when=None
                 if when and when<=now and when.date()==now.date():
@@ -244,6 +246,8 @@ class Operations:
             if p.get('journey_id'):
                 j=record(c,'SELECT * FROM studio_enrollment_journeys WHERE id=?',(p['journey_id'],))
                 if not j or not j['enabled']:return {'cancelled':True,'reason':'journey_paused'}
+                intake=record(c,'SELECT * FROM inquiries WHERE id=?',(j['inquiry_id'],))
+                if private_trial_block_reason(c,intake,own_order_id=j['order_id'],check_conversion=not bool(j['order_id'])):return {'cancelled':True,'reason':'not_private_trial'}
                 if not p.get('owner'):
                     i=record(c,'SELECT * FROM inquiries WHERE id=?',(j['inquiry_id'],));source=json.loads(j['source'])
                     if not i or any(str(i.get(k) or '').strip().casefold()!=str(source.get(k) or '').strip().casefold() for k in ('student_name','parent_email','phone')):return {'cancelled':True,'reason':'family_identity_changed'}
@@ -269,6 +273,7 @@ class Operations:
                 if not inv or inv['status'] not in ('unpaid','pending'):return {'cancelled':True,'reason':'invoice_no_longer_due'}
             if p.get('inquiry_due'):
                 i=record(c,'SELECT * FROM inquiries WHERE id=?',(p['target_id'],))
+                if private_trial_block_reason(c,i):return {'cancelled':True,'reason':'not_private_trial'}
                 if i.get('converted_student_name') or str(i.get('next_follow_up_at') or '').replace('T',' ')!=p['inquiry_due']:return {'cancelled':True,'reason':'followup_changed'}
         finally:c.close()
         results=[];api=self.api

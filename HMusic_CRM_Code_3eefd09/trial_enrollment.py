@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from flask import Blueprint, request, redirect, render_template_string, abort
 from itsdangerous import URLSafeSerializer, BadSignature
+from trial_eligibility import private_trial_block_reason
 from admissions import ensure_schema as admissions_schema, catalog, quote, sync_order, digest
 from studio_operations import LA, stamp, pack, record, conflict_check, checked_date, minutes, fingerprint
 
@@ -59,12 +60,18 @@ class Journey:
         if not i or any(str(i.get(k) or '').strip().casefold()!=str(source.get(k) or '').strip().casefold() for k in ('student_name','parent_email','phone')):
             raise ValueError('家庭身份或联系方式已改变，需重新核实')
         return i
+    def require_trial(self,c,j):
+        i=record(c,'SELECT * FROM inquiries WHERE id=?',(j['inquiry_id'],))
+        reason=private_trial_block_reason(c,i,own_order_id=j.get('order_id'),check_conversion=not bool(j.get('order_id')))
+        if reason:raise ValueError(reason)
     def path(self,j):return '/trial-enrollment/'+self.signer.dumps([j['id'],j['nonce']])
     def public(self,c,token):
         try:
             jid,nonce=self.signer.loads(token);j=self.get(c,jid)
         except (BadSignature,ValueError,TypeError):abort(404)
         if nonce!=j['nonce'] or not j['enabled']:abort(404)
+        try:self.require_trial(c,j)
+        except ValueError:abort(410)
         if datetime.now(timezone.utc)-datetime.fromisoformat(j['created_at'])>timedelta(days=60):abort(410)
         return j
     def notify(self,c,j,key,title,body,path=None,teacher=None,owner=False,**extra):
@@ -87,7 +94,8 @@ class Journey:
         c=self.db()
         try:
             lock(c);i=record(c,'SELECT * FROM inquiries WHERE id=?',(int(inquiry_id),))
-            if not i or i.get('converted_student_name'):raise ValueError('选择未转为正式学生的咨询')
+            reason=private_trial_block_reason(c,i)
+            if reason:raise ValueError(reason)
             if not i.get('parent_email') or '@' not in i['parent_email']:raise ValueError('报名付款需要已核实的家长邮箱')
             existing=record(c,'SELECT id FROM studio_enrollment_journeys WHERE inquiry_id=?',(i['id'],))
             if existing:return existing['id']
@@ -119,7 +127,7 @@ class Journey:
     def add_plan(self,jid,d):
         c=self.db()
         try:
-            j=self.get(c,jid);i=record(c,'SELECT student_name FROM inquiries WHERE id=?',(j['inquiry_id'],))
+            j=self.get(c,jid);self.require_trial(c,j);i=record(c,'SELECT student_name FROM inquiries WHERE id=?',(j['inquiry_id'],))
             teacher=next((t for t in catalog(c)['teachers'] if t['id']==d['teacher_id'] and t['active']),None)
         finally:c.close()
         if not teacher:raise ValueError('老师不存在')
@@ -127,7 +135,7 @@ class Journey:
         if not pricing or pricing.get('teacher_pay_amount') is None:raise ValueError('请先在 CRM 核实该老师和课程的计薪规则')
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid)
+            lock(c);j=self.get(c,jid);self.require_trial(c,j)
             if j['stage'] not in ('draft','offered','selected','trial','followup') or j['order_id']:raise ValueError('报名订单已建立，不能更改方案')
             ct=record(c,'SELECT * FROM course_types WHERE id=? AND active=1 AND COALESCE(is_group,0)=0',(int(d['course_type_id']),))
             if not ct:raise ValueError('课程类型不存在')
@@ -174,7 +182,7 @@ class Journey:
     def offer(self,jid,d):
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid);self.identity(c,j)
+            lock(c);j=self.get(c,jid);self.identity(c,j);self.require_trial(c,j)
             if not j['enabled'] or j['trial_schedule_id'] or j['stage'] not in ('draft','offered','selected'):raise ValueError('试听已确认或流程暂停，不能重发选项')
             if not json.loads(j['plans']):raise ValueError('先添加已审核的正式报名方案，供试听后自动跟进读取')
             slots=self.scan(c,j,d['start'],d['end'],d['course_type_id'])
@@ -190,7 +198,7 @@ class Journey:
     def select(self,jid,index,choices_version):
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid)
+            lock(c);j=self.get(c,jid);self.require_trial(c,j)
             if j['stage']=='selected':return
             if not j['enabled'] or j['stage']!='offered':raise ValueError('This selection is no longer available.')
             choices=json.loads(j['candidates'])
@@ -210,7 +218,7 @@ class Journey:
     def approve(self,jid):
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid);self.identity(c,j)
+            lock(c);j=self.get(c,jid);self.identity(c,j);self.require_trial(c,j)
             if j['trial_schedule_id']:return
             if not j['enabled'] or j['stage']!='selected':raise ValueError('家长还未选择或流程暂停')
             s=json.loads(j['selected']);self.check_trial(c,s)
@@ -228,7 +236,7 @@ class Journey:
         if end>datetime.now(LA):raise ValueError('实际结束时间不能在未来')
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid)
+            lock(c);j=self.get(c,jid);self.require_trial(c,j)
             if j['stage']!='trial' or not j['enabled']:raise ValueError('只可确认当前已安排试听')
             s=record(c,'SELECT * FROM schedule WHERE id=?',(j['trial_schedule_id'],))
             if not s or str(s.get('status','')).lower() in ('cancelled','canceled','teacher_cancelled','absent','excused','excused_24h','last_min_cancel'):raise ValueError('取消或未到课程不可按完成处理')
@@ -240,7 +248,7 @@ class Journey:
     def accept(self,jid,plan_id,signer,policy_version):
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid);self.identity(c,j)
+            lock(c);j=self.get(c,jid);self.identity(c,j);self.require_trial(c,j)
             if j['order_id']:return j['order_id']
             if not j['enabled'] or j['stage']!='followup':raise ValueError('Enrollment is not available yet.')
             if not signer.strip() or len(signer)>100:raise ValueError('Enter the guardian name to confirm.')
@@ -284,7 +292,7 @@ class Journey:
     def advance(self,jid,now):
         c=self.db();paid=False
         try:
-            lock(c);j=self.get(c,jid)
+            lock(c);j=self.get(c,jid);self.require_trial(c,j)
             if not j['enabled']:return
             self.identity(c,j)
             if j['stage']=='trial':
@@ -314,7 +322,7 @@ class Journey:
         # Called only from verified admissions paid state. Payment/credit posting remains existing CRM logic.
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid);self.identity(c,j)
+            lock(c);j=self.get(c,jid);self.identity(c,j);self.require_trial(c,j)
             if not j['enabled'] or j['stage']=='enrolled':return
             o=record(c,'SELECT * FROM admissions_orders WHERE id=?',(j['order_id'],))
             if not o or o['status']!='paid':raise ValueError('尚未核实付款')
@@ -350,7 +358,7 @@ class Journey:
         if not self.api['finalize_stripe_invoice_payment'](iid,checkout_session_id=o['checkout_id'],source='admissions-'+o['id']):raise ValueError('账单入账需核对')
         c=self.db()
         try:
-            lock(c);j=self.get(c,jid);self.identity(c,j)
+            lock(c);j=self.get(c,jid);self.identity(c,j);self.require_trial(c,j)
             if not j['enabled'] or j['stage']=='enrolled':return
             o=record(c,'SELECT * FROM admissions_orders WHERE id=?',(j['order_id'],));inv=record(c,'SELECT * FROM invoices WHERE id=?',(iid,))
             if not inv or inv['status']!='paid' or o['status']!='paid':raise ValueError('账单付款尚未完成')
@@ -374,20 +382,20 @@ OWNER='''<!doctype html><html lang="zh-CN"><head><meta name="viewport" content="
 <nav><a href="/owner_dashboard">CRM 工作台</a><a href="/admissions-admin">报名价格与政策</a><a href="/inquiries">咨询记录</a></nav>
 <h1>试听到报名</h1><p><b>{{'后台自动化已启用，每分钟检查' if scheduler_enabled else '后台自动化未启用，定时跟进与缴费后排课不会自动执行'}}</b></p><p>只为逐个核实并启用的家庭执行。试听由家长选时间、校长确认；试听结束两小时后跟进；核实缴费后自动正式排课并通知。</p>
 {% if error %}<section class="error">{{error}}</section>{% endif %}
-<details><summary>启用前审阅自动消息模板</summary><section><h3>试听后两小时跟进</h3><pre>{{followup_template}}</pre><p>系统会附上该家庭的私密报名链接。试听邀请会列明已核实试听费用，并说明家长选择后仍需学校确认。试听确认会列明最终老师、时间、时长、教室和校区。付款后欢迎通知会列明正式课次、首课信息、家长应用登录与安装入口；新家庭按现有找回密码流程设置访问，不发送默认密码。</p></section></details><section><h2>启用一个家庭</h2><form method="post"><input type="hidden" name="action" value="create"><label>咨询记录<select name="inquiry_id" required>{% for i in inquiries %}<option value="{{i.id}}">#{{i.id}} · {{i.student_name}} · {{i.parent_email}} · {{i.source}}</option>{% endfor %}</select></label><label><input type="checkbox" name="email" checked>邮件</label><label><input type="checkbox" name="sms">短信（需有效手机号与已配置通道）</label><label><input type="checkbox" name="identity_confirmed" required>我已核对原始请求、家庭身份与联系方式，审阅上方消息模板，并批准该家庭按本流程接收消息和缴费后排课。</label><button>建立流程</button></form></section>
+<details><summary>启用前审阅自动消息模板</summary><section><h3>试听后两小时跟进</h3><pre>{{followup_template}}</pre><p>系统会附上该家庭的私密报名链接。试听邀请会列明已核实试听费用，并说明家长选择后仍需学校确认。试听确认会列明最终老师、时间、时长、教室和校区。付款后欢迎通知会列明正式课次、首课信息、家长应用登录与安装入口；新家庭按现有找回密码流程设置访问，不发送默认密码。</p></section></details><section><h2>启用一个家庭</h2><p>这里只显示尚未报名的私课试听咨询。Circle Piano 等团课申请请到 <a href="/group-enrollments">团课报名审核</a> 处理。</p><form method="post"><input type="hidden" name="action" value="create"><label>私课试听咨询<select name="inquiry_id" required><option value="">请选择一条私课试听咨询</option>{% for i in inquiries %}<option value="{{i.id}}">#{{i.id}} · {{i.student_name}} · {{i.parent_email}} · {{i.source}}</option>{% endfor %}</select></label><label><input type="checkbox" name="email" checked>邮件</label><label><input type="checkbox" name="sms">短信（需有效手机号与已配置通道）</label><label><input type="checkbox" name="identity_confirmed" required>我已核对原始请求、家庭身份与联系方式，审阅上方消息模板，并批准该家庭按本流程接收消息和缴费后排课。</label><button>建立流程</button></form></section>
 <details><summary>管理已核实的老师工作时段（自动扫描的依据）</summary><section><p>确认老师能够教授所选课程，并核实实际校区、教室与工作时段。课表空白本身不代表老师可工作。</p><form method="post"><input type="hidden" name="action" value="window">{{teacher_select|safe}}{{course_select|safe}}<div class="row"><label>开始日期<input name="date_from" type="date" required></label><label>结束日期<input name="date_until" type="date" required></label></div><div class="row"><label>开始时间<input name="start_time" type="time" required></label><label>结束时间<input name="end_time" type="time" required></label></div><p>每周工作日</p>{% for day in weekdays %}<label style="display:inline-block"><input type="checkbox" name="weekdays" value="{{loop.index0}}">{{day}}</label>{% endfor %}<div class="row"><label>教室<input name="classroom" required maxlength="120"></label><label>校区<input name="location" required maxlength="120"></label></div><label><input type="checkbox" required>已向老师核实时间、课程适配和地点</label><button>保存可工作时段</button></form>
 {% for w in windows %}<p>#{{w.id}} · {{w.teacher_id}} · {{w.date_from}}—{{w.date_until}} · {{w.start_time}}—{{w.end_time}} · {{w.location}} / {{w.classroom}} · {{'启用' if w.active else '停用'}}</p>{% if w.active %}<form method="post"><input type="hidden" name="action" value="disable_window"><input type="hidden" name="window_id" value="{{w.id}}"><button>停用这个时段</button></form>{% endif %}{% endfor %}</section></details>
-{% for j in journeys %}<article><h2>#{{j.id}} · {{j.student_name}} · {{stages.get(j.stage,j.stage)}}</h2><p>来源：{{j.source_info.get('source') or '待核实'}} · {{j.source_info.get('parent_email')}}</p>{% if j.error %}<p class="error">{{j.error}}</p>{% endif %}<p><a href="{{j.parent_path}}" target="_blank" rel="noopener">打开该家庭的私密选择页面</a>（仅向该家庭分享）</p>
+{% for j in journeys %}<article><h2>#{{j.id}} · {{j.student_name}} · {{stages.get(j.stage,j.stage) if j.enabled else '已暂停'}}</h2><p>来源：{{j.source_info.get('source') or '待核实'}} · {{j.source_info.get('parent_email')}}</p>{% if j.error %}<p class="error">{{j.error}}</p>{% endif %}{% if j.exclusion_reason %}<p class="error">{{j.exclusion_reason}} <a href="/group-enrollments">查看报名审核</a></p>{% endif %}{% if j.enabled and not j.exclusion_reason %}<p><a href="{{j.parent_path}}" target="_blank" rel="noopener">打开该家庭的私密选择页面</a>（仅向该家庭分享）</p>{% endif %}
 {% if j.selected_info %}<p>家长选择：{{j.selected_info.date}} {{j.selected_info.time}} · {{j.selected_info.teacher}} · {{j.selected_info.location}} / {{j.selected_info.classroom}}</p>{% endif %}
 {% if j.followup_due %}<p>试听后跟进时间：{{j.followup_due}}（洛杉矶时间，不限夜间）</p>{% endif %}
 {% for p in j.plan_info %}<p>报名方案 {{loop.index}}：{{p.course_name}} · {{p.quote.teacher.name}} · {{p.quote.minutes}} 分钟 × {{p.quote.lessons}} · ${{'%.2f'|format(p.quote.total/100)}}<br>已审核日期：{{p.dates|join('、')}} {{p.time}} · {{p.location}} / {{p.classroom}}</p>{% endfor %}
-{% if j.enabled and not j.order_id and j.stage in ['draft','offered','selected','trial','followup'] %}<details><summary>添加家长可选的正式报名方案</summary><form method="post"><input type="hidden" name="action" value="plan"><input type="hidden" name="jid" value="{{j.id}}">{{teacher_select|safe}}{{course_select|safe}}<label>正式课程日期（每行 YYYY-MM-DD；需与套餐课次数一致，先排除学校假期）<textarea name="dates" rows="5" required></textarea></label><div class="row"><label>每节开始时间<input name="time" type="time" required></label><label>教室<input name="classroom" required></label><label>校区<input name="location" required></label></div><label><input type="checkbox" required>已审核全部日期、老师工作时间、费用与政策。最终时段由家长选择方案后确认；付款前不占位。</label><button>保存已审核方案</button></form></details>{% endif %}
-{% if j.enabled and j.stage in ['draft','offered','selected'] %}<details><summary>扫描试听空点并发送家长选项</summary><form method="post"><input type="hidden" name="action" value="offer"><input type="hidden" name="jid" value="{{j.id}}">{{course_select|safe}}<div class="row"><label>查询开始<input name="start" type="date" required></label><label>查询结束<input name="end" type="date" required></label><label>已核实试听费（美元；免费填0）<input name="trial_fee" type="number" min="0" step="0.01" required></label></div><p>最多提供12个不冲突选项；重新扫描不会重复发送同一邀请，可分享上方链接。</p><button>扫描并发送试听选项</button></form></details>{% endif %}
-{% if j.enabled and j.stage=='selected' %}<form method="post"><input type="hidden" name="action" value="approve"><input type="hidden" name="jid" value="{{j.id}}"><label><input type="checkbox" required>确认上方家长选定的老师、时间、教室与试听费用</label><button>确认试听并通知家长和老师</button></form>{% endif %}
-{% if j.enabled and j.stage=='trial' %}<form method="post"><input type="hidden" name="action" value="complete"><input type="hidden" name="jid" value="{{j.id}}"><label>试听实际结束时间<input name="ended" type="datetime-local" required></label><button>确认已完成，安排两小时后跟进</button></form><small>老师登记出勤后也会自动识别；默认使用课表结束时间。若实际时间不同，请在老师登记前填写。</small>{% endif %}
+{% if j.enabled and not j.exclusion_reason and not j.order_id and j.stage in ['draft','offered','selected','trial','followup'] %}<details><summary>添加家长可选的正式报名方案</summary><form method="post"><input type="hidden" name="action" value="plan"><input type="hidden" name="jid" value="{{j.id}}">{{teacher_select|safe}}{{course_select|safe}}<label>正式课程日期（每行 YYYY-MM-DD；需与套餐课次数一致，先排除学校假期）<textarea name="dates" rows="5" required></textarea></label><div class="row"><label>每节开始时间<input name="time" type="time" required></label><label>教室<input name="classroom" required></label><label>校区<input name="location" required></label></div><label><input type="checkbox" required>已审核全部日期、老师工作时间、费用与政策。最终时段由家长选择方案后确认；付款前不占位。</label><button>保存已审核方案</button></form></details>{% endif %}
+{% if j.enabled and not j.exclusion_reason and j.stage in ['draft','offered','selected'] %}<details><summary>扫描试听空点并发送家长选项</summary><form method="post"><input type="hidden" name="action" value="offer"><input type="hidden" name="jid" value="{{j.id}}">{{course_select|safe}}<div class="row"><label>查询开始<input name="start" type="date" required></label><label>查询结束<input name="end" type="date" required></label><label>已核实试听费（美元；免费填0）<input name="trial_fee" type="number" min="0" step="0.01" required></label></div><p>最多提供12个不冲突选项；重新扫描不会重复发送同一邀请，可分享上方链接。</p><button>扫描并发送试听选项</button></form></details>{% endif %}
+{% if j.enabled and not j.exclusion_reason and j.stage=='selected' %}<form method="post"><input type="hidden" name="action" value="approve"><input type="hidden" name="jid" value="{{j.id}}"><label><input type="checkbox" required>确认上方家长选定的老师、时间、教室与试听费用</label><button>确认试听并通知家长和老师</button></form>{% endif %}
+{% if j.enabled and not j.exclusion_reason and j.stage=='trial' %}<form method="post"><input type="hidden" name="action" value="complete"><input type="hidden" name="jid" value="{{j.id}}"><label>试听实际结束时间<input name="ended" type="datetime-local" required></label><button>确认已完成，安排两小时后跟进</button></form><small>老师登记出勤后也会自动识别；默认使用课表结束时间。若实际时间不同，请在老师登记前填写。</small>{% endif %}
 {% if j.order_id %}<p>报名订单：{{j.order_id}} · <a href="{{j.order_path}}">查看付款进度</a></p>{% endif %}
 {% if j.result_info.schedule_ids %}<p>已建立正式课程编号：{{j.result_info.schedule_ids|join('、')}}</p>{% endif %}
-{% if j.stage=='attention' and j.enabled %}<form method="post"><input type="hidden" name="action" value="retry"><input type="hidden" name="jid" value="{{j.id}}"><label><input type="checkbox" required>已核对当前付款、课表及失败原因；重试不会重新收费</label><button>重新核对并继续</button></form>{% endif %}
+{% if j.stage=='attention' and j.enabled and not j.exclusion_reason %}<form method="post"><input type="hidden" name="action" value="retry"><input type="hidden" name="jid" value="{{j.id}}"><label><input type="checkbox" required>已核对当前付款、课表及失败原因；重试不会重新收费</label><button>重新核对并继续</button></form>{% endif %}
 {% if j.enabled %}<form method="post"><input type="hidden" name="action" value="pause"><input type="hidden" name="jid" value="{{j.id}}"><button>暂停此家庭后续自动化</button></form>{% endif %}
 <details><summary>通知任务与结果</summary>{% for t in j.tasks %}<p>{{t.title}} · {{task_states.get(t.state,t.state)}} · {{t.updated_at}}</p>{% else %}<p>尚无通知任务</p>{% endfor %}</details></article>{% endfor %}</main></body></html>'''
 PUBLIC='''<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>H-Music · Trial & enrollment</title>{{style|safe}}</head><body><main><h1>H-Music · Trial & enrollment</h1><p>For {{student}}. Los Angeles time. Please keep this family link private.</p>{% if error %}<section class="error">{{error}}</section>{% endif %}
@@ -417,9 +425,12 @@ def register_trial_enrollment(app,operations,api):
             js=rows('SELECT j.*,i.student_name FROM studio_enrollment_journeys j JOIN inquiries i ON i.id=j.inquiry_id ORDER BY j.id DESC LIMIT 100')
             for j in js:
                 for raw,key in [('source','source_info'),('selected','selected_info'),('plans','plan_info'),('result','result_info')]:j[key]=json.loads(j[raw])
+                current=record(c,'SELECT * FROM inquiries WHERE id=?',(j['inquiry_id'],))
+                j['exclusion_reason']=private_trial_block_reason(c,current,own_order_id=j['order_id'],check_conversion=not bool(j['order_id']))
                 j['parent_path']=service.path(j);j['order_path']=service.order_path(j) if j['order_id'] else ''
                 cur=c.execute('SELECT payload,state,updated_at FROM studio_tasks WHERE operation_id=? ORDER BY id',(f"enrollment:{j['id']}",));j['tasks']=[{'title':json.loads(r[0])['title'],'state':r[1],'updated_at':r[2]} for r in cur.fetchall()]
-            return html(OWNER,followup_template=FOLLOWUP_TEXT,scheduler_enabled=__import__('os').environ.get('HMUSIC_STUDIO_AUTOMATION')=='1',journeys=js,inquiries=rows("SELECT id,student_name,parent_email,source FROM inquiries WHERE COALESCE(converted_student_name,'')='' ORDER BY id DESC LIMIT 200"),windows=rows('SELECT * FROM studio_enrollment_windows ORDER BY id DESC'),teacher_select=ts,course_select=cs,weekdays=['周一','周二','周三','周四','周五','周六','周日'],stages=STAGES,error=error,task_states={'pending':'待发送','running':'处理中','completed':'已完成','attention':'需核对发送结果','cancelled':'已取消'})
+            candidates=[i for i in rows("SELECT * FROM inquiries WHERE COALESCE(converted_student_name,'')='' ORDER BY id DESC") if not private_trial_block_reason(c,i)][:200]
+            return html(OWNER,followup_template=FOLLOWUP_TEXT,scheduler_enabled=__import__('os').environ.get('HMUSIC_STUDIO_AUTOMATION')=='1',journeys=js,inquiries=candidates,windows=rows('SELECT * FROM studio_enrollment_windows ORDER BY id DESC'),teacher_select=ts,course_select=cs,weekdays=['周一','周二','周三','周四','周五','周六','周日'],stages=STAGES,error=error,task_states={'pending':'待发送','running':'处理中','completed':'已完成','attention':'需核对发送结果','cancelled':'已取消'})
         finally:c.close()
     @bp.route(ROOT,methods=['GET','POST'])
     def owner():
