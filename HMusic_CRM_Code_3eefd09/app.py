@@ -41003,6 +41003,7 @@ def inquiries():
                     <a href="/registration" target="_blank">Registration</a>
                     <a href="/group-class-admin">Group Class Enrollment</a>
                     <a href="/admissions-admin">Tuition, discounts & enrollment payments</a>
+                    <a href="/studio-enrollment">试听到报名 · 自动跟进与缴费后排课</a>
                     <a href="/group-enrollments">Review Group Applications</a>
                     <a class="primary" href="/new_student_intake">Manual Entry</a>
                 </div>
@@ -50109,3 +50110,5 @@ register_studio_agent(app, lambda: sqlite3.connect("hmusic.db"), using_postgres)
 # Scoped writes use a distinct credential and durable proposals/outbox.
 from studio_operations import register_operations
 register_operations(app, lambda: sqlite3.connect("hmusic.db"), globals())
+from trial_enrollment import register_trial_enrollment
+register_trial_enrollment(app, app.extensions["studio_operations"], globals())

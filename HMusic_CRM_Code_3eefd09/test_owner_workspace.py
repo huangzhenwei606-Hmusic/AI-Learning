@@ -62,7 +62,7 @@ class WorkspaceTest(unittest.TestCase):
         for path in ['/admissions','/inquiries','/inquiry/42','/new_students','/new_student_leads','/new_student_intake','/add_inquiry','/trial_leads','/group-class-admin','/group-class-admin/3/schedule','/group-enrollments']:
             self.assertEqual(workspace_section(path),'/admissions',path)
     def test_public_family_pages_never_get_manager_shell(self):
-        for path in ['/group-classes','/group-classes/3/apply?preview=1','/group-classes/3/apply?_workspace=1','/group-registration/receipt','/registration','/trial','/trial_form','/trial_request']:
+        for path in ['/group-classes','/group-classes/3/apply?preview=1','/group-classes/3/apply?_workspace=1','/group-registration/receipt','/registration','/trial','/trial_form','/trial_request','/trial-enrollment/family-token']:
             html=self.render(path)
             self.assertNotIn('<iframe',html,path)
             self.assertNotIn('hmusic-workspace',html,path)
