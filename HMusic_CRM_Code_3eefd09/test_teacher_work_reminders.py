@@ -55,11 +55,9 @@ class TeacherWorkRemindersTest(unittest.TestCase):
         self.assertEqual(self.sql('SELECT * FROM schedule'),self.original)
         self.assertEqual(self.sql('SELECT status FROM teacher_work_reminders'),[('sent',)])
 
-    def test_time_change_requires_previous_time_and_shows_both(self):
+    def test_manual_previous_time_is_not_accepted(self):
         self.assertEqual(self.preview(kind='time_change').status_code,400)
-        p=self.preview(kind='time_change',old_date=self.day,old_time='15:00')
-        html=self.client.get(p.location).get_data(as_text=True)
-        for text in ['Previous time (provided by manager)','03:00 PM','New time:','04:00 PM']:self.assertIn(text,html)
+        self.assertEqual(self.preview(kind='time_change',old_date=self.day,old_time='15:00').status_code,400)
 
     def test_contacts_and_lesson_changes_invalidate_preview(self):
         p=self.preview();self.sql("UPDATE schedule SET lesson_time='17:00' WHERE id=1")
