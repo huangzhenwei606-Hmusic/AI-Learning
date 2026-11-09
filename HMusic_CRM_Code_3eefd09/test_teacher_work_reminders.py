@@ -95,6 +95,12 @@ class TeacherWorkRemindersTest(unittest.TestCase):
         self.client.post(p.location)
         self.assertEqual(len(self.sent),1)
 
+    def test_sms_transport_uncertain_return_blocks_a_new_draft(self):
+        self.api['send_sms_delivery']=lambda *args:(False,'Twilio connection failed: timed out')
+        p=self.preview(channels=['sms']);self.client.post(p.location)
+        p=self.preview(channels=['sms'])
+        self.assertEqual(self.client.post(p.location).status_code,409)
+
     def test_button_and_teacher_lesson_page(self):
         self.assertIn('Send teacher work reminder',self.client.get('/calendar').get_data(as_text=True))
         html=self.client.get('/manager/teacher-work-reminders?teacher_id=1').get_data(as_text=True)
