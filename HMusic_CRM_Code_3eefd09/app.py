@@ -24825,6 +24825,13 @@ def send_email_delivery(destination, title, body, link_url):
         message["Reply-To"] = message["From"]
     footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
     message.set_content(f"{body or ''}{footer}")
+    try:
+        attachment = invoice_message_attachment(destination, body)
+        if attachment:
+            filename, content = attachment
+            message.add_attachment(content, maintype="application", subtype="pdf", filename=filename)
+    except Exception:
+        return False, "Invoice PDF could not be prepared or access has changed. Review the invoice before resending."
 
     if not smtp_security:
         smtp_security = "ssl" if smtp_port == 465 else "starttls"
@@ -28235,7 +28242,7 @@ def create_invoice_message_event(invoice_id, event_type, body=None, parent_id=No
                 "parent",
                 str(parent_id),
                 "Tuition invoice sent",
-                f"{student_name} has a tuition invoice due: ${amount}.",
+                message_body,
                 f"/message_thread/{thread_id}"
             )
     elif event_type == "paid_notice":
@@ -46483,13 +46490,52 @@ def create_enrollment_invoice_route(enrollment_id):
                     <input type="hidden" name="default_message_body" value="{escape(default_message, quote=True)}">
                     <br>
                     <button type="submit" name="action" value="create_only" class="secondary">Create invoice only</button>
-                    <button type="submit" name="action" value="send">Send Invoice + Message</button>
+                    <button type="submit" name="action" value="send">Preview Invoice + Message</button>
                     <a class="button secondary" href="/enrollment/{enrollment_id}">Back</a>
                 </form>
             </div>
         </body>
         </html>
         """
+
+    if request.form.get("action") == "confirm_send":
+        try:
+            invoice_id = int(request.form.get("invoice_id", ""))
+        except ValueError:
+            conn.close()
+            return "Invalid invoice", 400
+        cursor.execute("SELECT student_name,amount FROM invoices WHERE id=? AND enrollment_id=?", (invoice_id, enrollment_id))
+        invoice = cursor.fetchone()
+        parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
+        conn.close()
+        if not invoice or not parent_id:
+            return "Invoice or guardian not found", 400
+        token = request.form.get("document_token", "")
+        import hashlib
+        if session.get("invoice_send_preview") != hashlib.sha256(token.encode()).hexdigest():
+            return "Preview has already been sent or expired. Preview again to resend.", 409
+        doc = invoice_document_load_token(token)
+        check = sqlite3.connect("hmusic.db")
+        try:
+            from billing_documents import invoice_document
+            expected = invoice_document(check.cursor(), invoice_id, parent_id, owner_preview=True)
+            if expected["number"] != doc["number"]:
+                return "Invoice or guardian changed. Preview again.", 409
+        finally:
+            check.close()
+        message_body = (request.form.get("message_body") or "").strip()
+        if not message_body:
+            return "Message is required", 400
+        message_body += "\n\nView / download Invoice (link valid for 7 days):\n" + hmusic_public_app_url(f"/invoice-share/{token}/invoice.pdf")
+        check = sqlite3.connect("hmusic.db")
+        try:
+            check.cursor().execute("UPDATE invoices SET status='unpaid' WHERE id=? AND status='pending_owner_approval'", (invoice_id,))
+            check.commit()
+        finally:
+            check.close()
+        session.pop("invoice_send_preview", None)
+        create_invoice_message_event(invoice_id, "sent", message_body, parent_id=parent_id, student_name=invoice[0], amount=invoice[1])
+        return redirect(f"/enrollment/{enrollment_id}")
 
     billing_mode = request.form.get("billing_mode", "existing")
     semester_start = ""
@@ -46528,10 +46574,10 @@ def create_enrollment_invoice_route(enrollment_id):
     parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
     default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=invoice_id, amount=invoice[1]) if invoice else ""
 
-    if invoice and request.form.get("action") == "send":
-        cursor.execute("UPDATE invoices SET status = 'unpaid' WHERE id = ? AND status = 'pending_owner_approval'", (invoice_id,))
     if semester_start:
         default_message += f"\nNew semester starts: {semester_start}"
+    if invoice and request.form.get("action") == "send":
+        sync_invoice_allocations(cursor, invoice_id, invoice[0], invoice[1], "unpaid")
     conn.commit()
     conn.close()
 
@@ -46542,14 +46588,9 @@ def create_enrollment_invoice_route(enrollment_id):
             message_body = default_message
         elif semester_start:
             message_body += f"\nNew semester starts: {semester_start}"
-        create_invoice_message_event(
-            invoice_id,
-            "sent",
-            message_body,
-            parent_id=parent_id,
-            student_name=invoice[0],
-            amount=invoice[1]
-        )
+        if not parent_id:
+            return "<h1>Add a guardian before sending an invoice.</h1>", 400
+        return invoice_message_preview(invoice_id, parent_id, message_body, enrollment_id)
 
     return redirect(f"/enrollment/{enrollment_id}")
 
@@ -48979,6 +49020,8 @@ install_quick_pay(app, globals())
 
 from billing_documents import install_billing_documents
 install_billing_documents(app, globals())
+from invoice_message_documents import install_invoice_message_documents
+install_invoice_message_documents(app, globals())
 
 from website_trial_api import register_website_trial_api
 register_website_trial_api(app, globals())

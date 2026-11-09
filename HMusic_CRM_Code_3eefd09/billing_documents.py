@@ -22,7 +22,7 @@ def document_links(base, paid=False):
     return '<div class="billing-downloads">' + links + '</div>'
 
 
-def invoice_document(cur, invoice_id, parent_id):
+def invoice_document(cur, invoice_id, parent_id, *, owner_preview=False):
     cur.execute('''SELECT i.id,i.student_name,i.charge_lessons,i.amount,i.status,i.created_at,
         i.due_date,i.coverage_title,i.coverage_class,i.coverage_start,i.coverage_note,
         e.course_type_name,e.teacher_name,e.duration,
@@ -31,7 +31,7 @@ def invoice_document(cur, invoice_id, parent_id):
         JOIN invoice_allocations ia ON ia.invoice_id=i.id AND ia.parent_id=?
         JOIN parent_profiles pp ON pp.id=ia.parent_id WHERE i.id=?''', (parent_id,invoice_id))
     r = cur.fetchone()
-    if not r or r[4] in ('pending_owner_approval','draft','void','waived','cancelled','canceled'):
+    if not r or r[4] in ('draft','void','waived','cancelled','canceled') or (r[4]=='pending_owner_approval' and not owner_preview):
         abort(404)
     line = dict(invoice_id=r[0],student=r[1],lessons=r[2],amount=money(r[15]),
                 course=r[8] or r[11] or '',teacher=r[12] or '',duration=r[13],
