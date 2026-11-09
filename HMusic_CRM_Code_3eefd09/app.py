@@ -50168,3 +50168,7 @@ register_trial_enrollment(app, app.extensions["studio_operations"], globals())
 
 from calendar_sms import register_calendar_sms
 register_calendar_sms(app, globals())
+
+
+from teacher_work_reminders import register_teacher_work_reminders
+register_teacher_work_reminders(app, globals())
