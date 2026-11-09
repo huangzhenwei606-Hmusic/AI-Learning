@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import re
 import secrets
 import threading
 from zoneinfo import ZoneInfo
@@ -47,12 +48,43 @@ def register_teacher_work_reminders(app, api):
         finally:
             conn.close()
 
-    def teachers(cursor):
-        cursor.execute("SELECT id,teacher_name,COALESCE(email,''),COALESCE(phone,'') FROM teachers WHERE COALESCE(active,1)=1 ORDER BY teacher_name")
+    def teacher_rows(cursor):
+        cursor.execute("SELECT id,teacher_name,COALESCE(email,''),COALESCE(phone,'') FROM teachers WHERE COALESCE(active,1)=1 AND TRIM(COALESCE(teacher_name,''))!='' ORDER BY teacher_name,id")
         return [dict(id=r[0], name=r[1], email=r[2], phone=r[3]) for r in cursor.fetchall()]
 
+    def recipient_key(person):
+        phone = re.sub(r"\D", '', person['phone'])
+        if len(phone) == 10:
+            phone = '1' + phone
+        # Schedule ownership uses the exact stored name, so do not hide aliases.
+        return person['name'], person['email'].strip().casefold(), phone
+
+    def teachers(cursor):
+        people = []
+        seen = set()
+        def normalized_name(name):
+            return ' '.join(name.split()).casefold()
+        for person in teacher_rows(cursor):
+            key = recipient_key(person)
+            if key in seen:
+                continue
+            seen.add(key)
+            people.append(person)
+        counts = {}
+        for person in people:
+            name = normalized_name(person['name'])
+            counts[name] = counts.get(name, 0) + 1
+        for person in people:
+            person['label'] = ' '.join(person['name'].split())
+            if counts[normalized_name(person['name'])] > 1:
+                # Conflicting contact records stay explicit; never guess a recipient.
+                contact = person['email'].strip() or ('phone ending ' + re.sub(r"\D", '', person['phone'])[-4:] if person['phone'].strip() else 'no contact')
+                person['label'] += f" — {contact} · ID {person['id']}"
+        return people
+
     def teacher(cursor, tid):
-        person = next((t for t in teachers(cursor) if t['id'] == tid), None)
+        # Existing draft/history IDs remain valid even if hidden as exact duplicates.
+        person = next((t for t in teacher_rows(cursor) if t['id'] == tid), None)
         if not person:
             fail(400, 'Choose an active teacher')
         return person
@@ -160,6 +192,12 @@ def register_teacher_work_reminders(app, api):
         with db() as (_, cursor):
             people = teachers(cursor)
             person = teacher(cursor, tid) if tid else None
+            if person and not any(t['id'] == tid for t in people):
+                # Keep the selected historical ID visible without adding another option.
+                for candidate in people:
+                    if recipient_key(candidate) == recipient_key(person):
+                        candidate['id'] = tid
+                        break
             lessons = []
             if person:
                 cursor.execute("SELECT id,student_name,teacher,lesson_date,lesson_time,duration,COALESCE(location,''),COALESCE(classroom,''),COALESCE(status,'scheduled'),COALESCE(course_type_name,''),COALESCE(is_group,0) FROM schedule WHERE teacher=? AND lesson_date>=? AND lesson_date<=? AND COALESCE(status,'scheduled')='scheduled' ORDER BY lesson_date,lesson_time,id LIMIT 501",(person['name'],start,end))
@@ -249,6 +287,6 @@ def register_teacher_work_reminders(app, api):
 
 STYLE='''<style>*{box-sizing:border-box}body{font:15px system-ui;background:#f6f7fb;color:#172235;margin:0;padding:24px}.wrap{max-width:1000px;margin:auto}.card{background:white;border:1px solid #dce2ea;border-radius:14px;padding:24px;margin-bottom:18px}h1{margin-top:0}label{display:block;margin:12px 0 5px}input,select,textarea{font:inherit;padding:10px;border:1px solid #cbd2dd;border-radius:8px;max-width:100%}select,textarea{width:100%}input[type=checkbox]{width:auto}button,.button{display:inline-block;font:inherit;font-weight:700;padding:11px 16px;background:#1f6fb8;color:white;border:0;border-radius:8px;text-decoration:none;cursor:pointer}button:disabled{opacity:.5}pre{white-space:pre-wrap;font:inherit;background:#f3f6fa;padding:16px;border-radius:8px}.muted{color:#5d6c80}.lesson{display:block;padding:10px;background:#f5f7fb;border-radius:8px}.lesson-picker{max-height:360px;overflow-y:auto}.preview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px}.reminder-channel{min-width:0}.reminder-channel h2{font-size:18px;overflow-wrap:anywhere}.row{display:flex;gap:16px;flex-wrap:wrap}.error{color:#a12020}fieldset{border:1px solid #dce2ea;border-radius:8px;margin:16px 0}a{color:#155d9e}</style>'''
 ERROR='<!doctype html><html><head><title>Teacher work reminder</title>'+STYLE+'</head><body><main class="wrap card"><h1>Cannot send reminder</h1><p role="alert">{{error}}</p><a href="/manager/teacher-work-reminders">Back to teacher reminders</a></main></body></html>'
-PAGE='''<!doctype html><html><head><title>Teacher work reminders</title>'''+STYLE+'''</head><body><main class="wrap"><section class="card"><h1>Teacher work reminders</h1><p>Send a new-lesson, changed-time or work reminder directly to a teacher by SMS or email.</p><a href="/calendar">Back to calendar</a><form method="get"><label for="teacher_id">Teacher</label><select name="teacher_id" id="teacher_id" required><option value="">Select teacher</option>{% for t in people %}<option value="{{t.id}}" {% if person and person.id==t.id %}selected{% endif %}>{{t.name}}</option>{% endfor %}</select><div class="row"><label>From <input type="date" name="start" value="{{start}}" required></label><label>Through <input type="date" name="end" value="{{end}}" required></label></div><button>Load lessons</button></form></section>
+PAGE='''<!doctype html><html><head><title>Teacher work reminders</title>'''+STYLE+'''</head><body><main class="wrap"><section class="card"><h1>Teacher work reminders</h1><p>Send a new-lesson, changed-time or work reminder directly to a teacher by SMS or email.</p><a href="/calendar">Back to calendar</a><form method="get"><label for="teacher_id">Teacher</label><select name="teacher_id" id="teacher_id" required><option value="">Select teacher</option>{% for t in people %}<option value="{{t.id}}" {% if person and person.id==t.id %}selected{% endif %}>{{t.label}}</option>{% endfor %}</select><div class="row"><label>From <input type="date" name="start" value="{{start}}" required></label><label>Through <input type="date" name="end" value="{{end}}" required></label></div><button>Load lessons</button></form></section>
 {% if person %}<form class="card" method="post"><input type="hidden" name="teacher_id" value="{{person.id}}"><h2>Reminder for {{person.name}}</h2><p>Mobile: {{person.phone or 'Missing — add it in Teachers'}}<br>Email: {{person.email or 'Missing — add it in Teachers'}}</p><label for="kind">Reminder type</label><select id="kind" name="kind" required><option value="">Choose reminder type</option>{% for k,v in kinds.items() %}{% if k!='time_change' %}<option value="{{k}}">{{v}}</option>{% endif %}{% endfor %}</select><fieldset><legend>Delivery channel</legend><label><input type="checkbox" name="channels" value="sms" {% if not sms_ready or not person.phone %}disabled{% endif %}> Mobile SMS {% if not sms_ready %}— service not configured{% endif %}</label><label><input type="checkbox" name="channels" value="email" {% if not email_ready or not person.email %}disabled{% endif %}> Email {% if not email_ready %}— service not configured{% endif %}</label></fieldset><fieldset class="lesson-picker"><legend>Upcoming lessons · select up to 20</legend>{% for l in lessons %}<label class="lesson"><input type="checkbox" name="lesson_ids" value="{{l.id}}"> {{l.student}} · {{l.display}}<br>{{l.course}} · {{l.location}} · {{l.room}}</label>{% else %}<p>No upcoming scheduled lessons in this range.</p>{% endfor %}</fieldset><label for="note">Manager note · optional</label><textarea name="note" id="note" maxlength="500" rows="3"></textarea><p>Preview the teacher, destination and exact message before sending. This reminder does not edit the schedule or billing.</p><button {% if not lessons %}disabled{% endif %}>Preview reminder</button></form><section class="card"><h2>Recent sends</h2>{% for h in history %}<p>{{h.created}} · {{h.kind}} · {{h.status}}</p>{% for c,r in h.results.items() %}<p>{{c}}: {{r.status}} — {{r.detail}}</p>{% endfor %}{% else %}<p>No reminders sent yet.</p>{% endfor %}</section>{% endif %}</main></body></html>'''
 REVIEW='''<!doctype html><html><head><title>Review teacher reminder</title>'''+STYLE+'''</head><body><main class="wrap card"><h1>Teacher work reminder · {{person.name}}</h1><p role="status">Status: {{status}}</p><div class="preview-grid">{% for channel,item in payload.items() %}<section class="reminder-channel"><h2>{{'Mobile SMS' if channel=='sms' else 'Email'}} → {{item.destination}}</h2><p>Subject: {{item.title}}</p><pre>{% if channel=='sms' %}H-Music: {{item.title}}\n{% endif %}{{item.body}}</pre>{% if channel in results %}<p>{{results[channel].status}} — {{results[channel].detail}}</p>{% endif %}</section>{% endfor %}</div>{% if status=='draft' %}<form method="post"><button>Send reminder now</button></form><p>SMS acceptance confirms submission to the provider, not handset delivery.</p>{% elif status=='sending' %}<p>Sending is in progress or the previous attempt needs review. Do not resend until you check the result.</p>{% endif %}<p><a href="/manager/teacher-work-reminders?teacher_id={{person.id}}">Back to teacher reminders</a> · <a href="/calendar">Calendar</a></p></main></body></html>'''
