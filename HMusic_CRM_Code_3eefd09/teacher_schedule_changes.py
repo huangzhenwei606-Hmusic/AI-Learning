@@ -63,7 +63,7 @@ def register_teacher_schedule_changes(app,api):
         candidates=with_contact or people
         if len({(p['email'].strip().lower(),api['hmusic_normalize_sms_phone'](p['phone'])) for p in candidates})>1:
             fail(409,'There are multiple different active contact profiles for '+name+'. Update Teachers to one current contact profile before sending.')
-        return max(candidates,key=lambda p:p['id'])
+        return work['teacher'](cursor,max(candidates,key=lambda p:p['id'])['id'])
 
     def prepare(cursor,changes):
         groups={}
@@ -131,7 +131,7 @@ def register_teacher_schedule_changes(app,api):
                     if not set(channels)<=set(payload):fail(400,'Choose an available delivery channel')
                     person=work['teacher'](cursor,snap['teacher']['id'])
                     lessons=[work['lesson'](cursor,l['id'],person['name']) for l in snap['lessons']]
-                    if person!=snap['teacher'] or lessons!=snap['lessons']:fail(409,'Lesson or contact details changed. Review the latest saved reminder.')
+                    if person!={k:v for k,v in snap['teacher'].items() if k!='label'} or lessons!=snap['lessons']:fail(409,'Lesson or contact details changed. Review the latest saved reminder.')
                     work['destinations'](person,channels)
             for p,channels in chosen:
                 if channels:results.append(work['dispatch'](p['token'],send=True,channels=channels))

@@ -228,7 +228,7 @@ def register_teacher_work_reminders(app, api):
                     fail(409,'Preview expired. Create a new preview.')
                 current_teacher=teacher(cursor,tid)
                 current_lessons=[lesson(cursor,x['id'],current_teacher['name']) for x in snapshot['lessons']]
-                if current_teacher!=snapshot['teacher'] or current_lessons!=snapshot['lessons']:
+                if current_teacher!={k:v for k,v in snapshot['teacher'].items() if k!='label'} or current_lessons!=snapshot['lessons']:
                     fail(409,'The lesson or teacher contact changed. Create a new preview before sending.')
                 if channels is not None:
                     if not channels or not set(channels)<=set(payload):

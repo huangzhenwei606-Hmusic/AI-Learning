@@ -103,6 +103,18 @@ class TeacherScheduleChangesTest(base.TeacherWorkRemindersTest):
         r=self.client.post('/test/update',data={'time':'18:00'});self.assertNotIn('teacher_work_reminders',r.json)
         self.assertEqual(self.sent,[])
 
+    def test_saved_popup_accepts_legacy_display_label(self):
+        url=self.saved_url(self.client.post('/test/update',data={'time':'18:00'}))
+        self.assertEqual(self.client.get(url).status_code,200)
+        token=self.draft()
+        snap=json.loads(self.sql('SELECT snapshot FROM teacher_work_reminders WHERE token=?',(token,))[0][0])
+        snap['teacher']['label']='Jenny Lee'
+        self.sql('UPDATE teacher_work_reminders SET snapshot=? WHERE token=?',(json.dumps(snap),token))
+        response=self.client.post(url,data={'channels_'+token:['sms','email']})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(len(self.sent),2)
+        self.assertIn('Status: sent',response.get_data(as_text=True))
+
 if __name__=='__main__':
     import unittest
     unittest.main()
