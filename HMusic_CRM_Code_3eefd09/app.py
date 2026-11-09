@@ -29266,8 +29266,8 @@ def message_thread(thread_id):
 
         messages_html += f"""
         <div class="message">
-            <div class="meta">{m[5]} | {m[2]} ({m[1]}) to {m[3]}</div>
-            <div class="body">{m[4]}</div>
+            <div class="meta">{m[5]} | {escape(str(m[2] or ""))} ({m[1]}) to {m[3]}</div>
+            <div class="body">{escape(str(m[4] or ""))}</div>
             {attachment_html}
         </div>
         """
@@ -29321,7 +29321,7 @@ def message_thread(thread_id):
         back_link = "/parent_messages"
 
     is_parent_app = back_link == "/parent_messages"
-    thread_head = parent_app_meta(thread[1]) if is_parent_app else f"<title>{thread[1]}</title>"
+    thread_head = parent_app_meta(thread[1]) if is_parent_app else f"<title>{escape(str(thread[1] or ""))}</title>"
     bottom_nav_html = parent_bottom_nav("messages") if is_parent_app else ""
     page_padding = "calc(96px + env(safe-area-inset-bottom))" if is_parent_app else "40px"
 
@@ -29355,7 +29355,7 @@ def message_thread(thread_id):
     </head>
     <body>
         <div class="container">
-            <h1>{thread[1]}</h1>
+            <h1>{escape(str(thread[1] or ""))}</h1>
             <p class="thread-meta"><span class="mode-pill">{mode_label}</span>{participant_line}<br>Student: {thread[2] or ''} | Type: {thread[3]} | Status: {thread[4]}</p>
             {observer_banner}
             <a class="button" href="{back_link}">Back</a>
@@ -49042,6 +49042,9 @@ install_invoice_message_documents(app, globals())
 
 from website_trial_api import register_website_trial_api
 register_website_trial_api(app, globals())
+
+from director_portal import register_director_portal
+register_director_portal(app, globals())
 
 if __name__ == "__main__":
     app.run(debug=True, port=5001)

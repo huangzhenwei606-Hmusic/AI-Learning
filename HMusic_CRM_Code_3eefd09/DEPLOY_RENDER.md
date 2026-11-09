@@ -170,3 +170,26 @@ Parent install flow:
 3. iPhone Safari: Share -> Add to Home Screen -> Add.
 4. Android Chrome: Install app or Add to Home screen.
 5. Reopen from the `H-Music` icon.
+
+
+## Director school communications
+
+Owner manages existing teacher logins at `/owner/directors`. `/director` is the
+school workspace. Teacher and Director share credentials; the signed-in user
+switches roles with a CSRF-protected POST. Director routes are isolated from
+Owner and teacher tools. Revocation is checked on every request.
+
+A one-time additive migration grants the authorized communications permissions
+to exactly one active teacher account linked to `Xueyang Wang`. The teacher role
+and password remain unchanged. Revocation is not undone on subsequent restarts.
+If the exact name is not unique, Owner selects the correct login explicitly.
+
+Broadcasts create one private conversation per family in the existing parent
+and Owner inboxes. Courses, new classes and events are restricted to the selected
+families at `/school/announcements`. Draft preview, optional Owner approval,
+publication idempotence, recipient filtering and staff audit are supported.
+
+Notifications appear in-app. Optional push uses the existing queue, whose current
+sender has no native/browser push provider; queue status is not phone delivery.
+
+Check: `python -m unittest test_director_portal test_owner_workspace`.

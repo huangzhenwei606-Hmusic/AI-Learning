@@ -4,7 +4,7 @@ import json
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import render_template
 
-NAV = [("/", "Overview"), ("/calendar", "Calendar"), ("/admissions", "Admissions & enrollment"), ("/students", "Students & families"), ("/invoices", "Billing"), ("/teachers", "Teachers"), ("/messages", "Messages"), ("/owner_event_room_bookings", "Events & rooms"), ("/owner_settings", "Settings")]
+NAV = [("/", "Overview"), ("/calendar", "Calendar"), ("/admissions", "Admissions & enrollment"), ("/students", "Students & families"), ("/invoices", "Billing"), ("/teachers", "Teachers"), ("/messages", "Messages"), ("/owner_event_room_bookings", "Events & rooms"), ("/director", "School office"), ("/owner/directors", "Director permissions"), ("/owner_settings", "Settings")]
 
 
 # Public family journeys stay independent of the signed-in manager workspace.
@@ -13,6 +13,8 @@ ADMISSIONS = re.compile(r'^/(?:admissions|studio-enrollment|admissions-admin|web
 
 def workspace_section(path):
     if path == '/': return '/'
+    if path.startswith('/director'): return '/director'
+    if path.startswith('/owner/directors'): return '/owner/directors'
     if ADMISSIONS.match(path): return '/admissions'
     for pattern, section in (
         (r'^/(?:student|students|parent|parents|enrollment|enrollments|add_student|add_enrollment|edit_student|edit_parent_admin)', '/students'),
