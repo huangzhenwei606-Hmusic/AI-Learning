@@ -105,4 +105,47 @@ class TeacherWorkRemindersTest(unittest.TestCase):
         self.assertIn('Ella Lee',html);self.assertNotIn('Other Student',html)
         self.assertIn('Mobile SMS',html);self.assertIn('Email',html)
 
+    def options(self, url='/manager/teacher-work-reminders'):
+        from html.parser import HTMLParser
+        class Options(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.selected=False; self.value=None; self.rows=[]
+            def handle_starttag(self, tag, attrs):
+                attrs=dict(attrs)
+                if tag=='select': self.selected=attrs.get('name')=='teacher_id'
+                if tag=='option' and self.selected: self.value=attrs.get('value')
+            def handle_data(self, text):
+                if self.value: self.rows.append((self.value,text))
+            def handle_endtag(self, tag):
+                if tag=='option': self.value=None
+                if tag=='select': self.selected=False
+        parser=Options(); parser.feed(self.client.get(url).get_data(as_text=True));return parser.rows
+
+    def test_identical_contacts_are_one_option_and_records_stay_intact(self):
+        self.sql("INSERT INTO teachers VALUES(3,'Jenny Lee',' JENNY@example.org ','(650) 555-0100',1)")
+        self.sql("INSERT INTO teachers VALUES(4,'Jenny Lee','jenny@example.org','+16505550100',1)")
+        self.assertEqual([label for _,label in self.options()],['Jenny Lee','Other Teacher'])
+        self.assertEqual(len(self.sql('SELECT * FROM teachers')),4)
+        self.assertEqual(self.sent,[])
+        self.assertEqual(self.sql('SELECT * FROM schedule'),self.original)
+        options=self.options('/manager/teacher-work-reminders?teacher_id=3')
+        self.assertEqual([value for value,label in options if label=='Jenny Lee'],['3'])
+        self.assertEqual(self.preview(teacher_id='3',channels=['email']).status_code,302)
+        self.assertEqual(self.sent,[])
+
+    def test_different_contacts_are_distinguished_not_merged(self):
+        self.sql("INSERT INTO teachers VALUES(3,'Jenny Lee','another@example.org','+16505550102',1)")
+        options=self.options()
+        self.assertEqual(len(options),3)
+        labels=[label for _,label in options if label.startswith('Jenny Lee')]
+        self.assertEqual(len(labels),2)
+        self.assertTrue(any('jenny@example.org' in label and 'ID 1' in label for label in labels))
+        self.assertTrue(any('another@example.org' in label and 'ID 3' in label for label in labels))
+
+    def test_aliases_and_inactive_records_are_not_silently_combined(self):
+        self.sql("INSERT INTO teachers VALUES(3,'Jenny','jenny@example.org','+16505550100',1)")
+        self.sql("INSERT INTO teachers VALUES(4,'Jenny Lee','jenny@example.org','+16505550100',0)")
+        self.sql("INSERT INTO teachers VALUES(5,'   ','empty@example.org','',1)")
+        self.assertEqual([label for _,label in self.options()],['Jenny','Jenny Lee','Other Teacher'])
+
 if __name__=='__main__':unittest.main()
