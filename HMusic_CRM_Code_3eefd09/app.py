@@ -24826,7 +24826,7 @@ def send_email_delivery(destination, title, body, link_url):
     footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
     message.set_content(f"{body or ''}{footer}")
     try:
-        attachment = invoice_message_attachment(destination, body)
+        attachment = invoice_message_attachment(destination, body) if "/invoice-share/" in (body or "") else None
         if attachment:
             filename, content = attachment
             message.add_attachment(content, maintype="application", subtype="pdf", filename=filename)
