@@ -9895,6 +9895,7 @@ def calendar():
             d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh and log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}};
           }}
           if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed');
+          if (window.HMusicTeacherWorkReminderPrompt) await window.HMusicTeacherWorkReminderPrompt(d.teacher_work_reminders || []);
           return d;
         }});
     }}
@@ -10251,10 +10252,11 @@ def calendar():
         }})
       }})
       .then(r => r.json())
-      .then(d => {{
+      .then(async d => {{
         closeModal();
         if (d.ok) {{
-          showSuccess(`Moved to ${{movedTo}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}. Teacher notified.`);
+          if (window.HMusicTeacherWorkReminderPrompt) await window.HMusicTeacherWorkReminderPrompt(d.teacher_work_reminders || []);
+          showSuccess(`Moved to ${{movedTo}}${{scope === 'forward' ? ' · all future lessons updated' : ''}}.`);
           setTimeout(() => location.reload(), 1800);
         }} else {{
           if ((d.error || '').toLowerCase().includes('permission') || (d.error || '').toLowerCase().includes('logged')) {{
@@ -11372,6 +11374,7 @@ def add_schedule():
 
         start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
         generated_count = 0
+        teacher_reminder_created_ids = []
         auto_link_student_teacher(cursor, student_name, teacher)
         resolved_enrollment_id = hmusic_resolve_enrollment_id(
             cursor,
@@ -11454,6 +11457,7 @@ def add_schedule():
                 "scheduled"
             ))
             schedule_id = cursor.lastrowid
+            teacher_reminder_created_ids.append(schedule_id)
             if is_group and group_participants:
                 for participant in group_participants:
                     participant_rate = participant["student_rate"]
@@ -11500,6 +11504,7 @@ def add_schedule():
 
             generated_count += 1
 
+        getattr(globals().get('app'), 'extensions', {}).get('teacher_schedule_changes', {}).get('record', lambda *a, **k: None)(cursor, {}, teacher_reminder_created_ids)
         conn.commit()
         conn.close()
         back_href = "/teacher_dashboard" if require_teacher() and not require_owner() else owner_calendar_return
@@ -17372,6 +17377,10 @@ def calendar_lesson_action():
         conn.close()
         return {"ok": False, "error": "Lesson not found"}, 404
     is_owner = require_owner()
+    teacher_reminder_api = getattr(globals().get('app'), 'extensions', {}).get('teacher_schedule_changes', {})
+    teacher_reminder_before = {}
+    if is_owner and action in ('save','reschedule') and teacher_reminder_api:
+        teacher_reminder_before = teacher_reminder_api['capture'](cursor, [int(schedule_id)] + calendar_following_lesson_ids(cursor, row, schedule_id))
     is_teacher = require_teacher() and not is_owner
     teacher_name = session.get("teacher_name")
     if is_teacher and not hmusic_schedule_teacher_matches(cursor,schedule_id,teacher_name,row[2]):
@@ -17832,6 +17841,7 @@ def calendar_lesson_action():
         effective_lesson_date = detail_update.get("lesson_date") if detail_update else row[3]
         effective_lesson_time = detail_update.get("lesson_time") if detail_update else row[4]
         effective_classroom = detail_update.get("classroom") if detail_update else (teacher_location_update.get("classroom") if teacher_location_update else row[5])
+        teacher_reminder_api.get('record', lambda *a, **k: None)(cursor, teacher_reminder_before)
         upsert_calendar_lesson_record(cursor, int(schedule_id), effective_student_name, lesson_note, homework, private_note, actor)
         conn.commit()
         conn.close()
@@ -17968,6 +17978,7 @@ def calendar_lesson_action():
                     classroom,
                     moved_id
                 ))
+            teacher_reminder_api.get('record', lambda *a, **k: None)(cursor, teacher_reminder_before)
             conn.commit()
             conn.close()
             following_count = max(0, len(moved_rows) - 1)
@@ -17975,14 +17986,15 @@ def calendar_lesson_action():
                 detail = f"{row[1]}'s lesson moved to {new_date} at {new_time}."
                 if following_count:
                     detail += f" {following_count} following lesson(s) were updated."
-                create_notification("teacher", row[2], "Lesson rescheduled", detail, "/teacher_dashboard?view=schedule", related_type="owner_reschedule", related_id=int(schedule_id))
+                create_notification("teacher", row[2], "Lesson rescheduled", detail, "/teacher_dashboard?view=schedule", related_type="owner_reschedule", related_id=int(schedule_id), queue_delivery=False, send_email_now=False)
             elif not is_owner:
                 detail = f"{row[2]} moved {row[1]}'s lesson to {new_date} at {new_time}."
                 if following_count:
                     detail += f" {following_count} following lesson(s) were updated."
                 create_notification("owner", "owner", "Teacher rescheduled lesson", detail, "/calendar", related_type="teacher_direct_reschedule", related_id=int(schedule_id))
-            for moved_id, _old_lesson_date in moved_rows:
-                queue_teacher_lesson_reminder(int(moved_id), row[2])
+            if not is_owner:
+                for moved_id, _old_lesson_date in moved_rows:
+                    queue_teacher_lesson_reminder(int(moved_id), row[2])
             if following_count:
                 msg = f"Moved this lesson and {following_count} following lesson(s)."
             else:
@@ -18090,6 +18102,7 @@ def calendar_lesson_action():
             return {"ok": False, "error": conflict.get("message") or "Schedule conflict found. Choose another date or time."}, 409
         try:
             new_id = hmusic_copy_lesson(cursor, schedule_id, next_date, target_time)
+            teacher_reminder_api.get('record', lambda *a, **k: None)(cursor, {}, [new_id])
             conn.commit()
         except Exception:
             conn.rollback()
@@ -28165,7 +28178,7 @@ def create_reschedule_message_event(request_id, event_type, body, parent_id=None
                 related_id=request_id
             )
         if teacher_name:
-            create_notification("teacher", teacher_name, "Reschedule approved", body, f"/message_thread/{thread_id}")
+            create_notification("teacher", teacher_name, "Reschedule approved", body, f"/message_thread/{thread_id}", queue_delivery=not require_owner(), send_email_now=not require_owner())
     elif event_type == "rejected":
         recipient_role = "parent" if parent_id else "teacher"
         add_message(thread_id, "owner", "Manager", recipient_role, body)
@@ -30130,6 +30143,7 @@ def parent_booking_request_review(request_id):
             updated_at = ?
         WHERE id = ?
         """, (owner_note, schedule_id, now, request_id))
+        getattr(globals().get('app'), 'extensions', {}).get('teacher_schedule_changes', {}).get('record', lambda *a, **k: None)(cursor, {}, [schedule_id])
         conn.commit()
         conn.close()
 
@@ -32233,6 +32247,8 @@ def approve_reschedule(request_id):
         conn.close()
         return "<h1>This request has already been reviewed.</h1>"
 
+    teacher_reminder_api = getattr(globals().get('app'), 'extensions', {}).get('teacher_schedule_changes', {})
+    teacher_reminder_before = teacher_reminder_api.get('capture', lambda *a: {})(cursor, [r[3]])
     actual_teacher = approved_teacher or r[8] or r[5]
     actual_classroom = approved_classroom or r[9] or r[6]
     actual_location_id = int(r[11] or 0) or None
@@ -32334,6 +32350,7 @@ def approve_reschedule(request_id):
         request_id
     ))
 
+    teacher_reminder_api.get('record', lambda *a, **k: None)(cursor, teacher_reminder_before)
     conn.commit()
     conn.close()
 
@@ -49077,6 +49094,14 @@ def reschedule_schedule():
     old_date_obj = datetime.strptime(lesson[3], "%Y-%m-%d").date()
     day_delta    = (new_date_obj - old_date_obj).days
     moved_ids    = []
+    teacher_reminder_api = getattr(globals().get('app'), 'extensions', {}).get('teacher_schedule_changes', {})
+    teacher_reminder_before = {}
+    if require_owner() and teacher_reminder_api:
+        reminder_ids = [int(schedule_id)]
+        if scope == 'forward':
+            cursor.execute('SELECT id FROM schedule WHERE student_name=? AND teacher=? AND lesson_time=? AND lesson_date>=?', (lesson[1],lesson[2],lesson[4],lesson[3]))
+            reminder_ids = [r[0] for r in cursor.fetchall()]
+        teacher_reminder_before = teacher_reminder_api['capture'](cursor, reminder_ids)
 
     if scope == "once":
         cursor.execute("""
@@ -49102,6 +49127,7 @@ def reschedule_schedule():
         conn.close()
         return {"ok": False, "error": "Invalid scope"}, 400
 
+    teacher_reminder_api.get('record', lambda *a, **k: None)(cursor, teacher_reminder_before)
     conn.commit()
 
     if require_teacher() and not require_owner():
@@ -49137,7 +49163,7 @@ def reschedule_schedule():
                 "teacher", lesson[2],
                 "Lesson rescheduled",
                 f"{lesson[1]}'s lesson moved to {new_date}.",
-                "/teacher_dashboard?view=schedule"
+                "/teacher_dashboard?view=schedule", queue_delivery=False, send_email_now=False
             )
         except Exception:
             pass
@@ -50215,3 +50241,7 @@ register_calendar_sms(app, globals())
 
 from teacher_work_reminders import register_teacher_work_reminders
 register_teacher_work_reminders(app, globals())
+
+
+from teacher_schedule_changes import register_teacher_schedule_changes
+register_teacher_schedule_changes(app, globals())
