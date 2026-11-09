@@ -215,6 +215,8 @@ def register_teacher_work_reminders(app, api):
                     try:
                         sent,detail=api['send_sms_delivery' if channel=='sms' else 'send_email_delivery'](item['destination'],item['title'],item['body'],'')
                         state='accepted' if sent else 'failed'
+                        if not sent and any(word in str(detail).lower() for word in ('connection failed','timed out','timeout','outcome unknown')):
+                            state='unconfirmed'
                     except Exception:
                         state,detail='unconfirmed','Delivery outcome unknown. Check the provider before sending again.'
                     results[channel]=dict(status=state,detail=str(detail)[:1000])
