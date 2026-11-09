@@ -29936,6 +29936,46 @@ def parent_booking_request_review(request_id):
         owner_note = (request.form.get("owner_note") or "").strip()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+        if action == "send_teacher":
+            teacher = (request.form.get("teacher") or "").strip()
+            cursor.execute("SELECT teacher_name FROM teachers WHERE teacher_name = ? AND COALESCE(active, 1) = 1", (teacher,))
+            teacher_row = cursor.fetchone()
+            if not teacher_row:
+                conn.close()
+                return "<h1>Select an active teacher before sending.</h1><p><a href='/parent_booking_request_review/%s'>Back to request</a></p>" % request_id, 400
+            teacher = teacher_row[0]
+            # A private owner/teacher thread per recipient; parents are never added.
+            thread_id = get_or_create_message_thread(
+                subject=f"Booking request #{request_id}: {req[2]}",
+                student_name=req[2], teacher_name=teacher,
+                thread_type="booking_request_teacher",
+                related_type=f"booking_request_teacher:{teacher}", related_id=request_id,
+            )
+            body = (
+                f"Parent booking request #{request_id}\n"
+                f"Student: {req[2] or 'Student'}\n"
+                f"Request type: {str(req[3] or '').replace('_', ' ').title()}\n"
+                f"Requested: {req[4] or 'Date TBD'} {req[5] or ''}\n"
+                f"Status: {req[9] or 'pending'}\n"
+                f"Parent note: {req[8] or ''}"
+            )
+            if owner_note:
+                body += f"\nManager note: {owner_note}"
+            cursor.execute("SELECT id FROM messages WHERE thread_id = ? AND sender_role = 'owner' AND recipient_role = 'teacher' AND body = ? LIMIT 1", (thread_id, body))
+            already_sent = cursor.fetchone() is not None
+            cursor.execute("UPDATE parent_booking_requests SET owner_note = ?, updated_at = ? WHERE id = ?", (owner_note, now, request_id))
+            conn.commit()
+            conn.close()
+            if not already_sent:
+                add_message(thread_id, "owner", "H-Music", "teacher", body)
+                create_notification(
+                    "teacher", teacher, "Parent booking request", body,
+                    f"/message_thread/{thread_id}",
+                    related_type="booking_request_teacher", related_id=request_id,
+                )
+            session["booking_teacher_sent"] = {"request_id": request_id, "teacher": teacher, "thread_id": thread_id, "already_sent": already_sent}
+            return redirect(f"/parent_booking_request_review/{request_id}")
+
         if action == "reject":
             cursor.execute("""
             UPDATE parent_booking_requests
@@ -30126,7 +30166,7 @@ def parent_booking_request_review(request_id):
     last_schedule = cursor.fetchone()
     conn.close()
 
-    preferred_teacher = req[6] or (last_schedule[3] if last_schedule else "") or (teachers[0] if teachers else "")
+    preferred_teacher = req[6] or (last_schedule[3] if last_schedule else "") or ""
     preferred_course_id = str(last_schedule[0]) if last_schedule and last_schedule[0] else (str(courses[0][0]) if courses else "")
     preferred_room_id = str(last_schedule[4]) if last_schedule and last_schedule[4] else ""
     if not preferred_room_id and req[7]:
@@ -30137,7 +30177,7 @@ def parent_booking_request_review(request_id):
     if not preferred_room_id and rooms:
         preferred_room_id = str(rooms[0][0])
 
-    teacher_options = "".join(
+    teacher_options = "<option value=''>Select teacher</option>" + "".join(
         f"<option value='{escape(str(t))}' {'selected' if str(t) == str(preferred_teacher) else ''}>{escape(str(t))}</option>"
         for t in teachers
     )
@@ -30151,6 +30191,13 @@ def parent_booking_request_review(request_id):
     )
     status_display = "confirmed" if (req[9] or "") in ("confirmed", "approved") else (req[9] or "pending")
     confirmed_link = f"<p><b>Calendar schedule:</b> <a href='/calendar'>#{req[12]}</a></p>" if req[12] else ""
+
+    teacher_notice = ""
+    sent = session.get("booking_teacher_sent")
+    if isinstance(sent, dict) and sent.get("request_id") == request_id:
+        session.pop("booking_teacher_sent", None)
+        verb = "Already sent" if sent.get("already_sent") else "Sent"
+        teacher_notice = f"<p role='status' style='padding:12px;background:#ecfdf3;border-radius:8px;'>{verb} to {escape(str(sent.get('teacher') or 'teacher'))}. <a href='/message_thread/{int(sent['thread_id'])}'>Open teacher conversation</a></p>"
 
     return f"""
     <html>
@@ -30185,6 +30232,7 @@ def parent_booking_request_review(request_id):
                 <p><b>Requested:</b> {escape(str(req[4] or 'Date TBD'))} {escape(str(req[5] or ''))} · {escape(str(req[6] or 'Any teacher'))} · {escape(str(req[7] or 'Any room'))}</p>
                 <p><b>Parent note:</b> {escape(str(req[8] or ''))}</p>
                 {confirmed_link}
+                {teacher_notice}
             </section>
             <form class="card" method="POST">
                 <div class="grid">
@@ -30204,8 +30252,10 @@ def parent_booking_request_review(request_id):
                 </div>
                 <label style="margin-top:12px;">Manager note</label>
                 <textarea name="owner_note" placeholder="Optional note for parent/internal record">{escape(str(req[11] or ''))}</textarea>
+                <p class="muted">Send to teacher shares this parent request and your note with the selected teacher in Messages. No date or time is required; it does not confirm or change a lesson.</p>
                 <div class="actions">
                     <button class="primary" name="action" value="confirm" type="submit">Confirm + add to calendar</button>
+                    <button class="secondary" name="action" value="send_teacher" type="submit" formnovalidate>Send to teacher</button>
                     <button class="danger" name="action" value="reject" type="submit">Reject request</button>
                     <a class="button secondary" href="/owner_booking_requests">Back to requests</a>
                     <a class="button secondary" href="/calendar">Calendar</a>
