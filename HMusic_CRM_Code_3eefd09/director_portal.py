@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from html import escape
 import json
+import base64
 import re
 import threading
 from urllib.parse import urlsplit
@@ -43,6 +44,7 @@ def ensure_schema(conn):
         '''CREATE TABLE IF NOT EXISTS school_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
             target TEXT, details TEXT, created_at TEXT)''',
+        '''CREATE TABLE IF NOT EXISTS school_post_files (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, original_filename TEXT NOT NULL, mime_type TEXT NOT NULL, file_size INTEGER NOT NULL, content_base64 TEXT NOT NULL, created_at TEXT)''',
         '''CREATE TABLE IF NOT EXISTS director_migrations (name TEXT PRIMARY KEY)''',
     ]
     for sql in statements:
@@ -271,6 +273,70 @@ def register_director_portal(app, api):
         cards = ''.join(f'<article><a href="/director/posts/{r[0]}">{escape(r[1])}</a><p>{escape(r[2])} · {escape(r[3])}</p></article>' for r in rows)
         return page('H-Music School Office', '<p>Private family conversations, school messages, courses and events.</p>'+cards)
 
+    def upload_controls():
+        return '<label>Choose files<input type="file" name="attachments" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.pdf"></label><p class="muted">Images and PDF · Up to 10 MB total. Files stay private with the draft until you publish.</p>'
+
+    def save_post_files(conn,post_id):
+        total=conn.execute('SELECT COALESCE(SUM(file_size),0) FROM school_post_files WHERE post_id=?',(post_id,)).fetchone()[0]
+        allowed={'image/png','image/jpeg','image/gif','image/webp','application/pdf'}
+        for file in request.files.getlist('attachments'):
+            if not file or not file.filename:
+                continue
+            if file.mimetype not in allowed:
+                abort(400,'Choose a PNG, JPEG, GIF, WebP image or PDF.')
+            content=file.stream.read(10*1024*1024-total+1)
+            total+=len(content)
+            if total>10*1024*1024:
+                abort(413,'The combined attachment limit is 10 MB.')
+            if not content:
+                abort(400,'Empty files cannot be uploaded.')
+            filename=file.filename.replace('\\','/').rsplit('/',1)[-1].replace('\r',' ').replace('\n',' ')[:240]
+            conn.execute('''INSERT INTO school_post_files(post_id,original_filename,mime_type,file_size,content_base64,created_at)
+                VALUES (?,?,?,?,?,?)''',(post_id,filename or 'attachment',file.mimetype,len(content),base64.b64encode(content).decode('ascii'),now()))
+
+    def file_cards(post_id):
+        with db() as conn:
+            files=conn.execute('SELECT id,original_filename,mime_type FROM school_post_files WHERE post_id=? ORDER BY id',(post_id,)).fetchall()
+        prefix='/director/files' if session.get('user_role') in ('owner','director') else '/school/files'
+        cards=''
+        for fid,name,mime in files:
+            url=f'{prefix}/{fid}'
+            picture=f'<p><img src="{url}" alt="{escape(name,quote=True)}"></p>' if mime.startswith('image/') else ''
+            cards+=f'<div>{picture}<a href="{url}?download=1">{escape(name)}</a></div>'
+        return '<section><h3>Attachments</h3>'+cards+'</section>' if cards else ''
+
+    @app.get('/director/files/<int:file_id>')
+    @app.get('/school/files/<int:file_id>')
+    @app.get('/message_uploads/school_<int:file_id>')
+    def school_post_file(file_id):
+        role=session.get('user_role')
+        if role not in ('owner','director','parent'):
+            abort(403)
+        if role in ('owner','director'):
+            authorize()
+        with db() as conn:
+            record=conn.execute('''SELECT f.post_id,f.original_filename,f.mime_type,p.status,p.author_id
+                FROM school_post_files f JOIN school_posts p ON p.id=f.post_id WHERE f.id=?''',(file_id,)).fetchone()
+            if not record:
+                abort(404)
+            if role=='parent':
+                eligible=conn.execute('''SELECT 1 FROM school_deliveries d JOIN parent_profiles p ON p.id=d.parent_id
+                    WHERE d.post_id=? AND d.parent_id=? AND p.active=1''',(record[0],session.get('parent_id'))).fetchone()
+                if record[3]!='published' or not eligible:
+                    abort(404)
+            elif not api['require_owner']():
+                user,_=permissions(conn)
+                if record[3]!='published' and (not user or record[4]!=user[0]):
+                    abort(403)
+            encoded=conn.execute('SELECT content_base64 FROM school_post_files WHERE id=?',(file_id,)).fetchone()[0]
+        response=Response(base64.b64decode(encoded),mimetype=record[2])
+        disposition='inline' if record[2].startswith('image/') and request.args.get('download')!='1' else 'attachment'
+        response.headers.set('Content-Disposition',disposition,filename=record[1])
+        response.headers['Cache-Control']='private, no-store'
+        response.headers['X-Content-Type-Options']='nosniff'
+        response.headers['Cross-Origin-Resource-Policy']='same-origin'
+        return response
+
     @app.route('/director/compose', methods=['GET','POST'])
     def school_compose():
         authorize()
@@ -299,6 +365,7 @@ def register_director_portal(app, api):
                     (kind,title,body,safe_url(request.form.get('image_url')),safe_url(request.form.get('signup_url')),
                      (request.form.get('event_details') or '')[:2000],author[0] if author else 0,json.dumps(ids),push,now()))
                 post_id = cur.lastrowid
+                save_post_files(conn,post_id)
                 audit(conn,'draft',post_id)
             return redirect(f'/director/posts/{post_id}')
         with db() as conn:
@@ -308,9 +375,10 @@ def register_director_portal(app, api):
                 filters[key] = [r[0] for r in conn.execute(f'SELECT DISTINCT {column} FROM schedule WHERE {column} IS NOT NULL ORDER BY {column}').fetchall()]
         choices = ''.join(f'<label><input type="checkbox" name="parent_ids" value="{p[0]}"> {escape(p[1] or "Family")}</label>' for p in parents)
         hints = ''.join(f'<p>{key.title()}: {escape(", ".join(values))}</p>' for key,values in filters.items())
-        return page('Compose school update', f'''<section><form method="POST">
+        return page('Compose school update', f'''<section><form method="POST" enctype="multipart/form-data">
         <label>Type<select name="kind"><option value="message">School message</option><option value="course">Course</option><option value="new_class">New class</option><option value="event">Event</option></select></label>
         <label>Title<input name="title" maxlength="200" required></label><label>Message<textarea name="body" maxlength="20000" required></textarea></label>
+        {upload_controls()}
         <label>Date, time and location<input name="event_details"></label><label>Image URL<input name="image_url" type="url"></label>
         <label>Registration link<input name="signup_url" type="url"></label>
         <label>Audience<select name="audience"><option value="all">All active families</option><option value="selected">Selected families below</option><option value="teacher">Teacher (upcoming lessons)</option><option value="course">Course (upcoming lessons)</option><option value="classroom">Classroom (upcoming lessons)</option></select></label>
@@ -329,7 +397,7 @@ def register_director_portal(app, api):
     def post_content(row):
         image = f'<img src="{escape(row[4],quote=True)}" alt="School update">' if row[4] else ''
         link = f'<p><a rel="noopener" href="{escape(row[5],quote=True)}">Registration / more information</a></p>' if row[5] else ''
-        return f'<article><h2>{escape(row[2])}</h2>{image}<p>{escape(row[6] or "")}</p><div class="body">{escape(row[3])}</div>{link}</article>'
+        return f'<article><h2>{escape(row[2])}</h2>{image}<p>{escape(row[6] or "")}</p><div class="body">{escape(row[3])}</div>{link}</article>' + file_cards(row[0])
 
     def dispatch_push(post_id):
         with db() as conn:
@@ -375,6 +443,7 @@ def register_director_portal(app, api):
                     body = (request.form.get('body') or '').strip()
                     if not title or not body or len(title)>200 or len(body)>20000:
                         abort(400)
+                    save_post_files(conn,post_id)
                     conn.execute("UPDATE school_posts SET title=?,body=?,status='draft' WHERE id=?",(title,body,post_id))
                     audit(conn,'edit',post_id)
                     return redirect(f'/director/posts/{post_id}')
@@ -410,8 +479,12 @@ def register_director_portal(app, api):
                                     VALUES (?,?,'school',0,1,'school_post',?,'open',?,?)''',(row[2],parent_id,post_id,now(),now()))
                                 thread_id = cur.lastrowid
                                 api['sync_thread_default_participants'](conn.cursor(),thread_id,parent_id,None,owner_observer=1)
-                                conn.execute('''INSERT INTO messages(thread_id,sender_role,sender_name,recipient_role,body,channel,created_at)
+                                message_cursor=conn.execute('''INSERT INTO messages(thread_id,sender_role,sender_name,recipient_role,body,channel,created_at)
                                     VALUES (?,'owner','H-Music School Office','participants',?,'in_app',?)''',(thread_id,'\n\n'.join(value for value in (row[3],row[6],row[4],row[5]) if value),now()))
+                                # Shared bytes are stored once, with a private reference per family.
+                                for fid,name,mime in conn.execute('SELECT id,original_filename,mime_type FROM school_post_files WHERE post_id=? ORDER BY id',(post_id,)).fetchall():
+                                    conn.execute('INSERT INTO message_attachments(message_id,stored_filename,original_filename,mime_type) VALUES (?,?,?,?)',
+                                        (message_cursor.lastrowid,f'school_{fid}',name,mime))
                             conn.execute('INSERT INTO school_deliveries(post_id,parent_id,thread_id,push_state) VALUES (?,?,?,?)',
                                 (post_id,parent_id,thread_id,'pending' if row[10] else 'not_requested'))
                             url = f'/message_thread/{thread_id}' if thread_id else f'/school/announcements/{post_id}'
@@ -432,7 +505,7 @@ def register_director_portal(app, api):
             states = conn.execute('SELECT push_state,COUNT(*) FROM school_deliveries WHERE post_id=? GROUP BY push_state',(post_id,)).fetchall()
         controls = ''
         if can_edit and row[8] in ('draft','pending'):
-            controls = f'<form method="POST"><label>Title<input name="title" value="{escape(row[2],quote=True)}" maxlength="200"></label><label>Message<textarea name="body" maxlength="20000">{escape(row[3])}</textarea></label><button name="action" value="save">Save changes &amp; preview again</button></form>'
+            controls = f'<form method="POST" enctype="multipart/form-data"><label>Title<input name="title" value="{escape(row[2],quote=True)}" maxlength="200"></label><label>Message<textarea name="body" maxlength="20000">{escape(row[3])}</textarea></label>{upload_controls()}<button name="action" value="save">Save changes &amp; preview again</button></form>'
             controls += '<form method="POST"><button name="action" value="submit">Submit for Owner review</button>'
             if owner or not grants.get('approval'):
                 controls += '<button name="action" value="publish">Confirm publish / send</button>'
@@ -522,6 +595,9 @@ def register_director_portal(app, api):
                 AND (t.thread_type='parent_director' OR EXISTS (SELECT 1 FROM school_deliveries d WHERE d.thread_id=t.id))''',(attachment_id,)).fetchone()
             if not attachment:
                 abort(404)
+            shared=re.fullmatch(r'school_(\d+)',attachment[0] or '')
+            if shared:
+                return redirect(f'/director/files/{shared[1]}')
             # Deployment supports database-backed attachments as well as disk/object storage.
             if 'get_message_upload_s3_config' in api:
                 encoded = conn.execute('SELECT content_base64 FROM message_attachments WHERE id=?',(attachment_id,)).fetchone()[0]
