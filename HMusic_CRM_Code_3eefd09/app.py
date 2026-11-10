@@ -29331,7 +29331,7 @@ def message_thread(thread_id):
             elif mime_type.startswith("video/"):
                 attachment_html += f"<div class='attachment'><video src='{file_url}' controls style='max-width:480px; border-radius:8px;'></video></div>"
             else:
-                attachment_html += f"<div class='attachment'><a href='{file_url}'>{a[1]}</a></div>"
+                attachment_html += f"<div class='attachment'><a href='{file_url}'>{escape(str(a[1] or "Attachment"))}</a></div>"
 
         messages_html += f"""
         <div class="message">
