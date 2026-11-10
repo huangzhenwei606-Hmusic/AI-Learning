@@ -52,6 +52,12 @@ class DirectorPortalTest(unittest.TestCase):
         @self.app.get('/teacher_dashboard')
         def dashboard():
             return '<html><body>Teacher tools</body></html>'
+        @self.app.get('/registration')
+        @self.app.get('/registration/complete')
+        @self.app.get('/group-registration/example')
+        @self.app.get('/trial-enrollment/example')
+        def public_family_form():
+            return '<html><body><h1>New student registration</h1><form method="POST"></form></body></html>'
         @self.app.get('/payroll')
         def payroll():
             return 'Owner financial data'
@@ -97,6 +103,27 @@ class DirectorPortalTest(unittest.TestCase):
     def publish(self, url):
         r = self.client.post(url,data={'action':'publish'})
         self.assertEqual(r.status_code,302,r.get_data(as_text=True))
+
+    def test_public_forms_never_show_staff_navigation_even_when_owner_logged_in(self):
+        for role in ('owner','teacher','director','parent',None):
+            self.login(role)
+            for path in ('/registration','/registration/complete','/group-registration/example','/trial-enrollment/example'):
+                response=self.client.get(path)
+                # The Director scope may block unrelated public routes; no management links may leak.
+                if response.status_code==200:
+                    html=response.get_data(as_text=True)
+                    self.assertIn('New student registration',html)
+                    for link in ('/owner/directors','/director','/role/switch','/school/announcements'):
+                        self.assertNotIn(link,html)
+        self.login('owner')
+        self.assertIn('Director permissions',self.client.get('/director').get_data(as_text=True))
+
+    def test_parent_and_anonymous_cannot_open_management_pages(self):
+        for role in ('parent',None):
+            self.login(role)
+            for path in ('/director','/director/inbox','/director/compose','/owner/directors'):
+                self.assertEqual(self.client.get(path).status_code,403)
+                self.assertIn(self.client.post(path,data={}).status_code,(403,405))
 
     def test_role_switch_teacher_preserved_and_owner_denied(self):
         html = self.client.get('/teacher_dashboard').get_data(as_text=True)

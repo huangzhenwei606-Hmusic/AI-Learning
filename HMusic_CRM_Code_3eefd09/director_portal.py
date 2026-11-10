@@ -17,6 +17,11 @@ PERMISSIONS = {
 }
 DEFAULT_PERMISSIONS = {key: True for key in PERMISSIONS if key != 'approval'}
 
+# Public family journeys never inherit the current staff session's navigation.
+PUBLIC_FAMILY_PATHS = re.compile(
+    r'^/(?:group-classes|group-registration|enrollment-order|trial-enrollment|trial|trial_form|trial_request|registration)(?:/|$)'
+)
+
 
 def ensure_schema(conn):
     statements = [
@@ -158,6 +163,8 @@ def register_director_portal(app, api):
 
     @app.after_request
     def add_workspace_navigation(response):
+        if PUBLIC_FAMILY_PATHS.match(request.path):
+            return response
         if response.status_code != 200 or not response.content_type.startswith('text/html'):
             return response
         role = session.get('user_role')
