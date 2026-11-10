@@ -13591,6 +13591,11 @@ def teacher_dashboard():
     .teacher-mobile-calendar.multi-select-on .calendar-event{cursor:pointer}
     .calendar-event.multi-selected{outline:2px solid var(--blue);box-shadow:0 0 0 3px rgba(24,95,165,.14)}
     .teacher-select-box{display:none;position:absolute;right:5px;top:5px;z-index:2;background:rgba(255,255,255,.94);border:1px solid #D9DEE8;border-radius:6px;padding:2px}
+    .teacher-select-day{min-height:36px;padding:4px 8px;border:1px solid #CBD5E1;border-radius:8px;background:#fff;color:#185FA5;cursor:pointer;margin:4px 0;font:inherit}
+    .teacher-date-select{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:12px 0}
+    .teacher-date-select label{display:flex;flex-direction:column;gap:4px;font-weight:600}
+    .teacher-date-select input,.teacher-date-select button{min-height:44px;padding:8px;border:1px solid #CBD5E1;border-radius:8px;font:inherit;max-width:100%}
+    .teacher-date-select small{flex-basis:100%;color:#64748B}
     .teacher-select-input{width:15px;height:15px;margin:0;accent-color:var(--blue)}
     .calendar-grid.multi-select-on .teacher-select-box{display:flex}
     .calendar-grid.multi-select-on .event-status-form{display:none}
@@ -13852,7 +13857,7 @@ def teacher_dashboard():
                     <h2>{current_day.strftime('%A, %b')} {current_day.day}</h2>
                     <span>{count_label}</span>
                 </div>
-                <div class="teacher-mobile-lesson-list">{day_items}</div>
+                <button type="button" class="teacher-select-day" onclick="teacherMultiSelectDates('{day_key}','{day_key}')" aria-label="Select all lessons on {day_key}">Select day</button><div class="teacher-mobile-lesson-list">{day_items}</div>
             </section>
             """
             current_day += timedelta(days=1)
@@ -13955,7 +13960,7 @@ def teacher_dashboard():
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
                 <section class="calendar-day {'today' if day_key == today else ''} {'has-lessons' if by_date.get(day_key) or event_room_by_date.get(day_key) else 'no-lessons'}" data-date="{day_key}">
-                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div><button type="button" class="teacher-select-day" onclick="teacherMultiSelectDates('{day_key}','{day_key}')" aria-label="Select all lessons on {day_key}">Select day</button>
                     {day_events}
                 </section>
                 """
@@ -13998,7 +14003,7 @@ def teacher_dashboard():
                     day_events = "<div class='calendar-empty'>No lessons</div>"
                 day_columns += f"""
                 <section class="calendar-day {'today' if day_key == today else ''}" data-date="{day_key}">
-                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div>
+                    <div class="calendar-day-head"><span>{current_day.strftime('%a')}</span><strong onclick="teacherAddOnDate('{day_key}')">{hstudio_date_short(day_key)}</strong></div><button type="button" class="teacher-select-day" onclick="teacherMultiSelectDates('{day_key}','{day_key}')" aria-label="Select all lessons on {day_key}">Select day</button>
                     {day_events}
                 </section>
                 """
@@ -14061,6 +14066,7 @@ def teacher_dashboard():
                 </div>
             </div>
             {TEACHER_CAL_CSS}
+        <div class="teacher-date-select"><label>From <input type="date" id="teacherSelectFrom"></label><label>Through <input type="date" id="teacherSelectThrough"></label><button type="button" onclick="teacherMultiSelectDates()">Select dates</button><small>Selects lessons in the current calendar view.</small></div>
         <div class="teacher-multi-bar" id="teacherMultiBar">
             <div class="teacher-multi-count"><span id="teacherMultiCount">0</span> selected</div>
             <select id="teacherMultiAction">
@@ -14495,18 +14501,38 @@ def teacher_dashboard():
             if (!teacherMultiOn) teacherMultiClear();
             teacherMultiUpdate();
         }}
+        function teacherMultiSelectDates(fromDate, throughDate) {{
+            const from = fromDate || document.getElementById('teacherSelectFrom').value;
+            const through = throughDate || document.getElementById('teacherSelectThrough').value || from;
+            if (!from || !through || from > through) {{ alert('Choose a valid date or date range.'); return; }}
+            const cards = Array.from(document.querySelectorAll('.calendar-event[data-id]'));
+            const matches = cards.filter(card => card.dataset.date >= from && card.dataset.date <= through && card.querySelector('.teacher-select-input'));
+            if (!matches.length) {{ alert('No lessons on these dates in the current calendar view.'); return; }}
+            if (new Set(matches.map(card => card.dataset.id)).size > 100) {{ alert('Select at most 100 lessons. Choose a shorter date range.'); return; }}
+            if (!teacherMultiOn) teacherMultiToggle();
+            teacherMultiClear();
+            matches.forEach(card => {{ card.querySelector('.teacher-select-input').checked = true; }});
+            document.getElementById('teacherSelectFrom').value = from;
+            document.getElementById('teacherSelectThrough').value = through;
+            teacherMultiUpdate();
+        }}
         function teacherMultiClear() {{
             document.querySelectorAll('.teacher-select-input').forEach(cb => cb.checked = false);
             teacherMultiUpdate();
         }}
+        let teacherMultiSaving = false;
         function teacherMultiApply() {{
+            if (teacherMultiSaving) return;
             const ids = teacherMultiSelectedIds();
             if (!ids.length) return;
+            if (ids.length > 100) {{ alert('Select at most 100 lessons.'); return; }}
             const action = document.getElementById('teacherMultiAction').value;
             const payload = {{action, schedule_ids: ids}};
             if (action === 'set_status') payload.status = document.getElementById('teacherMultiStatus').value;
-            if (action === 'cancel_lessons' && !confirm('Cancel selected lessons?')) return;
+            const label = action === 'cancel_lessons' ? 'Teacher Cancel' : document.getElementById('teacherMultiStatus').selectedOptions[0].textContent;
+            if (!confirm('Update ' + ids.length + ' selected lesson(s) to ' + label + '?')) return;
             if ((action === 'cancel_lessons') || (action === 'set_status' && payload.status === 'teacher_cancelled')) payload.notify_parent_on_teacher_cancel = confirm('Send cancel notice to parent? OK = send, Cancel = save without notifying.');
+            teacherMultiSaving = true;
             fetch('/teacher_multi_select_action', {{
                 method:'POST',
                 headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},
@@ -14520,8 +14546,9 @@ def teacher_dashboard():
                     d = {{ok:false,error: looksLoggedOut ? 'Session expired. Please refresh and log in again.' : 'Server returned an unreadable response. Please refresh and try again.'}};
                 }}
                 if (!r.ok || !d.ok) throw new Error(d.error || d.message || 'Action failed');
+                if (d.errors && d.errors.length) {{ alert('Updated ' + d.updated + ' lesson(s). Some lessons were not changed: ' + d.errors.join('; ')); }}
                 location.reload();
-            }}).catch(e => alert(e.message));
+            }}).catch(e => alert(e.message)).finally(() => {{ teacherMultiSaving = false; }});
         }}
         function teacherWeekdayFromDate(dateStr) {{
             const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -16407,15 +16434,16 @@ def teacher_multi_select_action():
     data = request.get_json(silent=True) or {}
     action = (data.get("action") or "").strip()
     raw_ids = data.get("schedule_ids") or data.get("ids") or []
-    schedule_ids = []
-    for raw_id in raw_ids:
-        try:
-            schedule_ids.append(int(raw_id))
-        except (TypeError, ValueError):
-            continue
-    schedule_ids = list(dict.fromkeys(schedule_ids))[:100]
-    if not schedule_ids:
-        return {"ok": False, "error": "Choose at least one lesson."}, 400
+    if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 100:
+        return {"ok": False, "error": "Choose 1–100 lessons."}, 400
+    try:
+        if any(isinstance(value, bool) or not str(value).isdigit() for value in raw_ids):
+            raise ValueError()
+        schedule_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+        if any(value <= 0 for value in schedule_ids):
+            raise ValueError()
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Invalid lesson selection."}, 400
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -16428,7 +16456,7 @@ def teacher_multi_select_action():
     """, (*schedule_ids, teacher_name))
     owned_ids = [int(row[0]) for row in cursor.fetchall()]
     conn.close()
-    if not owned_ids:
+    if set(owned_ids) != set(schedule_ids):
         return {"ok": False, "error": "No selected lessons belong to this teacher."}, 403
 
     teacher_permissions = get_teacher_permissions(teacher_name)
@@ -16483,6 +16511,8 @@ def teacher_multi_select_action():
     return {
         "ok": updated > 0,
         "message": f"Updated {updated} lesson(s).",
+        "updated": updated,
+        "errors": errors[:5],
         "error": "; ".join(errors[:3]) if errors and not updated else "",
     }
 
@@ -49630,21 +49660,25 @@ def api_teacher_lesson_bulk_status():
     status = (data.get("status") or "").strip()
     if status not in {"scheduled", "present", "no_show", "last_min_cancel", "excused_24h", "teacher_cancelled"}:
         return {"ok": False, "error": "Invalid status"}, 400
-    ids = []
-    for raw_id in data.get("schedule_ids") or []:
-        try:
-            ids.append(int(raw_id))
-        except Exception:
-            pass
-    ids = list(dict.fromkeys(ids))[:100]
-    if not ids:
-        return {"ok": False, "error": "Choose at least one lesson"}, 400
+    raw_ids = data.get("schedule_ids")
+    if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 100:
+        return {"ok": False, "error": "Choose 1–100 lessons"}, 400
+    try:
+        if any(isinstance(value, bool) or not str(value).isdigit() for value in raw_ids):
+            raise ValueError()
+        ids = list(dict.fromkeys(int(value) for value in raw_ids))
+        if any(value <= 0 for value in ids):
+            raise ValueError()
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "Invalid lesson selection"}, 400
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     placeholders = ",".join(["?"] * len(ids))
     cursor.execute(f"SELECT s.id FROM schedule s WHERE s.id IN ({placeholders}) AND ? IN (SELECT s.teacher UNION SELECT gt.teacher_name FROM group_session_teachers gt WHERE gt.schedule_id=s.id)", (*ids, teacher_name))
     owned_ids = [int(r[0]) for r in cursor.fetchall()]
     conn.close()
+    if set(owned_ids) != set(ids):
+        return {"ok": False, "error": "Choose only lessons assigned to you"}, 403
     updated = 0
     errors = []
     parent_notices = 0
