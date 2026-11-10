@@ -23677,7 +23677,7 @@ def get_student_teacher_names(cursor, student_name):
     return teachers
 
 
-def notify_thread_participants(thread_id, sender_role, sender_key, body, message_id=None, sender_name=None):
+def notify_thread_participants(thread_id, sender_role, sender_key, body, message_id=None, sender_name=None, delivery_channels=None):
     ensure_v29_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -23700,7 +23700,8 @@ def notify_thread_participants(thread_id, sender_role, sender_key, body, message
             body or "New attachment",
             f"/message_thread/{thread_id}",
             related_type="message",
-            related_id=message_id
+            related_id=message_id,
+            delivery_channels=delivery_channels if role in ("parent", "teacher") else None
         )
 
 
@@ -24400,7 +24401,10 @@ def hmusic_should_send_message_email_now(user_role, title):
     )
 
 
-def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True, send_email_now=True):
+from message_channels import selected_channels as message_selected_channels, controls as message_channel_controls, validate as validate_message_channels, deliver as deliver_message_channels, summary as message_delivery_summary
+
+
+def create_notification(user_role, user_key, title, body, link_url, related_type=None, related_id=None, queue_delivery=True, send_email_now=True, delivery_channels=None):
     ensure_v29_schema()
 
     conn = sqlite3.connect("hmusic.db")
@@ -24473,6 +24477,11 @@ def create_notification(user_role, user_key, title, body, link_url, related_type
     conn.close()
 
     if not queue_delivery:
+        return notification_id
+
+    if delivery_channels is not None:
+        deliver_message_channels(globals(), user_role, user_key, title, body, link_url,
+                                 related_type, related_id, delivery_channels)
         return notification_id
 
     queue_notification_delivery(
@@ -28351,6 +28360,7 @@ def new_owner_message():
     cursor = conn.cursor()
 
     if request.method == "POST":
+        channels = message_selected_channels(request.form)
         recipient_mode = request.form.get("recipient_mode", "parent")
         student_name = (request.form.get("student_name") or "").strip() or None
         subject_input = (request.form.get("subject") or "").strip()
@@ -28389,6 +28399,7 @@ def new_owner_message():
             parent_label = parent[0] or parent[1] or f"Parent #{parent_id}"
             subject = subject_input or f"Manager / Parent Message - {student_name or parent_label}"
             conn.close()
+            validate_message_channels(globals(), "parent", parent_id, channels)
 
             thread_id = get_or_create_message_thread(
                 subject,
@@ -28407,7 +28418,8 @@ def new_owner_message():
                 f"/message_thread/{thread_id}",
                 related_type="message",
                 related_id=message_id,
-                send_email_now=True
+                send_email_now=True,
+                delivery_channels=channels
             )
             return redirect(f"/message_thread/{thread_id}")
 
@@ -28421,6 +28433,7 @@ def new_owner_message():
 
             subject = subject_input or f"Manager / Teacher Message - {student_name or teacher_name}"
             conn.close()
+            validate_message_channels(globals(), "teacher", teacher_name, channels)
 
             thread_id = get_or_create_message_thread(
                 subject,
@@ -28436,7 +28449,8 @@ def new_owner_message():
                 teacher_name,
                 "New message from Manager",
                 body or "New attachment",
-                f"/message_thread/{thread_id}"
+                f"/message_thread/{thread_id}",
+                related_type="message", related_id=message_id, delivery_channels=channels
             )
             return redirect(f"/message_thread/{thread_id}")
 
@@ -28570,7 +28584,7 @@ def new_owner_message():
 
     parent_options = ""
     for parent_id, parent_name, parent_email, parent_phone, linked_students in parents:
-        contact = parent_email or parent_phone or f"Parent #{parent_id}"
+        contact = " · ".join(value for value in (parent_email,parent_phone) if value) or f"Parent #{parent_id}"
         student_label = f" | Students: {linked_students}" if linked_students else ""
         selected = "selected" if str(parent_id) == selected_parent_id else ""
         parent_options += (
@@ -28585,7 +28599,7 @@ def new_owner_message():
     ]) or '<option value="">No teachers found</option>'
     student_recipient_options = '<option value="">Choose a student to find parent</option>'
     for student_name, parent_id, parent_name, parent_email, parent_phone, teacher_name in student_parent_rows:
-        contact = parent_email or parent_phone or f"Parent #{parent_id}"
+        contact = " · ".join(value for value in (parent_email,parent_phone) if value) or f"Parent #{parent_id}"
         selected = "selected" if student_name == selected_student_name else ""
         student_recipient_options += (
             f'<option value="{escape(student_name, quote=True)}" '
@@ -28724,6 +28738,8 @@ def new_owner_message():
 
                 Message:<br>
                 <textarea name="body" rows="6" placeholder="Write your message here."></textarea>
+
+                {message_channel_controls(globals())}
 
                 Attachments:<br>
                 <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt">
@@ -29174,6 +29190,13 @@ def message_thread(thread_id):
     conn.close()
 
     if request.method == "POST":
+        channels = message_selected_channels(request.form) if require_owner() else None
+        if channels is not None:
+            conn = sqlite3.connect("hmusic.db")
+            participants = conn.execute("SELECT participant_role,participant_key FROM message_participants WHERE thread_id=? AND active=1 AND participant_role IN ('parent','teacher')",(thread_id,)).fetchall()
+            conn.close()
+            for role,key in participants:
+                validate_message_channels(globals(),role,key,channels)
         body = request.form.get("body")
         files = request.files.getlist("attachments")
 
@@ -29202,7 +29225,8 @@ def message_thread(thread_id):
                 sender_key,
                 body or "New attachment",
                 message_id=message_id,
-                sender_name=sender_name
+                sender_name=sender_name,
+                delivery_channels=channels
             )
 
         return redirect(f"/message_thread/{thread_id}")
@@ -29363,9 +29387,11 @@ def message_thread(thread_id):
 
             {messages_html}
 
+            {message_delivery_summary(globals(),thread_id) if require_owner() else ""}
             <h2>Reply</h2>
             <form method="POST" enctype="multipart/form-data">
                 <textarea name="body" rows="4"></textarea>
+                {message_channel_controls(globals()) if require_owner() else ""}
                 Attachments:<br>
                 <input type="file" name="attachments" multiple accept="image/*,video/*,.pdf,.doc,.docx,.txt"><br><br>
                 <button type="submit">Send Reply</button>
