@@ -21,7 +21,7 @@ def controls(api):
     <legend>Send notification by</legend><input type="hidden" name="delivery_selection" value="1">
     <label style="display:inline-block;margin-right:22px"><input type="checkbox" style="width:auto;min-height:0;margin:0 6px 0 0;padding:0" name="delivery_channels" value="email" {'checked' if email_ready else 'disabled'}> Email</label>
     <label style="display:inline-block"><input type="checkbox" style="width:auto;min-height:0;margin:0 6px 0 0;padding:0" name="delivery_channels" value="sms" {'' if sms_ready else 'disabled'}> Mobile SMS</label>
-    <p style="font-size:13px;color:#64748b;margin-bottom:0">Choose either or both. The message is always saved in the app. SMS includes a short preview and a link to the full message and attachments.</p>
+    <p style="font-size:13px;color:#64748b;margin-bottom:0">Choose either or both. The message is always saved in the app. Uploaded images are also attached to Email (10 MB total limit). SMS includes a short preview and a link to the full message and attachments.</p>
     {'' if email_ready else '<p>Email service is not configured.</p>'}
     {'' if sms_ready else '<p>Mobile SMS service is not configured.</p>'}
     </fieldset>'''

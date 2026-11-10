@@ -24812,7 +24812,7 @@ def queue_direct_delivery(channel, destination, title, body, link_url, related_t
         conn.close()
 
 
-def send_email_delivery(destination, title, body, link_url):
+def send_email_delivery(destination, title, body, link_url, message_id=None):
     if not hmusic_is_real_email(destination):
         return False, "Email not sent: destination is missing or is an internal placeholder address."
     conn = sqlite3.connect("hmusic.db")
@@ -24836,8 +24836,18 @@ def send_email_delivery(destination, title, body, link_url):
     if configured_from and configured_from.casefold() != HMUSIC_TRANSACTIONAL_EMAIL.casefold():
         return False, f"HMUSIC_FROM_EMAIL must be {HMUSIC_TRANSACTIONAL_EMAIL}."
 
+    from message_email import message_context, render_content
+    try:
+        email_subject, images = message_context(globals(), message_id, destination, link_url) if message_id is not None else (title, [])
+        plain, html = render_content(globals(), body, link_url)
+    except ValueError as exc:
+        return False, str(exc)
+    except Exception:
+        app.logger.exception("Conversation email could not be prepared")
+        return False, "Message images or recipient access could not be verified. Review before resending; the app record is preserved."
+
     message = EmailMessage()
-    message["Subject"] = title or "H-Music Notification"
+    message["Subject"] = email_subject or title or "H-Music Notification"
     message["From"] = HMUSIC_TRANSACTIONAL_EMAIL
     message["To"] = destination
     conversation = re.search(r"/message_thread/(\d+)", link_url or "")
@@ -24845,8 +24855,10 @@ def send_email_delivery(destination, title, body, link_url):
         from email.utils import make_msgid
         message["Message-ID"] = make_msgid(idstring=f"hmusic-thread-{conversation.group(1)}", domain=str(message["From"]).split("@")[-1])
         message["Reply-To"] = message["From"]
-    footer = f"\n\nOpen: {link_url}\n\nH-Music" if link_url else "\n\nH-Music"
-    message.set_content(f"{body or ''}{footer}")
+    message.set_content(plain)
+    message.add_alternative(html, subtype="html")
+    for filename, mime, content in images:
+        message.add_attachment(content, maintype="image", subtype=mime.split("/",1)[1], filename=filename)
     try:
         attachment = invoice_message_attachment(destination, body) if "/invoice-share/" in (body or "") else None
         if attachment:
@@ -24992,7 +25004,7 @@ def send_queued_email_now(queue_id, retry_failed=False):
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT channel, destination, title, body, link_url, status
+    SELECT channel, destination, title, body, link_url, status, related_type, related_id
     FROM notification_delivery_queue
     WHERE id = ?
     """, (queue_id,))
@@ -25001,7 +25013,7 @@ def send_queued_email_now(queue_id, retry_failed=False):
         conn.close()
         return False, "Queue item not found."
 
-    channel, destination, title, body, link_url, status = row
+    channel, destination, title, body, link_url, status, related_type, related_id = row
     if channel != "email":
         conn.close()
         return False, "Queue item is not an email."
@@ -25017,7 +25029,10 @@ def send_queued_email_now(queue_id, retry_failed=False):
         return False, "Queue item already claimed for delivery."
 
     try:
-        sent, response = send_email_delivery(destination, title, body, link_url)
+        if related_type == "message" and related_id is not None:
+            sent, response = send_email_delivery(destination, title, body, link_url, related_id)
+        else:
+            sent, response = send_email_delivery(destination, title, body, link_url)
     except smtplib.SMTPResponseException as exc:
         sent, response = False, f"SMTP rejected delivery ({exc.smtp_code}): {exc.smtp_error!s}"
     except Exception:
