@@ -541,11 +541,21 @@ def install_family_billing(app, api):
             items=cur.fetchall()
             rows = ''.join(f'<tr><td>#{i}</td><td>{escape(s)}</td><td>{escape(c or "Fee")} · {escape(t or "")}</td><td>{l:g}</td><td>${n/100:,.2f}</td></tr>' for i,s,c,t,l,n in items)
             actions = ''
+            guidance_state = None
             if batch[3] != 'paid' and batch[3] != 'cancelled':
                 if batch[2] in ('Stripe ACH','Square'):
                     actions = f'<form method="post" action="/family_payment/{batch_id}/check"><button>Check payment status</button></form>'
                     if batch[3] in ('processing','submitted'):
-                        actions += '<p>Your payment was submitted and is processing. Do not submit another payment. Credits are added after settlement.</p>'
+                        if batch[2]=='Stripe ACH' and batch[5]:
+                            from stripe_payment_guidance import checkout_guidance
+                            try:
+                                checkout_state = api['stripe'].checkout.Session.retrieve(batch[5])
+                                guidance_state, guidance = checkout_guidance(api['stripe'], checkout_state)
+                            except Exception:
+                                guidance_state, guidance = 'unknown', '<p>Payment status could not be checked. Contact H-Music before submitting another payment.</p>'
+                            actions += guidance
+                        else:
+                            actions += '<p>Your payment is awaiting confirmation. Do not submit another payment.</p>'
                     else:
                         actions = f'<form method="post" action="/family_payment/{batch_id}/checkout"><button>Continue payment · ${batch[4]/100:,.2f} via {escape(batch[2])}</button></form>' + actions
                         actions += '<p>Payment has not been confirmed. Continue this same bill to resume an interrupted checkout.</p>'
@@ -561,7 +571,7 @@ def install_family_billing(app, api):
             from billing_documents import document_links
             actions = document_links(f'/family_payment/{batch_id}', batch[3]=='paid') + actions
             if not api['require_owner']():
-                label='Paid' if batch[3]=='paid' else 'Payment processing' if batch[3] in ('submitted','processing') else 'Unpaid'
+                label=({'verification':'Bank verification required','action_required':'Action required','incomplete':'Payment not completed','unknown':'Check payment status'}.get(guidance_state) or ('Paid' if batch[3]=='paid' else 'Payment processing' if batch[3] in ('submitted','processing') else 'Unpaid'))
                 cards=''.join(f'<section class="billing-record"><h3>{escape(s)} · Invoice #{i}</h3><p>{escape(c or "Tuition")} · {escape(t or "")}</p><p>{l:g} lessons</p><p><strong>${n/100:,.2f}</strong></p></section>' for i,s,c,t,l,n in items)
                 return page('Payment received' if batch[3]=='paid' else 'Family invoice',f'<p>Family invoice #{batch_id} · {label}</p><div class="payment-total">${batch[4]/100:,.2f}</div><p>{escape(batch[2])}</p><h2 style="font-size:16px">Course breakdown</h2>{cards}{actions}<p class="muted">Keep these documents for your records. Course credits are added only after payment is confirmed.</p>')
             return page(f'Family payment #{batch_id}',f'<p>Status: <strong>{escape(batch[3])}</strong> · {escape(batch[2])}</p><div class="table-wrap"><table><tr><th>Invoice</th><th>Student</th><th>Course / Teacher</th><th>Course credits</th><th>Share</th></tr>{rows}</table></div><h2>Total ${batch[4]/100:,.2f}</h2><p>Each invoice keeps its course binding. Split-guardian invoices receive credit only when all shares have been paid.</p>{actions}<a href="/family_billing/{batch[1]}">Family billing</a>')

@@ -47,7 +47,7 @@ class QuickPayTest(unittest.TestCase):
         self.api=dict(sqlite3=SimpleNamespace(connect=self.connect),os=os,date=date,datetime=datetime,
             ensure_guardian_billing_schema=lambda:None,require_owner=lambda:session.get('owner',False),
             parent_can_access_student=lambda *a:self.permission,parent_has_student_permission=lambda *a:self.permission,
-            configure_stripe=lambda:True,stripe=SimpleNamespace(checkout=SimpleNamespace(Session=self.provider)),
+            configure_stripe=lambda:True,stripe=SimpleNamespace(checkout=SimpleNamespace(Session=self.provider),PaymentIntent=SimpleNamespace(retrieve=lambda _:dict(status='processing'))),
             public_url_for=lambda p:'https://billing.example.invalid'+p,hmusic_csrf_token=lambda:'test',
             refresh_invoice_status_from_allocations=refresh,notify_parent_payment_confirmed=lambda *a,**kw:self.notices.append((a,kw)),
             invoice_credit_to_grant=lambda *a:10,sync_invoice_allocations=lambda *a:[])
@@ -74,6 +74,21 @@ class QuickPayTest(unittest.TestCase):
     def send_link(self,t):
         with self.client.session_transaction() as s:s['owner']=True
         return self.client.post('/owner/invoice/1/quick-pay',data={'action':'send_sms','token':t})
+    def test_bank_verification_return_preserves_reservation_and_credits(self):
+        t=self.make_link(); self.checkout(t, 'ach')
+        obj=next(iter(self.provider.objects.values()))
+        obj['status']='complete'
+        self.api['stripe'].PaymentIntent=SimpleNamespace(retrieve=lambda _:dict(status='requires_action',next_action=dict(type='verify_with_microdeposits',verify_with_microdeposits=dict(hosted_verification_url='https://payments.stripe.com/microdeposit?slug=test'))))
+        html=self.client.get('/p/'+t).text
+        self.assertIn('Bank verification required',html)
+        self.assertIn('Verify bank account',html)
+        self.assertNotIn('No further payment is needed',html)
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT lessons_left FROM enrollments').fetchone()[0],0)
+            self.assertEqual(c.execute('SELECT count(*) FROM payments').fetchone()[0],0)
+            self.assertIsNotNone(c.execute('SELECT lock_token FROM invoice_allocations').fetchone()[0])
+        self.assertEqual(len(self.provider.calls),1)
+
     def test_sms_explicit_recipient_and_double_click(self):
         self.setup_sms(); t=self.make_link()
         self.assertEqual(self.sms_calls,[])

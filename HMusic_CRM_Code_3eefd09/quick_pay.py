@@ -141,15 +141,18 @@ def install_quick_pay(app, api):
         token=request.view_args.get('token','')
         return document_links('/p/'+token,paid)
 
-    def receipt(link, paid=False):
+    def receipt(link, paid=False, checkout=None):
+        from stripe_payment_guidance import checkout_guidance
+        state, guidance = checkout_guidance(api["stripe"], checkout or {}) if not paid else ("paid", "")
+        title = {"verification":"Bank verification required", "action_required":"Action required", "incomplete":"Payment not completed", "unknown":"Check payment status"}.get(state, "Bank payment processing")
         fee = link['fee_cents'] if link['method'] == 'card' else 0
-        return page('Payment received' if paid else 'Bank payment processing',
-            f'<p>Invoice #{link["invoice_id"]} · {"Paid" if paid else "Processing — not yet confirmed"}</p>'
+        return page('Payment received' if paid else title,
+            f'<p>Invoice #{link["invoice_id"]} · {"Paid" if paid else escape(title)}</p>'
             f'<div class="amount">${(link["amount_cents"]+fee)/100:,.2f}</div>'
             f'<p>Tuition / assigned share: ${link["amount_cents"]/100:,.2f}<br>'
             f'Credit card surcharge: ${fee/100:,.2f}</p>' + details(link,False) + download_links(link,paid) +
             ('<p>Thank you. Your payment is confirmed. Download your receipt for your records.</p>'
-             if paid else '<p>No further payment is needed while your bank payment is processing. Course credits are added only after payment is confirmed.</p>'))
+             if paid else guidance))
 
     def validate(link, row):
         if not link or not row or link['revoked'] or link['expires_at'] <= int(time.time()):
@@ -543,7 +546,7 @@ def install_quick_pay(app, api):
                 if outcome == 'paid':
                     return receipt(link, paid=True)
                 if outcome == 'processing':
-                    return receipt(link, paid=False)
+                    return receipt(link, paid=False, checkout=obj)
                 if obj.get('status') == 'expired':
                     return redirect('/p/' + token, code=303)
                 # Also repairs old premature processing flags while preserving

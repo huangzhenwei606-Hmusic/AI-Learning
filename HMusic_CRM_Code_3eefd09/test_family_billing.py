@@ -198,9 +198,10 @@ class FamilyBillingTests(unittest.TestCase):
         self.assertEqual(client.post(f'/family_payment/{bid}/checkout').location,'https://checkout.stripe.com/test')
         api['stripe'].checkout.Session.create.assert_not_called()
         obj['status']='complete'
+        api['stripe'].PaymentIntent=SimpleNamespace(retrieve=lambda _:dict(status='processing'))
         self.assertEqual(api['sync_family_payment_status'](bid),'processing')
         submitted_page=client.get(f'/family_payment/{bid}').text
-        self.assertIn('Your payment was submitted',submitted_page)
+        self.assertIn('Your bank payment was submitted',submitted_page)
         self.assertNotIn('Continue payment',submitted_page)
         self.assertEqual(list(self.conn.execute('SELECT status FROM invoices')), [('payment_processing',)]*3)
         self.assertEqual(self.balances(),[-3,-3,-1,8])

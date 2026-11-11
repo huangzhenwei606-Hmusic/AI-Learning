@@ -113,6 +113,18 @@ class AdmissionsTests(unittest.TestCase):
   self.provider.checkout.Session.create.assert_called_once();self.assertEqual(self.provider.checkout.Session.create.call_args.kwargs['idempotency_key'],'admissions-'+oid)
   self.assertEqual(self.client.get(url).status_code,200)
   with closing(sqlite3.connect(self.path)) as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM admissions_orders').fetchone()[0],1)
+ def test_enrollment_return_requires_bank_verification(self):
+  url=self.order();oid=url.split('/')[2]
+  obj={'id':'cs_test','mode':'payment','currency':'usd','amount_total':65000,'payment_status':'unpaid','status':'complete','payment_intent':'pi_test','metadata':{'admissions_order':oid}}
+  with closing(sqlite3.connect(self.path)) as c:c.execute("UPDATE admissions_orders SET checkout_id='cs_test' WHERE id=?",(oid,));c.commit()
+  self.provider.checkout.Session.retrieve.return_value=obj
+  self.provider.PaymentIntent=SimpleNamespace(retrieve=lambda _:dict(status='requires_action',next_action=dict(type='verify_with_microdeposits',verify_with_microdeposits=dict(hosted_verification_url='https://payments.stripe.com/microdeposit?slug=test'))))
+  html=self.client.get(url).text
+  self.assertIn('Verify bank account',html)
+  self.assertNotIn('Bank payment is processing',html)
+  self.assertNotIn('Continue to secure ACH payment',html)
+  self.provider.checkout.Session.create.assert_not_called()
+
  def test_paid_requires_matching_provider_and_never_regresses(self):
   url=self.order();oid=url.split('/')[2]
   with closing(sqlite3.connect(self.path)) as c:

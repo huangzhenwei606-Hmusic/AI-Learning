@@ -459,16 +459,23 @@ def register_admissions(app,api):
   c=db()
   try:
    o=find_order(c,oid,token)
+   payment_guidance=''
    if o['checkout_id'] and api['configure_stripe']():
-    try:sync_order(c,api['stripe'].checkout.Session.retrieve(o['checkout_id']));o=find_order(c,oid,token)
-    except Exception:app.logger.warning('Enrollment payment reconciliation needs retry')
+    try:
+     obj=api['stripe'].checkout.Session.retrieve(o['checkout_id']);sync_order(c,obj);o=find_order(c,oid,token)
+     if o['status'] not in ('paid','expired','failed'):
+      from stripe_payment_guidance import checkout_guidance
+      _,payment_guidance=checkout_guidance(api['stripe'],obj)
+    except Exception:
+     app.logger.warning('Enrollment payment reconciliation needs retry')
+     payment_guidance='<p>Payment status could not be checked. Contact H-Music before submitting another payment.</p>'
    q=json.loads(o['snapshot']);csrf=escape(api['hmusic_csrf_token']())
    status={'paid':'Payment confirmed. H-Music will confirm your schedule and parent app access.','processing':'Bank payment is processing. Please do not pay again.','expired':'This checkout expired. Contact H-Music for a reviewed replacement.','registration':'Registration received. Review your order and continue to secure payment.','checkout':'Payment has not been confirmed. Resume the same checkout below.'}.get(o['status'],'Contact H-Music to review this registration.')
    button=''
    if o['status'] in ['registration','checkout'] and catalog(c)['checkoutEnabled'] and o['inquiry_id']:
     button=f'<form method="post" action="/enrollment-order/{oid}/{token}/checkout"><input type="hidden" name="_csrf_token" value="{csrf}"><button>Continue to secure ACH payment ↗</button></form>'
    venue=q.get('teaching_location');venue_html=('<p><strong>'+escape(venue['title'])+'</strong><br>'+escape(venue['address'])+'</p>') if venue else ''
-   body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1>{venue_html}<p>{escape(status)}</p><h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
+   body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1>{venue_html}{payment_guidance or ('<p>'+escape(status)+'</p>')}<h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
    return response(body)
   finally:c.close()
  @app.post('/enrollment-order/<oid>/<token>/checkout', endpoint='hmusic_admissions_checkout')
