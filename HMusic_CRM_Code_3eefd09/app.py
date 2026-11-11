@@ -46522,6 +46522,15 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
     return hmusic_render_message_template("invoice_payment_reminder", "email_body", context, fallback)
 
 
+def invoice_message_parent(cursor, invoice_id, preferred_parent_id):
+    """Use an assigned payer, never an unrelated same-email guardian profile."""
+    cursor.execute("SELECT parent_id FROM invoice_allocations WHERE invoice_id=? ORDER BY id", (invoice_id,))
+    payers = [r[0] for r in cursor.fetchall()]
+    if preferred_parent_id in payers:
+        return preferred_parent_id
+    return payers[0] if len(payers) == 1 else None
+
+
 @app.route("/create_enrollment_invoice/<int:enrollment_id>", methods=["GET", "POST"])
 def create_enrollment_invoice_route(enrollment_id):
     if not require_owner():
@@ -46616,7 +46625,7 @@ def create_enrollment_invoice_route(enrollment_id):
             return "Invalid invoice", 400
         cursor.execute("SELECT student_name,amount FROM invoices WHERE id=? AND enrollment_id=?", (invoice_id, enrollment_id))
         invoice = cursor.fetchone()
-        parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
+        parent_id = invoice_message_parent(cursor, invoice_id, get_primary_parent_for_student(cursor, invoice[0])) if invoice else None
         conn.close()
         if not invoice or not parent_id:
             return "Invoice or guardian not found", 400
@@ -46688,6 +46697,7 @@ def create_enrollment_invoice_route(enrollment_id):
         default_message += f"\nNew semester starts: {semester_start}"
     if invoice and request.form.get("action") == "send":
         sync_invoice_allocations(cursor, invoice_id, invoice[0], invoice[1], "unpaid")
+        parent_id = invoice_message_parent(cursor, invoice_id, parent_id)
     conn.commit()
     conn.close()
 
@@ -46699,7 +46709,7 @@ def create_enrollment_invoice_route(enrollment_id):
         elif semester_start:
             message_body += f"\nNew semester starts: {semester_start}"
         if not parent_id:
-            return "<h1>Add a guardian before sending an invoice.</h1>", 400
+            return "<h1>Check the invoice’s assigned payer before sending. No message was sent.</h1>", 400
         return invoice_message_preview(invoice_id, parent_id, message_body, enrollment_id)
 
     return redirect(f"/enrollment/{enrollment_id}")
