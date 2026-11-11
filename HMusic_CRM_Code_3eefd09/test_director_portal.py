@@ -149,6 +149,14 @@ class DirectorPortalTest(unittest.TestCase):
         self.assertEqual(self.sql('SELECT enabled FROM director_access WHERE user_id=1'),[(0,)])
         self.assertEqual(self.client.post('/role/switch',data={'role':'director'}).status_code,403)
 
+    def test_native_login_entry_keeps_director_workspace(self):
+        self.director()
+        response = self.client.get('/teacher_login?native_app=1')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.location, '/director')
+        self.assertEqual(self.client.get('/payroll').status_code, 403)
+        self.assertEqual(self.client.get('/teacher_dashboard').status_code, 403)
+
     def test_private_broadcast_preview_idempotence_and_push(self):
         self.director()
         url = self.draft(push='1')

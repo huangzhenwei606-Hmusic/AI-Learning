@@ -25,6 +25,8 @@ class DirectorFilesTest(DirectorPortalTest):
         image=self.client.get(f'/school/files/{ids[0]}')
         self.assertEqual(image.data,PNG);self.assertEqual(image.headers['Cache-Control'],'private, no-store')
         self.assertIn('inline',image.headers['Content-Disposition'])
+        image.headers['Content-Disposition'].encode('ascii')
+        self.assertIn("filename*=UTF-8''",image.headers['Content-Disposition'])
         pdf=self.client.get(f'/school/files/{ids[1]}')
         self.assertEqual(pdf.data,b'%PDF-test');self.assertIn('attachment',pdf.headers['Content-Disposition'])
         self.login('parent',parent_id=2)

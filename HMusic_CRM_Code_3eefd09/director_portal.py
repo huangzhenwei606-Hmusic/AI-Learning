@@ -4,12 +4,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from html import escape
 import json
+from io import BytesIO
 import base64
 import re
 import threading
 from urllib.parse import urlsplit
 
-from flask import abort, redirect, request, session, Response, send_from_directory
+from flask import abort, redirect, request, session, Response, send_from_directory, send_file
 
 PERMISSIONS = {
     'inbox': 'Read school inbox', 'reply': 'Reply to families',
@@ -159,6 +160,9 @@ def register_director_portal(app, api):
             else:
                 session.clear()
             return redirect('/teacher_dashboard' if user else '/teacher_login')
+        # Native Teacher App reopens its login entry when returning from a preview.
+        if request.path == '/teacher_login':
+            return redirect('/director')
         allowed = ('/director', '/role/switch', '/teacher_logout', '/static/', '/favicon', '/hmusic-icon')
         if not request.path.startswith(allowed):
             abort(403, 'Switch to Teacher to use teacher tools.')
@@ -329,9 +333,10 @@ def register_director_portal(app, api):
                 if record[3]!='published' and (not user or record[4]!=user[0]):
                     abort(403)
             encoded=conn.execute('SELECT content_base64 FROM school_post_files WHERE id=?',(file_id,)).fetchone()[0]
-        response=Response(base64.b64decode(encoded),mimetype=record[2])
-        disposition='inline' if record[2].startswith('image/') and request.args.get('download')!='1' else 'attachment'
-        response.headers.set('Content-Disposition',disposition,filename=record[1])
+        download = not record[2].startswith('image/') or request.args.get('download')=='1'
+        # RFC 5987 encoding keeps Chinese filenames valid in HTTP headers.
+        response=send_file(BytesIO(base64.b64decode(encoded)),mimetype=record[2],
+            download_name=record[1],as_attachment=download)
         response.headers['Cache-Control']='private, no-store'
         response.headers['X-Content-Type-Options']='nosniff'
         response.headers['Cross-Origin-Resource-Policy']='same-origin'
