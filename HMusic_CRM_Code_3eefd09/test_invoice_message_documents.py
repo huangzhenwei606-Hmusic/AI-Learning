@@ -64,18 +64,20 @@ class InvoiceDeliveryTest(BillingDocumentsTest):
     def test_preview_and_confirm_reuses_invoice_and_preserves_edits(self):
         sent = []
         with self.connect() as c:
+            c.execute('DELETE FROM invoice_allocations WHERE invoice_id=240 AND parent_id=2')
             for name in ('student_name', 'final_price', 'package_amount', 'package_lessons', 'auto_renew_lessons'):
                 c.execute(f'ALTER TABLE enrollments ADD COLUMN {name}')
             c.execute("UPDATE enrollments SET student_name='Mia Chen',final_price=55,package_amount=550,package_lessons=10,auto_renew_lessons=10")
         ns = dict(self.api, request=request, redirect=redirect, session=session, date=date, escape=escape,
-                  require_owner=lambda: True, get_primary_parent_for_student=lambda *a: 1,
+                  require_owner=lambda: True, get_primary_parent_for_student=lambda *a: 999,
                   hmusic_enrollment_invoice_message_body=lambda *a, **k: 'Default',
                   create_enrollment_invoice=lambda *a, **k: 240,
                   sync_invoice_allocations=lambda *a: None,
                   create_invoice_message_event=lambda *a, **k: sent.append((a, k)))
         node = next(n for n in ast.parse(Path('app.py').read_text()).body if isinstance(n, ast.FunctionDef) and n.name == 'create_enrollment_invoice_route')
+        helper = next(n for n in ast.parse(Path('app.py').read_text()).body if isinstance(n, ast.FunctionDef) and n.name == 'invoice_message_parent')
         node.decorator_list = []
-        exec(compile(ast.Module(body=[node], type_ignores=[]), 'app.py', 'exec'), ns)
+        exec(compile(ast.Module(body=[helper, node], type_ignores=[]), 'app.py', 'exec'), ns)
         self.app.add_url_rule('/send/<int:enrollment_id>', 'send', ns[node.name], methods=['GET', 'POST'])
         response = self.client.post('/send/1', data={'action': 'send', 'message_body': 'Custom <note>'})
         self.assertEqual(response.status_code, 200)
@@ -86,6 +88,7 @@ class InvoiceDeliveryTest(BillingDocumentsTest):
         response = self.client.post('/send/1', data={'action': 'confirm_send', 'invoice_id': 240, 'document_token': token, 'message_body': 'Edited text'})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][1]['parent_id'], 1)
         self.assertEqual(sent[0][0][:2], (240, 'sent'))
         self.assertIn('Edited text', sent[0][0][2])
         self.assertIn('/invoice-share/', sent[0][0][2])
