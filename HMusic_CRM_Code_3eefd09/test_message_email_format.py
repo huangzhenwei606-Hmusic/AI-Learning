@@ -88,6 +88,25 @@ class MessageEmailFormatTest(unittest.TestCase):
         self.assertEqual(before,self.sql('SELECT * FROM message_attachments'))
         self.assertEqual(self.sql('SELECT COUNT(*) FROM messages'),[(3,)])
 
+    def test_school_images_and_pdf_are_exact_private_email_attachments(self):
+        self.sql('CREATE TABLE school_posts(id,status)')
+        self.sql('CREATE TABLE school_deliveries(post_id,parent_id,thread_id)')
+        self.sql('CREATE TABLE school_post_files(id,post_id,content_base64)')
+        self.sql("INSERT INTO school_posts VALUES(1,'published')")
+        self.sql('INSERT INTO school_deliveries VALUES(1,1,7)')
+        self.sql('INSERT INTO school_post_files VALUES(1,1,?)',(base64.b64encode(PNG).decode(),))
+        self.sql('INSERT INTO school_post_files VALUES(2,1,?)',(base64.b64encode(b'%PDF-school').decode(),))
+        self.sql("UPDATE message_attachments SET stored_filename='school_1',content_base64=NULL WHERE id=1")
+        self.sql("INSERT INTO message_attachments VALUES(3,10,'活动.pdf','school_2','application/pdf',NULL)")
+        ok,_=self.send();self.assertTrue(ok)
+        message=BytesParser(policy=default).parsebytes(self.delivered[0].as_bytes())
+        files=list(message.iter_attachments())
+        self.assertEqual([(f.get_filename(),f.get_content_type(),f.get_payload(decode=True)) for f in files],
+            [('课表.png','image/png',PNG),('活动.pdf','application/pdf',b'%PDF-school')])
+        self.sql('DELETE FROM school_deliveries')
+        ok,_=self.send();self.assertFalse(ok)
+        self.assertEqual(len(self.delivered),1)
+
     def test_latest_reply_image_is_not_substituted_for_original_message(self):
         _,images=message_context(self.api,10,'family@school.test','/message_thread/7')
         self.assertEqual(images,[('课表.png','image/png',PNG)])

@@ -62,11 +62,24 @@ def message_context(api, message_id, destination, link):
                 raise ValueError('Recipient no longer has access to this message.')
         records=cursor.execute('''SELECT original_filename,stored_filename,mime_type,content_base64
             FROM message_attachments WHERE message_id=? ORDER BY id''',(message_id,)).fetchall()
+        resolved=[]
+        for filename,stored,mime,encoded in records:
+            shared=re.fullmatch(r'school_(\d+)',str(stored or ''))
+            if shared:
+                source=cursor.execute("""SELECT f.content_base64 FROM school_post_files f
+                    JOIN school_posts p ON p.id=f.post_id
+                    JOIN school_deliveries d ON d.post_id=p.id AND d.thread_id=? AND d.parent_id=?
+                    WHERE f.id=? AND p.status='published'""",(row[0],row[2],int(shared[1]))).fetchone()
+                if not source:
+                    raise ValueError('School attachment no longer belongs to this recipient.')
+                encoded=source[0]
+            resolved.append((filename,stored,mime,encoded))
+        records=resolved
     finally:
         conn.close()
     images=[];total=0
     for filename,stored,mime,encoded in records:
-        if mime not in IMAGE_TYPES:
+        if mime not in IMAGE_TYPES and not (mime=='application/pdf' and re.fullmatch(r'school_\d+',str(stored or ''))):
             continue
         remaining=MAX_IMAGE_BYTES-total
         if encoded is not None:

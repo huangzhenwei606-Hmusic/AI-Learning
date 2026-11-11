@@ -24888,7 +24888,7 @@ def send_email_delivery(destination, title, body, link_url, message_id=None):
     message.set_content(plain)
     message.add_alternative(html, subtype="html")
     for filename, mime, content in images:
-        message.add_attachment(content, maintype="image", subtype=mime.split("/",1)[1], filename=filename)
+        message.add_attachment(content, maintype=mime.split("/",1)[0], subtype=mime.split("/",1)[1], filename=filename)
     try:
         attachment = invoice_message_attachment(destination, body) if "/invoice-share/" in (body or "") else None
         if attachment:

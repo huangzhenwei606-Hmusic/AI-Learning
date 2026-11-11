@@ -46,6 +46,8 @@ def ensure_schema(conn):
             id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
             target TEXT, details TEXT, created_at TEXT)''',
         '''CREATE TABLE IF NOT EXISTS school_post_files (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, original_filename TEXT NOT NULL, mime_type TEXT NOT NULL, file_size INTEGER NOT NULL, content_base64 TEXT NOT NULL, created_at TEXT)''',
+        '''CREATE TABLE IF NOT EXISTS school_post_channels (post_id INTEGER PRIMARY KEY, email_requested INTEGER DEFAULT 0)''',
+        '''CREATE TABLE IF NOT EXISTS school_email_outbox (post_id INTEGER NOT NULL,parent_id INTEGER NOT NULL,message_id INTEGER NOT NULL,state TEXT DEFAULT 'pending',queue_id INTEGER,PRIMARY KEY(post_id,parent_id))''',
         '''CREATE TABLE IF NOT EXISTS director_migrations (name TEXT PRIMARY KEY)''',
     ]
     for sql in statements:
@@ -298,6 +300,61 @@ def register_director_portal(app, api):
             conn.execute('''INSERT INTO school_post_files(post_id,original_filename,mime_type,file_size,content_base64,created_at)
                 VALUES (?,?,?,?,?,?)''',(post_id,filename or 'attachment',file.mimetype,len(content),base64.b64encode(content).decode('ascii'),now()))
 
+    def email_selected(conn, post_id):
+        channel=conn.execute('SELECT email_requested FROM school_post_channels WHERE post_id=?',(post_id,)).fetchone()
+        return bool(channel and channel[0])
+
+    def channel_controls(selected=False):
+        return ('<fieldset><legend>Send via</legend><label><input type="radio" name="delivery" value="message" '+('' if selected else 'checked')+'> Message (App only)</label>'
+            '<label><input type="radio" name="delivery" value="email" '+('checked' if selected else '')+'> Email + App message</label>'
+            '<p class="muted">Every send keeps a private App record. Email uses your title and includes uploaded images and PDFs.</p></fieldset>')
+
+    def save_channel(conn,post_id):
+        delivery=request.form.get('delivery','message')
+        if delivery not in ('message','email'):
+            abort(400,'Choose Message or Email.')
+        conn.execute('DELETE FROM school_post_channels WHERE post_id=?',(post_id,))
+        conn.execute('INSERT INTO school_post_channels(post_id,email_requested) VALUES (?,?)',(post_id,int(delivery=='email')))
+
+    def dispatch_email(post_id):
+        with db() as conn:
+            pending=conn.execute("SELECT e.parent_id,e.message_id,e.queue_id,m.thread_id,m.body,t.subject FROM school_email_outbox e JOIN messages m ON m.id=e.message_id JOIN message_threads t ON t.id=m.thread_id WHERE e.post_id=? AND e.state='pending'",(post_id,)).fetchall()
+        for parent_id,message_id,queue_id,thread_id,body,title in pending:
+            try:
+                if not queue_id:
+                    queue_id=api['queue_notification_delivery']('parent',str(parent_id),title,body,f'/message_thread/{thread_id}',
+                        'email',related_type='message',related_id=message_id)
+                    with db() as conn:
+                        conn.execute('UPDATE school_email_outbox SET queue_id=?,state=? WHERE post_id=? AND parent_id=?',
+                            (queue_id,'pending' if queue_id else 'unavailable',post_id,parent_id))
+                if queue_id:
+                    # Existing queue claims prevent duplicate SMTP sends on repeated publish.
+                    sent,_=api['send_queued_email_now'](queue_id)
+                    with db() as conn:
+                        conn.execute("UPDATE school_email_outbox SET state=? WHERE post_id=? AND parent_id=?",('sent' if sent else 'review_required',post_id,parent_id))
+            except Exception:
+                app.logger.exception('School email dispatch failed; existing queue retained')
+
+    email_jobs=set()
+    email_jobs_lock=threading.Lock()
+
+    def start_email(post_id):
+        def run():
+            try:
+                with app.app_context():
+                    dispatch_email(post_id)
+            finally:
+                with email_jobs_lock:
+                    email_jobs.discard(post_id)
+        with email_jobs_lock:
+            if post_id in email_jobs:
+                return
+            email_jobs.add(post_id)
+        if app.testing:
+            run()
+        else:
+            threading.Thread(target=run,daemon=True,name=f'school-email-{post_id}').start()
+
     def file_cards(post_id):
         with db() as conn:
             files=conn.execute('SELECT id,original_filename,mime_type FROM school_post_files WHERE post_id=? ORDER BY id',(post_id,)).fetchall()
@@ -371,6 +428,7 @@ def register_director_portal(app, api):
                      (request.form.get('event_details') or '')[:2000],author[0] if author else 0,json.dumps(ids),push,now()))
                 post_id = cur.lastrowid
                 save_post_files(conn,post_id)
+                save_channel(conn,post_id)
                 audit(conn,'draft',post_id)
             return redirect(f'/director/posts/{post_id}')
         with db() as conn:
@@ -384,6 +442,7 @@ def register_director_portal(app, api):
         <label>Type<select name="kind"><option value="message">School message</option><option value="course">Course</option><option value="new_class">New class</option><option value="event">Event</option></select></label>
         <label>Title<input name="title" maxlength="200" required></label><label>Message<textarea name="body" maxlength="20000" required></textarea></label>
         {upload_controls()}
+        {channel_controls()}
         <label>Date, time and location<input name="event_details"></label><label>Image URL<input name="image_url" type="url"></label>
         <label>Registration link<input name="signup_url" type="url"></label>
         <label>Audience<select name="audience"><option value="all">All active families</option><option value="selected">Selected families below</option><option value="teacher">Teacher (upcoming lessons)</option><option value="course">Course (upcoming lessons)</option><option value="classroom">Classroom (upcoming lessons)</option></select></label>
@@ -437,7 +496,7 @@ def register_director_portal(app, api):
             action = request.form.get('action')
             if row[10] and action in ('submit','publish','retry'):
                 authorize('push')
-            if action not in ('submit','publish','retry','delete','save'):
+            if action not in ('submit','publish','retry','delete','save','continue_email'):
                 abort(400)
             with lock, db() as conn:
                 row = post_record(conn,post_id)
@@ -449,6 +508,7 @@ def register_director_portal(app, api):
                     if not title or not body or len(title)>200 or len(body)>20000:
                         abort(400)
                     save_post_files(conn,post_id)
+                    save_channel(conn,post_id)
                     conn.execute("UPDATE school_posts SET title=?,body=?,status='draft' WHERE id=?",(title,body,post_id))
                     audit(conn,'edit',post_id)
                     return redirect(f'/director/posts/{post_id}')
@@ -478,7 +538,7 @@ def register_director_portal(app, api):
                             if not active:
                                 continue
                             thread_id = None
-                            if row[1] == 'message':
+                            if row[1] == 'message' or email_selected(conn,post_id):
                                 cur = conn.execute('''INSERT INTO message_threads(subject,parent_id,thread_type,is_group,
                                     owner_observer,related_type,related_id,status,created_at,updated_at)
                                     VALUES (?,?,'school',0,1,'school_post',?,'open',?,?)''',(row[2],parent_id,post_id,now(),now()))
@@ -490,6 +550,8 @@ def register_director_portal(app, api):
                                 for fid,name,mime in conn.execute('SELECT id,original_filename,mime_type FROM school_post_files WHERE post_id=? ORDER BY id',(post_id,)).fetchall():
                                     conn.execute('INSERT INTO message_attachments(message_id,stored_filename,original_filename,mime_type) VALUES (?,?,?,?)',
                                         (message_cursor.lastrowid,f'school_{fid}',name,mime))
+                            if email_selected(conn,post_id):
+                                conn.execute('INSERT INTO school_email_outbox(post_id,parent_id,message_id) VALUES (?,?,?)',(post_id,parent_id,message_cursor.lastrowid))
                             conn.execute('INSERT INTO school_deliveries(post_id,parent_id,thread_id,push_state) VALUES (?,?,?,?)',
                                 (post_id,parent_id,thread_id,'pending' if row[10] else 'not_requested'))
                             url = f'/message_thread/{thread_id}' if thread_id else f'/school/announcements/{post_id}'
@@ -499,6 +561,8 @@ def register_director_portal(app, api):
                         audit(conn,'publish',post_id)
                 elif row[8] != 'published':
                     abort(409)
+            if action in ('publish','continue_email'):
+                start_email(post_id)
             if action in ('publish','retry') and row[10]:
                 dispatch_push(post_id)
             return redirect(f'/director/posts/{post_id}')
@@ -507,10 +571,12 @@ def register_director_portal(app, api):
             for pid in json.loads(row[9]):
                 p = conn.execute('SELECT parent_name FROM parent_profiles WHERE id=?',(pid,)).fetchone()
                 names.append(p[0] or str(pid) if p else str(pid))
+            wants_email=email_selected(conn,post_id)
+            email_states=conn.execute('SELECT state,COUNT(*) FROM school_email_outbox WHERE post_id=? GROUP BY state',(post_id,)).fetchall()
             states = conn.execute('SELECT push_state,COUNT(*) FROM school_deliveries WHERE post_id=? GROUP BY push_state',(post_id,)).fetchall()
         controls = ''
         if can_edit and row[8] in ('draft','pending'):
-            controls = f'<form method="POST" enctype="multipart/form-data"><label>Title<input name="title" value="{escape(row[2],quote=True)}" maxlength="200"></label><label>Message<textarea name="body" maxlength="20000">{escape(row[3])}</textarea></label>{upload_controls()}<button name="action" value="save">Save changes &amp; preview again</button></form>'
+            controls = f'<form method="POST" enctype="multipart/form-data"><label>Title<input name="title" value="{escape(row[2],quote=True)}" maxlength="200"></label><label>Message<textarea name="body" maxlength="20000">{escape(row[3])}</textarea></label>{upload_controls()}{channel_controls(wants_email)}<button name="action" value="save">Save changes &amp; preview again</button></form>'
             controls += '<form method="POST"><button name="action" value="submit">Submit for Owner review</button>'
             if owner or not grants.get('approval'):
                 controls += '<button name="action" value="publish">Confirm publish / send</button>'
@@ -518,8 +584,13 @@ def register_director_portal(app, api):
         elif can_edit and row[8] == 'published' and row[10]:
             controls = f'<form method="POST"><label>Title<input name="title" value="{escape(row[2],quote=True)}" maxlength="200"></label><label>Message<textarea name="body" maxlength="20000">{escape(row[3])}</textarea></label><button name="action" value="save">Save changes &amp; preview again</button></form>'
             controls += '<form method="POST"><button name="action" value="retry">Retry failed push queue requests</button></form>'
+        labels={'pending':'Waiting to send','sent':'Sent','unavailable':'No eligible email','review_required':'Owner review needed'}
+        email_status=escape(', '.join(f'{labels.get(state,state)}: {count}' for state,count in email_states))
+        email_summary=f'<p>Send via: {"Email + App message" if wants_email else "Message (App only)"}</p><p>Email delivery: {email_status or "Not sent"}. Sent means accepted by the mail server. Missing or blocked email addresses are skipped. Waiting emails can be continued without resending completed items.</p>'
+        if can_edit and row[8]=='published' and any(state=='pending' for state,count in email_states):
+            controls+='<form method="POST"><button name="action" value="continue_email">Continue pending emails</button></form>'
         status = escape(', '.join(f'{key}: {count}' for key,count in states))
-        return page('Preview school update', f'<p>Status: {escape(row[8])} · Push requested: {bool(row[10])}</p>'+post_content(row)+
+        return page('Preview school update', f'<p>Status: {escape(row[8])} · Push requested: {bool(row[10])}</p>'+email_summary+post_content(row)+
             f'<section><h2>Recipients ({len(names)})</h2><p>{escape(", ".join(names))}</p><p>Each family receives a private copy. Inactive families are skipped at publication.</p><p>{status}</p><p>Queued means added to the existing notification queue. Phone lock-screen delivery requires a connected push provider; the current CRM has in-app notifications only.</p>{controls}</section>')
 
     @app.get('/director/inbox')

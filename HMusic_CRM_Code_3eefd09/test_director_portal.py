@@ -40,6 +40,7 @@ class DirectorPortalTest(unittest.TestCase):
         self.app.secret_key = 'tests'
         self.app.testing = True
         self.push = []
+        self.email_sends = []
         self.push_failure = False
         def queue(*args, **kwargs):
             if self.push_failure:
@@ -67,6 +68,7 @@ class DirectorPortalTest(unittest.TestCase):
             hmusic_csrf_token=lambda: 'test-token',
             sync_thread_default_participants=participants,
             queue_notification_delivery=queue,
+            send_queued_email_now=lambda qid: (self.email_sends.append(qid) or True,"accepted"),
             HMUSIC_UPLOAD_DIR=self.tmp.name,
         ))
         self.client = self.app.test_client()
@@ -156,6 +158,30 @@ class DirectorPortalTest(unittest.TestCase):
         self.assertEqual(response.location, '/director')
         self.assertEqual(self.client.get('/payroll').status_code, 403)
         self.assertEqual(self.client.get('/teacher_dashboard').status_code, 403)
+
+    def test_email_preview_publish_and_idempotent_send(self):
+        self.director()
+        url=self.draft(delivery='email')
+        self.assertEqual(self.push,[])
+        self.assertIn('Email + App message',self.client.get(url).get_data(as_text=True))
+        self.publish(url)
+        self.assertEqual(len(self.email_sends),2)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM messages'),[(2,)])
+        self.assertEqual(self.sql('SELECT state,COUNT(*) FROM school_email_outbox GROUP BY state'),[('sent',2)])
+        self.assertTrue(all(item[0][5]=='email' and item[1]['related_type']=='message' for item in self.push))
+        self.publish(url)
+        self.assertEqual(len(self.email_sends),2)
+        self.assertEqual(self.client.post(url,data={'action':'save','title':'Changed','body':'Changed','delivery':'message'}).status_code,409)
+
+    def test_existing_event_draft_can_select_email(self):
+        self.director()
+        url=self.draft(kind='event',audience='selected',parent_ids=['1'])
+        self.assertEqual(self.client.post(url,data={'action':'save','title':'Event title','body':'Details','delivery':'email'}).status_code,302)
+        self.assertEqual(self.email_sends,[])
+        self.publish(url)
+        self.assertEqual(len(self.email_sends),1)
+        self.assertEqual(self.sql('SELECT subject,parent_id FROM message_threads'),[('Event title',1)])
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM notifications'),[(1,)])
 
     def test_private_broadcast_preview_idempotence_and_push(self):
         self.director()
