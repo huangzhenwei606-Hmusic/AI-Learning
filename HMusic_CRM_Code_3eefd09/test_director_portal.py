@@ -25,6 +25,9 @@ class DirectorPortalTest(unittest.TestCase):
                 INSERT INTO parent_profiles VALUES(1,'Family One',1),(2,'Family Two',1),(3,'Disabled Family',0);
                 CREATE TABLE parent_students(parent_id,student_name,active);
                 INSERT INTO parent_students VALUES(1,'Student One',1),(2,'Student Two',1);
+                CREATE TABLE students(name,status,active);
+                INSERT INTO students VALUES('Student One','Active',1),('Student Two','Active',1);
+                CREATE TABLE group_schedule_students(schedule_id,student_name,attendance_status);
                 CREATE TABLE schedule(student_name,teacher,course_type_name,classroom,lesson_date,status);
                 INSERT INTO schedule VALUES('Student One','Xueyang Wang','Piano','Room A','2099-01-01','scheduled'),
                     ('Student Two','Other','Violin','Room B','2099-01-01','scheduled');
@@ -163,7 +166,7 @@ class DirectorPortalTest(unittest.TestCase):
         self.director()
         url=self.draft(delivery='email')
         self.assertEqual(self.push,[])
-        self.assertIn('Email + App message',self.client.get(url).get_data(as_text=True))
+        self.assertIn('Message + Email',self.client.get(url).get_data(as_text=True))
         self.publish(url)
         self.assertEqual(len(self.email_sends),2)
         self.assertEqual(self.sql('SELECT COUNT(*) FROM messages'),[(2,)])
@@ -182,6 +185,30 @@ class DirectorPortalTest(unittest.TestCase):
         self.assertEqual(len(self.email_sends),1)
         self.assertEqual(self.sql('SELECT subject,parent_id FROM message_threads'),[('Event title',1)])
         self.assertEqual(self.sql('SELECT COUNT(*) FROM notifications'),[(1,)])
+
+    def test_checkbox_email_only_keeps_history_without_app_notification(self):
+        self.director()
+        url=self.draft(audience='selected',parent_ids=['1'],channel_format='checkbox-v1',channels=['email'])
+        self.publish(url)
+        self.assertEqual(len(self.email_sends),1)
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM messages'),[(1,)])
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM notifications'),[(0,)])
+
+    def test_both_channels_exclusions_and_changed_list_requires_preview(self):
+        self.director()
+        url=self.draft(audience='current',exclude_ids=['2'],channel_format='checkbox-v1',channels=['message','email'])
+        self.assertEqual(self.sql('SELECT recipients FROM school_posts'),[('[1]',)])
+        self.sql("UPDATE schedule SET status='teacher_cancelled' WHERE student_name='Student One'")
+        self.assertEqual(self.client.post(url,data={'action':'publish'}).status_code,409)
+        self.assertEqual(self.email_sends,[])
+        self.assertEqual(self.sql('SELECT COUNT(*) FROM messages'),[(0,)])
+
+    def test_no_channels_or_no_selected_families_rejected(self):
+        self.director()
+        base=dict(kind='message',title='News',body='Details',audience='selected',parent_ids=['1'],channel_format='checkbox-v1')
+        self.assertEqual(self.client.post('/director/compose',data=base).status_code,400)
+        base.update(channels=['message'],parent_ids=[])
+        self.assertEqual(self.client.post('/director/compose',data=base).status_code,400)
 
     def test_private_broadcast_preview_idempotence_and_push(self):
         self.director()
@@ -245,7 +272,7 @@ class DirectorPortalTest(unittest.TestCase):
 
     def test_filters_edit_and_invalid_urls(self):
         self.director()
-        url = self.draft(audience='teacher',audience_value='Xueyang Wang')
+        url = self.draft(audience='teacher',audience_teachers=['Xueyang Wang'])
         self.assertEqual(self.sql('SELECT recipients FROM school_posts'),[('[1]',)])
         self.assertEqual(self.client.post(url,data={'action':'save','title':'Edited','body':'New wording'}).status_code,302)
         self.publish(url)
