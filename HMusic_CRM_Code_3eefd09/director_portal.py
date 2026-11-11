@@ -144,7 +144,7 @@ def register_director_portal(app, api):
         *{{box-sizing:border-box}}body{{font:16px system-ui;background:#f3f5fa;color:#172338;margin:0}}
         main{{max-width:1000px;margin:32px auto;padding:24px}}nav{{display:flex;gap:18px;flex-wrap:wrap}}
         a{{color:#4149a5}}section,article{{background:white;padding:24px;border-radius:16px;margin:20px 0;border:1px solid #e0e5f0}}
-        label{{display:block;margin:12px 0}}input:not([type=checkbox]),textarea,select{{width:100%;padding:12px;border:1px solid #bac4d6;border-radius:8px;font:inherit}}
+        label{{display:block;margin:12px 0}}input:not([type=checkbox]):not([type=radio]),textarea,select{{width:100%;padding:12px;border:1px solid #bac4d6;border-radius:8px;font:inherit}}
         textarea{{min-height:180px}}button{{background:#454abb;color:white;border:0;padding:12px 18px;border-radius:8px;cursor:pointer;margin:8px 8px 0 0}}
         .body{{white-space:pre-wrap;overflow-wrap:anywhere}}.muted{{color:#64748b}}img{{max-width:100%;max-height:400px;border-radius:12px}}
         </style></head><body><main><nav>{navigation}</nav><h1>{escape(title)}</h1>{content}</main></body></html>'''
