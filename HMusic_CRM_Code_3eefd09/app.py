@@ -40016,7 +40016,6 @@ def v35_public_trial_form(error="", values=None, family_context=None):
     error_html = f'<div class="error">{v35_safe(error)}</div>' if error else ""
     school_policy = json.loads(admissions_policy_snapshot())["policy"]
     policy_english = "".join(f"<p>{v35_safe(line)}</p>" for line in school_policy["text"].splitlines() if line.strip())
-    policy_chinese = "".join(f"<p>{v35_safe(line)}</p>" for line in school_policy["textZh"].splitlines() if line.strip())
     trial_back_html = '<a class="trial-back" href="/parent_agent">Back to Family Assistant</a>' if family_context.get("is_existing_family") else ""
     return f"""
     <html>
@@ -40125,8 +40124,6 @@ def v35_public_trial_form(error="", values=None, family_context=None):
             }}
             .trial-policy-copy {{ margin-top:14px; display:grid; gap:12px; overflow-wrap:anywhere; }}
             .trial-policy-copy p {{ font-size:14px; line-height:1.7; color:var(--text); }}
-            .trial-policy-translation {{ margin-top:18px; padding:14px; border:1px solid var(--line); border-radius:12px; background:#fafaf7; }}
-            .trial-policy-translation summary {{ cursor:pointer; font-weight:700; font-size:14px; }}
         </style>
         <script>
             function selectTrialFee(value, fee) {{
@@ -40288,11 +40285,10 @@ def v35_public_trial_form(error="", values=None, family_context=None):
                 </section>
 
                 <section id="trial-school-policy" aria-labelledby="trial-policy-heading">
-                    <h2 class="section-title" id="trial-policy-heading">School policy · 学校政策</h2>
+                    <h2 class="section-title" id="trial-policy-heading">School policy</h2>
                     <p class="hint">Please review our school policy before submitting your trial request.</p>
                     <p class="hint">Policy version: {v35_safe(school_policy["version"])}</p>
                     <div class="trial-policy-copy" lang="en">{policy_english}</div>
-                    <details class="trial-policy-translation"><summary>中文政策 · Read in Chinese</summary><div class="trial-policy-copy" lang="zh-CN">{policy_chinese}</div></details>
                 </section>
 
                 <p>ACH: submit your request and continue to secure bank payment for the selected trial fee. Zelle: submit your request to view payment instructions. Your trial time will be confirmed separately.</p>
