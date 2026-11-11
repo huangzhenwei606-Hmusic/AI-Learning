@@ -36904,6 +36904,17 @@ def parent_invoice(invoice_id):
         for amount, description in cursor.fetchall() if float(amount or 0) > 0
     ]
 
+    stripe_guidance_html = ""
+    if own_allocation and can_pay_invoice:
+        cursor.execute("SELECT stripe_checkout_session_id FROM invoice_allocations WHERE id=? AND status!='paid' AND payment_method='Stripe ACH'", (own_allocation[0],))
+        checkout_row = cursor.fetchone()
+        if checkout_row and checkout_row[0] and configure_stripe():
+            from stripe_payment_guidance import checkout_guidance
+            try:
+                checkout_state = stripe.checkout.Session.retrieve(checkout_row[0])
+                _, stripe_guidance_html = checkout_guidance(stripe, checkout_state)
+            except Exception:
+                stripe_guidance_html = "<p>Payment status could not be checked. Contact H-Music before submitting another payment.</p>"
     conn.close()
 
     checked_yes = "selected" if invoice[10] == 1 else ""
@@ -37075,7 +37086,7 @@ def parent_invoice(invoice_id):
                 <div><div class="summary-value">{escape(str(invoice[1]))}</div><div class="invoice-number">Invoice #{invoice_id}</div></div>
                 <div class="amount-block"><div class="status-pill">{escape(status_label)}</div><div class="summary-label">{amount_label}</div><div class="amount">${hmusic_money(own_amount)}</div></div>
             </div>
-            {payment_status_alert}
+            {stripe_guidance_html or payment_status_alert}
             {document_links(f"/parent_invoice/{invoice_id}", own_status == "paid") if own_allocation else ""}
             {details_html}
             {allocation_summary_html}
