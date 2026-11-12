@@ -19499,7 +19499,7 @@ def repair_paid_invoice_credit(cursor, invoice):
 
 def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_method,
                                     payment_date, lessons_added=0, parent_id=None,
-                                    allocation_id=None, invoice_status="paid"):
+                                    allocation_id=None, invoice_status="paid", send_message=True):
     """Notify only after the payment transaction has committed."""
     try:
         if not parent_id:
@@ -19518,14 +19518,25 @@ def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_me
         link = f"/parent_invoice/{invoice_id}"
         related_type = "payment_confirmation_share" if allocation_id else "payment_confirmation"
         related_id = allocation_id or invoice_id
-        create_notification("parent", str(parent_id), title, body, link,
-                            related_type=related_type, related_id=related_id,
-                            send_email_now=False)
         queue_id = queue_notification_delivery(
             "parent", str(parent_id), title, body, link, "email",
             related_type=related_type, related_id=related_id)
         if queue_id:
             send_queued_email_now(queue_id)
+        else:
+            app.logger.error("Payment confirmation email could not be queued for invoice %s", invoice_id)
+        # Email is mandatory; the optional in-app message is independent of delivery.
+        if send_message:
+            try:
+                thread_id = get_or_create_message_thread(
+                    title, student_name=student_name, parent_id=parent_id,
+                    thread_type="tuition_invoice", related_type=related_type, related_id=related_id)
+                add_message(thread_id, "system", "H-Music", "parent", body)
+                create_notification("parent", str(parent_id), title, body, link,
+                                    related_type=related_type, related_id=related_id,
+                                    send_email_now=False)
+            except Exception:
+                app.logger.exception("Payment confirmation App message failed for invoice %s", invoice_id)
     except Exception:
         app.logger.exception("Payment confirmation notification failed for invoice %s", invoice_id)
 
@@ -19538,6 +19549,7 @@ def pay_invoice(invoice_id):
 
     ensure_v321_schema()
     ensure_guardian_billing_schema()
+    ensure_v33_schema()
 
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
@@ -19566,9 +19578,21 @@ def pay_invoice(invoice_id):
 
     if invoice[4] == "paid":
         # Viewing an invoice must never change course credits.
+        cursor.execute("""SELECT q.status,q.sent_at FROM notification_delivery_queue q
+            WHERE q.channel='email' AND (q.related_type='payment_confirmation' AND q.related_id=?
+            OR q.related_type='payment_confirmation_share' AND q.related_id IN
+                (SELECT id FROM invoice_allocations WHERE invoice_id=?)) ORDER BY q.id DESC""", (invoice_id, invoice_id))
+        deliveries = cursor.fetchall()
+        labels = {'sent':'Email accepted by mail server (inbox delivery not confirmed)',
+                  'pending':'Email queued', 'sending':'Email sending',
+                  'failed':'Email failed — review email delivery history',
+                  'unconfirmed':'Email result unknown — check delivery before retrying'}
+        email_results = '<ul>' + ''.join('<li>'+escape(labels.get(state, str(state)))+
+                         (' · '+escape(str(at)) if at else '')+'</li>' for state,at in deliveries)+'</ul>' if deliveries else '<p>No confirmation email delivery recorded. Check the guardian email and delivery settings.</p>'
         conn.close()
         return f"""
         <h1>Invoice Already Paid</h1>
+        <h2>Payment confirmation email</h2>{email_results}
         <p>Invoice #{invoice_id} is already marked as paid.</p>
         <a href="/owner/invoice/{invoice_id}/reverse-payment">Reverse mistaken Paid / correction history</a>
         <p><a href="/invoices">Back to Invoices</a></p>
@@ -19626,7 +19650,9 @@ def pay_invoice(invoice_id):
                         request.form.get("payment_date") or date.today().isoformat(),
                         lessons_added=result.get("lessons_added", 0),
                         parent_id=result["parent_id"], allocation_id=allocation_id,
-                        invoice_status=result.get("invoice_status", "paid"))
+                        invoice_status=result.get("invoice_status", "paid"),
+                        send_message=(request.form.get("confirmation_options_present") != "1"
+                                      or request.form.get("send_confirmation_message") == "1"))
                 return redirect(f"/pay_invoice/{invoice_id}?share_confirmed=1")
             return f"<h1>Payment could not be confirmed</h1><p>{escape(result.get('error') or 'Unknown error')}</p>", 400
 

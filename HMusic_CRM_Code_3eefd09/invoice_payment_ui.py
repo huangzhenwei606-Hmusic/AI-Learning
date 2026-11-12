@@ -26,6 +26,9 @@ def owner_payment_confirmation_html(allocation_id, share_status, current_method)
         <input type="hidden" name="action" value="confirm_allocation">
         <input type="hidden" name="allocation_id" value="{int(allocation_id)}">
         <label>Received payment method <select name="payment_method" required>{options}</select></label>
+        <input type="hidden" name="confirmation_options_present" value="1">
+        <p>Payment confirmation email is always sent. Check the delivery result after confirming.</p>
+        <label><input type="checkbox" name="send_confirmation_message" value="1" checked> Also send a confirmation message in the Parent App</label>
         <button type="submit">Confirm payment received</button>
     </form>'''
 
