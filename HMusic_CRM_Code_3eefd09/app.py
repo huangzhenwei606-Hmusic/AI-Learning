@@ -6962,6 +6962,7 @@ def edit_invoice(invoice_id):
             <div class="shell">
                 <div class="head">
                     <h1>Edit Invoice</h1>
+                    <a href="/owner/invoice/{invoice_id}/reverse-payment">Reverse mistaken Paid / correction history</a>
                     <div class="sub">Manager can edit billing details from any billing view. Parents will see the updated amount when they open the invoice.</div>
                 </div>
                 <div class="summary">
@@ -7775,6 +7776,11 @@ def edit_payment(payment_id):
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    from payment_reversal import audited_payment
+    if audited_payment(cursor, payment_id):
+        conn.close()
+        return "<h1>This payment is part of a retained correction audit and cannot be edited or deleted.</h1>", 409
+
     cursor.execute("""
     SELECT student_name, amount, lessons_added, payment_method, payment_date, enrollment_id
     FROM payments
@@ -7988,6 +7994,11 @@ def delete_payment(payment_id):
     ensure_v321_schema()
     conn = sqlite3.connect("hmusic.db")
     cursor = conn.cursor()
+    from payment_reversal import audited_payment
+    if audited_payment(cursor, payment_id):
+        conn.close()
+        return "<h1>This payment is part of a retained correction audit and cannot be edited or deleted.</h1>", 409
+
     cursor.execute("""
     SELECT student_name, COALESCE(lessons_added, 0), enrollment_id
     FROM payments
@@ -19559,6 +19570,7 @@ def pay_invoice(invoice_id):
         return f"""
         <h1>Invoice Already Paid</h1>
         <p>Invoice #{invoice_id} is already marked as paid.</p>
+        <a href="/owner/invoice/{invoice_id}/reverse-payment">Reverse mistaken Paid / correction history</a>
         <p><a href="/invoices">Back to Invoices</a></p>
         """
 
@@ -49142,6 +49154,8 @@ from billing_documents import install_billing_documents
 install_billing_documents(app, globals())
 from invoice_message_documents import install_invoice_message_documents
 install_invoice_message_documents(app, globals())
+from payment_reversal import install_payment_reversal
+install_payment_reversal(app, globals())
 
 from website_trial_api import register_website_trial_api
 register_website_trial_api(app, globals())
