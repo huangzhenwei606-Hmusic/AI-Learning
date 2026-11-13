@@ -142,6 +142,21 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.client.post(r.location)
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),1)
 
+    def test_bulk_restricted_guardian_does_not_block_other_families(self):
+        self.apply(name='First',email='first@example.test');self.apply(name='Second',email='second@example.test')
+        calls=[]
+        def payment_link(cur,iid,pid,description):
+            if iid==1:raise ValueError('Guardian cannot pay this invoice.')
+            return 'https://school.example/p/second'
+        self.api.update(hmusic_is_real_email=lambda v:True,group_payment_link=payment_link,queue_direct_delivery=lambda *a,**kw:calls.append(a) or 15,send_queued_email_now=lambda q:(True,'Accepted'))
+        r=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1','2'],'bulk_action':'invoice','student_1':'new','student_2':'new','full_amount':'500','description':'Group term','message':'Hello','email':'1'})
+        self.client.post(r.location);self.client.post(r.location)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),2)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][1],'second@example.test')
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM group_bulk_deliveries WHERE status='blocked'"),1)
+        self.assertIn(b'Guardian cannot pay',self.client.get(r.location).data)
+
     def tearDown(self):self.conn.close();self.tmp.cleanup()
     def scalar(self,q,args=()):return self.conn.execute(q,args).fetchone()[0]
     def create_class(self,**kw):

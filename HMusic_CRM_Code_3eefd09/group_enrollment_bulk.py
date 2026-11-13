@@ -132,7 +132,14 @@ def install_group_bulk(bp,api,db,owner,page):
                             if b['plan']['action']=='invoice' and b['plan']['channels']:
                                 cur.execute('SELECT id FROM parent_profiles WHERE lower(email)=lower(?) AND active=1',(a['email'],));parents=cur.fetchall()
                                 if len(parents)!=1:raise ValueError('Review guardian account before sending.')
-                                url=api['group_payment_link'](cur,iid,parents[0][0],b['plan']['description'])
+                                # One restricted guardian must not block the other families.
+                                # The link helper rejects access before making any payment-link writes.
+                                try:url=api['group_payment_link'](cur,iid,parents[0][0],b['plan']['description'])
+                                except ValueError as exc:
+                                    for channel in b['plan']['channels']:
+                                        destination=a['email'] if channel=='email' else api['hmusic_normalize_sms_phone'](a['phone'])
+                                        cur.execute('INSERT INTO group_bulk_deliveries(item_id,channel,destination,body,status,created_at,result) VALUES(?,?,?,?,?,?,?)',(item['id'],channel,destination,'','blocked',now(),f'Invoice #{iid} was created; nothing sent to this recipient. {exc} Review guardian billing/payment permissions or the assigned payer in Billing.'))
+                                    continue
                                 cur.execute('UPDATE group_bulk_items SET payment_url=? WHERE id=?',(url,item['id']))
                             body=b['plan']['message'].replace('{parent}',a['parent_name']).replace('{student}',a['student_name']).replace('{class}',a['title'])
                             if url:body+=f"\nInvoice #{iid}: ${a['billing']['amount_cents']/100:,.2f}\n{b['plan']['description']}\nDownload invoice:\n{url}/invoice.pdf\nPay here:\n{url}"
