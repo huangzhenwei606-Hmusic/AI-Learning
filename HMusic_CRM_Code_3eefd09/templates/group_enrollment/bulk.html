@@ -12,6 +12,7 @@ Invoice balance: ${{ '%.2f'|format(a.billing.amount_cents/100) }}
 Download invoice: included automatically
 Pay here:
 {{ item.payment_url or '[Individual secure payment link will be included automatically]' }}{% endif %}</pre>{% endif %}
+{% if batch.status!='preview' and item.deliveries %}<p>See each channel result below. A blocked recipient has not been sent an invoice or payment link.</p>{% endif %}
 {% if item.invoice_id %}<p><a href="/owner/invoice/{{ item.invoice_id }}/quick-pay">Invoice #{{ item.invoice_id }}</a></p>{% endif %}
 {% for d in item.deliveries %}<p>{{ d.created_at }} Pacific · {{ d.channel }} · {{ d.destination }} · <strong>{{ d.status }}</strong><br>{{ d.result }}{% if d.queue_id %} · Delivery record #{{ d.queue_id }}{% endif %}</p>{% endfor %}
 </section>{% endfor %}
