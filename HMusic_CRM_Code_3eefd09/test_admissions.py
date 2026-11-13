@@ -32,6 +32,29 @@ class AdmissionsTests(unittest.TestCase):
   r=self.client.post('/test-register',data={'teacher_id':self.teacher,'lesson_minutes':'30','admission_code':code,'admissions_key':key,'parent_email':'parent@example.com','student_name':'Child','age':'7','policy_version':self.catalog['policy']['version'],'guardian_signature':'Parent','signed_date':'2026-11-03'})
   self.assertEqual(r.status_code,303,r.data)
   return r.location
+ def test_theory_prices_and_zelle_order(self):
+  with closing(sqlite3.connect(self.path)) as conn:
+   for minutes,amount in [('45',75000),('60',90000)]:
+    q=quote(conn,'theory-online-class',minutes)
+    self.assertEqual(q['total'],amount)
+   with self.assertRaises(ValueError):quote(conn,'theory-online-class','30')
+  with self.client.session_transaction() as session_data:session_data['admissions_keys']=['theory']
+  result=self.client.post('/test-register',data={'teacher_id':'theory-online-class','lesson_minutes':'45','admissions_key':'theory','parent_email':'parent@example.com','student_name':'Theory Student','age':'9','policy_version':self.catalog['policy']['version']})
+  self.assertEqual(result.status_code,303)
+  page=self.client.get(result.location).get_data(as_text=True)
+  self.assertIn('Theory online class',page)
+  self.assertIn('750.00',page)
+  self.assertIn('Zelle: 6507977125',page)
+  self.assertIn('<strong>Online</strong>',page)
+ def test_theory_migration_preserves_custom_catalog(self):
+  with closing(sqlite3.connect(self.path)) as conn:
+   cfg=copy.deepcopy(self.catalog);cfg['teachers']=[t for t in cfg['teachers'] if t['id']!='theory-online-class'];cfg['teachers'][0]['prices']['30']=12345
+   conn.execute('UPDATE admissions_settings SET draft=?,published=?',(json.dumps(cfg),json.dumps(cfg)))
+   conn.execute("DELETE FROM admissions_audit WHERE action='theory-online-v1'");conn.commit()
+   ensure_schema(conn);ensure_schema(conn)
+   cfg=json.loads(conn.execute('SELECT published FROM admissions_settings').fetchone()[0])
+   self.assertEqual(cfg['teachers'][0]['prices']['30'],12345)
+   self.assertEqual(sum(t['id']=='theory-online-class' for t in cfg['teachers']),1)
  def test_partner_directory_and_idempotent_migration(self):
   self.assertEqual(len(self.catalog['partners']),4)
   for school in self.catalog['partners']:
