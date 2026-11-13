@@ -5,11 +5,22 @@
 {% block content %}<h1>Group Enrollments</h1>
 <form method="GET" class="card"><label>Class<select name="offering_id"><option value="">All group classes</option>{% for o in class_choices %}<option value="{{ o.id }}" {{ 'selected' if filtered_class and filtered_class.id==o.id else '' }}>{{ o.title }} (#{{ o.id }})</option>{% endfor %}</select></label><button class="secondary">Show applications</button>{% if filtered_class %}<p><a href="/group-class-admin?class_id={{ filtered_class.id }}">Manage {{ filtered_class.title }} ↗</a> · {{ applications|length }} application(s)</p>{% endif %}</form>
 <p class="muted">Review → reserve a place and create an invoice → verify payment → confirm enrollment. Reservations last 48 hours; paid applications keep their place.</p>
+<form id="group-bulk" method="POST" action="/group-enrollments/bulk-preview" class="card">
+<h2>Batch actions</h2><p>Select applications below. Every action requires a preview before confirmation.</p>
+<label>Action<select name="bulk_action"><option value="message">Send class notification</option><option value="invoice">Create custom invoices</option><option value="convert">Create / link student profiles only</option></select></label>
+<div class="grid"><label>Full tuition ($)<input name="full_amount" type="number" min="0" step="0.01"></label><label>Received deposit to deduct ($)<input name="deposit_amount" type="number" min="0" step="0.01" value="0"></label></div>
+<label>What the invoice covers<textarea name="description" maxlength="2000" placeholder="Course, teacher, dates, lesson count and duration"></textarea></label>
+<label>Message (editable)<textarea name="message" maxlength="3000">Hi {parent}, {student}'s {class} is starting soon. Please review the course information. Thank you!</textarea></label>
+<p>Use {parent}, {student}, {class}. Each family receives its own message. Invoice amount and payment link are added automatically.</p>
+<label class="check"><input type="checkbox" name="email" value="1" checked>Email</label><label class="check"><input type="checkbox" name="sms" value="1">SMS</label>
+<button>Preview selected applications</button>
+<p class="muted">For invoices, choose Full tuition or Deduct verified deposit for each student. Record a verified deposit reference; selecting a deposit does not verify bank receipt. Creating a student profile does not mark an invoice paid or add course credits.</p></form>
+<details class="card"><summary>Batch history</summary>{% for b in bulk_history %}<p><a href="/group-enrollments/bulk/{{ b.id }}">{{ b.created_at }} Pacific · {{ b.status }}</a></p>{% else %}<p>No batches yet.</p>{% endfor %}</details>
 <div class="card scroll">
 <table>
 <thead>
 <tr>
-<th>Student / parent</th>
+<th>Select / billing / student profile</th><th>Student / parent</th>
 <th>Class</th>
 <th>Enrollment</th>
 <th>Payment</th>
@@ -17,7 +28,11 @@
 </tr>
 </thead>
 <tbody>{% for a in applications %}<tr id="application-{{ a.id }}">
-<td>
+<td><label class="check"><input form="group-bulk" type="checkbox" name="application_ids" value="{{ a.id }}">Select</label>
+<select form="group-bulk" name="scheme_{{ a.id }}" aria-label="Billing plan for {{ a.student_name }}"><option value="full">Full tuition</option><option value="deposit">Deduct verified deposit</option></select>
+<input form="group-bulk" name="amount_{{ a.id }}" type="number" min="0.01" step="0.01" placeholder="Optional invoice amount override" aria-label="Invoice override for {{ a.student_name }}">
+<label class="check"><input form="group-bulk" type="checkbox" name="verified_{{ a.id }}" value="1">Deposit received and verified</label><input form="group-bulk" name="reference_{{ a.id }}" placeholder="Deposit date / receipt / reference" aria-label="Deposit reference for {{ a.student_name }}">
+{% if a.student_id %}<p>Linked student #{{ a.student_id }}</p>{% else %}<select form="group-bulk" name="student_{{ a.id }}" aria-label="Student profile for {{ a.student_name }}"><option value="">Choose profile…</option><option value="new">Create new: {{ a.student_name }}</option>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} (#{{ s.id }})</option>{% endfor %}</select>{% endif %}</td><td>
 <b>{{ a.student_name }}</b>
 <br>{{ a.parent_name }}<br>{{ a.email }}<br>{{ a.phone }}</td>
 <td>{{ a.title }}</td>

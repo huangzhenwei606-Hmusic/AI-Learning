@@ -56,6 +56,70 @@ class GroupEnrollmentTests(unittest.TestCase):
         with self.client.session_transaction() as s:s['user_role']='owner'
         self.create_class()
 
+    def test_bulk_preview_no_writes_then_invoice_idempotent(self):
+        self.apply()
+        form={'application_ids':['1'],'bulk_action':'invoice','student_1':'new','full_amount':'500','deposit_amount':'100','scheme_1':'deposit','verified_1':'1','reference_1':'Zelle verified 11/12 ref abc','description':'Two 45-minute group lessons','message':'Hi {parent}, {student} is starting.'}
+        preview=self.client.post('/group-enrollments/bulk-preview',data=form)
+        self.assertEqual(preview.status_code,303)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertIn(b'$400.00',self.client.get(preview.location).data)
+        result=self.client.post(preview.location)
+        self.assertEqual(result.status_code,303)
+        self.assertEqual(self.scalar('SELECT amount FROM invoices'),400)
+        self.assertEqual(self.scalar('SELECT charge_lessons FROM invoices'),2)
+        self.assertEqual(self.scalar('SELECT lessons_left FROM enrollments'),0)
+        self.client.post(preview.location)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),1)
+    def test_bulk_deposit_requires_evidence(self):
+        self.apply()
+        result=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'invoice','student_1':'new','full_amount':'500','deposit_amount':'100','scheme_1':'deposit','description':'Lessons','message':'Hi'})
+        self.assertEqual(result.status_code,400)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+    def test_bulk_convert_then_invoice_reuses_student(self):
+        self.apply()
+        result=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'convert','student_1':'new'})
+        self.client.post(result.location)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),1)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.approve()
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),1)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),1)
+    def test_bulk_notification_saved_and_no_duplicate_send(self):
+        self.apply()
+        calls=[]
+        self.api['hmusic_normalize_sms_phone']=lambda value:'+16507977125'
+        self.api['hmusic_is_real_email']=lambda value:True
+        self.api['queue_direct_delivery']=lambda *a,**kw:calls.append(a) or 10
+        self.api['send_queued_email_now']=lambda q:(True,'Provider accepted')
+        result=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'message','email':'1','message':'Hi {parent}, {student} starts soon.'})
+        self.client.post(result.location);self.client.post(result.location)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(self.scalar('SELECT status FROM group_bulk_deliveries'),'submitted')
+        self.assertIn(b'Provider accepted',self.client.get(result.location).data)
+    def test_bulk_stale_preview_rejected(self):
+        self.apply()
+        result=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'convert','student_1':'new'})
+        self.conn.execute("UPDATE group_applications SET email='changed@test.com'");self.conn.commit()
+        self.client.post(result.location)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),0)
+
+    def test_bulk_invoice_notice_has_individual_guest_link(self):
+        self.apply()
+        calls=[]
+        self.api.update(hmusic_is_real_email=lambda v:True,group_payment_link=lambda cur,iid,pid,description:'https://school.example/p/individual',queue_direct_delivery=lambda *a,**kw:calls.append(a) or 11,send_queued_email_now=lambda q:(True,'Accepted'))
+        r=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'invoice','student_1':'new','full_amount':'500','description':'Group term','message':'Hi {parent}','email':'1'})
+        self.client.post(r.location)
+        self.assertEqual(len(calls),1)
+        self.assertIn('https://school.example/p/individual/invoice.pdf',calls[0][3])
+        self.assertTrue(calls[0][3].endswith('Pay here:\nhttps://school.example/p/individual'))
+    def test_bulk_unknown_send_is_not_retried(self):
+        self.apply();calls=[]
+        self.api.update(hmusic_is_real_email=lambda v:True,queue_direct_delivery=lambda *a,**kw:calls.append(a) or 12,send_queued_email_now=lambda q:(False,'Email outcome unknown; owner review required.'))
+        r=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'message','email':'1','message':'Hello'})
+        self.client.post(r.location);self.client.post(r.location)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(self.scalar('SELECT status FROM group_bulk_deliveries'),'unconfirmed')
+
     def tearDown(self):self.conn.close();self.tmp.cleanup()
     def scalar(self,q,args=()):return self.conn.execute(q,args).fetchone()[0]
     def create_class(self,**kw):

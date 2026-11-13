@@ -37,6 +37,8 @@ def one(cur):
 
 
 def ensure_schema(conn):
+    from group_enrollment_bulk import ensure_bulk_schema
+    ensure_bulk_schema(conn)
     for sql in (
         '''CREATE TABLE IF NOT EXISTS group_offerings (
         id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
@@ -208,26 +210,10 @@ def application_tuition(application):
     return amount
 
 
-def approve(cur, aid, student_choice, api):
-    cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
-    a = one(cur)
-    if not a:
-        raise ValueError('Application not found.')
-    lock_offering(cur, a['offering_id'])
-    cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
-    a = one(cur)
-    o = get_offering(cur, a['offering_id'])
-    if a['status'] == 'enrolled':
-        return
-    if a['status'] not in ACTIVE:
-        raise ValueError('This application is closed.')
-    ss = valid_sessions(cur, o)
-    if occupied(cur, o['id'], aid) >= o['capacity']:
-        raise ValueError('This class is full. Keep this student on the waitlist.')
-    if a['invoice_id']:
-        cur.execute("UPDATE group_applications SET status='reserved',reserved_until=?,updated_at=? WHERE id=?",
-                    ((datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(), now(), aid))
-        return
+def resolve_profile(cur,a,student_choice,ss,api):
+    o=get_offering(cur,a['offering_id']);aid=a['id']
+    if a.get('student_id'):
+        student_choice=str(a['student_id'])
     if student_choice == 'new':
         cur.execute('SELECT id FROM students WHERE lower(trim(name))=lower(trim(?))', (a['student_name'],))
         if cur.fetchone():
@@ -273,8 +259,32 @@ def approve(cur, aid, student_choice, api):
     else:
         cur.execute('''INSERT INTO parent_students(parent_id,student_name,relationship,active,created_at)
             VALUES (?,?,'Parent',1,?)''', (pid, name, now()))
+    return sid,name,pid
+
+
+def approve(cur, aid, student_choice, api, billing=None):
+    cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
+    a = one(cur)
+    if not a:
+        raise ValueError('Application not found.')
+    lock_offering(cur, a['offering_id'])
+    cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
+    a = one(cur)
+    o = get_offering(cur, a['offering_id'])
+    if a['status'] == 'enrolled':
+        return
+    if a['status'] not in ACTIVE:
+        raise ValueError('This application is closed.')
+    ss = valid_sessions(cur, o)
+    if occupied(cur, o['id'], aid) >= o['capacity']:
+        raise ValueError('This class is full. Keep this student on the waitlist.')
+    if a['invoice_id']:
+        cur.execute("UPDATE group_applications SET status='reserved',reserved_until=?,updated_at=? WHERE id=?",
+                    ((datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(), now(), aid))
+        return
+    sid,name,pid=resolve_profile(cur,a,student_choice,ss,api)
     # Never reuse or overwrite another course wallet, or pre-grant its credits.
-    o['tuition_cents']=application_tuition(a)
+    o['tuition_cents']=billing['amount_cents'] if billing else application_tuition(a)
     per_lesson = o['tuition_cents']/100/len(ss)
     cur.execute('''INSERT INTO enrollments(student_name,course_type_id,course_type_name,teacher_name,
         duration,student_billing_method,base_price,final_price,lessons_left,status,notes,
@@ -290,6 +300,8 @@ def approve(cur, aid, student_choice, api):
          ss[0]['lesson_date'],"Class dates (Pacific time):\n"+"\n".join(
              f"{s['lesson_date']} {s['lesson_time']} · {s['teacher']} · {s['location'] or ''} {s['classroom']}" for s in ss)
              +"\n"+(o['program']['summary'] if o['program'] else o['description']),invoice))
+    if billing:
+        cur.execute('UPDATE invoices SET coverage_note=coverage_note || ? WHERE id=?',('\n'+billing['description']+'\n'+billing.get('deposit_note',''),invoice))
     cur.execute("UPDATE group_applications SET student_id=?,student_name=?,enrollment_id=?,invoice_id=?,status='reserved',reserved_until=?,updated_at=? WHERE id=?",
         (sid,name,eid,invoice,(datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(),now(),aid))
 
@@ -894,8 +906,11 @@ def register_group_enrollment(app, api):
             query='SELECT a.*,o.title FROM group_applications a JOIN group_offerings o ON o.id=a.offering_id'
             cur.execute(query+(' WHERE a.offering_id=?' if filter_id else '')+' ORDER BY a.id DESC LIMIT 500',(filter_id,) if filter_id else ())
             applications=rows(cur)
+            cur.execute('SELECT id,created_at,status FROM group_bulk_batches ORDER BY created_at DESC LIMIT 20');bulk_history=rows(cur)
             for a in applications:a['payment']=payment_status(cur,a)
             cur.execute('SELECT id,name FROM students ORDER BY name');students=rows(cur)
-        return page('review.html',applications=applications,students=students,class_choices=class_choices,filtered_class=filtered_class,error=error)
+        return page('review.html',applications=applications,students=students,class_choices=class_choices,filtered_class=filtered_class,error=error,bulk_history=bulk_history)
 
+    from group_enrollment_bulk import install_group_bulk
+    install_group_bulk(bp,api,db,owner,page)
     app.register_blueprint(bp)
