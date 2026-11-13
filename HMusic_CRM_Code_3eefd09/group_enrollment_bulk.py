@@ -28,7 +28,7 @@ def amount(value):
 
 
 def install_group_bulk(bp,api,db,owner,page):
-    from group_enrollment import now,rows,one,approve,resolve_profile,get_offering,valid_sessions,schedule_version
+    from group_enrollment import now,rows,one,approve,resolve_profile,get_offering,valid_sessions,schedule_version,existing_application_student
 
     def batch(cur,key):
         cur.execute('SELECT * FROM group_bulk_batches WHERE id=?',(key,));b=one(cur)
@@ -68,6 +68,9 @@ def install_group_bulk(bp,api,db,owner,page):
                     a['offering_version']=schedule_version(get_offering(cur,a['offering_id']))
                     a['student_choice']=request.form.get('student_'+str(aid),'')
                     if action in ('invoice','convert') and not a['student_id'] and not a['student_choice']:raise ValueError('Choose a student profile for '+a['student_name'])
+                    if a['student_choice']=='new' and not a['student_id']:
+                        existing=existing_application_student(cur,a)
+                        if existing:a['student_choice']=str(existing[0])
                     if a['student_choice'] and a['student_choice']!='new':
                         cur.execute('SELECT name FROM students WHERE id=?',(a['student_choice'],));student=cur.fetchone()
                         if not student:raise ValueError('Student profile not found.')
