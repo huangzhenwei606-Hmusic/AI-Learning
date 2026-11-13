@@ -70,6 +70,24 @@ def install_quick_pay(app, api):
         response.headers['X-Hmusic-Payment-Submission'] = 'confirmed-only-v1'
         return response
 
+    def group_payment_link(cur, invoice_id, parent_id, description):
+        """Create a scoped guest link inside the caller's invoice transaction."""
+        ensure_schema(cur)
+        cur.execute('SELECT student_name,amount,status FROM invoices WHERE id=?',(invoice_id,))
+        invoice=cur.fetchone()
+        if not invoice or not allowed(parent_id,invoice[0]):raise ValueError('Guardian cannot pay this invoice.')
+        api['sync_invoice_allocations'](cur,invoice_id,*invoice)
+        cur.execute('SELECT id,amount,status FROM invoice_allocations WHERE invoice_id=? AND parent_id=?',(invoice_id,parent_id))
+        allocation=cur.fetchone()
+        if not allocation or allocation[2] not in ('unpaid','failed') or reserved(cur,allocation[0]):raise ValueError('Invoice is paid or reserved by another payment.')
+        link=dict(invoice_id=invoice_id,parent_id=parent_id,allocation_id=allocation[0])
+        token=secrets.token_urlsafe(32)
+        html,_=coverage(cur,link)
+        cur.execute("""INSERT INTO quick_payment_links(token_hash,invoice_id,parent_id,allocation_id,amount_cents,expires_at,invoice_snapshot,payment_description,coverage_html,fee_cents,card_rate_bps)
+            VALUES (?,?,?,?,?,?,?,?,?,0,0)""",(hashlib.sha256(token.encode()).hexdigest(),invoice_id,parent_id,allocation[0],cents(allocation[1]),int(time.time())+7*86400,snapshot(context(cur,link)),description,html))
+        return api['public_url_for']('/p/'+token)
+    api['group_payment_link']=group_payment_link
+
     @app.route('/p/<token>/<kind>.pdf')
     def quick_pay_document(token,kind):
         from billing_documents import invoice_document, pdf_response

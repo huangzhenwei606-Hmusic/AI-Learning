@@ -56,6 +56,17 @@ class QuickPayTest(unittest.TestCase):
         exec(compile(ast.Module(body=[node],type_ignores=[]),'app.py','exec'),self.api)
         install_quick_pay(self.app,self.api); self.client=self.app.test_client()
         self.env=patch.dict(os.environ,{'STRIPE_WEBHOOK_SECRET':'whsec_test'}); self.env.start()
+    def test_group_link_uses_guardian_scope_and_downloads(self):
+        with self.connect() as conn:
+            url=self.api['group_payment_link'](conn.cursor(),1,2,'Group term: ten lessons')
+            conn.commit()
+        token=url.rsplit('/',1)[1]
+        with self.connect() as conn:
+            self.assertEqual(conn.execute('SELECT amount_cents FROM quick_payment_links WHERE token_hash=?',(hashlib.sha256(token.encode()).hexdigest(),)).fetchone()[0],55000)
+        self.assertEqual(self.client.get('/p/'+token).status_code,200)
+        self.permission=False
+        with self.connect() as conn:
+            with self.assertRaises(ValueError):self.api['group_payment_link'](conn.cursor(),1,2,'Group term')
     def tearDown(self): self.env.stop(); self.tmp.cleanup()
     def make_link(self):
         with self.client.session_transaction() as s:s['owner']=True

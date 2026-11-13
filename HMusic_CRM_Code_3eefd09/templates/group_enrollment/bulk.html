@@ -1,0 +1,18 @@
+{% extends 'group_enrollment/base.html' %}
+{% block content %}<h1>Group class batch {{ 'preview' if batch and batch.status=='preview' else 'results' }}</h1>
+<a href="/group-enrollments">Back to applications</a>
+{% if batch %}<div class="card"><p>Created {{ batch.created_at }} Pacific · {{ batch.status }} · {{ batch.actor }}</p>
+{% if batch.status=='preview' %}<p class="notice">Nothing has been created or sent. Review every student, amount and recipient below.</p>{% endif %}
+<p>Action: {{ batch.plan.action }} · Channels: {{ batch.plan.channels|join(', ') or 'None' }}</p>
+{% for item in items %}{% set a=item.application %}<section class="card"><h2>{{ a.student_name }} · {{ a.title }}</h2><p>Student profile: {{ a.profile_label }}</p><p>{{ a.parent_name }} · {{ a.email }} · {{ a.phone }}</p>
+{% if a.billing %}<p><strong>Invoice balance ${{ '%.2f'|format(a.billing.amount_cents/100) }}</strong></p><p>{{ a.billing.description }}</p><p>{{ a.billing.deposit_note }}</p>{% endif %}
+{% if batch.plan.action!='convert' %}<pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ batch.plan.message|replace('{parent}',a.parent_name)|replace('{student}',a.student_name)|replace('{class}',a.title) }}{% if a.billing %}
+Invoice balance: ${{ '%.2f'|format(a.billing.amount_cents/100) }}
+{{ a.billing.description }}
+Download invoice: included automatically
+Pay here:
+{{ item.payment_url or '[Individual secure payment link will be included automatically]' }}{% endif %}</pre>{% endif %}
+{% if item.invoice_id %}<p><a href="/owner/invoice/{{ item.invoice_id }}/quick-pay">Invoice #{{ item.invoice_id }}</a></p>{% endif %}
+{% for d in item.deliveries %}<p>{{ d.created_at }} Pacific · {{ d.channel }} · {{ d.destination }} · <strong>{{ d.status }}</strong><br>{{ d.result }}{% if d.queue_id %} · Delivery record #{{ d.queue_id }}{% endif %}</p>{% endfor %}
+</section>{% endfor %}
+{% if batch.status in ['preview','prepared'] %}<form method="post"><button>Confirm — {{ 'create invoices' if batch.plan.action=='invoice' else 'create / link student profiles' if batch.plan.action=='convert' else 'send notifications' }}{{ ' and send selected channels' if batch.plan.action=='invoice' and batch.plan.channels else '' }}</button></form>{% else %}<p class="muted">Submitted means accepted for sending, not confirmed delivered. Unconfirmed attempts require review before retrying. Student profile creation does not confirm payment or add the student to the class roster.</p>{% endif %}</div>{% endif %}{% endblock %}
