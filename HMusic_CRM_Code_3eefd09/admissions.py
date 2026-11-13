@@ -35,11 +35,18 @@ def money(cents):return f'${cents/100:,.2f}'
 def row(cur):
  r=cur.fetchone();return dict(zip([d[0] for d in cur.description],r)) if r else None
 
+def theory_offering():
+ return dict(id="theory-online-class",name="Theory online class",subject="Online Theory",active=True,prices={"45":75000,"60":90000})
+
+def zelle_information():
+ return '<aside><h3>Pay by Zelle</h3><p><strong>Zelle: 6507977125</strong></p><p>Include the student’s full name and registration number in your payment note. H-Music will confirm receipt. If you have already paid by Zelle, do not also pay by ACH.</p></aside>'
+
 def seed():
  teachers=[]
  for names,prices,subject in [(['Xu Huang','Jason Kim'],[65000,97500,130000],'Instrument'),(['Jessie Gong','Hyewon Shin','Xueyang Wang','Yidan Sun','Chloe Lu'],[60000,90000,120000],'Instrument'),(['Mia Li','Claire Chen','Halley Hsieh','Jenny Lee'],[55000,82500,110000],'Instrument'),(['Jenny Lee','Yichi Dang'],[55000,82500,110000],'Voice')]:
   for name in names:
    teachers.append(dict(id=re.sub('[^a-z0-9]+','-',name.lower()+'-'+subject.lower()),name=name,subject=subject,active=True,prices=dict(zip(['30','45','60'],prices))))
+ teachers.append(theory_offering())
  return dict(teachers=teachers,lessons=10,checkoutEnabled=True,policy=dict(version='2026-11-03',text=POLICY,textZh=POLICY_ZH),centers=[{'id': 'center-edgewater', 'title': 'H-Music Center · Edgewater', 'address': '951 M Edgewater Blvd, Foster City, CA 94404', 'city': 'Foster City', 'active': True}, {'id': 'center-marlin', 'title': 'H-Music Center · Marlin', 'address': '1101 Marlin Ave, Foster City, CA 94404', 'city': 'Foster City', 'active': True}],partners=json.loads((BASE/'partners.json').read_text()),events=[],copy={'enrollTitle':'Find your next musical chapter.','enrollTitleZh':'开启你的音乐新篇章。','eventsTitle':'On stage. Together.','eventsTitleZh':'一起走上舞台。'},navigation={'enroll':True,'events':True})
 
 def ensure_schema(conn):
@@ -97,6 +104,16 @@ def ensure_schema(conn):
    values.append(json.dumps(cfg,ensure_ascii=False))
   conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',values)
   conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('partner-photos-v1','{}',?)",(now(),));conn.commit()
+
+
+ if not conn.execute("SELECT 1 FROM admissions_audit WHERE action='theory-online-v1'").fetchone():
+  values=[]
+  for raw in conn.execute('SELECT draft,published FROM admissions_settings WHERE id=1').fetchone():
+   cfg=json.loads(raw)
+   if not any(t['id']=='theory-online-class' for t in cfg['teachers']):cfg['teachers'].append(theory_offering())
+   values.append(json.dumps(cfg,ensure_ascii=False))
+  conn.execute('UPDATE admissions_settings SET draft=?,published=?,revision=revision+1 WHERE id=1',values)
+  conn.execute("INSERT INTO admissions_audit(action,payload,created_at) VALUES('theory-online-v1','{}',?)",(now(),));conn.commit()
 
 
 def validate_catalog(c):
@@ -308,9 +325,10 @@ def register_admissions(app,api):
     st=c.execute('SELECT name FROM students WHERE id=?',(d.get('student_id'),)).fetchone()
     ct=c.execute('SELECT id,name,duration FROM course_types WHERE id=? AND active=1 AND COALESCE(is_group,0)=0',(d.get('course_type_id'),)).fetchone()
     if not st or not ct or int(ct[2])!=q['minutes']:raise ValueError('Choose an existing student and matching private lesson duration')
+    if q['teacher']['id']=='theory-online-class' and 'theory' not in ct[1].lower():raise ValueError('Choose a Theory course with the matching duration')
     # A manager explicitly maps the verified order to an existing student. No public form can create family access.
     c.execute("""INSERT INTO enrollments(student_name,course_type_id,course_type_name,teacher_name,duration,student_billing_method,base_price,final_price,lessons_left,status,notes,package_amount,package_lessons,auto_renew_enabled,created_at,updated_at)
-       VALUES(?,?,?,?,?,'Per Lesson',?,?,0,'active',?,?,?,0,?,?)""",(st[0],ct[0],ct[1],q['teacher']['name'],q['minutes'],o['subtotal']/100/q['lessons'],o['total']/100/q['lessons'], 'Paid enrollment order '+o['id'],o['total']/100,q['lessons'],now(),now()))
+       VALUES(?,?,?,?,?,'Per Lesson',?,?,0,'active',?,?,?,0,?,?)""",(st[0],ct[0],ct[1],('Unassigned' if q['teacher']['id']=='theory-online-class' else q['teacher']['name']),q['minutes'],o['subtotal']/100/q['lessons'],o['total']/100/q['lessons'], 'Paid enrollment order '+o['id'],o['total']/100,q['lessons'],now(),now()))
     eid=c.execute('SELECT id FROM enrollments WHERE notes=?',('Paid enrollment order '+o['id'],)).fetchone()[0]
     iid=api['create_enrollment_invoice'](c.cursor(),eid,'initial_tuition','Already paid online: enrollment order '+o['id'],grant_credit_on_payment=True,attach_pending_charges=False)
     c.execute('UPDATE invoices SET discount_code=?,discount_amount=?,stripe_checkout_session_id=? WHERE id=?',(o['coupon_code'],o['discount']/100,o['checkout_id'],iid))
@@ -375,7 +393,7 @@ def register_admissions(app,api):
   partner=values.get('partner_id',request.args.get('partner',''));partner_item=next((p for p in data['partners'] if p['id']==partner and p['active']),None)
   if partner and not partner_item:partner=''
   partner_html=f'<p>Partner program: {escape(partner_item["title"])} · {escape(partner_item.get("semester",""))}</p>' if partner_item else ''
-  fragment=f'''<section id="tuition-selection"><div class="section-title">Teacher & tuition · {data['lessons']} classes per term</div>{partner_html}<input type="hidden" name="_csrf_token" value="{escape(api['hmusic_csrf_token']())}"><input type="hidden" name="admissions_key" value="{escape(token)}"><input type="hidden" name="partner_id" value="{escape(partner)}"><input type="hidden" name="policy_version" value="{escape(data['policy']['version'])}"><label>Teacher<select name="teacher_id" id="admission-teacher">{opts}</select></label><label>Lesson length<select name="lesson_minutes" id="admission-minutes" data-selected="{escape(values.get('lesson_minutes',request.args.get('duration','')))}"></select></label><label>Discount code (optional)<input name="admission_code" id="admission-code" value="{escape(values.get('admission_code',''))}" maxlength="32"></label><button type="button" id="apply-admission-code">Apply code</button><p id="admission-price" role="status"></p><p>Tuition covers the selected package. H-Music will confirm the final schedule. No payment is collected for teacher matching requests.</p></section><script src="/static/admissions-registration.js" defer></script>'''
+  fragment=f'''<section id="tuition-selection"><div class="section-title">Teacher / course & tuition · {data['lessons']} classes per term</div>{partner_html}<input type="hidden" name="_csrf_token" value="{escape(api['hmusic_csrf_token']())}"><input type="hidden" name="admissions_key" value="{escape(token)}"><input type="hidden" name="partner_id" value="{escape(partner)}"><input type="hidden" name="policy_version" value="{escape(data['policy']['version'])}"><label>Teacher / course<select name="teacher_id" id="admission-teacher">{opts}</select></label><label>Lesson length<select name="lesson_minutes" id="admission-minutes" data-selected="{escape(values.get('lesson_minutes',request.args.get('duration','')))}"></select></label><label>Discount code (optional)<input name="admission_code" id="admission-code" value="{escape(values.get('admission_code',''))}" maxlength="32"></label><button type="button" id="apply-admission-code">Apply code</button><p id="admission-price" role="status"></p><p>Tuition covers the selected package. H-Music will confirm the final schedule. No payment is collected for teacher matching requests.</p>{zelle_information()}</section><script src="/static/admissions-registration.js" defer></script>'''
   if partner_item:
    course_id=values.get('partner_course',request.args.get('course',''))
    course=next((p for p in partner_item.get('programs',[]) if p['id']==course_id and p['active']),None)
@@ -410,7 +428,7 @@ def register_admissions(app,api):
   if not tid:
    if values.get('admission_code','').strip():raise ValueError('Choose a teacher before applying a discount code')
    return None
-  if values.get('program_interest','Private Lesson')!='Private Lesson':raise ValueError('Online teacher tuition applies to Private Lesson. Choose matching for other programs.')
+  if tid!='theory-online-class' and values.get('program_interest','Private Lesson')!='Private Lesson':raise ValueError('Online teacher tuition applies to Private Lesson. Choose matching for other programs.')
   if values.get('admissions_key') not in session.get('admissions_keys',[]):raise ValueError('Reload the registration form before submitting')
   c=db()
   try:
@@ -422,7 +440,7 @@ def register_admissions(app,api):
    if values.get('policy_version')!=cfg['policy']['version']:raise ValueError('The policy changed. Review the updated policy and submit again.')
    identity=digest('|'.join([values.get('parent_email','').strip().lower(),values.get('student_name','').strip().casefold(),values.get('age','').strip().casefold()]))
    q=quote(c,tid,values.get('lesson_minutes'),values.get('admission_code',''),values.get('partner_id',''),identity,True)
-   q['teaching_location']=center_context(values)
+   q['teaching_location']={'title':'Online','address':'Theory online class'} if tid=='theory-online-class' else center_context(values)
    q['checkoutEnabled']=cfg['checkoutEnabled'];q['student_name']=values.get('student_name','');q['email']=values.get('parent_email','');q['signed_by']=values.get('guardian_signature','');q['signed_date']=values.get('signed_date','');q['accepted_at']=now()
    oid=secrets.token_urlsafe(24);access=secrets.token_urlsafe(32)
    c.execute('INSERT INTO admissions_orders(id,request_key,access_hash,student_key,teacher_id,partner_id,semester,snapshot,subtotal,discount,total,coupon_code,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(oid,digest(values['admissions_key']),digest(access),identity,tid,q['partner_id'],q['semester'],json.dumps(q,ensure_ascii=False),q['subtotal'],q['discount'],q['total'],q['coupon'],'registration',now()));c.commit()
@@ -469,13 +487,13 @@ def register_admissions(app,api):
     except Exception:
      app.logger.warning('Enrollment payment reconciliation needs retry')
      payment_guidance='<p>Payment status could not be checked. Contact H-Music before submitting another payment.</p>'
-   q=json.loads(o['snapshot']);csrf=escape(api['hmusic_csrf_token']())
+   q=json.loads(o['snapshot']);zelle_html=zelle_information() if o['status']=='registration' and not o['checkout_started'] else '';csrf=escape(api['hmusic_csrf_token']())
    status={'paid':'Payment confirmed. H-Music will confirm your schedule and parent app access.','processing':'Bank payment is processing. Please do not pay again.','expired':'This checkout expired. Contact H-Music for a reviewed replacement.','registration':'Registration received. Review your order and continue to secure payment.','checkout':'Payment has not been confirmed. Resume the same checkout below.'}.get(o['status'],'Contact H-Music to review this registration.')
    button=''
    if o['status'] in ['registration','checkout'] and catalog(c)['checkoutEnabled'] and o['inquiry_id']:
     button=f'<form method="post" action="/enrollment-order/{oid}/{token}/checkout"><input type="hidden" name="_csrf_token" value="{csrf}"><button>Continue to secure ACH payment ↗</button></form>'
    venue=q.get('teaching_location');venue_html=('<p><strong>'+escape(venue['title'])+'</strong><br>'+escape(venue['address'])+'</p>') if venue else ''
-   body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1>{venue_html}{payment_guidance or ('<p>'+escape(status)+'</p>')}<h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
+   body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enrollment order</title><link rel="stylesheet" href="/static/admissions.css"></head><body><main><h1>Enrollment order</h1>{venue_html}{payment_guidance or ('<p>'+escape(status)+'</p>')}<h2>{escape(q['teacher']['name'])} · {q['minutes']} minutes</h2><p>{q['lessons']} lessons · {escape(q['teacher']['subject'])}</p><p>Tuition {money(o['subtotal'])}<br>Discount −{money(o['discount'])}<br><strong>Total {money(o['total'])}</strong></p><p>Order {escape(oid)} · Registration #{o['inquiry_id'] or 'pending'}</p>{button}{zelle_html}<p>Scheduling and account activation are reviewed separately by H-Music. This page does not grant lesson credits.</p></main></body></html>'''
    return response(body)
   finally:c.close()
  @app.post('/enrollment-order/<oid>/<token>/checkout', endpoint='hmusic_admissions_checkout')

@@ -11,8 +11,8 @@ try{const [r,p]=await Promise.all([fetch('/api/website/admissions',{signal:Abort
 const css=document.createElement('link');css.rel='stylesheet';css.href='/static/admissions-registration.css';document.head.append(css);
 const section=document.getElementById('tuition-selection');section.classList.add('compact-admissions');
 const teacherLabel=teacher.closest('label'),durationLabel=duration.closest('label');teacherLabel.hidden=true;durationLabel.hidden=true;teacherLabel.setAttribute('aria-hidden','true');durationLabel.setAttribute('aria-hidden','true');
-const teachers=el('div',null,'teacher-choice-grid');teachers.setAttribute('role','radiogroup');teachers.setAttribute('aria-label','Teacher');
-const title=el('h2','1. Choose your teacher','choice-title');section.insertBefore(title,teacherLabel);section.insertBefore(teachers,teacherLabel);
+const teachers=el('div',null,'teacher-choice-grid');teachers.setAttribute('role','radiogroup');teachers.setAttribute('aria-label','Teacher or course');
+const title=el('h2','1. Choose your teacher or course','choice-title');section.insertBefore(title,teacherLabel);section.insertBefore(teachers,teacherLabel);
 const lengthHeader=el('div',null,'length-heading');lengthHeader.append(el('h2','2. Choose lesson length','choice-title'));const packageBadge=el('span',null,'package-badge');lengthHeader.append(packageBadge);section.insertBefore(lengthHeader,durationLabel);
 const lengths=el('div',null,'length-choice-grid');lengths.setAttribute('role','radiogroup');lengths.setAttribute('aria-label','Lesson length');section.insertBefore(lengths,durationLabel);
 const codeLabel=code.closest('label');codeLabel.classList.add('discount-label');codeLabel.htmlFor=code.id;const apply=document.getElementById('apply-admission-code');const codeRow=el('div',null,'discount-code-row');codeLabel.parentNode.insertBefore(codeRow,codeLabel.nextSibling);codeRow.append(code,apply);apply.textContent='Apply';
