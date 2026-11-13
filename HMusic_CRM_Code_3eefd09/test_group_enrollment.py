@@ -120,6 +120,28 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.assertEqual(len(calls),1)
         self.assertEqual(self.scalar('SELECT status FROM group_bulk_deliveries'),'unconfirmed')
 
+    def test_existing_profile_same_guardian_reused(self):
+        self.apply()
+        self.conn.execute("INSERT INTO students(name,parent_email,lessons_left) VALUES('Child','p@example.test',7)");self.conn.commit()
+        self.approve()
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),1)
+        self.assertEqual(self.scalar('SELECT lessons_left FROM students'),7)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),1)
+    def test_existing_same_name_wrong_guardian_is_blocked(self):
+        self.apply()
+        self.conn.execute("INSERT INTO students(name,parent_email) VALUES('Child','other@example.test')");self.conn.commit()
+        self.approve()
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM parent_students'),0)
+    def test_bulk_preview_reuses_existing_profile_label(self):
+        self.apply()
+        self.conn.execute("INSERT INTO students(name,parent_email) VALUES('Child','p@example.test')");self.conn.commit()
+        r=self.client.post('/group-enrollments/bulk-preview',data={'application_ids':['1'],'bulk_action':'convert','student_1':'new'})
+        self.assertEqual(r.status_code,303)
+        self.assertIn(b'Child (#1)',self.client.get(r.location).data)
+        self.client.post(r.location)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),1)
+
     def tearDown(self):self.conn.close();self.tmp.cleanup()
     def scalar(self,q,args=()):return self.conn.execute(q,args).fetchone()[0]
     def create_class(self,**kw):

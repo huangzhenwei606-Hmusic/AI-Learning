@@ -32,7 +32,7 @@
 <select form="group-bulk" name="scheme_{{ a.id }}" aria-label="Billing plan for {{ a.student_name }}"><option value="full">Full tuition</option><option value="deposit">Deduct verified deposit</option></select>
 <input form="group-bulk" name="amount_{{ a.id }}" type="number" min="0.01" step="0.01" placeholder="Optional invoice amount override" aria-label="Invoice override for {{ a.student_name }}">
 <label class="check"><input form="group-bulk" type="checkbox" name="verified_{{ a.id }}" value="1">Deposit received and verified</label><input form="group-bulk" name="reference_{{ a.id }}" placeholder="Deposit date / receipt / reference" aria-label="Deposit reference for {{ a.student_name }}">
-{% if a.student_id %}<p>Linked student #{{ a.student_id }}</p>{% else %}<select form="group-bulk" name="student_{{ a.id }}" aria-label="Student profile for {{ a.student_name }}"><option value="">Choose profile…</option><option value="new">Create new: {{ a.student_name }}</option>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} (#{{ s.id }})</option>{% endfor %}</select>{% endif %}</td><td>
+{% if a.student_id %}<p>Linked student #{{ a.student_id }}</p>{% else %}<select form="group-bulk" name="student_{{ a.id }}" aria-label="Student profile for {{ a.student_name }}"><option value="">Choose profile…</option><option value="new">Create new / reuse matching profile: {{ a.student_name }}</option>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} (#{{ s.id }})</option>{% endfor %}</select>{% endif %}</td><td>
 <b>{{ a.student_name }}</b>
 <br>{{ a.parent_name }}<br>{{ a.email }}<br>{{ a.phone }}</td>
 <td>{{ a.title }}</td>
@@ -50,7 +50,7 @@
 {% if a.status in ['review','waitlist','reserved'] %}<form method="POST" class="review-form">
 <input type="hidden" name="id" value="{{ a.id }}">{% if not a.invoice_id %}<label>Confirm the correct student profile<select name="student_id" required>
 <option value="">Choose explicitly…</option>
-<option value="new">Create a new student profile for {{ a.student_name }}</option>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} (#{{ s.id }})</option>{% endfor %}</select>
+<option value="new">Create new / reuse matching profile for {{ a.student_name }}</option>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} (#{{ s.id }})</option>{% endfor %}</select>
 </label>
 <p class="muted">Approving links this guardian to the selected child’s parent app. Verify the family before approving.</p>{% endif %}<p class="toolbar">{% if a.payment=='paid' %}<button name="action" value="confirm">Confirm paid enrollment</button>{% else %}<button name="action" value="approve">{{ 'Renew reservation' if a.invoice_id else 'Approve & create invoice' }}</button>{% endif %}
 {% if not a.invoice_id %}<button class="secondary" name="action" value="waitlist" formnovalidate>Waitlist</button>

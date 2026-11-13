@@ -210,18 +210,37 @@ def application_tuition(application):
     return amount
 
 
+def existing_application_student(cur,a):
+    """Reuse exact names only when the applicant is a verified existing guardian."""
+    cur.execute('SELECT id,name,parent_email FROM students WHERE lower(trim(name))=lower(trim(?))',(a['student_name'],))
+    candidates=cur.fetchall()
+    if not candidates:return None
+    if len(candidates)!=1:raise ValueError('Multiple students have this name. Select the correct existing profile.')
+    sid,name,email=candidates[0]
+    applicant=str(a.get('email') or '').strip().casefold()
+    matched=bool(applicant and applicant==str(email or '').strip().casefold())
+    if not matched:
+        cur.execute("""SELECT 1 FROM parent_students ps JOIN parent_profiles pp ON pp.id=ps.parent_id
+            WHERE ps.student_name=? AND COALESCE(ps.active,1)=1 AND COALESCE(pp.active,1)=1
+            AND lower(trim(pp.email))=lower(trim(?))""",(name,applicant))
+        matched=bool(applicant and cur.fetchone())
+    if not matched:raise ValueError('A student with this name exists, but the guardian email differs. Select and verify the correct existing profile.')
+    return sid,name
+
+
 def resolve_profile(cur,a,student_choice,ss,api):
     o=get_offering(cur,a['offering_id']);aid=a['id']
     if a.get('student_id'):
         student_choice=str(a['student_id'])
     if student_choice == 'new':
-        cur.execute('SELECT id FROM students WHERE lower(trim(name))=lower(trim(?))', (a['student_name'],))
-        if cur.fetchone():
-            raise ValueError('A student with this name exists. Select their existing profile or use a unique profile name.')
-        cur.execute('''INSERT INTO students(name,teacher,parent_name,parent_email,parent_phone,lessons_left)
-            VALUES (?,?,?,?,?,0)''', (a['student_name'], ss[0]['teacher'], a['parent_name'], a['email'], a['phone']))
-        sid = cur.lastrowid
-        name = a['student_name']
+        existing=existing_application_student(cur,a)
+        if existing:
+            sid,name=existing
+        else:
+            cur.execute("""INSERT INTO students(name,teacher,parent_name,parent_email,parent_phone,lessons_left)
+                VALUES (?,?,?,?,?,0)""", (a['student_name'], ss[0]['teacher'], a['parent_name'], a['email'], a['phone']))
+            sid = cur.lastrowid
+            name = a['student_name']
     else:
         try:
             sid = int(student_choice)
