@@ -256,7 +256,7 @@ CHECKS = {
     "processing invoice status action": "Check payment status",
     "processing invoice retry safety": "Do not ask the parent to pay again yet.",
     "processing invoice cancellation helper": "def cancel_stripe_invoice_payment(invoice_id):",
-    "processing invoice checkout lock label": "ACH in transit",
+    "processing invoice Stripe truth label": "owner_status_label(ach_live_states.get(invoice_id, 'unknown'))",
     "processing invoice checkout cancellation blocked": 'return "checkout_locked"',
     "billing settings identifies Stripe account": "Connected Stripe Account",
     "processing invoice cancellation requires Stripe confirmation": "if str(payment_intent.get(\"status\") or \"\") != \"canceled\"",
