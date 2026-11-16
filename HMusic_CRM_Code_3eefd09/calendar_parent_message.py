@@ -1,5 +1,7 @@
 """A lesson-scoped parent composer using the existing message delivery pipeline."""
 import re
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from flask import abort, jsonify, request
 
 
@@ -13,7 +15,7 @@ def register_calendar_parent_message(app, api):
         conn = api['sqlite3'].connect('hmusic.db')
         try:
             cur = conn.cursor()
-            cur.execute('SELECT student_name,teacher,lesson_date,lesson_time,COALESCE(is_group,0) FROM schedule WHERE id=?', (sid,))
+            cur.execute('SELECT student_name,teacher,lesson_date,lesson_time,COALESCE(is_group,0),duration,location,classroom FROM schedule WHERE id=?', (sid,))
             lesson = cur.fetchone()
             if not lesson:
                 abort(404)
@@ -28,7 +30,15 @@ def register_calendar_parent_message(app, api):
                     WHERE ps.student_name=? AND COALESCE(ps.active,1)=1 AND COALESCE(p.active,1)=1 ORDER BY p.id''', (name,))
                 for pid, parent, email, phone in cur.fetchall():
                     recipients.append(dict(id=pid, name=parent or 'Parent', email=email or '', phone=phone or '', student=name))
-            return dict(student=lesson[0] or 'Group lesson', teacher=lesson[1], date=lesson[2], time=lesson[3]), recipients
+            display_time = str(lesson[3] or '')
+            try:
+                start = datetime.fromisoformat(str(lesson[2])+'T'+str(lesson[3])).replace(tzinfo=ZoneInfo('America/Los_Angeles'))
+                end = start + timedelta(minutes=int(lesson[5] or 30))
+                display_time = start.strftime('%I:%M %p')+'–'+end.strftime('%I:%M %p %Z')
+            except (ValueError, TypeError):
+                pass
+            return dict(student=lesson[0] or 'Group lesson', teacher=lesson[1], date=lesson[2], time=lesson[3],
+                        display_time=display_time, duration=lesson[5], location=lesson[6] or '', room=lesson[7] or ''), recipients
         finally:
             conn.close()
 
@@ -95,6 +105,6 @@ def register_calendar_parent_message(app, api):
         if request.path.startswith('/api/calendar-parent-message/'):
             response.headers['Cache-Control'] = 'no-store'
         if request.endpoint == 'calendar' and response.status_code == 200 and response.mimetype == 'text/html' and api['require_owner']():
-            assets = '<link rel="stylesheet" href="/static/calendar_parent_message.css?v=1"><script defer src="/static/calendar_parent_message.js?v=1"></script>'
+            assets = '<link rel="stylesheet" href="/static/calendar_parent_message.css?v=2"><script defer src="/static/parent_message_templates.js?v=1"></script><script defer src="/static/calendar_parent_message.js?v=2"></script>'
             response.set_data(response.get_data(as_text=True).replace('</head>', assets + '</head>', 1))
         return response
