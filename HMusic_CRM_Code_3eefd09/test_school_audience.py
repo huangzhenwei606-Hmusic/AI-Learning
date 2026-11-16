@@ -51,3 +51,26 @@ class SchoolAudienceTest(unittest.TestCase):
  def test_calendar_month_cutoff_clamps_month_end(self):
   self.child(1,'Boundary');self.lesson(1,'Boundary','2026-04-30')
   self.assertEqual(family_catalog(self.db,today=date(2026,8,31))[0]['category'],'current')
+ def test_complete_class_list_and_legacy_roster_without_upcoming_lessons(self):
+  self.db.execute('ALTER TABLE schedule ADD COLUMN group_name TEXT')
+  self.db.execute('ALTER TABLE schedule ADD COLUMN group_student_names TEXT')
+  self.child(1,'Legacy child')
+  self.child(2,'Other child')
+  self.db.execute("INSERT INTO schedule VALUES(1,'Class placeholder','2025-01-01','present','Teacher One','Group Class','Finished class','Legacy child')")
+  self.db.execute("INSERT INTO schedule VALUES(2,'Empty placeholder','2026-12-01','scheduled','Teacher One','Group Class','No family class','')")
+  data=self.catalog()
+  self.assertEqual(data[0]['category'],'past')
+  rule=dict(mode='course',courses=['Class: Finished class'],exclude=[],selected=[],teachers=[])
+  self.assertEqual(select_ids(data,rule),[1])
+  html=render_controls(data)
+  self.assertIn('Class: Finished class',html)
+  self.assertIn('Class: No family class',html)
+  rule['courses']=['Class: No family class']
+  self.assertEqual(select_ids(data,rule),[])
+ def test_structured_roster_wins_over_stale_legacy_names(self):
+  self.db.execute('ALTER TABLE schedule ADD COLUMN group_name TEXT')
+  self.db.execute('ALTER TABLE schedule ADD COLUMN group_student_names TEXT')
+  self.child(1,'Actual child');self.child(2,'Stale child')
+  self.db.execute("INSERT INTO schedule VALUES(1,'Placeholder','2026-11-01','present','Teacher One','Group Class','Actual class','Stale child')")
+  self.db.execute("INSERT INTO group_schedule_students VALUES(1,'Actual child','present')")
+  self.assertEqual(select_ids(self.catalog(),dict(mode='course',courses=['Class: Actual class'],exclude=[])),[1])

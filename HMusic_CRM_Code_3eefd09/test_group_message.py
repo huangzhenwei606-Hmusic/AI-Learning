@@ -42,3 +42,15 @@ class GroupMessageTest(DirectorPortalTest):
     def test_parent_cannot_open_group_composer(self):
         self.prepare_group();self.login('parent','1')
         self.assertIn(self.client.get('/director/compose?group_schedule_id=91').status_code,(302,403))
+
+    def test_shortcut_resolves_legacy_roster(self):
+        self.prepare_group();self.login('owner','owner')
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('ALTER TABLE schedule ADD COLUMN group_student_names TEXT')
+            db.execute('DELETE FROM group_schedule_students WHERE schedule_id=91')
+            db.execute("UPDATE schedule SET group_student_names='Student One, Student Two' WHERE id=91")
+            db.commit()
+        html=self.client.get('/director/compose?group_schedule_id=91').get_data(as_text=True)
+        import re
+        data=json.loads(re.search(r'data-audience-data>(.*?)</script>',html,re.S).group(1))
+        self.assertEqual(data['rule']['selected'],[1,2])

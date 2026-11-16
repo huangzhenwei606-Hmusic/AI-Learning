@@ -10,7 +10,7 @@ FUTURE={'scheduled','makeup','confirmed'}
 
 def records(conn, table):
     fields={'students':['name','status','active'], 'parent_profiles':['id','parent_name','email','active'],
-        'parent_students':['parent_id','student_name','active'], 'schedule':['id','student_name','lesson_date','status','teacher','course_type_name','group_name'],
+        'parent_students':['parent_id','student_name','active'], 'schedule':['id','student_name','lesson_date','status','teacher','course_type_name','group_name','group_student_names','is_group'],
         'group_schedule_students':['id','schedule_id','student_name','attendance_status']}
     available={c[0] for c in conn.execute('SELECT * FROM '+table+' LIMIT 0').description}
     names=[name for name in fields[table] if name in available]
@@ -20,6 +20,21 @@ def records(conn, table):
 def parse_date(value):
     try:return date.fromisoformat(str(value)[:10])
     except (ValueError,TypeError):return None
+
+class FamilyCatalog(list):
+    """Family rows plus the complete calendar class inventory, even empty classes."""
+    course_options = ()
+
+
+def lesson_roster(lesson, structured_names, known_students):
+    if structured_names:
+        return list(dict.fromkeys(str(n).strip() for n in structured_names if str(n).strip()))
+    legacy = [n.strip() for n in str(lesson.get('group_student_names') or '').split(',') if n.strip()]
+    if legacy:
+        return list(dict.fromkeys(legacy))
+    name = str(lesson.get('student_name') or '').strip()
+    return [name] if name.casefold() in known_students else []
+
 
 def family_catalog(conn, today=None, email_check=None):
     today=today or datetime.now(ZoneInfo('America/Los_Angeles')).date()
@@ -31,14 +46,17 @@ def family_catalog(conn, today=None, email_check=None):
     group=defaultdict(list)
     for g in records(conn,'group_schedule_students'):
         group[g['schedule_id']].append(g)
+    course_options=set()
     for s in records(conn,'schedule'):
-        members=group.get(s.get('id'))
-        if members:
-            for g in members:
-                item=dict(s);item['status']=g.get('attendance_status') or s.get('status');item['parent_status']=s.get('status')
-                lessons[str(g['student_name']).strip().casefold()].append(item)
-        else:
-            lessons[str(s.get('student_name') or '').strip().casefold()].append(s)
+        if s.get('course_type_name'):course_options.add(s['course_type_name'])
+        if s.get('group_name'):course_options.add('Class: '+str(s['group_name']).strip())
+        members=group.get(s.get('id')) or []
+        statuses={str(g['student_name']).strip().casefold():g.get('attendance_status') for g in members}
+        for name in lesson_roster(s,[g['student_name'] for g in members],students):
+            item=dict(s)
+            item['status']=statuses.get(name.casefold()) or s.get('status')
+            item['parent_status']=s.get('status')
+            lessons[name.casefold()].append(item)
     links=defaultdict(set)
     for link in records(conn,'parent_students'):
         if link.get('active',1):links[link['parent_id']].add(str(link['student_name']).strip().casefold())
@@ -63,8 +81,9 @@ def family_catalog(conn, today=None, email_check=None):
             if category=='current':
                 for l in future:
                     if l.get('teacher'):teachers.add(l['teacher'])
-                    if l.get('course_type_name'):courses.add(l['course_type_name'])
-                    if l.get('group_name'):courses.add('Class: '+str(l['group_name']))
+            for l in history:
+                if l.get('course_type_name'):courses.add(l['course_type_name'])
+                if l.get('group_name'):courses.add('Class: '+str(l['group_name']).strip())
             children.append(dict(name=name,category=category,reason=reason,last=str(last_child or ''),next=str(next_child or '')))
             if last_child:last=max(last,last_child) if last else last_child
             if next_child:upcoming=min(upcoming,next_child) if upcoming else next_child
@@ -74,7 +93,9 @@ def family_catalog(conn, today=None, email_check=None):
         eligible=bool(email_check(email)) if email_check else bool('@' in email and not email.lower().endswith(('.invalid','@example.com')))
         families.append(dict(id=parent['id'],name=parent.get('parent_name') or 'Family',students=[c['name'] for c in children],
             category=category,children=children,last=str(last or ''),next=str(upcoming or ''),teachers=sorted(teachers),courses=sorted(courses),email_ok=eligible))
-    return sorted(families,key=lambda f:(f['name'].casefold(),f['id']))
+    result=FamilyCatalog(sorted(families,key=lambda f:(f['name'].casefold(),f['id'])))
+    result.course_options=sorted(course_options)
+    return result
 
 def rule_from_form(form):
     mode=form.get('audience','selected')
@@ -103,18 +124,18 @@ def render_controls(catalog,rule=None,message=True,email=False):
     from html import escape
     rule=rule or dict(mode='selected',selected=[],exclude=[],teachers=[],courses=[])
     payload=json.dumps(dict(families=catalog,rule=rule),ensure_ascii=False).replace('<','\\u003c').replace('&','\\u0026')
-    scopes=[('current','Current families','Recent attendance or upcoming lessons'),('past','Inactive / past families','Paused or no attendance in 4 months'),('review','Needs review','Incomplete history; review before selecting'),('selected','Selected families','Search and choose individual families'),('teacher','By teacher','Current families with upcoming lessons'),('course','By course / class','Current families with upcoming lessons')]
+    scopes=[('current','Current families','Recent attendance or upcoming lessons'),('past','Inactive / past families','Paused or no attendance in 4 months'),('review','Needs review','Incomplete history; review before selecting'),('selected','Selected families','Search and choose individual families'),('teacher','By teacher','Current families with upcoming lessons'),('course','By course / class','All saved classes, including past lessons')]
     scopes=[(key,label+(f' ({sum(f["category"]==key for f in catalog)})' if key in ('current','past','review') else ''),hint) for key,label,hint in scopes]
     cards=''.join(f'<label class="scope-card"><input type="radio" name="audience" value="{key}" {"checked" if rule["mode"]==key else ""}><span><strong>{label}</strong><small>{hint}</small></span></label>' for key,label,hint in scopes)
     def options(key,name):
-        values=sorted({v for f in catalog for v in f[key]})
+        values=sorted({v for f in catalog for v in f[key]} | (set(getattr(catalog,'course_options',())) if key=='courses' else set()))
         return ''.join(f'<label class="filter-item"><input type="checkbox" name="{name}" value="{escape(v,quote=True)}" {"checked" if v in rule[key] else ""}> {escape(v)}</label>' for v in values)
     return f'''<section class="recipient-delivery" data-audience-widget>
     <h2>Recipients &amp; delivery</h2><h3>1. Who should receive this?</h3>
     <p class="muted">Current means at least one child attended within 4 calendar months or has an upcoming lesson. Paused children are excluded from current families. Missing history needs review.</p>
     <div class="audience-layout"><div class="scope-options">{cards}</div><div class="audience-picker">
     <div data-teacher-panel hidden><strong>Choose teachers</strong><div class="filter-options">{options('teachers','audience_teachers')}</div></div>
-    <div data-course-panel hidden><strong>Choose courses / classes</strong><div class="filter-options">{options('courses','audience_courses')}</div></div>
+    <div data-course-panel hidden><strong>Choose courses / classes</strong><p class="muted">Includes past and upcoming classes. Recipients follow saved student rosters, including legacy rosters. A class with no linked family accounts selects 0 families.</p><div class="filter-options">{options('courses','audience_courses')}</div></div>
     <label>Search parent or student<input type="search" data-family-search placeholder="Search parent or student name"></label>
     <div class="family-list" data-family-list></div>
     <details><summary>Exclude families</summary><label>Search exclusions<input type="search" data-exclude-search placeholder="Search families to exclude"></label><div class="family-list exclusions" data-exclude-list></div></details>
