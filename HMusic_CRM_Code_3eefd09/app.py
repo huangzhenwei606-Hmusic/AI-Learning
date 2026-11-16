@@ -9670,6 +9670,8 @@ def calendar():
           <h3>Group</h3>
           <label><span class="detail-label">Group name</span><input class="panel-field owner-group-name" id="panelGroupName" placeholder="Group name"></label>
           <div class="owner-group-list" id="panelGroupRoster"></div>
+          <a id="panelGroupMessage" class="panel-field" style="display:block;margin-top:12px;text-align:center;color:#5145c6;font-weight:700" href="/director/compose" target="_blank" rel="noopener">Message class parents ↗</a>
+          <small>Opens a draft with this lesson's saved families selected.</small>
         </div>
         <div class="panel-section"><h3>Attendance</h3><div class="att-row">
           <button class="att-btn" data-status="present" onclick="setPanelStatus('present')">Present</button>
@@ -9921,6 +9923,8 @@ def calendar():
       const groupNameInput = document.getElementById('panelGroupName');
       const rosterBox = document.getElementById('panelGroupRoster');
       if (section) section.classList.toggle('show', isGroup);
+      const messageLink = document.getElementById('panelGroupMessage');
+      if (messageLink && isGroup) messageLink.href = '/director/compose?group_schedule_id=' + encodeURIComponent(lesson.id);
       if (!groupNameInput || !rosterBox) return;
       groupNameInput.value = isGroup ? (lesson.group_name || '') : '';
       groupNameInput.oninput = () => {{
