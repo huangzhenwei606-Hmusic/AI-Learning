@@ -14,8 +14,8 @@ class ParentComposerTests(unittest.TestCase):
         path=str(Path(self.tmp.name)/'test.db')
         connect=lambda _:sqlite3.connect(path)
         with closing(connect('')) as c:
-            c.executescript('''CREATE TABLE schedule(id,student_name,teacher,lesson_date,lesson_time,is_group);
-                INSERT INTO schedule VALUES(1,'Daniel','Jason','2026-11-16','16:15',0),(2,'Group','Jason','2026-11-17','16:00',1);
+            c.executescript('''CREATE TABLE schedule(id,student_name,teacher,lesson_date,lesson_time,is_group,duration,location,classroom);
+                INSERT INTO schedule VALUES(1,'Daniel','Jason','2026-11-16','16:15',0,30,'Main studio','Room 3'),(2,'Group','Jason','2026-11-17','16:00',1,60,'Main studio','Room 2');
                 CREATE TABLE parent_profiles(id,parent_name,email,phone,active);
                 INSERT INTO parent_profiles VALUES(1,'Parent','parent@example.test','123',1),(2,'Other','other@example.test','456',1);
                 CREATE TABLE parent_students(parent_id,student_name,active);
@@ -37,7 +37,7 @@ class ParentComposerTests(unittest.TestCase):
         return self.client.post('/api/calendar-parent-message/1',json=dict(parent_id=1,student='Daniel',body='Hello parent',channels=['email'],token='a'*32,**kw))
     def test_context_and_read_do_not_send_or_link(self):
         d=self.client.get('/api/calendar-parent-message/1').json
-        self.assertEqual([p['id'] for p in d['parents']],[1]);self.assertEqual(self.calls,[])
+        self.assertEqual(d['lesson']['display_time'],'04:15 PM–04:45 PM PST');self.assertEqual(d['lesson']['room'],'Room 3');self.assertEqual([p['id'] for p in d['parents']],[1]);self.assertEqual(self.calls,[])
         self.assertIn(b'calendar_parent_message.js',self.client.get('/calendar').data)
         self.assertEqual([p['id'] for p in self.client.get('/api/calendar-parent-message/2').json['parents']],[1])
     def test_send_parent_only_selected_channels_and_duplicate(self):
