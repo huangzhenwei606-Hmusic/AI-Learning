@@ -281,7 +281,7 @@ def resolve_profile(cur,a,student_choice,ss,api):
     return sid,name,pid
 
 
-def approve(cur, aid, student_choice, api, billing=None):
+def approve(cur, aid, student_choice, api, billing=None, defer_invoice=False):
     cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
     a = one(cur)
     if not a:
@@ -290,28 +290,44 @@ def approve(cur, aid, student_choice, api, billing=None):
     cur.execute('SELECT * FROM group_applications WHERE id=?', (aid,))
     a = one(cur)
     o = get_offering(cur, a['offering_id'])
-    if a['status'] == 'enrolled':
+    if a['status'] == 'enrolled' and (defer_invoice or a['invoice_id']):
         return
-    if a['status'] not in ACTIVE:
+    if a['status'] not in ACTIVE and a['status'] != 'enrolled':
         raise ValueError('This application is closed.')
-    ss = valid_sessions(cur, o)
-    if occupied(cur, o['id'], aid) >= o['capacity']:
+    # An admitted student can be invoiced later, including after term starts.
+    ss = o['sessions'] if a['status'] == 'enrolled' else valid_sessions(cur, o)
+    if not ss:
+        raise ValueError('Class sessions are missing. Review the class before billing.')
+    if a['status'] != 'enrolled' and occupied(cur, o['id'], aid) >= o['capacity']:
         raise ValueError('This class is full. Keep this student on the waitlist.')
     if a['invoice_id']:
+        if defer_invoice:
+            raise ValueError('This application already has an invoice. Review it in Billing.')
         cur.execute("UPDATE group_applications SET status='reserved',reserved_until=?,updated_at=? WHERE id=?",
                     ((datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(), now(), aid))
         return
-    sid,name,pid=resolve_profile(cur,a,student_choice,ss,api)
-    # Never reuse or overwrite another course wallet, or pre-grant its credits.
     o['tuition_cents']=billing['amount_cents'] if billing else application_tuition(a)
-    per_lesson = o['tuition_cents']/100/len(ss)
-    cur.execute('''INSERT INTO enrollments(student_name,course_type_id,course_type_name,teacher_name,
-        duration,student_billing_method,base_price,final_price,lessons_left,status,notes,
-        package_amount,package_lessons,auto_renew_enabled,start_date,created_at,updated_at)
-        VALUES (?,?,?,?,?,'Per Lesson',?,?,0,'pending',?,?,?,0,?,?,?)''',
-        (name, ss[0]['course_type_id'], ss[0]['course_type_name'], ss[0]['teacher'],ss[0]['duration'],
-         per_lesson,per_lesson,f"Group enrollment #{aid}: {o['title']}",o['tuition_cents']/100,len(ss),ss[0]['lesson_date'],now(),now()))
-    eid = cur.lastrowid
+    if a['enrollment_id'] and a['student_id']:
+        sid,name,eid=a['student_id'],a['student_name'],a['enrollment_id']
+        if billing:
+            cur.execute('UPDATE enrollments SET base_price=?,final_price=?,package_amount=?,package_lessons=?,updated_at=? WHERE id=?',
+                (o['tuition_cents']/100/len(ss),o['tuition_cents']/100/len(ss),o['tuition_cents']/100,len(ss),now(),eid))
+    else:
+        sid,name,pid=resolve_profile(cur,a,student_choice,ss,api)
+        # Create a course-specific wallet without granting prepaid credits.
+        per_lesson = o['tuition_cents']/100/len(ss)
+        cur.execute('''INSERT INTO enrollments(student_name,course_type_id,course_type_name,teacher_name,
+            duration,student_billing_method,base_price,final_price,lessons_left,status,notes,
+            package_amount,package_lessons,auto_renew_enabled,start_date,created_at,updated_at)
+            VALUES (?,?,?,?,?,'Per Lesson',?,?,0,'pending',?,?,?,0,?,?,?)''',
+            (name, ss[0]['course_type_id'], ss[0]['course_type_name'], ss[0]['teacher'],ss[0]['duration'],
+             per_lesson,per_lesson,f"Group enrollment #{aid}: {o['title']}",o['tuition_cents']/100,len(ss),ss[0]['lesson_date'],now(),now()))
+        eid = cur.lastrowid
+    if defer_invoice:
+        cur.execute('UPDATE group_applications SET student_id=?,student_name=?,enrollment_id=?,reserved_until=NULL,updated_at=? WHERE id=?',(sid,name,eid,now(),aid))
+        a.update(student_id=sid,student_name=name,enrollment_id=eid)
+        finish_enrollment(cur,a,o,ss)
+        return
     invoice = api['create_enrollment_invoice'](cur, eid, 'initial_tuition',
                   f"Group class: {o['title']} | Application #{aid} | {len(ss)} lessons", grant_credit_on_payment=True, attach_pending_charges=False)
     cur.execute("""UPDATE invoices SET coverage_title=?,coverage_class=?,coverage_start=?,coverage_note=? WHERE id=?""",
@@ -321,8 +337,8 @@ def approve(cur, aid, student_choice, api, billing=None):
              +"\n"+(o['program']['summary'] if o['program'] else o['description']),invoice))
     if billing:
         cur.execute('UPDATE invoices SET coverage_note=coverage_note || ? WHERE id=?',('\n'+billing['description']+'\n'+billing.get('deposit_note',''),invoice))
-    cur.execute("UPDATE group_applications SET student_id=?,student_name=?,enrollment_id=?,invoice_id=?,status='reserved',reserved_until=?,updated_at=? WHERE id=?",
-        (sid,name,eid,invoice,(datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(),now(),aid))
+    cur.execute("UPDATE group_applications SET student_id=?,student_name=?,enrollment_id=?,invoice_id=?,status=?,reserved_until=?,updated_at=? WHERE id=?",
+        (sid,name,eid,invoice,'enrolled' if a['status']=='enrolled' else 'reserved',None if a['status']=='enrolled' else (datetime.fromisoformat(now())+timedelta(hours=48)).isoformat(),now(),aid))
 
 
 def confirm(cur, aid):
@@ -342,6 +358,11 @@ def confirm(cur, aid):
     o['tuition_cents']=application_tuition(a)
     if occupied(cur, o['id'], aid) >= o['capacity']:
         raise ValueError('Class is full. Review this paid application before admission.')
+    finish_enrollment(cur,a,o,ss)
+
+
+def finish_enrollment(cur,a,o,ss):
+    """Join the roster without creating invoices, payments, credits or messages."""
     cur.execute("UPDATE enrollments SET status='active',updated_at=? WHERE id=?", (now(), a['enrollment_id']))
     for s in ss:
         # Materialize a legacy roster only when it has no structured rows yet.
@@ -367,7 +388,7 @@ def confirm(cur, aid):
         names = [r[0] for r in cur.fetchall()]
         cur.execute('UPDATE schedule SET group_student_names=?,group_size=?,owner_calendar_updated_at=? WHERE id=?',
                     (', '.join(names),len(names),now(),s['id']))
-    cur.execute("UPDATE group_applications SET status='enrolled',updated_at=? WHERE id=?", (now(),aid))
+    cur.execute("UPDATE group_applications SET status='enrolled',updated_at=? WHERE id=?", (now(),a['id']))
     if a['inquiry_id']:
         cur.execute("UPDATE inquiries SET status='Active',converted_student_name=?,converted_enrollment_id=?,updated_at=? WHERE id=?",
                     (a['student_name'],a['enrollment_id'],now(),a['inquiry_id']))
@@ -906,6 +927,7 @@ def register_group_enrollment(app, api):
                 with db(write=True) as conn:
                     cur=conn.cursor();aid=int(request.form.get('id','0'));action=request.form.get('action')
                     if action=='approve':approve(cur,aid,request.form.get('student_id'),api)
+                    elif action=='approve_later':approve(cur,aid,request.form.get('student_id'),api,defer_invoice=True)
                     elif action=='confirm':confirm(cur,aid)
                     elif action in ('waitlist','cancel'):
                         cur.execute('SELECT * FROM group_applications WHERE id=?',(aid,));a=one(cur)
