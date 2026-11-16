@@ -10,7 +10,7 @@ import re
 import threading
 from urllib.parse import urlsplit
 
-from school_audience import family_catalog, rule_from_form, select_ids, render_controls, STYLE as AUDIENCE_STYLE
+from school_audience import records, lesson_roster, family_catalog, rule_from_form, select_ids, render_controls, STYLE as AUDIENCE_STYLE
 
 from flask import abort, redirect, request, session, Response, send_from_directory, send_file
 
@@ -460,7 +460,9 @@ def register_director_portal(app, api):
                 if not lesson or not lesson[2]:
                     abort(404, 'Group lesson not found.')
                 members = conn.execute('SELECT student_name FROM group_schedule_students WHERE schedule_id=?', (int(source),)).fetchall()
-                names = {str(member[0]).strip().casefold() for member in members}
+                saved = next((row for row in records(conn,'schedule') if row.get('id')==int(source)), {})
+                known = {str(row['name']).strip().casefold() for row in records(conn,'students')}
+                names = {name.casefold() for name in lesson_roster(saved,[member[0] for member in members],known)}
                 selected = set()
                 for parent_id, student_name in conn.execute('SELECT parent_id, student_name FROM parent_students WHERE COALESCE(active,1)=1').fetchall():
                     if str(student_name).strip().casefold() in names:
