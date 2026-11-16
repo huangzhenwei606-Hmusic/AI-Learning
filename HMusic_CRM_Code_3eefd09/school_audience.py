@@ -36,6 +36,23 @@ def lesson_roster(lesson, structured_names, known_students):
     return [name] if name.casefold() in known_students else []
 
 
+def approved_class_families(conn):
+    """Resolve reviewed applications only through existing authorized family links."""
+    required={'group_applications','group_offerings','group_offering_sessions'}
+    if not all(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() for name in sorted(required)):
+        return []
+    rows=conn.execute("""SELECT DISTINCT pp.id,o.title,os.schedule_id
+        FROM group_applications a
+        JOIN students s ON s.id=a.student_id
+        JOIN group_offerings o ON o.id=a.offering_id
+        JOIN group_offering_sessions os ON os.offering_id=o.id
+        JOIN parent_profiles pp ON lower(trim(pp.email))=lower(trim(a.email))
+        JOIN parent_students ps ON ps.parent_id=pp.id AND lower(trim(ps.student_name))=lower(trim(s.name))
+        WHERE a.status IN ('reserved','enrolled')
+        AND COALESCE(pp.active,1)=1 AND COALESCE(ps.active,1)=1""").fetchall()
+    return [dict(parent_id=row[0],title=row[1],schedule_id=row[2]) for row in rows]
+
+
 def family_catalog(conn, today=None, email_check=None):
     today=today or datetime.now(ZoneInfo('America/Los_Angeles')).date()
     month=today.year*12+today.month-1-4
@@ -60,10 +77,16 @@ def family_catalog(conn, today=None, email_check=None):
     links=defaultdict(set)
     for link in records(conn,'parent_students'):
         if link.get('active',1):links[link['parent_id']].add(str(link['student_name']).strip().casefold())
+    applications=approved_class_families(conn)
+    approved_courses=defaultdict(set)
+    for application in applications:
+        label='Class: '+str(application['title']).strip()
+        course_options.add(label)
+        approved_courses[application['parent_id']].add(label)
     families=[]
     for parent in records(conn,'parent_profiles'):
         if not parent.get('active',1):continue
-        children=[];teachers=set();courses=set();last=None;upcoming=None
+        children=[];teachers=set();courses=set(approved_courses[parent['id']]);last=None;upcoming=None
         for key in sorted(links[parent['id']]):
             student=students.get(key)
             name=student['name'] if student else key
@@ -135,7 +158,7 @@ def render_controls(catalog,rule=None,message=True,email=False):
     <p class="muted">Current means at least one child attended within 4 calendar months or has an upcoming lesson. Paused children are excluded from current families. Missing history needs review.</p>
     <div class="audience-layout"><div class="scope-options">{cards}</div><div class="audience-picker">
     <div data-teacher-panel hidden><strong>Choose teachers</strong><div class="filter-options">{options('teachers','audience_teachers')}</div></div>
-    <div data-course-panel hidden><strong>Choose courses / classes</strong><p class="muted">Includes past and upcoming classes. Recipients follow saved student rosters, including legacy rosters. A class with no linked family accounts selects 0 families.</p><div class="filter-options">{options('courses','audience_courses')}</div></div>
+    <div data-course-panel hidden><strong>Choose courses / classes</strong><p class="muted">Includes past and upcoming classes. Recipients follow saved student rosters and reviewed class applications linked to existing family accounts. A class with no linked family accounts selects 0 families.</p><div class="filter-options">{options('courses','audience_courses')}</div></div>
     <label>Search parent or student<input type="search" data-family-search placeholder="Search parent or student name"></label>
     <div class="family-list" data-family-list></div>
     <details><summary>Exclude families</summary><label>Search exclusions<input type="search" data-exclude-search placeholder="Search families to exclude"></label><div class="family-list exclusions" data-exclude-list></div></details>

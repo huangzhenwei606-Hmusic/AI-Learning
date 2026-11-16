@@ -54,3 +54,36 @@ class GroupMessageTest(DirectorPortalTest):
         import re
         data=json.loads(re.search(r'data-audience-data>(.*?)</script>',html,re.S).group(1))
         self.assertEqual(data['rule']['selected'],[1,2])
+
+    def test_reviewed_application_selects_existing_link_without_calendar_roster(self):
+        self.prepare_group();self.login('owner','owner')
+        with closing(sqlite3.connect(self.path)) as db:
+            db.executescript("""
+                ALTER TABLE students ADD COLUMN id INTEGER;
+                UPDATE students SET id=1 WHERE name='Student One';
+                UPDATE students SET id=2 WHERE name='Student Two';
+                ALTER TABLE parent_profiles ADD COLUMN email TEXT;
+                UPDATE parent_profiles SET email='one@school.test' WHERE id=1;
+                UPDATE parent_profiles SET email='two@school.test' WHERE id=2;
+                CREATE TABLE group_offerings(id,title);
+                CREATE TABLE group_offering_sessions(offering_id,schedule_id);
+                CREATE TABLE group_applications(id,offering_id,student_id,email,status);
+                INSERT INTO group_offerings VALUES(1,'Reviewed class');
+                INSERT INTO group_offering_sessions VALUES(1,91);
+                DELETE FROM group_schedule_students;
+                INSERT INTO group_applications VALUES(1,1,1,'one@school.test','reserved');
+                INSERT INTO group_applications VALUES(2,1,2,'two@school.test','review');
+            """)
+            db.commit()
+        import re
+        def selected():
+            response=self.client.get('/director/compose?group_schedule_id=91')
+            self.assertEqual(response.status_code,200)
+            data=json.loads(re.search(r'data-audience-data>(.*?)</script>',response.get_data(as_text=True),re.S).group(1))
+            if data['rule']['selected']:
+                self.assertIn('Class: Reviewed class',data['families'][0]['courses'])
+            return data['rule']['selected']
+        self.assertEqual(selected(),[1])
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('UPDATE parent_students SET active=0 WHERE parent_id=1');db.commit()
+        self.assertEqual(selected(),[])
