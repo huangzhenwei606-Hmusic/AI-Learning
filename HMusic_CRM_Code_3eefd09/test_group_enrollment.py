@@ -157,6 +157,53 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM group_bulk_deliveries WHERE status='blocked'"),1)
         self.assertIn(b'Guardian cannot pay',self.client.get(r.location).data)
 
+    def test_approve_later_joins_roster_without_invoice_or_credits(self):
+        self.apply()
+        self.conn.execute("UPDATE schedule SET group_student_names='Existing' WHERE id IN (1,2)")
+        self.conn.commit()
+        r=self.client.post('/group-enrollments',data={'id':1,'action':'approve_later','student_id':'new'})
+        self.assertEqual(r.status_code,303)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),1)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM parent_students'),1)
+        self.assertEqual(self.scalar('SELECT lessons_left FROM enrollments'),0)
+        self.assertEqual(self.scalar('SELECT status FROM group_applications'),'enrolled')
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM group_schedule_students WHERE student_name='Child'"),2)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM group_schedule_students WHERE student_name='Existing'"),2)
+        self.client.post('/group-enrollments',data={'id':1,'action':'approve_later','student_id':'new'})
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM enrollments'),1)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM group_schedule_students WHERE student_name='Child'"),2)
+        page=self.client.get('/group-enrollments').data
+        self.assertIn(b'Create invoice',page)
+        self.assertNotIn('批准并建档'.encode(),page)
+        # The second seat is already occupied. Later billing must still work.
+        self.conn.execute("UPDATE schedule SET lesson_date='2020-01-01'")
+        self.conn.commit()
+        self.approve()
+        self.approve()
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),1)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM enrollments'),1)
+        self.assertEqual(self.scalar('SELECT status FROM group_applications'),'enrolled')
+        self.assertEqual(self.scalar('SELECT lessons_left FROM enrollments'),0)
+
+    def test_approve_later_full_class_rolls_back_profile_and_invoice(self):
+        self.apply()
+        self.conn.execute("UPDATE schedule SET group_student_names='Existing,Another'")
+        self.conn.commit()
+        r=self.client.post('/group-enrollments',data={'id':1,'action':'approve_later','student_id':'new'})
+        self.assertIn(b'class is full',r.data)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM students'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM invoices'),0)
+        self.assertEqual(self.scalar('SELECT COUNT(*) FROM enrollments'),0)
+
+    def test_approve_later_rejects_existing_invoice_and_requires_owner(self):
+        self.apply();self.approve()
+        r=self.client.post('/group-enrollments',data={'id':1,'action':'approve_later'})
+        self.assertIn(b'already has an invoice',r.data)
+        self.assertEqual(self.scalar('SELECT status FROM group_applications'),'reserved')
+        with self.client.session_transaction() as session:session['user_role']='teacher'
+        self.assertEqual(self.client.post('/group-enrollments',data={'id':1,'action':'approve_later'}).status_code,403)
+
     def tearDown(self):self.conn.close();self.tmp.cleanup()
     def scalar(self,q,args=()):return self.conn.execute(q,args).fetchone()[0]
     def create_class(self,**kw):
