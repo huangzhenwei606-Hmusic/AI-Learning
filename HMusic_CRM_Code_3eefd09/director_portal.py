@@ -10,7 +10,7 @@ import re
 import threading
 from urllib.parse import urlsplit
 
-from school_audience import records, lesson_roster, family_catalog, rule_from_form, select_ids, render_controls, STYLE as AUDIENCE_STYLE
+from school_audience import approved_class_families, records, lesson_roster, family_catalog, rule_from_form, select_ids, render_controls, STYLE as AUDIENCE_STYLE
 
 from flask import abort, redirect, request, session, Response, send_from_directory, send_file
 
@@ -467,9 +467,10 @@ def register_director_portal(app, api):
                 for parent_id, student_name in conn.execute('SELECT parent_id, student_name FROM parent_students WHERE COALESCE(active,1)=1').fetchall():
                     if str(student_name).strip().casefold() in names:
                         selected.add(parent_id)
+                selected.update(application['parent_id'] for application in approved_class_families(conn) if application['schedule_id']==int(source))
                 eligible = {family['id'] for family in catalog(conn)}
                 rule = dict(mode='selected', selected=sorted(selected & eligible), exclude=[], teachers=[], courses=[])
-                group_context = '<p><strong>Message this class:</strong> ' + escape(str(lesson[0] or 'Group lesson')) + ' · ' + escape(str(lesson[1])) + '</p><p>Families are selected from this saved lesson roster, including completed classes. Review the recipient list before sending. Save any roster changes in the calendar first.</p>'
+                group_context = '<p><strong>Message this class:</strong> ' + escape(str(lesson[0] or 'Group lesson')) + ' · ' + escape(str(lesson[1])) + '</p><p>Families are selected from the saved lesson roster and reviewed class applications linked to existing family accounts. Review the recipient list before sending. Save any roster changes in the calendar first.</p>'
                 if not rule['selected']:
                     group_context += '<p role="alert">No linked active family accounts were found. Select the families below before continuing.</p>'
             recipients_html=recipient_controls(conn,rule=rule)
