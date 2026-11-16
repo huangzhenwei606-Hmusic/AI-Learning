@@ -10135,7 +10135,7 @@ def calendar():
         setTimeout(() => location.reload(), 800);
       }}).catch(e => alert(e.message));
     }}
-    function ownerMessageParent() {{ if (activePanelLesson) window.location.href = '/messages?student=' + encodeURIComponent(activePanelLesson.student || ''); }}
+    function ownerMessageParent() {{ if (activePanelLesson) HMusicParentMessage.open(activePanelLesson.id,document.activeElement); }}
     function ownerViewStudent() {{ if (activePanelLesson) window.location.href = '/student/' + encodeURIComponent(activePanelLesson.student || ''); }}
     function ownerRenewPackage() {{ if (activePanelLesson) window.location.href = '/payment/' + encodeURIComponent(activePanelLesson.student || ''); }}
 
@@ -50412,6 +50412,8 @@ register_trial_enrollment(app, app.extensions["studio_operations"], globals())
 
 from calendar_sms import register_calendar_sms
 register_calendar_sms(app, globals())
+from calendar_parent_message import register_calendar_parent_message
+register_calendar_parent_message(app, globals())
 
 
 from teacher_work_reminders import register_teacher_work_reminders
