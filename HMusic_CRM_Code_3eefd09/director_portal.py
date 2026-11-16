@@ -280,8 +280,7 @@ def register_director_portal(app, api):
         row=conn.execute('SELECT message_requested FROM school_post_message_channels WHERE post_id=?',(post_id,)).fetchone()
         return bool(row[0]) if row else True
 
-    def recipient_controls(conn,row=None):
-        rule=None
+    def recipient_controls(conn,row=None,rule=None):
         if row:
             stored=conn.execute('SELECT rule_json FROM school_audience_rules WHERE post_id=?',(row[0],)).fetchone()
             rule=json.loads(stored[0]) if stored else dict(mode='selected',selected=json.loads(row[9]),exclude=[],teachers=[],courses=[])
@@ -449,9 +448,30 @@ def register_director_portal(app, api):
                 save_audience(conn,post_id)
                 audit(conn,'draft',post_id)
             return redirect(f'/director/posts/{post_id}')
+        group_context = ''
         with db() as conn:
-            recipients_html=recipient_controls(conn)
-        return page('Compose school update', f'''<section><form method="POST" enctype="multipart/form-data">
+            rule = None
+            source = request.args.get('group_schedule_id')
+            if source is not None:
+                authorize('broadcast')
+                if not source.isdigit():
+                    abort(400, 'Invalid group lesson.')
+                lesson = conn.execute('SELECT group_name, lesson_date, is_group FROM schedule WHERE id=?', (int(source),)).fetchone()
+                if not lesson or not lesson[2]:
+                    abort(404, 'Group lesson not found.')
+                members = conn.execute('SELECT student_name FROM group_schedule_students WHERE schedule_id=?', (int(source),)).fetchall()
+                names = {str(member[0]).strip().casefold() for member in members}
+                selected = set()
+                for parent_id, student_name in conn.execute('SELECT parent_id, student_name FROM parent_students WHERE COALESCE(active,1)=1').fetchall():
+                    if str(student_name).strip().casefold() in names:
+                        selected.add(parent_id)
+                eligible = {family['id'] for family in catalog(conn)}
+                rule = dict(mode='selected', selected=sorted(selected & eligible), exclude=[], teachers=[], courses=[])
+                group_context = '<p><strong>Message this class:</strong> ' + escape(str(lesson[0] or 'Group lesson')) + ' · ' + escape(str(lesson[1])) + '</p><p>Families are selected from this saved lesson roster, including completed classes. Review the recipient list before sending. Save any roster changes in the calendar first.</p>'
+                if not rule['selected']:
+                    group_context += '<p role="alert">No linked active family accounts were found. Select the families below before continuing.</p>'
+            recipients_html=recipient_controls(conn,rule=rule)
+        return page('Compose school update', f'''<section>{group_context}<form method="POST" enctype="multipart/form-data">
         <label>Type<select name="kind"><option value="message">School message</option><option value="course">Course</option><option value="new_class">New class</option><option value="event">Event</option></select></label>
         <label>Title<input name="title" maxlength="200" required></label><label>Message<textarea name="body" maxlength="20000" required></textarea></label>
         {upload_controls()}
