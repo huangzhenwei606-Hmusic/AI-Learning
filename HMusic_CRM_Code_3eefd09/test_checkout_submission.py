@@ -95,6 +95,26 @@ class CheckoutSubmissionTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT status FROM invoices').fetchone()[0],'payment_processing')
         self.scope['finalize_stripe_invoice_payment'].assert_not_called()
 
+    def test_customer_action_is_warned_without_releasing_or_crediting(self):
+        obj = self.provider.checkout.Session.retrieve.return_value
+        obj['status'] = 'complete'
+        obj['payment_intent'] = 'pi_action'
+        self.provider.PaymentIntent.retrieve.return_value = {'status': 'requires_action'}
+        self.assertEqual(self.scope['sync_stripe_invoice_payment'](1), 'action_required')
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(db.execute('SELECT status FROM invoice_allocations').fetchone()[0], 'processing')
+        self.scope['finalize_stripe_invoice_payment'].assert_not_called()
+        self.scope['mark_stripe_invoice_payment_failed'].assert_not_called()
+
+    def test_guest_checkout_action_is_not_reported_as_bank_processing(self):
+        obj = self.provider.checkout.Session.retrieve.return_value
+        obj['status'] = 'complete'
+        obj['metadata']['quick_pay'] = 'guest-digest'
+        self.scope['sync_quick_pay_checkout'].return_value = 'processing'
+        self.provider.PaymentIntent.retrieve.return_value = {'status': 'requires_action'}
+        self.assertEqual(self.scope['sync_stripe_invoice_payment'](1), 'action_required')
+        self.scope['finalize_stripe_invoice_payment'].assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

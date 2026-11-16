@@ -18816,6 +18816,9 @@ def invoices():
     WHERE status = 'processing' AND payment_method = 'Stripe ACH'
     """)
     ach_processing_invoice_ids = {row[0] for row in cursor.fetchall()}
+    cursor.execute("""SELECT invoice_id, stripe_checkout_session_id, stripe_payment_intent_id
+        FROM invoice_allocations WHERE status = 'processing' AND payment_method = 'Stripe ACH' ORDER BY id""")
+    ach_payment_targets = cursor.fetchall()
 
     for column_name, column_sql in (
         ("payment_reminder_sent_at", "payment_reminder_sent_at TEXT"),
@@ -18889,6 +18892,10 @@ def invoices():
     conn.commit()
     conn.close()
 
+    from stripe_owner_status import owner_payment_states, owner_status_label
+    visible_invoice_ids = {row[0] for row in invoice_rows}
+    ach_live_states = owner_payment_states(stripe if configure_stripe() else None,
+        [target for target in ach_payment_targets if target[0] in visible_invoice_ids])
     summary = {row[0]: {"count": row[1], "amount": row[2]} for row in summary_rows}
     open_statuses = ("unpaid", "payment_failed", "payment_processing", "stripe_processing", "square_processing", "pending_confirmation")
     open_count = sum(summary.get(status, {}).get("count", 0) for status in open_statuses)
@@ -18962,6 +18969,9 @@ def invoices():
         payment_sync_labels = {
             "paid": "Stripe confirmed the payment. The invoice is now paid.",
             "failed": "Stripe confirmed the payment failed. The parent can retry from the invoice now.",
+            "action_required": "Action required: customer verification or confirmation is pending. Payment is not confirmed; do not start a second payment.",
+            "requires_capture": "Payment requires capture. Owner review is required.",
+            "unknown": "Payment status is unverified. Review the original Stripe payment.",
             "processing": "Stripe confirms the ACH transfer is still processing. Do not ask the parent to pay again yet.",
             "unpaid": "Stripe confirms no ACH payment was submitted. The invoice was restored to unpaid.",
             "missing": "Invoice not found.",
@@ -19001,7 +19011,8 @@ def invoices():
                 if parent_id else '<div class="email-warning">No parent profile linked</div>'
             )
         )
-        status_safe = escape(status_label(status))
+        status_safe = escape(owner_status_label(ach_live_states[invoice_id])
+                             if invoice_id in ach_live_states else status_label(status))
         type_safe = escape(type_label(invoice_type))
         action_html = (
             f'<a class="row-action" href="/edit_invoice/{invoice_id}">Edit</a>'
@@ -19014,7 +19025,7 @@ def invoices():
             <form class="inline-action-form" method="POST" action="/sync_invoice_payment/{invoice_id}">
                 <button class="row-action reminder" type="submit">Check payment status</button>
             </form>
-            <span class="paid-text">ACH in transit</span>
+            <span class="notice warn">{escape(owner_status_label(ach_live_states.get(invoice_id, 'unknown')))}</span>
             <a class="row-action" href="/parent_invoice/{invoice_id}">Review</a>
             """
         elif status == "pending_confirmation":
@@ -27467,7 +27478,12 @@ def sync_stripe_invoice_payment(invoice_id):
                         or (allocation_id and str(metadata.get("allocation_id")) != str(allocation_id))
                         or (parent_id and str(metadata.get("parent_id")) != str(parent_id))):
                     raise ValueError("Quick checkout does not match this invoice share")
-                results.append(sync_quick_pay_checkout(checkout_session))
+                quick_result = sync_quick_pay_checkout(checkout_session)
+                if quick_result == "processing":
+                    from stripe_owner_status import owner_payment_states, sync_outcome
+                    live_state = owner_payment_states(stripe, [(invoice_id, checkout_session_id, payment_intent_id)])
+                    quick_result = sync_outcome(live_state.get(invoice_id, "unknown"))
+                results.append(quick_result)
                 continue
 
             if checkout_session and checkout_session.get("payment_status") == "paid":
@@ -27565,11 +27581,16 @@ def sync_stripe_invoice_payment(invoice_id):
             """, (payment_intent_id, f"processing: {stripe_status}", invoice_id))
             conn.commit()
             conn.close()
-            results.append("processing")
+            results.append("processing" if stripe_status == "processing" else
+                           "action_required" if stripe_status in ("requires_action", "requires_confirmation") else
+                           "requires_capture" if stripe_status == "requires_capture" else "unknown")
     except Exception:
         app.logger.exception("Stripe status check failed for invoice %s", invoice_id)
         return "error"
 
+    for attention_state in ("action_required", "requires_capture", "unknown"):
+        if attention_state in results:
+            return attention_state
     if "processing" in results:
         return "processing"
     if "failed" in results:
