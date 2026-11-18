@@ -9670,6 +9670,14 @@ def calendar():
           <h3>Group</h3>
           <label><span class="detail-label">Group name</span><input class="panel-field owner-group-name" id="panelGroupName" placeholder="Group name"></label>
           <div class="owner-group-list" id="panelGroupRoster"></div>
+          <button type="button" class="panel-field" style="margin-top:12px;color:#5145c6;font-weight:700" onclick="document.getElementById('panelGroupAddFields').hidden=false;document.getElementById('panelGroupAddStudent').focus()">+ Add student / 添加学生</button>
+          <div id="panelGroupAddFields" hidden style="margin-top:10px">
+            <label><span class="detail-label">Existing student</span><input id="panelGroupAddStudent" class="panel-field student-picker-compact" list="popStudentList" placeholder="Search student or parent" autocomplete="off"></label>
+            <label><span class="detail-label">Apply to</span><select id="panelGroupAddScope" class="panel-field"><option value="once">This lesson only / 仅这节课</option><option value="following">This and following lessons / 这节及后续课程</option></select></label>
+            <small>New students start as Scheduled. Click below to save the addition.</small>
+            <button id="panelGroupAddConfirm" type="button" class="panel-field" onclick="ownerAddGroupStudent()">Add to class / 确认添加</button>
+            <p id="panelGroupAddResult" role="status" aria-live="polite"></p>
+          </div>
           <a id="panelGroupMessage" class="panel-field" style="display:block;margin-top:12px;text-align:center;color:#5145c6;font-weight:700" href="/director/compose" target="_blank" rel="noopener">Message class parents ↗</a>
           <small>Opens a draft with this lesson's saved families selected.</small>
         </div>
@@ -9919,6 +9927,10 @@ def calendar():
     }}
     function renderOwnerGroupSection(lesson) {{
       const isGroup = !!(lesson && Number(lesson.is_group || 0));
+      document.getElementById('panelGroupAddFields').hidden=true;
+      document.getElementById('panelGroupAddStudent').value='';
+      document.getElementById('panelGroupAddScope').value='once';
+      document.getElementById('panelGroupAddResult').textContent='';
       const section = document.getElementById('panelGroupSection');
       const groupNameInput = document.getElementById('panelGroupName');
       const rosterBox = document.getElementById('panelGroupRoster');
@@ -9964,6 +9976,26 @@ def calendar():
         row.appendChild(tag);
         rosterBox.appendChild(row);
       }});
+    }}
+    let ownerGroupAddBusy=false;
+    async function ownerAddGroupStudent() {{
+      if (!activePanelLesson || ownerGroupAddBusy || ownerPanelSaving) return;
+      const result=document.getElementById('panelGroupAddResult');
+      const original=activePanelLesson.group_students || [];
+      const attendanceChanged=collectOwnerGroupAttendance().some(item=>{{const prior=original.find(x=>x.student_name===item.student_name);return prior && (prior.attendance_status || 'scheduled')!==item.attendance_status;}});
+      if (panelDetailsChanged() || panelRemindersChanged() || attendanceChanged || activePanelStatus!==activePanelLesson.status || document.getElementById('panelLessonNote').value!==(activePanelLesson.lesson_note || '') || document.getElementById('panelHomework').value!==(activePanelLesson.homework || '')) {{
+        result.textContent='Save or discard your other lesson changes before adding a student.';return;
+      }}
+      const name=document.getElementById('panelGroupAddStudent').value.trim();
+      if (!name) {{result.textContent='Choose an existing student.';return;}}
+      const sid=activePanelLesson.id,button=document.getElementById('panelGroupAddConfirm');
+      ownerGroupAddBusy=true;button.disabled=true;result.textContent='Adding...';
+      try {{
+        const response=await fetch('/api/calendar-group-roster/'+encodeURIComponent(sid)+'/add',{{method:'POST',headers:{{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':window.HMUSIC_CSRF_TOKEN || ''}},body:JSON.stringify({{student_name:name,scope:document.getElementById('panelGroupAddScope').value}})}});
+        const data=await response.json();if(!response.ok || !data.ok) throw new Error(data.error || 'Could not add student.');
+        if (activePanelLesson && activePanelLesson.id===sid) {{openLessonPanel(sid);showPanelToast(data.message);}}
+      }} catch(error) {{result.textContent=error.message;}}
+      finally {{ownerGroupAddBusy=false;button.disabled=false;}}
     }}
     function collectOwnerGroupAttendance() {{
       return Array.from(document.querySelectorAll('#panelGroupRoster .owner-group-attendance')).map(select => ({{
@@ -17076,7 +17108,7 @@ def update_calendar_group_lesson(cursor, schedule_ids, group_name=None, attendan
     return updated
 
 
-def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_schedule_id=None):
+def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_schedule_id=None, apply_existing_attendance=True, minimum_students=2):
     if not isinstance(roster_items, list):
         raise ValueError("Group roster must be a list.")
 
@@ -17115,7 +17147,7 @@ def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_sc
 
     if missing:
         raise ValueError("Student not found: " + ", ".join(missing[:5]))
-    if len(normalized) < 2:
+    if len(normalized) < minimum_students:
         raise ValueError("A group lesson must have at least two students.")
 
     target_keys = {hmusic_name_key(item["student_name"]) for item in normalized}
@@ -17201,7 +17233,8 @@ def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_sc
                     now,
                 ))
 
-            hmusic_apply_group_attendance_credit(cursor, schedule_id, item["student_name"], status)
+            if apply_existing_attendance or not existing:
+                hmusic_apply_group_attendance_credit(cursor, schedule_id, item["student_name"], status)
 
         names = [item["student_name"] for item in normalized]
         cursor.execute("""
@@ -50422,3 +50455,6 @@ register_teacher_work_reminders(app, globals())
 
 from teacher_schedule_changes import register_teacher_schedule_changes
 register_teacher_schedule_changes(app, globals())
+
+from owner_group_roster import register_owner_group_roster
+register_owner_group_roster(app, globals())
