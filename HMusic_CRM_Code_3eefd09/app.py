@@ -9670,12 +9670,12 @@ def calendar():
           <h3>Group</h3>
           <label><span class="detail-label">Group name</span><input class="panel-field owner-group-name" id="panelGroupName" placeholder="Group name"></label>
           <div class="owner-group-list" id="panelGroupRoster"></div>
-          <button type="button" class="panel-field" style="margin-top:12px;color:#5145c6;font-weight:700" onclick="document.getElementById('panelGroupAddFields').hidden=false;document.getElementById('panelGroupAddStudent').focus()">+ Add student / 添加学生</button>
+          <button type="button" class="panel-field" style="margin-top:12px;color:#5145c6;font-weight:700" onclick="document.getElementById('panelGroupAddFields').hidden=false;document.getElementById('panelGroupAddStudent').focus()">+ Add student</button>
           <div id="panelGroupAddFields" hidden style="margin-top:10px">
             <label><span class="detail-label">Existing student</span><input id="panelGroupAddStudent" class="panel-field student-picker-compact" list="popStudentList" placeholder="Search student or parent" autocomplete="off"></label>
-            <label><span class="detail-label">Apply to</span><select id="panelGroupAddScope" class="panel-field"><option value="once">This lesson only / 仅这节课</option><option value="following">This and following lessons / 这节及后续课程</option></select></label>
+            <label><span class="detail-label">Apply to</span><select id="panelGroupAddScope" class="panel-field"><option value="once">This lesson only</option><option value="following">This and following lessons</option></select></label>
             <small>New students start as Scheduled. Click below to save the addition.</small>
-            <button id="panelGroupAddConfirm" type="button" class="panel-field" onclick="ownerAddGroupStudent()">Add to class / 确认添加</button>
+            <button id="panelGroupAddConfirm" type="button" class="panel-field" onclick="ownerAddGroupStudent()">Add to class</button>
             <p id="panelGroupAddResult" role="status" aria-live="polite"></p>
           </div>
           <a id="panelGroupMessage" class="panel-field" style="display:block;margin-top:12px;text-align:center;color:#5145c6;font-weight:700" href="/director/compose" target="_blank" rel="noopener">Message class parents ↗</a>
