@@ -58,10 +58,17 @@
   function addButtons() {
     document.querySelectorAll('.ev[data-id]').forEach(card=>{
       if(card.querySelector('.cpm-card'))return;
-      const title=card.querySelector('.lc-title-line') || card.querySelector('.ev-name')?.parentElement;
-      if(!title)return;
-      const b=document.createElement('button');b.type='button';b.className='cpm-card';b.textContent='Parent';b.title='Message parent';b.setAttribute('aria-label','Message parent');
-      b.onclick=e=>{e.preventDefault();e.stopPropagation();open(card.dataset.id,b);};b.onmousedown=e=>e.stopPropagation();title.append(b);
+      const name=card.querySelector('.ev-name');
+      if(!name)return;
+      let title=name.parentElement;
+      if(!title.classList.contains('lc-title-line')) {
+        title=document.createElement('div');title.className='lc-title-line';
+        name.before(title);title.append(name);
+      }
+      title.classList.add('cpm-title-line');
+      const b=document.createElement('button');b.type='button';b.className='cpm-card';b.draggable=false;b.title='Message parent';b.setAttribute('aria-label','Message parent for '+name.textContent.trim());
+      b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="3"/><path d="M2 21v-2a6 6 0 0 1 12 0v2M16 13l-2 2v-4a4 4 0 0 1-2-3V6a3 3 0 0 1 3-3h5a2 2 0 0 1 2 2v4a3 3 0 0 1-3 3h-1l-2 1Z"/></svg>';
+      b.onclick=e=>{e.preventDefault();e.stopPropagation();open(card.dataset.id,b);};b.onmousedown=e=>e.stopPropagation();b.onpointerdown=e=>e.stopPropagation();b.ondragstart=e=>{e.preventDefault();e.stopPropagation();};title.append(b);
     });
   }
   addButtons();new MutationObserver(addButtons).observe(document.querySelector('.calendar-grid') || document.body,{childList:true,subtree:true});
