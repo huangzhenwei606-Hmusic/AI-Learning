@@ -105,6 +105,6 @@ def register_calendar_parent_message(app, api):
         if request.path.startswith('/api/calendar-parent-message/'):
             response.headers['Cache-Control'] = 'no-store'
         if request.endpoint == 'calendar' and response.status_code == 200 and response.mimetype == 'text/html' and api['require_owner']():
-            assets = '<link rel="stylesheet" href="/static/calendar_parent_message.css?v=2"><script defer src="/static/parent_message_templates.js?v=1"></script><script defer src="/static/calendar_parent_message.js?v=2"></script>'
+            assets = '<link rel="stylesheet" href="/static/calendar_parent_message.css?v=3"><script defer src="/static/parent_message_templates.js?v=1"></script><script defer src="/static/calendar_parent_message.js?v=3"></script>'
             response.set_data(response.get_data(as_text=True).replace('</head>', assets + '</head>', 1))
         return response
