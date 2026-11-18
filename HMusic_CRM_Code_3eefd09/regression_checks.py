@@ -167,7 +167,7 @@ CHECKS = {
     "teacher group roster financial redaction": "def teacher_safe_group_roster(group_roster):",
     "teacher status financial redaction": "return teacher_safe_lesson_status_result(result)",
     "teacher group roster permission": '"manage_group_roster": 1',
-    "teacher group roster sync": "def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_schedule_id=None):",
+    "teacher group roster sync": "def sync_calendar_group_roster(cursor, schedule_ids, roster_items, attendance_schedule_id=None, apply_existing_attendance=True, minimum_students=2):",
     "teacher group roster editor": "function teacherAddGroupStudent()",
     "teacher group roster removal": "function teacherRemoveGroupStudent(studentName)",
     "teacher group roster payload": "payload.group_roster = collectTeacherGroupRoster()",
