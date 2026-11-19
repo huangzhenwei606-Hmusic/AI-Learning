@@ -77,6 +77,34 @@ class QuickPayTest(unittest.TestCase):
         self.assertEqual(self.client.get('/p/'+token).status_code,200)
         return token
     def checkout(self,t,method='card'):return self.client.post('/p/'+t+'/checkout',data={'method':method,'fee_consent':'1'})
+    def test_optional_zelle_account_is_saved_and_shared_without_settling(self):
+        self.setup_sms()
+        with self.client.session_transaction() as s:s['owner']=True
+        owner=self.client.get('/owner/invoice/1/quick-pay').text
+        self.assertIn('name="offer_zelle" value="1" checked',owner)
+        result=self.client.post('/owner/invoice/1/quick-pay',data={
+            'action':'create','allocation_id':'3','payment_description':'Ten piano lessons','offer_zelle':'1'})
+        token=re.search(r'https://billing.example.invalid/p/([A-Za-z0-9_-]+)',result.text)[1]
+        self.assertIn('Zelle: 6507977125',result.text)
+        self.assertIn('invoice #1',result.text)
+        guest=self.client.get('/p/'+token).text
+        self.assertIn('Pay by Zelle',guest)
+        self.assertIn('6507977125',guest)
+        self.assertIn('stays unpaid until confirmation',guest)
+        self.send_link(token)
+        self.assertIn('Zelle: 6507977125',self.sms_calls[0][2])
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT status FROM invoices').fetchone()[0],'unpaid')
+            self.assertEqual(c.execute('SELECT lessons_left FROM enrollments').fetchone()[0],0)
+            self.assertEqual(c.execute('SELECT count(*) FROM payments').fetchone()[0],0)
+        with self.client.session_transaction() as s:s.clear()
+        self.client.get('/p/'+token)
+        self.checkout(token,'ach')
+        self.assertNotIn('Pay by Zelle',self.client.get('/p/'+token).text)
+
+    def test_unchecked_zelle_is_not_offered_to_parent(self):
+        token=self.make_link()
+        self.assertNotIn('Pay by Zelle',self.client.get('/p/'+token).text)
     def setup_sms(self):
         self.sms_calls=[]
         self.api.update(sms_config_status=lambda:(True,[]),

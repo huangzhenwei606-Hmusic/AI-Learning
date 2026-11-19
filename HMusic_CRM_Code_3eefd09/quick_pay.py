@@ -8,7 +8,8 @@ from html import escape
 from flask import abort, make_response, redirect, request, session
 
 COLUMNS = ('token_hash invoice_id parent_id allocation_id amount_cents expires_at revoked '
-           'attempt_key attempt_started checkout_id method status invoice_snapshot payment_description coverage_html fee_cents card_rate_bps').split()
+           'attempt_key attempt_started checkout_id method status invoice_snapshot payment_description coverage_html fee_cents card_rate_bps offer_zelle').split()
+ZELLE_ACCOUNT = '6507977125'
 CLOSED = {'paid', 'cancelled', 'canceled', 'void', 'waived', 'pending_owner_approval', 'draft'}
 
 
@@ -29,7 +30,8 @@ def ensure_schema(cur):
     for name, definition in [('payment_description', "TEXT NOT NULL DEFAULT ''"),
                              ('coverage_html', "TEXT NOT NULL DEFAULT ''"),
                              ('fee_cents', 'INTEGER NOT NULL DEFAULT 0'),
-                             ('card_rate_bps', 'INTEGER NOT NULL DEFAULT 0')]:
+                             ('card_rate_bps', 'INTEGER NOT NULL DEFAULT 0'),
+                             ('offer_zelle', 'INTEGER NOT NULL DEFAULT 0')]:
         if name not in existing:
             cur.execute(f'ALTER TABLE quick_payment_links ADD COLUMN {name} {definition}')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_quick_payment_allocation ON quick_payment_links(allocation_id)')
@@ -430,11 +432,13 @@ def install_quick_pay(app, api):
             default_html, default_description = coverage(cur,sample_link) if sample_link else ('','')
             generated = ''
             token = None
+            offer_zelle = False
             sms_notice = ''
             if request.method == 'POST' and request.form.get('action') == 'send_sms':
                 token = request.form.get('token', '')
                 digest = hashlib.sha256(token.encode()).hexdigest()
                 link = load(cur, digest)
+                offer_zelle = bool(link and link['offer_zelle'])
                 row = next((r for r in rows if link and r[0] == link['allocation_id']), None)
                 ctx = context(cur, link) if link else None
                 if (not link or link['invoice_id'] != invoice_id or not row or not ctx
@@ -458,7 +462,9 @@ def install_quick_pay(app, api):
                     url = '/p/' + token
                     try:
                         ok, detail = api['send_sms_delivery'](phone, 'Tuition invoice',
-                            f"{invoice[0]}'s invoice #{invoice_id} for ${row[3]:,.2f} is ready. View course details and pay securely without app login:", url)
+                            f"{invoice[0]}'s invoice #{invoice_id} for ${row[3]:,.2f} is ready. "
+                            + (f"Zelle: {ZELLE_ACCOUNT}. Memo: {invoice[0]}, invoice #{invoice_id}. " if offer_zelle else '')
+                            + 'View course details and pay securely without app login:', url)
                     except Exception:
                         ok, detail = False, 'Delivery could not be confirmed. Check provider records before sending another link.'
                     cur.execute('UPDATE quick_payment_sms SET status=?,provider_response=? WHERE token_hash=?',
@@ -480,18 +486,21 @@ def install_quick_pay(app, api):
                 if not description or len(description) > 2000:
                     return unavailable('Enter a parent-visible course description of up to 2000 characters.', 400)
                 card_rate = rate if request.form.get('offer_card') == '1' else 0
+                offer_zelle = request.form.get('offer_zelle') == '1'
                 fee = int((Decimal(cents(row[3])) * Decimal(card_rate) / 10000).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
                 coverage_html, _ = coverage(cur, dict(allocation_id=row[0],invoice_id=invoice_id,parent_id=row[1]))
                 token = secrets.token_urlsafe(32)
                 digest = hashlib.sha256(token.encode()).hexdigest()
                 cur.execute('''INSERT INTO quick_payment_links
-                    (token_hash,invoice_id,parent_id,allocation_id,amount_cents,expires_at,invoice_snapshot,payment_description,coverage_html,fee_cents,card_rate_bps)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (digest, invoice_id, row[1], row[0], cents(row[3]), int(time.time())+7*86400,
-                    snapshot(context(cur, dict(allocation_id=row[0], invoice_id=invoice_id, parent_id=row[1]))), description, coverage_html, fee, card_rate))
+                    (token_hash,invoice_id,parent_id,allocation_id,amount_cents,expires_at,invoice_snapshot,payment_description,coverage_html,fee_cents,card_rate_bps,offer_zelle)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''', (digest, invoice_id, row[1], row[0], cents(row[3]), int(time.time())+7*86400,
+                    snapshot(context(cur, dict(allocation_id=row[0], invoice_id=invoice_id, parent_id=row[1]))), description, coverage_html, fee, card_rate,int(offer_zelle)))
                 conn.commit()
             if token:
                 url = api['public_url_for']('/p/' + token)
                 text = f'H-Music: {invoice[0]}\'s invoice #{invoice_id} for ${row[3]:,.2f} is ready. View course details & pay securely without app login: {url} Thank you!'
+                if offer_zelle:
+                    text += f' You may also pay by Zelle: {ZELLE_ACCOUNT}. Memo: {invoice[0]}, invoice #{invoice_id}. Payment is confirmed after H-Music verifies receipt.'
                 generated = f'''<h2>Ready to share</h2><p>Recipient: {escape(str(row[2] or 'Guardian'))} · {escape(str(row[5]))}</p>
                     <label>Payment link<input id="quick-pay-url" readonly value="{escape(url, quote=True)}" onclick="this.select()"></label>
                     <button type="button" onclick="copyQuickPay('quick-pay-url',this)">Copy payment link</button>
@@ -534,6 +543,7 @@ def install_quick_pay(app, api):
                 {generated}<form method="post"><input type="hidden" name="action" value="create">
                 <label>Guardian / assigned amount<select name="allocation_id" required>{options}</select></label>
                 <label>What this payment covers (parent visible)<textarea name="payment_description" maxlength="2000" required>{escape(default_description)}</textarea></label>
+                <label class="check"><input type="checkbox" name="offer_zelle" value="1" checked>Also offer Zelle: {ZELLE_ACCOUNT}</label>
                 <label class="check"><input type="checkbox" name="offer_card" value="1" {'disabled' if not rate else ''}>Also offer credit card payment ({rate/100:g}% surcharge, parent must agree)</label>
                 <button {'disabled' if not options or str(invoice[2]).lower() in CLOSED else ''}>Generate payment link</button></form>
                 <p class="muted">ACH: no added parent fee. Optional credit card surcharge is shown separately. Generate a link, then click Send SMS to send it to the selected guardian.</p>
@@ -597,6 +607,11 @@ def install_quick_pay(app, api):
             note = 'Payment has not been submitted. Continue securely using the same checkout; no payment has been confirmed.'
         else:
             buttons = form('ach', f'Pay ${link["amount_cents"]/100:,.2f} by bank · ACH')
+            if link['offer_zelle']:
+                buttons += f'''<details class="description"><summary>Pay by Zelle · {ZELLE_ACCOUNT}</summary>
+                    <p>Send ${link['amount_cents']/100:,.2f} using your bank's Zelle service to <b>{ZELLE_ACCOUNT}</b>.</p>
+                    <p>Memo: {escape(str(row[4]))}, invoice #{link['invoice_id']}.</p>
+                    <p>H-Music will confirm your payment after verifying receipt. This invoice stays unpaid until confirmation. If you pay by Zelle, do not also submit an ACH or card payment.</p></details>'''
             if link['card_rate_bps']:
                 total = (link['amount_cents']+link['fee_cents'])/100
                 consent = f'<p>Tuition / share: ${link["amount_cents"]/100:,.2f}<br>Credit card surcharge ({link["card_rate_bps"]/100:g}%): ${link["fee_cents"]/100:,.2f}<br><b>Total: ${total:,.2f}</b></p><label class="check"><input type="checkbox" name="fee_consent" value="1" required>I choose credit card payment and agree to the surcharge and total shown above. ACH is available with no added fee.</label>'
