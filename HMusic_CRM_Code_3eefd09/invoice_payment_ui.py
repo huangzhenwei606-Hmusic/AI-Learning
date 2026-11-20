@@ -15,21 +15,28 @@ def validated_manual_payment_method(value, share_status='', current_method=''):
 
 
 def receipt_delivery_options_html():
-    return '''<label>Send receipt by <select name="receipt_delivery" required>
-        <option value="both">Message + Email</option>
-        <option value="message">Message (Parent App)</option>
-        <option value="email">Email</option>
-    </select></label>'''
+    return '''<fieldset><legend>Send receipt by (choose one or more)</legend>
+        <input type="hidden" name="receipt_channels_present" value="1">
+        <label><input type="checkbox" name="receipt_app" value="1" checked> App</label>
+        <label><input type="checkbox" name="receipt_sms" value="1"> SMS (text message)</label>
+        <label><input type="checkbox" name="receipt_email" value="1" checked> Email</label>
+    </fieldset>'''
 
 
 def receipt_delivery_channels(form):
+    if form.get('receipt_channels_present') == '1':
+        channels = tuple(form.get('receipt_' + channel) == '1' for channel in ('app', 'email', 'sms'))
+        if not any(channels):
+            raise ValueError('Choose at least one receipt channel: App, SMS, or Email.')
+        return channels
+    # Previously opened forms retain their original meaning.
     choice = form.get('receipt_delivery')
     if choice is None:
         return (form.get('confirmation_options_present') != '1'
-                or form.get('send_confirmation_message') == '1'), True
+                or form.get('send_confirmation_message') == '1'), True, False
     if choice not in ('both', 'message', 'email'):
-        raise ValueError('Choose Message, Email, or Message + Email for the receipt.')
-    return choice in ('both', 'message'), choice in ('both', 'email')
+        raise ValueError('Choose App, SMS, or Email for the receipt.')
+    return choice in ('both', 'message'), choice in ('both', 'email'), False
 
 
 def owner_payment_confirmation_html(allocation_id, share_status, current_method):
