@@ -34,4 +34,5 @@ class Tests(unittest.TestCase):
   result,writes=self.run_route({'ignore_conflict':'1'},False)
   self.assertEqual(result,'/owner_login')
   self.assertFalse(writes)
-unittest.main()
+if __name__ == "__main__":
+ unittest.main()
