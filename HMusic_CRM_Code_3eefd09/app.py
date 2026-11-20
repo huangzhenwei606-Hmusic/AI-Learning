@@ -32463,13 +32463,35 @@ def approve_reschedule(request_id):
         location=actual_location
     )
 
-    if conflict["has_conflict"]:
+    if conflict["has_conflict"] and request.form.get("ignore_conflict") != "1":
         conn.close()
+        # Preserve the manager's selections when explicitly overriding a conflict.
+        fields = {
+            "approved_teacher": approved_teacher,
+            "approved_date": approved_date,
+            "approved_time": approved_time,
+            "approved_room_id": approved_room_id,
+            "approved_classroom": approved_classroom,
+            "owner_note": owner_note,
+        }
+        hidden_fields = "".join(
+            f'<input type="hidden" name="{name}" value="{escape(str(value or ""), quote=True)}">'
+            for name, value in fields.items()
+        )
         return f"""
         <h1>Cannot Approve Reschedule</h1>
-        <p>{conflict["message"]}</p>
+        <p>{escape(str(conflict["message"]))}</p>
+        <form method="post" action="/approve_reschedule/{request_id}"
+              onsubmit="return confirm('Ignore this conflict and approve the reschedule? The existing lesson will remain scheduled.');">
+            {hidden_fields}
+            <button type="submit" name="ignore_conflict" value="1">Ignore conflict and approve</button>
+        </form>
         <p><a href="/reschedule_request/{request_id}">Back to Request</a></p>
         """
+
+    if conflict["has_conflict"]:
+        override_note = "Conflict explicitly overridden by manager: " + str(conflict["message"])
+        owner_note = "\n".join(part for part in (owner_note, override_note) if part)
 
     cursor.execute("""
     UPDATE schedule
