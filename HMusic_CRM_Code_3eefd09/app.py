@@ -19547,7 +19547,7 @@ def repair_paid_invoice_credit(cursor, invoice):
 
 def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_method,
                                     payment_date, lessons_added=0, parent_id=None,
-                                    allocation_id=None, invoice_status="paid", send_message=True):
+                                    allocation_id=None, invoice_status="paid", send_message=True, send_email=True):
     """Notify only after the payment transaction has committed."""
     try:
         if not parent_id:
@@ -19566,14 +19566,14 @@ def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_me
         link = f"/parent_invoice/{invoice_id}"
         related_type = "payment_confirmation_share" if allocation_id else "payment_confirmation"
         related_id = allocation_id or invoice_id
-        queue_id = queue_notification_delivery(
-            "parent", str(parent_id), title, body, link, "email",
-            related_type=related_type, related_id=related_id)
-        if queue_id:
-            send_queued_email_now(queue_id)
-        else:
-            app.logger.error("Payment confirmation email could not be queued for invoice %s", invoice_id)
-        # Email is mandatory; the optional in-app message is independent of delivery.
+        if send_email:
+            queue_id = queue_notification_delivery(
+                "parent", str(parent_id), title, body, link, "email",
+                related_type=related_type, related_id=related_id)
+            if queue_id:
+                send_queued_email_now(queue_id)
+            else:
+                app.logger.error("Payment confirmation email could not be queued for invoice %s", invoice_id)
         if send_message:
             try:
                 thread_id = get_or_create_message_thread(
@@ -19591,9 +19591,17 @@ def notify_parent_payment_confirmed(invoice_id, student_name, amount, payment_me
 
 @app.route("/pay_invoice/<int:invoice_id>", methods=["GET", "POST"])
 def pay_invoice(invoice_id):
-    from invoice_payment_ui import owner_payment_confirmation_html, validated_manual_payment_method
+    from invoice_payment_ui import (owner_payment_confirmation_html, validated_manual_payment_method,
+                                   receipt_delivery_options_html, receipt_delivery_channels)
     if not require_owner():
         return redirect("/owner_login")
+
+    send_receipt_message, send_receipt_email = True, True
+    if request.method == "POST":
+        try:
+            send_receipt_message, send_receipt_email = receipt_delivery_channels(request.form)
+        except ValueError as exc:
+            return f"<h1>Choose receipt delivery</h1><p>{escape(str(exc))}</p>", 400
 
     ensure_v321_schema()
     ensure_guardian_billing_schema()
@@ -19699,8 +19707,7 @@ def pay_invoice(invoice_id):
                         lessons_added=result.get("lessons_added", 0),
                         parent_id=result["parent_id"], allocation_id=allocation_id,
                         invoice_status=result.get("invoice_status", "paid"),
-                        send_message=(request.form.get("confirmation_options_present") != "1"
-                                      or request.form.get("send_confirmation_message") == "1"))
+                        send_message=send_receipt_message, send_email=send_receipt_email)
                 return redirect(f"/pay_invoice/{invoice_id}?share_confirmed=1")
             return f"<h1>Payment could not be confirmed</h1><p>{escape(result.get('error') or 'Unknown error')}</p>", 400
 
@@ -19812,7 +19819,8 @@ def pay_invoice(invoice_id):
 
         notify_parent_payment_confirmed(
             invoice_id, student_name, amount, payment_method, payment_date,
-            lessons_added=lessons_added)
+            lessons_added=lessons_added,
+            send_message=send_receipt_message, send_email=send_receipt_email)
 
         return f"""
         <h1>Invoice Paid!</h1>
@@ -19864,6 +19872,7 @@ def pay_invoice(invoice_id):
             Payment Method:<br>
             <input name="payment_method" value="Manual"><br><br>
 
+            {receipt_delivery_options_html()}<br><br>
             <button type="submit">Confirm Payment</button>
         </form>
         """

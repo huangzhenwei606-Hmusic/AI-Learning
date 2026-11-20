@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock
-from invoice_payment_ui import owner_payment_confirmation_html
+from invoice_payment_ui import owner_payment_confirmation_html, receipt_delivery_channels
 
 class ConfirmationDeliveryTest(TestCase):
     def setUp(self):
@@ -29,5 +29,17 @@ class ConfirmationDeliveryTest(TestCase):
         self.ns['send_queued_email_now'].assert_called_once_with(123)
     def test_checkbox_default(self):
         html=owner_payment_confirmation_html(2,'unpaid','Zelle')
-        self.assertIn('name="send_confirmation_message" value="1" checked',html)
-        self.assertIn('confirmation email is always sent',html)
+        self.assertIn('name="receipt_delivery"',html)
+        self.assertIn('Message (Parent App)',html)
+        self.assertNotIn('always sent',html)
+    def test_message_only_does_not_send_email(self):
+        self.ns['notify_parent_payment_confirmed'](274,'Leo',990,'Zelle','2026-11-12',parent_id=1,send_message=True,send_email=False)
+        self.ns['queue_notification_delivery'].assert_not_called()
+        self.ns['send_queued_email_now'].assert_not_called()
+        self.ns['add_message'].assert_called_once()
+    def test_delivery_selection(self):
+        for choice, expected in [('message',(True,False)),('email',(False,True)),('both',(True,True))]:
+            self.assertEqual(receipt_delivery_channels({'receipt_delivery':choice}),expected)
+        with self.assertRaises(ValueError):
+            receipt_delivery_channels({'receipt_delivery':'invalid'})
+        self.assertEqual(receipt_delivery_channels({}),(True,True))

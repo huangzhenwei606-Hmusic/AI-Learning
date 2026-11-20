@@ -14,6 +14,24 @@ def validated_manual_payment_method(value, share_status='', current_method=''):
     return value
 
 
+def receipt_delivery_options_html():
+    return '''<label>Send receipt by <select name="receipt_delivery" required>
+        <option value="both">Message + Email</option>
+        <option value="message">Message (Parent App)</option>
+        <option value="email">Email</option>
+    </select></label>'''
+
+
+def receipt_delivery_channels(form):
+    choice = form.get('receipt_delivery')
+    if choice is None:
+        return (form.get('confirmation_options_present') != '1'
+                or form.get('send_confirmation_message') == '1'), True
+    if choice not in ('both', 'message', 'email'):
+        raise ValueError('Choose Message, Email, or Message + Email for the receipt.')
+    return choice in ('both', 'message'), choice in ('both', 'email')
+
+
 def owner_payment_confirmation_html(allocation_id, share_status, current_method):
     if share_status == 'processing' and str(current_method).lower().startswith(('stripe', 'square')):
         return '<p role="status">Bank / online payment processing. This updates automatically after the provider confirms payment.</p>'
@@ -27,8 +45,7 @@ def owner_payment_confirmation_html(allocation_id, share_status, current_method)
         <input type="hidden" name="allocation_id" value="{int(allocation_id)}">
         <label>Received payment method <select name="payment_method" required>{options}</select></label>
         <input type="hidden" name="confirmation_options_present" value="1">
-        <p>Payment confirmation email is always sent. Check the delivery result after confirming.</p>
-        <label><input type="checkbox" name="send_confirmation_message" value="1" checked> Also send a confirmation message in the Parent App</label>
+        {receipt_delivery_options_html()}
         <button type="submit">Confirm payment received</button>
     </form>'''
 
@@ -59,6 +76,7 @@ def invoice_details_html(invoice_id, lessons, subtotal, due_date='', title='', c
         package += f' × ${tuition / count:,.2f}'
     rows = [('Invoice', f'#{invoice_id}'), ('Coverage', title), ('Course', course),
             ('Teacher', teacher), ('Package', package),
+            ('Amount', f'${max(0, float(subtotal or 0) - float(discount or 0)):,.2f}'),
             ('Coverage from', display_date(coverage_start)), ('Payment due', display_date(due_date))]
     if charges and valid_breakdown:
         rows += [('Tuition', f'${tuition:,.2f}')] if count > 0 else []
