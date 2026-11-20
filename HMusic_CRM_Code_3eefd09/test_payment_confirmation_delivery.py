@@ -7,7 +7,7 @@ from invoice_payment_ui import owner_payment_confirmation_html, receipt_delivery
 class ConfirmationDeliveryTest(TestCase):
     def setUp(self):
         node=next(n for n in ast.parse(Path(__file__).with_name('app.py').read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='notify_parent_payment_confirmed')
-        self.ns={k:Mock() for k in ['queue_notification_delivery','send_queued_email_now','get_or_create_message_thread','add_message','create_notification','app']}
+        self.ns={k:Mock() for k in ['queue_notification_delivery','send_queued_email_now','send_queued_sms_now','get_or_create_message_thread','add_message','create_notification','app']}
         self.ns.update(hmusic_money=lambda n:f'{n:.2f}',hmusic_number=lambda n:str(n))
         self.ns['queue_notification_delivery'].return_value=123
         exec(compile(ast.Module(body=[node],type_ignores=[]),'app.py','exec'),self.ns)
@@ -29,8 +29,8 @@ class ConfirmationDeliveryTest(TestCase):
         self.ns['send_queued_email_now'].assert_called_once_with(123)
     def test_checkbox_default(self):
         html=owner_payment_confirmation_html(2,'unpaid','Zelle')
-        self.assertIn('name="receipt_delivery"',html)
-        self.assertIn('Message (Parent App)',html)
+        self.assertIn('name="receipt_sms"',html)
+        self.assertIn('SMS (text message)',html)
         self.assertNotIn('always sent',html)
     def test_message_only_does_not_send_email(self):
         self.ns['notify_parent_payment_confirmed'](274,'Leo',990,'Zelle','2026-11-12',parent_id=1,send_message=True,send_email=False)
@@ -38,8 +38,21 @@ class ConfirmationDeliveryTest(TestCase):
         self.ns['send_queued_email_now'].assert_not_called()
         self.ns['add_message'].assert_called_once()
     def test_delivery_selection(self):
-        for choice, expected in [('message',(True,False)),('email',(False,True)),('both',(True,True))]:
+        for choice, expected in [('message',(True,False,False)),('email',(False,True,False)),('both',(True,True,False))]:
             self.assertEqual(receipt_delivery_channels({'receipt_delivery':choice}),expected)
         with self.assertRaises(ValueError):
             receipt_delivery_channels({'receipt_delivery':'invalid'})
-        self.assertEqual(receipt_delivery_channels({}),(True,True))
+        self.assertEqual(receipt_delivery_channels({}),(True,True,False))
+
+    def test_sms_only_sends_to_sms_queue_without_app_or_email(self):
+        self.ns['notify_parent_payment_confirmed'](274,'Leo',990,'Zelle','2026-11-12',parent_id=1,
+            send_message=False,send_email=False,send_sms=True)
+        self.assertEqual(self.ns['queue_notification_delivery'].call_args.args[5], 'sms')
+        self.ns['send_queued_sms_now'].assert_called_once_with(123)
+        self.ns['send_queued_email_now'].assert_not_called()
+        self.ns['add_message'].assert_not_called()
+    def test_new_channel_checkboxes(self):
+        self.assertEqual(receipt_delivery_channels({'receipt_channels_present':'1','receipt_sms':'1'}),(False,False,True))
+        self.assertEqual(receipt_delivery_channels({'receipt_channels_present':'1','receipt_app':'1','receipt_email':'1','receipt_sms':'1'}),(True,True,True))
+        with self.assertRaises(ValueError):
+            receipt_delivery_channels({'receipt_channels_present':'1'})
