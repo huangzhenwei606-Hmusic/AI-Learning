@@ -19632,6 +19632,28 @@ def pay_invoice(invoice_id):
         conn.close()
         return "<h1>Invoice not found</h1>"
 
+    cursor.execute("""SELECT COALESCE(NULLIF(i.coverage_class,''),e.course_type_name,'')
+        FROM invoices i LEFT JOIN enrollments e ON e.id=i.enrollment_id WHERE i.id=?""", (invoice_id,))
+    description_row = cursor.fetchone()
+    invoice_description = (description_row[0] if description_row else '') or ''
+    if request.method == "POST" and request.form.get("action") == "save_description":
+        invoice_description = (request.form.get("invoice_description") or '').strip()
+        if not invoice_description or len(invoice_description) > 200:
+            conn.rollback()
+            conn.close()
+            return "<h1>Enter an invoice description (1–200 characters).</h1>", 400
+        cursor.execute("UPDATE invoices SET coverage_class=? WHERE id=?", (invoice_description, invoice_id))
+        conn.commit()
+        conn.close()
+        return redirect(f"/pay_invoice/{invoice_id}?description_saved=1")
+    description_editor = f'''<section><h2>Invoice description</h2>
+        <p>{escape(str(invoice_description))} · ${hmusic_money(invoice[3])}</p>
+        <form method="POST"><input type="hidden" name="action" value="save_description">
+        <label>Course / invoice description <input name="invoice_description" value="{escape(str(invoice_description), quote=True)}"
+            placeholder="Piano lessons" maxlength="200" required style="min-width:300px"></label>
+        <button type="submit">Save description</button></form>
+        <p>This description appears on the invoice and PDF. Saving does not confirm payment or send a receipt.</p></section>'''
+
     if invoice[4] == "paid":
         # Viewing an invoice must never change course credits.
         cursor.execute("""SELECT q.status,q.sent_at FROM notification_delivery_queue q
@@ -19648,6 +19670,7 @@ def pay_invoice(invoice_id):
         conn.close()
         return f"""
         <h1>Invoice Already Paid</h1>
+        {description_editor}
         <h2>Payment confirmation email</h2>{email_results}
         <p>Invoice #{invoice_id} is already marked as paid.</p>
         <a href="/owner/invoice/{invoice_id}/reverse-payment">Reverse mistaken Paid / correction history</a>
@@ -19889,6 +19912,7 @@ def pay_invoice(invoice_id):
     <p>Type: {invoice[5]}</p>
     <p>Status: {invoice[4]}</p>
 
+    {description_editor}
     {allocation_section}
     {payment_form}
 
