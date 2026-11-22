@@ -51,14 +51,14 @@ class CancellationNotificationsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'test.db')
             db = sqlite3.connect(path)
-            db.executescript('''CREATE TABLE schedule(id INTEGER, status TEXT);
-                INSERT INTO schedule VALUES(3,'parent_cancel_pending_confirm');
+            db.executescript('''CREATE TABLE schedule(id INTEGER, status TEXT, charge_lessons REAL DEFAULT 0, policy_waiver_applied INTEGER DEFAULT 0, pending_fee_amount REAL DEFAULT 0, duration INTEGER DEFAULT 30);
+                INSERT INTO schedule(id,status) VALUES(3,'parent_cancel_pending_confirm');
                 CREATE TABLE lesson_change_requests(id INTEGER,parent_id,student_name,schedule_id,
                 request_type,original_date,original_time,teacher,classroom,policy_status,fee_preview,
                 waiver_available,reason,status,owner_decision,owner_note,created_at,updated_at);
                 INSERT INTO lesson_change_requests VALUES(24,2,'Olivia Ma',3,'cancel_lesson',
-                '2026-10-09','14:15','Jenny Lee','Room 2','excused_24h',0,0,'Cancel',
-                'pending',NULL,NULL,'2026-10-05',NULL);''')
+                '2026-11-22','11:45','Jenny Lee','Room 2','last_min_cancel',15,0,'Cancel',
+                'pending',NULL,NULL,'2026-11-21T10:51:00-08:00',NULL);''')
             db.commit()
             db.close()
             def apply(schedule_id, status, **kwargs):
@@ -69,14 +69,28 @@ class CancellationNotificationsTest(unittest.TestCase):
                 with sqlite3.connect(path) as conn:
                     self.assertEqual(conn.execute('SELECT status FROM schedule').fetchone()[0], 'excused_24h')
                     self.assertEqual(conn.execute('SELECT status FROM lesson_change_requests').fetchone()[0], 'approved')
-                self.assertEqual(args, (24, 'Jenny Lee', 'Olivia Ma', '2026-10-09', '14:15', 'approved'))
+                self.assertEqual(args, (24, 'Jenny Lee', 'Olivia Ma', '2026-11-22', '11:45', 'approved'))
+                with sqlite3.connect(path) as conn:
+                    self.assertEqual(conn.execute('SELECT policy_status,fee_preview FROM lesson_change_requests').fetchone(), ('excused_24h', 0))
             notify = Mock(side_effect=notified)
             scope = dict(require_owner=lambda:True, ensure_v321_schema=lambda:None,
                 sqlite3=SimpleNamespace(connect=lambda _: sqlite3.connect(path)),
                 request=SimpleNamespace(method='POST',form={'action':'apply_policy'}),
                 apply_lesson_status=apply,datetime=datetime,
+                escape=__import__('html').escape,hmusic_money=lambda n:f'{float(n):.2f}',
+                hmusic_policy_status_label=lambda s:s,
+                HMUSIC_TIMEZONE=__import__('zoneinfo').ZoneInfo('America/Los_Angeles'),
+                hmusic_now=Mock(side_effect=AssertionError('Approval time must not determine fees')),
                 notify_teacher_parent_cancellation=notify,create_notification=Mock(),redirect=lambda url:url)
+            for helper in ('get_parent_cancel_status', 'hmusic_cancellation_submission_time', 'hmusic_cancellation_request_policy'):
+                load(helper, scope)
             review = load('lesson_change_request_detail', scope)
+            scope['request'] = SimpleNamespace(method='GET',args={})
+            preview = review(24)
+            self.assertIn('Submitted 2026-11-21 10:51 PST', preview)
+            self.assertIn('<b>excused_24h</b>', preview)
+            self.assertIn('<b>$0.00</b>', preview)
+            scope['request'] = SimpleNamespace(method='POST',form={'action':'apply_policy'})
             self.assertEqual(review(24).split('?')[0], '/lesson_change_request/24')
             notify.assert_called_once()
             review(24)  # Repeated approval must not send another message.

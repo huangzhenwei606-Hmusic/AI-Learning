@@ -15235,7 +15235,7 @@ def teacher_logout():
 # Unified lesson status application
 # =========================
 
-def get_parent_cancel_status(lesson_date, lesson_time):
+def get_parent_cancel_status(lesson_date, lesson_time, submitted_at=None):
     lesson_datetime_str = lesson_date + " " + lesson_time
 
     try:
@@ -15249,13 +15249,37 @@ def get_parent_cancel_status(lesson_date, lesson_time):
             "%Y-%m-%d %I:%M %p"
         )
 
-    hours_before = (lesson_datetime - datetime.now()).total_seconds() / 3600
+    # Lesson dates are school wall time; server clocks may run in UTC.
+    reference = submitted_at if submitted_at is not None else hmusic_now()
+    if HMUSIC_TIMEZONE:
+        lesson_datetime = lesson_datetime.replace(tzinfo=HMUSIC_TIMEZONE)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=HMUSIC_TIMEZONE)
+    hours_before = (lesson_datetime.timestamp() - reference.timestamp()) / 3600
 
     if hours_before < 1:
         return "no_show"
     if hours_before < 24:
         return "last_min_cancel"
     return "excused_24h"
+
+
+def hmusic_cancellation_submission_time(value):
+    """New requests carry an offset; legacy datetime.now values use server time."""
+    submitted = datetime.fromisoformat(str(value).strip())
+    # astimezone interprets old naive values in the server's local timezone,
+    # exactly where legacy datetime.now() timestamps were recorded.
+    return submitted.astimezone(HMUSIC_TIMEZONE) if HMUSIC_TIMEZONE else submitted.astimezone()
+
+
+def hmusic_cancellation_request_policy(lesson_date, lesson_time, created_at, stored_policy):
+    try:
+        submitted = hmusic_cancellation_submission_time(created_at)
+        return get_parent_cancel_status(lesson_date, lesson_time, submitted_at=submitted)
+    except (TypeError, ValueError, OverflowError):
+        # Missing historical evidence must never turn an old request into a late
+        # cancellation merely because an owner is reviewing it today.
+        return stored_policy
 
 
 def get_hours_before_lesson(lesson_date, lesson_time):
@@ -16039,11 +16063,12 @@ def parent_cancel():
             conn.close()
             return redirect("/parent_schedule")
 
-        cancel_status = get_parent_cancel_status(lesson[1], lesson[2])
+        submitted_at = hmusic_now()
+        cancel_status = get_parent_cancel_status(lesson[1], lesson[2], submitted_at=submitted_at)
         holder = hmusic_waiver_holder(cursor, student_name, lesson[6])
         waiver_available = 1 if cancel_status == "no_show" and holder["used"] < holder["allowance"] else 0
         fee_preview = hmusic_last_min_fee(lesson[5]) if cancel_status == "last_min_cancel" else 0
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now = submitted_at.isoformat(timespec="seconds")
         cursor.execute("""
         INSERT INTO lesson_change_requests (
             parent_id,
@@ -16207,6 +16232,24 @@ def lesson_change_request_detail(request_id):
         conn.close()
         return "<h1>Request not found</h1>"
 
+    cursor.execute("""
+    SELECT status, COALESCE(charge_lessons, 0), COALESCE(policy_waiver_applied, 0), COALESCE(pending_fee_amount, 0), COALESCE(duration, 30)
+    FROM schedule
+    WHERE id = ?
+    """, (req[3],))
+    schedule_state = cursor.fetchone()
+
+    policy_status = req[9]
+    if (req[13] or "pending") in ("pending", "pending_owner_review"):
+        policy_status = hmusic_cancellation_request_policy(req[5], req[6], req[16], req[9])
+    preview_amount = req[10]
+    if (req[13] or "pending") in ("pending", "pending_owner_review") and schedule_state:
+        preview_amount = hmusic_last_min_fee(schedule_state[4]) if policy_status == "last_min_cancel" else 0
+    try:
+        submitted_label = hmusic_cancellation_submission_time(req[16]).strftime("%Y-%m-%d %H:%M %Z")
+    except (TypeError, ValueError, OverflowError):
+        submitted_label = str(req[16] or "Unknown")
+
     if request.method == "POST":
         if (req[13] or "pending") not in ("pending", "pending_owner_review"):
             conn.close()
@@ -16220,7 +16263,7 @@ def lesson_change_request_detail(request_id):
         if action == "apply_policy":
             result = apply_lesson_status(
                 req[3],
-                req[9],
+                policy_status,
                 actor="owner:request",
                 reason=req[12],
                 use_policy_waiver=True
@@ -16228,7 +16271,7 @@ def lesson_change_request_detail(request_id):
         elif action == "charge":
             result = apply_lesson_status(
                 req[3],
-                req[9],
+                policy_status,
                 actor="owner:request_charge",
                 reason=req[12],
                 use_policy_waiver=False
@@ -16268,9 +16311,11 @@ def lesson_change_request_detail(request_id):
         SET status = ?,
             owner_decision = ?,
             owner_note = ?,
+            policy_status = ?,
+            fee_preview = ?,
             updated_at = ?
         WHERE id = ?
-        """, (new_status, decision, owner_note, now, request_id))
+        """, (new_status, decision, owner_note, policy_status, preview_amount, now, request_id))
         conn.commit()
         conn.close()
 
@@ -16289,16 +16334,10 @@ def lesson_change_request_detail(request_id):
             )
         return redirect(f"/lesson_change_request/{request_id}?updated=1")
 
-    cursor.execute("""
-    SELECT status, COALESCE(charge_lessons, 0), COALESCE(policy_waiver_applied, 0), COALESCE(pending_fee_amount, 0)
-    FROM schedule
-    WHERE id = ?
-    """, (req[3],))
-    schedule_state = cursor.fetchone()
     conn.close()
 
-    status_label = hmusic_policy_status_label(req[9])
-    fee_preview = hmusic_money(req[10])
+    status_label = hmusic_policy_status_label(policy_status)
+    fee_preview = hmusic_money(preview_amount)
     waiver_text = "Available" if req[11] else "Not available"
     request_status_display = "confirmed" if (req[13] or "") == "approved" else (req[13] or "pending")
     current_state = ""
@@ -16373,12 +16412,13 @@ def lesson_change_request_detail(request_id):
         <div class="wrap">
             {update_notice}
             <div class="card">
-                <p class="muted">Request #{req[0]} · {escape(req[16] or '')}</p>
+                <p class="muted">Request #{req[0]} · Submitted {escape(submitted_label)}</p>
                 <h1>{escape(req[2])} cancellation request</h1>
                 <p>{escape(req[5] or '')} {escape(req[6] or '')} · {escape(req[7] or '')} · {escape(req[8] or '')}</p>
                 <p><b>Reason:</b> {escape(req[12] or 'No reason provided.')}</p>
                 <p><b>Request status:</b> {escape(request_status_display)}</p>
                 <p><b>Current lesson state:</b> {escape(current_state or 'Lesson not found')}</p>
+                <p class="muted">Cancellation policy is based on when the parent submitted this request, not when the school approves it. Times are shown in the school timezone.</p>
                 <div class="grid">
                     <div class="metric"><span>Policy preview</span><b>{status_label}</b></div>
                     <div class="metric"><span>Waiver</span><b>{waiver_text}</b></div>
@@ -30514,7 +30554,8 @@ def owner_cancel_requests():
     if status_filter == "all":
         cursor.execute("""
         SELECT id, student_name, original_date, original_time, teacher, classroom,
-               policy_status, fee_preview, waiver_available, reason, status, created_at
+               policy_status, fee_preview, waiver_available, reason, status, created_at,
+               (SELECT COALESCE(duration, 30) FROM schedule WHERE schedule.id = lesson_change_requests.schedule_id)
         FROM lesson_change_requests
         WHERE request_type = 'cancel_lesson'
         ORDER BY id DESC
@@ -30523,7 +30564,8 @@ def owner_cancel_requests():
     else:
         cursor.execute("""
         SELECT id, student_name, original_date, original_time, teacher, classroom,
-               policy_status, fee_preview, waiver_available, reason, status, created_at
+               policy_status, fee_preview, waiver_available, reason, status, created_at,
+               (SELECT COALESCE(duration, 30) FROM schedule WHERE schedule.id = lesson_change_requests.schedule_id)
         FROM lesson_change_requests
         WHERE request_type = 'cancel_lesson'
         AND status IN ('pending', 'pending_owner_review')
@@ -30535,19 +30577,27 @@ def owner_cancel_requests():
 
     rows = ""
     for r in requests:
+        policy_status, preview_amount = r[6], r[7]
+        if (r[10] or "pending") in ("pending", "pending_owner_review"):
+            policy_status = hmusic_cancellation_request_policy(r[2], r[3], r[11], r[6])
+            preview_amount = hmusic_last_min_fee(r[12] or 30) if policy_status == "last_min_cancel" else 0
+        try:
+            submitted_label = hmusic_cancellation_submission_time(r[11]).strftime("%Y-%m-%d %H:%M %Z")
+        except (TypeError, ValueError, OverflowError):
+            submitted_label = str(r[11] or "Unknown")
         waiver = "Yes" if r[8] else "No"
         status_display = "confirmed" if (r[10] or "") == "approved" else (r[10] or "")
         action_html = f"<a class='mini-button' href='/lesson_change_request/{r[0]}'>Review / Confirm</a>"
         rows += f"""
         <tr>
             <td><a href="/lesson_change_request/{r[0]}">#{r[0]}</a></td>
-            <td>{escape(str(r[11] or ""))}</td>
+            <td>{escape(submitted_label)}</td>
             <td><a href="/student/{quote(str(r[1] or ''))}">{escape(str(r[1] or ""))}</a></td>
             <td>{escape(str(r[2] or ""))} {escape(str(r[3] or ""))}</td>
             <td>{escape(str(r[4] or ""))}</td>
             <td>{escape(str(r[5] or ""))}</td>
-            <td>{escape(hmusic_policy_status_label(r[6]))}</td>
-            <td>${hmusic_money(r[7] or 0)}</td>
+            <td>{escape(hmusic_policy_status_label(policy_status))}</td>
+            <td>${hmusic_money(preview_amount or 0)}</td>
             <td>{waiver}</td>
             <td>{escape(str(r[9] or ""))}</td>
             <td>{escape(status_display)}</td>
