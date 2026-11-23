@@ -163,6 +163,18 @@ class AttendanceCreditsTest(unittest.TestCase):
             with sqlite3.connect(path) as check:
                 self.assertEqual(check.execute("SELECT lessons_left FROM students WHERE name='Legacy'" if legacy else 'SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],-2 if legacy else 10)
 
+            if not legacy:
+                with sqlite3.connect(path) as check:
+                    check.execute('UPDATE schedule SET student_charge_amount=75')
+                for _ in range(2):
+                    self.assertTrue(scope['apply_lesson_status'](1,'no_show',use_policy_waiver=False)['ok'])
+                with sqlite3.connect(path) as check:
+                    self.assertEqual(check.execute('SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],9)
+                    self.assertEqual(check.execute('SELECT charge_lessons,revenue_amount,pending_fee_amount FROM schedule').fetchone(),(1,75,0))
+                self.assertTrue(scope['apply_lesson_status'](1,'scheduled')['ok'])
+                with sqlite3.connect(path) as check:
+                    self.assertEqual(check.execute('SELECT lessons_left FROM enrollments WHERE id=8').fetchone()[0],10)
+
             if legacy:
                 scope.update(hmusic_last_min_fee=lambda duration:25, hmusic_money=lambda amount:str(amount))
                 for locked in (False, True):
