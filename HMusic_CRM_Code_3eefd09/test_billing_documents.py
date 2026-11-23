@@ -61,6 +61,13 @@ INSERT INTO invoice_allocations VALUES(1,240,1,400,'unpaid','','',NULL,NULL),(2,
   self.paid();self.assertEqual(self.client.get('/family_payment/1/receipt.pdf').status_code,200)
   with self.connect() as c:c.execute('UPDATE family_payment_links SET expires_at=0')
   self.assertEqual(self.client.get('/family_payment/1/invoice.pdf').status_code,403)
+ def test_custom_course_name_is_used_by_single_and_combined_documents(self):
+  with self.connect() as c:
+   c.execute("UPDATE invoices SET coverage_class=? WHERE id=240", ('Online Theory <Level 1>',))
+   self.assertEqual(invoice_document(c.cursor(),240,1)['lines'][0]['course'],'Online Theory <Level 1>')
+   self.assertEqual(family_document(c.cursor(),1)['lines'][0]['course'],'Online Theory <Level 1>')
+   c.execute("UPDATE invoices SET coverage_class='' WHERE id=240")
+   self.assertEqual(family_document(c.cursor(),1)['lines'][0]['course'],'Private Piano')
  def test_family_total_partial_payment(self):
   self.paid()
   with self.connect() as c:
