@@ -82,14 +82,14 @@ class CancellationNotificationsTest(unittest.TestCase):
                 HMUSIC_TIMEZONE=__import__('zoneinfo').ZoneInfo('America/Los_Angeles'),
                 hmusic_now=Mock(side_effect=AssertionError('Approval time must not determine fees')),
                 notify_teacher_parent_cancellation=notify,create_notification=Mock(),redirect=lambda url:url)
-            for helper in ('get_parent_cancel_status', 'hmusic_cancellation_submission_time', 'hmusic_cancellation_request_policy'):
+            for helper in ('get_parent_cancel_status', 'hmusic_cancellation_submission_time', 'hmusic_cancellation_request_policy', 'hmusic_cancellation_charge_preview'):
                 load(helper, scope)
             review = load('lesson_change_request_detail', scope)
             scope['request'] = SimpleNamespace(method='GET',args={})
             preview = review(24)
             self.assertIn('Submitted 2026-11-21 10:51 PST', preview)
             self.assertIn('<b>excused_24h</b>', preview)
-            self.assertIn('<b>$0.00</b>', preview)
+            self.assertIn('<b>$0.00 extra fee</b>', preview)
             scope['request'] = SimpleNamespace(method='POST',form={'action':'apply_policy'})
             self.assertEqual(review(24).split('?')[0], '/lesson_change_request/24')
             notify.assert_called_once()

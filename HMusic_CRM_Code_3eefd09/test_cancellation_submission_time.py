@@ -17,6 +17,14 @@ class SubmissionPolicyTest(unittest.TestCase):
                      'hmusic_cancellation_request_policy'):
             load(name, self.scope)
 
+    def test_no_show_preview_describes_full_tuition_not_free(self):
+        self.scope['hmusic_money'] = lambda amount: f'{amount:.2f}'
+        load('hmusic_cancellation_charge_preview', self.scope)
+        preview = self.scope['hmusic_cancellation_charge_preview']
+        self.assertEqual(preview('no_show', 0), '1 lesson credit · 100% tuition; no extra fee')
+        self.assertIn('policy waiver available', preview('no_show', 0, True))
+        self.assertEqual(preview('last_min_cancel', 15), '$15.00 extra fee')
+
     def test_early_submission_stays_free_despite_late_review(self):
         policy = self.scope['hmusic_cancellation_request_policy']
         self.assertEqual(policy('2026-11-22', '11:45', '2026-11-21T10:51:00-08:00',

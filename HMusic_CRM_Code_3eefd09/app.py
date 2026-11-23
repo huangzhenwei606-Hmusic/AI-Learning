@@ -15646,6 +15646,14 @@ def hmusic_attendance_enrollment(cursor, schedule_id, student_name, enrollment_i
     return matches[0][0] if len(matches) == 1 else None
 
 
+def hmusic_cancellation_charge_preview(status, extra_fee=0, waiver_available=False):
+    if status == "no_show":
+        return ("1 lesson credit · 100% tuition" +
+                (" (policy waiver available)" if waiver_available else "") +
+                "; no extra fee")
+    return f"${hmusic_money(extra_fee or 0)} extra fee"
+
+
 def hmusic_apply_group_attendance_credit(cursor, schedule_id, student_name, status):
     """Track the actual deduction, so repeated Present saves are idempotent."""
     cursor.execute("""SELECT id, COALESCE(credit_units,1), COALESCE(billing_rule,'existing_credits'),
@@ -16337,7 +16345,7 @@ def lesson_change_request_detail(request_id):
     conn.close()
 
     status_label = hmusic_policy_status_label(policy_status)
-    fee_preview = hmusic_money(preview_amount)
+    fee_preview = hmusic_cancellation_charge_preview(policy_status, preview_amount, bool(req[11]))
     waiver_text = "Available" if req[11] else "Not available"
     request_status_display = "confirmed" if (req[13] or "") == "approved" else (req[13] or "pending")
     current_state = ""
@@ -16422,7 +16430,7 @@ def lesson_change_request_detail(request_id):
                 <div class="grid">
                     <div class="metric"><span>Policy preview</span><b>{status_label}</b></div>
                     <div class="metric"><span>Waiver</span><b>{waiver_text}</b></div>
-                    <div class="metric"><span>Fee preview</span><b>${fee_preview}</b></div>
+                    <div class="metric"><span>Tuition / fee preview</span><b>{escape(fee_preview)}</b></div>
                 </div>
             </div>
             {decision_panel}
@@ -30597,7 +30605,7 @@ def owner_cancel_requests():
             <td>{escape(str(r[4] or ""))}</td>
             <td>{escape(str(r[5] or ""))}</td>
             <td>{escape(hmusic_policy_status_label(policy_status))}</td>
-            <td>${hmusic_money(preview_amount or 0)}</td>
+            <td>{escape(hmusic_cancellation_charge_preview(policy_status, preview_amount, bool(r[8])))}</td>
             <td>{waiver}</td>
             <td>{escape(str(r[9] or ""))}</td>
             <td>{escape(status_display)}</td>
@@ -30639,7 +30647,7 @@ def owner_cancel_requests():
             <table>
                 <tr>
                     <th>ID</th><th>Created</th><th>Student</th><th>Lesson</th><th>Teacher</th>
-                    <th>Room</th><th>Policy</th><th>Fee preview</th><th>Waiver</th><th>Reason</th><th>Status</th><th>Action</th>
+                    <th>Room</th><th>Policy</th><th>Tuition / fee preview</th><th>Waiver</th><th>Reason</th><th>Status</th><th>Action</th>
                 </tr>
                 {rows}
             </table>
