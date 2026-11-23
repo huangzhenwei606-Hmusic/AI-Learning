@@ -6998,8 +6998,8 @@ def edit_invoice(invoice_id):
                             <input name="coverage_title" value="{escape(str(coverage_title or ''), quote=True)}" placeholder="Fall 2026 Piano Package">
                         </div>
                         <div>
-                            <label>Class / package note</label>
-                            <input name="coverage_class" value="{escape(str(coverage_class or ''), quote=True)}" placeholder="Private piano">
+                            <label>Course name (shown on invoice and receipt)</label>
+                            <input name="coverage_class" value="{escape(str(coverage_class or ''), quote=True)}" maxlength="200" placeholder="e.g. Private Piano / Online Theory">
                         </div>
                         <div>
                             <label>Coverage starts</label>
@@ -46633,6 +46633,11 @@ def hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=None, 
     student_name = enrollment[1] or ""
     course_name = enrollment[2] or "Tuition"
     teacher_name = enrollment[3] or ""
+    if invoice_id:
+        cursor.execute("SELECT coverage_class FROM invoices WHERE id=?", (invoice_id,))
+        course_override = cursor.fetchone()
+        if course_override and course_override[0]:
+            course_name = course_override[0]
     lesson_count = enrollment[6] or enrollment[7] or 10
     invoice_amount = amount if amount is not None else enrollment[5]
     if invoice_amount is None or invoice_amount == 0:
@@ -46769,6 +46774,9 @@ def create_enrollment_invoice_route(enrollment_id):
                         <label>New semester start date <input type="date" name="semester_start"></label>
                         <p>A new semester keeps previous unpaid invoices separate. The same start date reuses its invoice to prevent duplicates. Credits are added only after payment is confirmed.</p>
                     </fieldset>
+                    <label for="invoice-course-name">Course name (optional)</label><br>
+                    <input id="invoice-course-name" name="coverage_class" maxlength="200" placeholder="{escape(str(enrollment[2] or 'Course name'), quote=True)}" style="width:100%;box-sizing:border-box;padding:12px;margin:8px 0">
+                    <p>Shown to parents on this invoice, PDF and receipt. Leave blank to use the existing course name.</p>
                     Message to parent:<br>
                     <textarea name="message_body" required>{escape(default_message)}</textarea>
                     <input type="hidden" name="default_message_body" value="{escape(default_message, quote=True)}">
@@ -46821,6 +46829,11 @@ def create_enrollment_invoice_route(enrollment_id):
         create_invoice_message_event(invoice_id, "sent", message_body, parent_id=parent_id, student_name=invoice[0], amount=invoice[1])
         return redirect(f"/enrollment/{enrollment_id}")
 
+    custom_course_name = (request.form.get("coverage_class") or "").strip()
+    if len(custom_course_name) > 200:
+        conn.close()
+        return "Course name must be 200 characters or fewer", 400
+
     billing_mode = request.form.get("billing_mode", "existing")
     semester_start = ""
     if billing_mode not in ("existing", "new_semester"):
@@ -46854,6 +46867,9 @@ def create_enrollment_invoice_route(enrollment_id):
     WHERE id = ?
     """, (invoice_id,))
     invoice = cursor.fetchone()
+
+    if invoice and custom_course_name:
+        cursor.execute("UPDATE invoices SET coverage_class=? WHERE id=?", (custom_course_name, invoice_id))
 
     parent_id = get_primary_parent_for_student(cursor, invoice[0]) if invoice else None
     default_message = hmusic_enrollment_invoice_message_body(cursor, enrollment, invoice_id=invoice_id, amount=invoice[1]) if invoice else ""

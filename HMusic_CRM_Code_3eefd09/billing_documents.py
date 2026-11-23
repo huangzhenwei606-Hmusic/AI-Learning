@@ -61,7 +61,7 @@ def family_document(cur, batch_id):
     r=cur.fetchone()
     if not r or r[3]=='cancelled': abort(404)
     cur.execute('''SELECT fi.invoice_id,fi.student_name,fi.lessons,fi.amount_cents,
-        fi.course_name,fi.teacher_name,i.coverage_title,i.coverage_start,i.coverage_note,
+        COALESCE(NULLIF(TRIM(i.coverage_class),''),fi.course_name),fi.teacher_name,i.coverage_title,i.coverage_start,i.coverage_note,
         ia.paid_at,ia.status,e.duration FROM family_payment_items fi JOIN invoices i ON i.id=fi.invoice_id
         LEFT JOIN enrollments e ON e.id=i.enrollment_id
         JOIN invoice_allocations ia ON ia.id=fi.allocation_id
